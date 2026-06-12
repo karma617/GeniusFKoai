@@ -1,3 +1,4 @@
+import mimetypes
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -148,10 +149,21 @@ app.include_router(system_router, prefix="/api")
 
 _static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(_static_dir):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_static_dir, "assets")), name="assets")
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("application/javascript", ".mjs")
+    mimetypes.add_type("text/css", ".css")
+    mimetypes.add_type("image/svg+xml", ".svg")
+
+    _assets_dir = os.path.join(_static_dir, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str):
+        requested_path = os.path.abspath(os.path.join(_static_dir, full_path))
+        static_root = os.path.abspath(_static_dir)
+        if requested_path.startswith(static_root + os.sep) and os.path.isfile(requested_path):
+            return FileResponse(requested_path)
         return FileResponse(os.path.join(_static_dir, "index.html"))
 
 
