@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Port = 8000,
     [string]$HostName = "127.0.0.1",
     [switch]$NoBrowser
@@ -9,9 +9,91 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
-$PythonExe = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path -LiteralPath $PythonExe)) {
-    $PythonExe = "python"
+$VenvDir = Join-Path $Root ".venv"
+$PythonExe = Join-Path $VenvDir "Scripts\python.exe"
+$RequirementsFile = Join-Path $Root "requirements.txt"
+$RequirementsStamp = Join-Path $VenvDir ".requirements.stamp"
+
+function Invoke-Native {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments
+    )
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Get-BootstrapPython {
+    $pythonLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($pythonLauncher) {
+        return @($pythonLauncher.Source, "-3")
+    }
+
+    $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($pythonCommand) {
+        return @($pythonCommand.Source)
+    }
+
+    throw "Python 3.12+ not found. Please install Python or add python/py to PATH."
+}
+
+function Get-FileSha256 {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return ""
+    }
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hashBytes = $sha256.ComputeHash($stream)
+            return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "")
+        } finally {
+            $sha256.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Ensure-PythonEnvironment {
+    # 首次运行自动创建虚拟环境；后续只在 requirements.txt 变化时重装依赖。
+    if (-not (Test-Path -LiteralPath $PythonExe)) {
+        $bootstrap = @(Get-BootstrapPython)
+        $bootstrapPython = $bootstrap[0]
+        $bootstrapArgs = @()
+        if ($bootstrap.Count -gt 1) {
+            $bootstrapArgs = $bootstrap[1..($bootstrap.Count - 1)]
+        }
+
+        Write-Host "Python venv not found. Creating: $VenvDir" -ForegroundColor Yellow
+        Invoke-Native -FilePath $bootstrapPython -Arguments ($bootstrapArgs + @("-m", "venv", $VenvDir))
+    }
+
+    if (-not (Test-Path -LiteralPath $PythonExe)) {
+        throw "Python venv create failed: $PythonExe"
+    }
+
+    if (-not (Test-Path -LiteralPath $RequirementsFile)) {
+        Write-Host "requirements.txt not found; skip dependency install." -ForegroundColor Yellow
+        return
+    }
+
+    $currentHash = Get-FileSha256 -Path $RequirementsFile
+    $installedHash = ""
+    if (Test-Path -LiteralPath $RequirementsStamp) {
+        $installedHash = (Get-Content -LiteralPath $RequirementsStamp -Raw).Trim()
+    }
+
+    if ($currentHash -ne $installedHash) {
+        Write-Host "Installing Python dependencies from requirements.txt..." -ForegroundColor Yellow
+        Invoke-Native -FilePath $PythonExe -Arguments @("-m", "pip", "install", "--upgrade", "pip")
+        Invoke-Native -FilePath $PythonExe -Arguments @("-m", "pip", "install", "-r", $RequirementsFile)
+        Set-Content -LiteralPath $RequirementsStamp -Value $currentHash -Encoding UTF8
+        Write-Host "Python dependencies ready." -ForegroundColor Green
+    }
 }
 
 function Test-TcpPort {
@@ -88,6 +170,9 @@ function Stop-ExistingProjectServer {
 $Url = "http://${HostName}:$Port"
 $env:PYTHONUTF8 = "1"
 
+Set-Location -LiteralPath $Root
+Ensure-PythonEnvironment
+
 Write-Host "Project root: $Root"
 Write-Host "URL: $Url"
 Write-Host "Python: $PythonExe"
@@ -111,6 +196,5 @@ if (-not $NoBrowser) {
     } -ArgumentList $Url | Out-Null
 }
 
-Set-Location -LiteralPath $Root
 Write-Host "Starting backend. Close this window to stop the service." -ForegroundColor Cyan
 & $PythonExe -m uvicorn main:app --host $HostName --port $Port
