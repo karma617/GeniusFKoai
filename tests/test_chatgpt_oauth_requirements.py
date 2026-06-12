@@ -59,6 +59,61 @@ def test_generate_chatgpt_registration_password_meets_openai_strength_requiremen
         assert any(ch in ",._!@#" for ch in password)
 
 
+def test_add_phone_retryable_rejection_text_matches_english_and_chinese():
+    matcher = browser_register_module._is_retryable_phone_rejection_text
+
+    assert matcher("This phone number is not supported. Please try another phone.")
+    assert matcher("We couldn't send a text message to this phone number, so we switched to WhatsApp.")
+    assert matcher("You've made too many phone verification requests. Please try again later.")
+    assert matcher("不支持虚拟手机号，请更换一个号码")
+    assert not matcher("Enter the 6-digit security code we sent to your phone.")
+
+
+def test_add_phone_attempt_limit_uses_codex_pool_size():
+    class FakeCallback:
+        provider_key = "codex_sms_pool"
+        config = {
+            "codex_sms_pool_text": "\n".join(
+                [
+                    "+15550000001|https://sms.example/1",
+                    "+15550000002|https://sms.example/2",
+                ]
+            )
+        }
+
+    assert browser_register_module._resolve_add_phone_attempt_limit(FakeCallback(), 40) == 2
+
+
+def test_add_phone_default_attempt_limit_is_two_countries_times_ten():
+    class FakeCallback:
+        provider_key = "smsbower_api"
+
+    default_limit = (
+        browser_register_module.PHONE_ATTEMPTS_PER_COUNTRY
+        * browser_register_module.PHONE_MAX_COUNTRIES
+    )
+
+    assert browser_register_module.PHONE_ATTEMPTS_PER_COUNTRY == 10
+    assert browser_register_module.PHONE_MAX_COUNTRIES == 2
+    assert default_limit == 20
+    assert browser_register_module._resolve_add_phone_attempt_limit(FakeCallback(), default_limit) == 20
+
+
+def test_playwright_pageerror_location_patch_is_idempotent(tmp_path):
+    bundle = tmp_path / "coreBundle.js"
+    bundle.write_text(
+        "url: pageError.location.url,\n"
+        "line: pageError.location.lineNumber,\n"
+        "column: pageError.location.columnNumber\n",
+        encoding="utf-8",
+    )
+
+    assert browser_register_module._patch_playwright_firefox_pageerror_location_bug(bundle_path=bundle)
+    patched = bundle.read_text(encoding="utf-8")
+    assert 'url: pageError.location?.url || "",' in patched
+    assert browser_register_module._patch_playwright_firefox_pageerror_location_bug(bundle_path=bundle) is False
+
+
 def test_auth_timeout_retry_text_detects_openai_retry_page():
     text = "Oops, an error occurred! Operation timed out Try again Terms of Use"
 

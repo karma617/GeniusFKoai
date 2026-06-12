@@ -14,13 +14,19 @@ import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from curl_cffi import requests as curl_requests
 
 from core.desktop_apps import build_desktop_app_state
 
 logger = logging.getLogger(__name__)
+
+CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
+CODEX_PROBE_MODEL = "gpt-5.4"
+CODEX_PROBE_VERSION = "0.125.0"
+CODEX_PROBE_USER_AGENT = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+CODEX_PROBE_INSTRUCTIONS = "You are Codex, a coding agent. Answer briefly."
 
 
 def _build_proxies(proxy: Optional[str]) -> dict | None:
@@ -35,6 +41,356 @@ def _mask_secret(value: str) -> str:
     if len(value) <= 12:
         return value
     return f"{value[:6]}...{value[-4:]}"
+
+
+def _utc_iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _header_value(headers: Any, key: str) -> str:
+    if not headers:
+        return ""
+    for candidate in (key, key.lower(), key.title()):
+        try:
+            value = headers.get(candidate)
+        except AttributeError:
+            value = None
+        if value not in (None, ""):
+            return str(value)
+    try:
+        iterator = headers.items()
+    except AttributeError:
+        return ""
+    key_lc = key.lower()
+    for name, value in iterator:
+        if str(name).lower() == key_lc and value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _parse_codex_rate_limit_headers(headers: Any) -> dict[str, Any] | None:
+    """解析 SUB2API 同款 Codex 响应头额度。"""
+
+    fields = {
+        "primary_used_percent": ("x-codex-primary-used-percent", _parse_float),
+        "primary_reset_after_seconds": ("x-codex-primary-reset-after-seconds", _parse_int),
+        "primary_window_minutes": ("x-codex-primary-window-minutes", _parse_int),
+        "secondary_used_percent": ("x-codex-secondary-used-percent", _parse_float),
+        "secondary_reset_after_seconds": ("x-codex-secondary-reset-after-seconds", _parse_int),
+        "secondary_window_minutes": ("x-codex-secondary-window-minutes", _parse_int),
+        "primary_over_secondary_percent": ("x-codex-primary-over-secondary-limit-percent", _parse_float),
+    }
+    snapshot: dict[str, Any] = {}
+    for name, (header_name, parser) in fields.items():
+        parsed = parser(_header_value(headers, header_name))
+        if parsed is not None:
+            snapshot[name] = parsed
+    if not snapshot:
+        return None
+    snapshot["updated_at"] = _utc_iso(datetime.now(timezone.utc))
+    return snapshot
+
+
+def _normalize_codex_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    """按窗口分钟数把 primary/secondary 归一到 5h/7d。"""
+
+    if not snapshot:
+        return None
+
+    primary_mins = _parse_int(snapshot.get("primary_window_minutes"))
+    secondary_mins = _parse_int(snapshot.get("secondary_window_minutes"))
+    has_primary = primary_mins is not None
+    has_secondary = secondary_mins is not None
+
+    use_5h_from_primary = False
+    use_7d_from_primary = False
+    if has_primary and has_secondary:
+        if int(primary_mins or 0) < int(secondary_mins or 0):
+            use_5h_from_primary = True
+        else:
+            use_7d_from_primary = True
+    elif has_primary:
+        if int(primary_mins or 0) <= 360:
+            use_5h_from_primary = True
+        else:
+            use_7d_from_primary = True
+    elif has_secondary:
+        if int(secondary_mins or 0) <= 360:
+            use_7d_from_primary = True
+        else:
+            use_5h_from_primary = True
+    else:
+        use_7d_from_primary = True
+
+    normalized: dict[str, Any] = {}
+    if use_5h_from_primary:
+        normalized.update(
+            {
+                "used_5h_percent": snapshot.get("primary_used_percent"),
+                "reset_5h_seconds": snapshot.get("primary_reset_after_seconds"),
+                "window_5h_minutes": snapshot.get("primary_window_minutes"),
+                "used_7d_percent": snapshot.get("secondary_used_percent"),
+                "reset_7d_seconds": snapshot.get("secondary_reset_after_seconds"),
+                "window_7d_minutes": snapshot.get("secondary_window_minutes"),
+            }
+        )
+    elif use_7d_from_primary:
+        normalized.update(
+            {
+                "used_7d_percent": snapshot.get("primary_used_percent"),
+                "reset_7d_seconds": snapshot.get("primary_reset_after_seconds"),
+                "window_7d_minutes": snapshot.get("primary_window_minutes"),
+                "used_5h_percent": snapshot.get("secondary_used_percent"),
+                "reset_5h_seconds": snapshot.get("secondary_reset_after_seconds"),
+                "window_5h_minutes": snapshot.get("secondary_window_minutes"),
+            }
+        )
+    return {key: value for key, value in normalized.items() if value not in (None, "")}
+
+
+def _codex_reset_at(base: datetime, seconds: Any) -> str | None:
+    parsed = _parse_int(seconds)
+    if parsed is None:
+        return None
+    return _utc_iso(base + timedelta(seconds=max(0, parsed)))
+
+
+def _build_codex_usage_extra_updates(snapshot: dict[str, Any] | None, fallback_now: datetime | None = None) -> dict[str, Any]:
+    if not snapshot:
+        return {}
+    now = fallback_now or datetime.now(timezone.utc)
+    base_time = _parse_datetime(snapshot.get("updated_at")) or now
+    updates: dict[str, Any] = {}
+
+    # 保留原始响应头字段，便于前端日志或后续排错比对。
+    raw_mapping = {
+        "codex_primary_used_percent": "primary_used_percent",
+        "codex_primary_reset_after_seconds": "primary_reset_after_seconds",
+        "codex_primary_window_minutes": "primary_window_minutes",
+        "codex_secondary_used_percent": "secondary_used_percent",
+        "codex_secondary_reset_after_seconds": "secondary_reset_after_seconds",
+        "codex_secondary_window_minutes": "secondary_window_minutes",
+        "codex_primary_over_secondary_percent": "primary_over_secondary_percent",
+    }
+    for target, source in raw_mapping.items():
+        if snapshot.get(source) not in (None, ""):
+            updates[target] = snapshot[source]
+    updates["codex_usage_updated_at"] = _utc_iso(base_time)
+
+    normalized = _normalize_codex_snapshot(snapshot)
+    if normalized:
+        normalized_mapping = {
+            "codex_5h_used_percent": "used_5h_percent",
+            "codex_5h_reset_after_seconds": "reset_5h_seconds",
+            "codex_5h_window_minutes": "window_5h_minutes",
+            "codex_7d_used_percent": "used_7d_percent",
+            "codex_7d_reset_after_seconds": "reset_7d_seconds",
+            "codex_7d_window_minutes": "window_7d_minutes",
+        }
+        for target, source in normalized_mapping.items():
+            if normalized.get(source) not in (None, ""):
+                updates[target] = normalized[source]
+        reset_5h_at = _codex_reset_at(base_time, normalized.get("reset_5h_seconds"))
+        reset_7d_at = _codex_reset_at(base_time, normalized.get("reset_7d_seconds"))
+        if reset_5h_at:
+            updates["codex_5h_reset_at"] = reset_5h_at
+        if reset_7d_at:
+            updates["codex_7d_reset_at"] = reset_7d_at
+    return updates
+
+
+def _build_codex_usage_progress_from_extra(extra: dict[str, Any], window: str, now: datetime | None = None) -> dict[str, Any] | None:
+    if not extra:
+        return None
+    now = now or datetime.now(timezone.utc)
+    if window == "5h":
+        used_key = "codex_5h_used_percent"
+        reset_after_key = "codex_5h_reset_after_seconds"
+        reset_at_key = "codex_5h_reset_at"
+    elif window == "7d":
+        used_key = "codex_7d_used_percent"
+        reset_after_key = "codex_7d_reset_after_seconds"
+        reset_at_key = "codex_7d_reset_at"
+    else:
+        return None
+
+    used_percent = _parse_float(extra.get(used_key))
+    if used_percent is None:
+        return None
+
+    reset_at = _parse_datetime(extra.get(reset_at_key))
+    if reset_at is None:
+        reset_after = _parse_int(extra.get(reset_after_key))
+        if reset_after and reset_after > 0:
+            base = _parse_datetime(extra.get("codex_usage_updated_at")) or now
+            reset_at = base + timedelta(seconds=reset_after)
+
+    remaining_seconds: int | None = None
+    if reset_at is not None:
+        remaining_seconds = max(0, int((reset_at - now).total_seconds()))
+        if now >= reset_at:
+            used_percent = 0.0
+
+    used_percent = max(0.0, min(100.0, float(used_percent)))
+    progress: dict[str, Any] = {
+        "window": window,
+        "utilization": used_percent,
+        "used_percent": used_percent,
+        "remaining_percent": max(0.0, 100.0 - used_percent),
+    }
+    if reset_at is not None:
+        progress["resets_at"] = _utc_iso(reset_at)
+    if remaining_seconds is not None:
+        progress["remaining_seconds"] = remaining_seconds
+    return progress
+
+
+def _percent_text(value: Any) -> str:
+    parsed = _parse_float(value)
+    if parsed is None:
+        return ""
+    if parsed.is_integer():
+        return f"{int(parsed)}%"
+    return f"{parsed:.2f}".rstrip("0").rstrip(".") + "%"
+
+
+def _codex_usage_breakdown(label: str, progress: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not progress:
+        return None
+    return {
+        "display_name": label,
+        "current_usage": _percent_text(progress.get("used_percent")),
+        "usage_limit": "100%",
+        "remaining_usage": _percent_text(progress.get("remaining_percent")),
+        "next_reset_at": progress.get("resets_at", ""),
+        "remaining_seconds": progress.get("remaining_seconds", ""),
+    }
+
+
+def _build_codex_probe_payload(model: str = CODEX_PROBE_MODEL) -> dict[str, Any]:
+    return {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            }
+        ],
+        "stream": True,
+        "store": False,
+        "instructions": CODEX_PROBE_INSTRUCTIONS,
+    }
+
+
+def _extract_codex_probe_updates(response: Any) -> dict[str, Any]:
+    snapshot = _parse_codex_rate_limit_headers(getattr(response, "headers", None))
+    if snapshot:
+        return _build_codex_usage_extra_updates(snapshot, datetime.now(timezone.utc))
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code < 200 or status_code >= 300:
+        body = str(getattr(response, "text", "") or "")[:300]
+        raise RuntimeError(f"openai codex probe returned status {status_code}: {body}")
+    return {}
+
+
+def _probe_codex_usage(
+    *,
+    access_token: str,
+    account_id: str = "",
+    proxy: str | None = None,
+    model: str = CODEX_PROBE_MODEL,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """按 SUB2API /usage active+force 逻辑，请求 Codex responses 并取额度响应头。"""
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "text/event-stream",
+        "OpenAI-Beta": "responses=experimental",
+        "Originator": "codex_cli_rs",
+        "Version": CODEX_PROBE_VERSION,
+        "User-Agent": CODEX_PROBE_USER_AGENT,
+    }
+    if account_id:
+        headers["chatgpt-account-id"] = account_id
+
+    started = time.monotonic()
+    response = curl_requests.post(
+        CODEX_RESPONSES_URL,
+        headers=headers,
+        json=_build_codex_probe_payload(model),
+        proxies=_build_proxies(proxy),
+        timeout=20,
+        stream=True,
+    )
+    try:
+        updates = _extract_codex_probe_updates(response)
+        details = {
+            "source": "active",
+            "force": True,
+            "url": CODEX_RESPONSES_URL,
+            "model": model,
+            "status_code": getattr(response, "status_code", None),
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "account_id_present": bool(account_id),
+            "proxy": proxy or "",
+        }
+        return updates, details
+    finally:
+        close_fn = getattr(response, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+
+def _extract_account_id_from_profile(profile: dict[str, Any]) -> str:
+    for key in ("account_id", "chatgpt_account_id"):
+        value = str(profile.get(key) or "").strip()
+        if value:
+            return value
+    accounts = profile.get("accounts")
+    if isinstance(accounts, list):
+        for item in accounts:
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("account") if isinstance(item.get("account"), dict) else item
+            for key in ("account_id", "chatgpt_account_id", "id"):
+                value = str(nested.get(key) or "").strip()
+                if value:
+                    return value
+    return ""
 
 
 def _chromium_utc(dt: datetime) -> int:
@@ -338,16 +694,21 @@ def fetch_chatgpt_account_state(
     session_token: str = "",
     cookies: str = "",
     proxy: str | None = None,
+    chatgpt_account_id: str = "",
+    existing_extra: dict[str, Any] | None = None,
+    force_usage: bool = True,
 ) -> dict:
     state = {
         "platform": "chatgpt",
         "desktop_app": "Codex",
         "session_token_present": bool(extract_session_token(session_token, cookies)),
-        "quota_note": "ChatGPT 未公开稳定的剩余额度接口，当前返回订阅状态和账号 profile 信息。",
+        "quota_note": "Codex 额度按 SUB2API active+force 方式探测：请求 Codex responses 后解析 x-codex-* 响应头。",
     }
+    usage_extra = dict(existing_extra or {})
 
     resolved_session = extract_session_token(session_token, cookies)
     resolved_access = access_token
+    resolved_account_id = str(chatgpt_account_id or usage_extra.get("account_id") or usage_extra.get("chatgpt_account_id") or "").strip()
     token_refresh_attempted = False
 
     def _refresh_access_from_session() -> bool:
@@ -381,6 +742,12 @@ def fetch_chatgpt_account_state(
         state["valid"] = ok
         if ok:
             state["profile"] = profile
+            state["remote_user"] = profile
+            profile_account_id = _extract_account_id_from_profile(profile)
+            if profile_account_id and not resolved_account_id:
+                resolved_account_id = profile_account_id
+            if resolved_account_id:
+                state["account_id"] = resolved_account_id
             try:
                 from platforms.chatgpt.payment import check_subscription_status
 
@@ -393,6 +760,44 @@ def fetch_chatgpt_account_state(
                 state["subscription_status"] = check_subscription_status(account, proxy=proxy)
             except Exception as exc:
                 state["subscription_error"] = str(exc)
+
+            if force_usage:
+                try:
+                    updates, probe_details = _probe_codex_usage(
+                        access_token=resolved_access,
+                        account_id=resolved_account_id,
+                        proxy=proxy,
+                    )
+                    state["codex_usage_probe"] = probe_details
+                    if updates:
+                        usage_extra.update(updates)
+                        state["codex_usage_extra"] = updates
+                except Exception as exc:
+                    state["codex_usage_error"] = str(exc)
+
+            five_hour = _build_codex_usage_progress_from_extra(usage_extra, "5h")
+            seven_day = _build_codex_usage_progress_from_extra(usage_extra, "7d")
+            if five_hour or seven_day:
+                codex_usage = {
+                    "source": "active" if state.get("codex_usage_probe") else "cached",
+                    "updated_at": usage_extra.get("codex_usage_updated_at", ""),
+                    "five_hour": five_hour,
+                    "seven_day": seven_day,
+                }
+                state["codex_usage"] = codex_usage
+                breakdowns = [
+                    item
+                    for item in (
+                        _codex_usage_breakdown("Codex 5h", five_hour),
+                        _codex_usage_breakdown("Codex 7d", seven_day),
+                    )
+                    if item
+                ]
+                if breakdowns:
+                    state["usage_breakdowns"] = breakdowns
+                if five_hour:
+                    state["prompt_remaining_percent"] = five_hour.get("remaining_percent")
+                    state["next_reset_at"] = five_hour.get("resets_at", "")
         else:
             state["profile_error"] = profile
     else:

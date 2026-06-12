@@ -93,6 +93,24 @@ STANDARD_CAPABILITIES: Dict[str, CapabilityDefinition] = {
         ],
         ui_hints={"inline": False, "priority": 6}
     ),
+
+    "upload_sub2api": CapabilityDefinition(
+        id="upload_sub2api",
+        label="上传至 SUB2API",
+        description="Upload account to SUB2API",
+        category="integration",
+        icon="upload",
+        requires_params=True,
+        param_schema=[
+            {"key": "api_url", "label": "SUB2API 后台地址", "type": "text"},
+            {"key": "email", "label": "SUB2API 登录邮箱", "type": "text"},
+            {"key": "password", "label": "SUB2API 登录密码", "type": "text"},
+            {"key": "group_name", "label": "OpenAI 分组", "type": "text"},
+            {"key": "account_priority", "label": "账号优先级", "type": "number"},
+            {"key": "default_proxy_name", "label": "默认代理名称 / ID", "type": "text"},
+        ],
+        ui_hints={"inline": False, "priority": 7}
+    ),
     
     "upload_tm": CapabilityDefinition(
         id="upload_tm",
@@ -105,7 +123,7 @@ STANDARD_CAPABILITIES: Dict[str, CapabilityDefinition] = {
             {"key": "api_url", "label": "TM API URL", "type": "text"},
             {"key": "api_key", "label": "TM API Key", "type": "text"},
         ],
-        ui_hints={"inline": False, "priority": 7}
+        ui_hints={"inline": False, "priority": 8}
     ),
     
     "check_trial": CapabilityDefinition(
@@ -114,7 +132,7 @@ STANDARD_CAPABILITIES: Dict[str, CapabilityDefinition] = {
         description="Check trial eligibility",
         category="payment",
         icon="check-circle",
-        ui_hints={"inline": True, "priority": 8}
+        ui_hints={"inline": True, "priority": 9}
     ),
     
     "create_api_key": CapabilityDefinition(
@@ -127,7 +145,7 @@ STANDARD_CAPABILITIES: Dict[str, CapabilityDefinition] = {
         param_schema=[
             {"key": "name", "label": "Key 名称", "type": "text"},
         ],
-        ui_hints={"inline": False, "priority": 9}
+        ui_hints={"inline": False, "priority": 10}
     ),
 }
 

@@ -179,6 +179,7 @@ def _build_generic_usage_metrics(overview: dict[str, Any]) -> tuple[list[dict[st
                                 _metric("current_usage", "已用", item.get("current_usage")),
                                 _metric("usage_limit", "上限", item.get("usage_limit")),
                                 _metric("remaining_usage", "剩余", item.get("remaining_usage"), tone="good"),
+                                _metric("next_reset_at", "重置", _format_maybe_timestamp(item.get("next_reset_at") or item.get("resets_at")), tone="muted"),
                                 _metric("trial_status", "试用状态", item.get("trial_status")),
                                 _metric("trial_expiry", "试用到期", item.get("trial_expiry")),
                                 _metric("trial_remaining_usage", "试用剩余", item.get("trial_remaining_usage"), tone="good"),
@@ -244,6 +245,8 @@ def build_account_display_summary(
         warnings.append({"key": "quota_note", "tone": "warning", "message": _text(overview.get("quota_note"))})
     if overview.get("check_error"):
         warnings.append({"key": "check_error", "tone": "danger", "message": _text(overview.get("check_error"))})
+    if overview.get("codex_usage_error"):
+        warnings.append({"key": "codex_usage_error", "tone": "warning", "message": _text(overview.get("codex_usage_error"))})
 
     badges = [
         {"label": _text(chip), "tone": "muted"}

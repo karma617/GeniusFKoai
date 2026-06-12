@@ -83,7 +83,7 @@ def register_with_browser_oauth(
                 _m = str(_exc).lower()
                 if _attempt >= 3 or not any(tk in _m for tk in _nav_tokens):
                     raise
-                log_fn(f"OAuth 打开授权页瞬时网络失败（第 {_attempt}/3 次，重试）: {str(_exc)[:120]}")
+                log_fn(f"OAuth 打开授权页瞬时网络失败（第 {_attempt}/3 次，重试）: {str(_exc)}")
                 time.sleep(1.5 * _attempt)
         if _last_exc is not None:
             raise _last_exc

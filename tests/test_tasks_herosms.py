@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from core import proxy_pool as proxy_pool_module
 from application.tasks import _resolve_sms_provider_for_task
 from application.tasks import _resolve_registration_proxy_for_platform
+from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
 from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
 
 def test_resolve_sms_provider_for_task_uses_saved_herosms_default():
+    ProviderDefinitionsRepository().ensure_seeded()
     repo = ProviderSettingsRepository()
     repo.save(
         setting_id=None,
         provider_type="sms",
-        provider_key="herosms",
+        provider_key="herosms_api",
         display_name="HeroSMS",
         auth_mode="api_key",
         enabled=True,
@@ -26,7 +29,7 @@ def test_resolve_sms_provider_for_task_uses_saved_herosms_default():
 
     provider_key, settings = _resolve_sms_provider_for_task({})
 
-    assert provider_key == "herosms"
+    assert provider_key == "herosms_api"
     assert settings["herosms_api_key"] == "hero123"
     assert settings["sms_service"] == "dr"
 
@@ -43,7 +46,7 @@ def test_resolve_sms_provider_for_task_allows_inline_override():
     assert settings["sms_country"] == "52"
 
 
-def test_chatgpt_registration_does_not_use_proxy_pool_or_explicit_proxy():
+def test_chatgpt_registration_uses_global_proxy_policy():
     calls = []
 
     proxy = _resolve_registration_proxy_for_platform(
@@ -52,11 +55,17 @@ def test_chatgpt_registration_does_not_use_proxy_pool_or_explicit_proxy():
         proxy_getter=lambda: calls.append("called") or "http://pool-proxy.example:8080",
     )
 
-    assert proxy is None
+    assert proxy == "http://explicit-proxy.example:8080"
     assert calls == []
 
 
-def test_non_chatgpt_registration_still_uses_proxy_pool():
+def test_non_chatgpt_registration_still_uses_proxy_pool(monkeypatch):
+    monkeypatch.setattr(
+        proxy_pool_module,
+        "get_proxy_runtime_config",
+        lambda: {"strategy": "pool_then_default", "fallback_url": "http://127.0.0.1:7897"},
+    )
+
     proxy = _resolve_registration_proxy_for_platform(
         "windsurf",
         explicit_proxy="",

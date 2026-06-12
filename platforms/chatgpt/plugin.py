@@ -1,15 +1,18 @@
 """ChatGPT / Codex CLI 平台插件"""
+import json
 import os
 import re
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from core.base_platform import BasePlatform, Account, AccountStatus, RegisterConfig
 from core.base_mailbox import BaseMailbox
 from core.registration import BrowserRegistrationAdapter, OtpSpec, ProtocolMailboxAdapter, ProtocolOAuthAdapter, RegistrationCapability, RegistrationResult
 from core.registration.helpers import resolve_timeout
 from core.registry import register
-from core.proxy_pool import proxy_pool
+from core.proxy_pool import get_proxy_runtime_config, proxy_pool, resolve_runtime_proxy
 from platforms._browser_backend import BrowserBackendConfig
 
 
@@ -65,6 +68,83 @@ def _mask_proxy(proxy: str | None) -> str:
     return f"{scheme}{sep}***@{host}" if sep else f"***@{host}"
 
 
+def _proxy_log_value(proxy: str | None) -> str:
+    """代理日志脱敏；空值显示为直连。"""
+    return _mask_proxy(proxy) if str(proxy or "").strip() else "直连"
+
+
+def _chatgpt_token_backup_dir() -> Path:
+    """ChatGPT OAuth token 本地备份目录。"""
+    return Path(__file__).resolve().parents[2] / "data" / "chatgpt_token_backups"
+
+
+def _safe_backup_filename_part(value: str, fallback: str = "account") -> str:
+    text = re.sub(r"[^A-Za-z0-9._@+-]+", "_", str(value or "").strip()).strip("._-")
+    return text[:80] or fallback
+
+
+def _save_get_rt_token_backup(account: Account, result: dict, *, action_label: str = "get_rt") -> str:
+    """保存一次 OAuth token 交换结果，便于本地追溯与恢复。"""
+    if not isinstance(result, dict):
+        return ""
+    if not (str(result.get("access_token") or "").strip() or str(result.get("refresh_token") or "").strip()):
+        return ""
+
+    saved_at = datetime.now(timezone.utc).isoformat()
+    email = str(result.get("email") or account.email or "").strip()
+    account_id = str(result.get("account_id") or account.user_id or "").strip()
+    backup_dir = _chatgpt_token_backup_dir()
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"{timestamp}-{_safe_backup_filename_part(email)}.json"
+    backup_path = backup_dir / filename
+    payload = {
+        "saved_at": saved_at,
+        "action": action_label,
+        "platform": "chatgpt",
+        "email": email,
+        "account_id": account_id,
+        "tokens": {
+            "access_token": str(result.get("access_token") or ""),
+            "refresh_token": str(result.get("refresh_token") or ""),
+            "id_token": str(result.get("id_token") or ""),
+        },
+        "result": result,
+    }
+    backup_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return str(backup_path)
+
+
+def _resolve_action_proxy(
+    configured_proxy: str | None,
+    *,
+    region: str = "",
+    log_fn=None,
+    action_label: str = "操作",
+) -> str | None:
+    """按代理页配置解析平台动作代理，并输出可排查日志。"""
+    runtime_config = get_proxy_runtime_config()
+    resolved = resolve_runtime_proxy(
+        explicit_proxy=configured_proxy,
+        proxy_getter=lambda: proxy_pool.get_next(region=region),
+        region=region,
+    )
+    if callable(log_fn):
+        source = "显式代理" if str(configured_proxy or "").strip() else (
+            f"全局策略={runtime_config['strategy']}"
+        )
+        log_fn(
+            f"  {action_label}: 代理解析 {source} "
+            f"fallback={_proxy_log_value(runtime_config.get('fallback_url'))} "
+            f"region={region or '(未指定)'} actual={_proxy_log_value(resolved)}"
+        )
+    return resolved
+
+
 def _build_checkout_har_path(email: str) -> str:
     """为 Camoufox checkout 生成 HAR 文件路径：tools/captures/checkout-<ts>-<email-slug>.har"""
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -83,6 +163,14 @@ def _build_get_rt_har_path(email: str) -> str:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(email or "anon")).strip("_") or "anon"
     return os.path.join(capture_dir, f"get-rt-{timestamp}-{slug}.har")
+
+
+def _normalize_get_rt_sms_provider(value) -> str:
+    """规范化 get_rt 手机接码 provider：空值走默认，none/off 才显式禁用。"""
+    provider = str(value or "").strip().lower()
+    if provider in {"none", "off", "disabled", "disable", "false", "0", "不启用"}:
+        return ""
+    return provider or "default"
 
 
 def _run_sync_checkout_isolated(checkout_fn, **kwargs):
@@ -172,6 +260,7 @@ class ChatGPTPlatform(BasePlatform):
         "generate_link",    # Generate payment link
         "switch_desktop",   # Switch to Codex desktop
         "upload_cpa",       # Upload to CPA system
+        "upload_sub2api",   # Upload to SUB2API
         "upload_tm",        # Upload to Team Manager
     ]
 
@@ -183,7 +272,6 @@ class ChatGPTPlatform(BasePlatform):
         self._last_check_overview = {}
         try:
             from platforms.chatgpt.payment import fetch_subscription_status_details
-            from core.proxy_pool import proxy_pool
             class _A: pass
             a = _A()
             extra = account.extra or {}
@@ -193,55 +281,55 @@ class ChatGPTPlatform(BasePlatform):
             a.extra = extra
 
             region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
-            configured_proxy = self.config.proxy if self.config else None
-            proxy_candidates: list[tuple[str | None, bool]] = []
-            if configured_proxy:
-                proxy_candidates.append((configured_proxy, False))
-            else:
-                pooled_proxy = proxy_pool.get_next(region=region)
-                if pooled_proxy:
-                    proxy_candidates.append((pooled_proxy, True))
-            proxy_candidates.append((None, False))
+            # 账号检测同样遵守代理资源页策略，避免代理池为空时误走本机直连。
+            proxy = _resolve_action_proxy(
+                self.config.proxy if self.config else None,
+                region=region,
+                log_fn=None,
+                action_label="账号检测",
+            )
 
-            for proxy, should_report in proxy_candidates:
+            details = fetch_subscription_status_details(a, proxy=proxy)
+            if proxy:
                 try:
-                    details = fetch_subscription_status_details(a, proxy=proxy)
-                    if should_report and proxy:
-                        proxy_pool.report_success(proxy)
-                    status = details.get("status")
-                    # 把订阅状态同步映射成前端能用的 plan_state / chips
-                    # 来源（避免老 chips 还带 "Plus" 但实际已 free）。
-                    if status == "plus":
-                        plan_state = "subscribed"
-                        chips = ["Plus"]
-                    elif status == "team":
-                        plan_state = "subscribed"
-                        chips = ["Team"]
-                    elif status == "free":
-                        plan_state = "free"
-                        chips = ["Free"]
-                    elif status in ("expired", "invalid", "banned"):
-                        plan_state = "expired"
-                        chips = []
-                    else:
-                        plan_state = "unknown"
-                        chips = []
-                    overview = {
-                        "plan": status,
-                        "plan_name": status,
-                        "plan_state": plan_state,
-                        "chips": chips,
-                        "check_source": details.get("source"),
-                    }
-                    if isinstance(details.get("usage"), dict):
-                        overview["chatgpt_usage"] = details["usage"]
-                    self._last_check_overview = overview
-                    return status not in ("expired", "invalid", "banned", None)
+                    proxy_pool.report_success(proxy)
                 except Exception:
-                    if should_report and proxy:
-                        proxy_pool.report_fail(proxy)
-                    continue
+                    pass
+            status = details.get("status")
+            # 把订阅状态同步映射成前端能用的 plan_state / chips
+            # 来源（避免老 chips 还带 "Plus" 但实际已 free）。
+            if status == "plus":
+                plan_state = "subscribed"
+                chips = ["Plus"]
+            elif status == "team":
+                plan_state = "subscribed"
+                chips = ["Team"]
+            elif status == "free":
+                plan_state = "free"
+                chips = ["Free"]
+            elif status in ("expired", "invalid", "banned"):
+                plan_state = "expired"
+                chips = []
+            else:
+                plan_state = "unknown"
+                chips = []
+            overview = {
+                "plan": status,
+                "plan_name": status,
+                "plan_state": plan_state,
+                "chips": chips,
+                "check_source": details.get("source"),
+            }
+            if isinstance(details.get("usage"), dict):
+                overview["chatgpt_usage"] = details["usage"]
+            self._last_check_overview = overview
+            return status not in ("expired", "invalid", "banned", None)
         except Exception:
+            try:
+                if "proxy" in locals() and proxy:
+                    proxy_pool.report_fail(proxy)
+            except Exception:
+                pass
             return False
         return False
 
@@ -448,6 +536,15 @@ class ChatGPTPlatform(BasePlatform):
                  {"key": "api_url", "label": "CPA API URL", "type": "text"},
                  {"key": "api_key", "label": "CPA API Key", "type": "text"},
              ]},
+            {"id": "upload_sub2api", "label": "上传 SUB2API",
+             "params": [
+                 {"key": "api_url", "label": "SUB2API 后台地址（留空用全局配置）", "type": "text"},
+                 {"key": "email", "label": "SUB2API 登录邮箱（留空用全局配置）", "type": "text"},
+                 {"key": "password", "label": "SUB2API 登录密码（留空用全局配置）", "type": "text"},
+                 {"key": "group_name", "label": "OpenAI 分组（留空默认 codex）", "type": "text"},
+                 {"key": "account_priority", "label": "账号优先级（留空默认 1）", "type": "number"},
+                 {"key": "default_proxy_name", "label": "默认代理名称 / ID（留空不用代理）", "type": "text"},
+             ]},
             {"id": "upload_tm", "label": "上传 Team Manager",
              "params": [
                  {"key": "api_url", "label": "TM API URL", "type": "text"},
@@ -461,12 +558,16 @@ class ChatGPTPlatform(BasePlatform):
         return get_codex_desktop_state()
 
     def execute_action(self, action_id: str, account: Account, params: dict) -> dict:
+        if action_id == "get_account_state":
+            return self._handle_query_state(account, params)
         if action_id == "payment_link":
             return self._handle_generate_link(account, params)
         if action_id == "get_rt":
             return self._handle_get_rt(account, params)
         if action_id == "get_rt_bypass":
             return self._handle_get_rt_bypass(account, params)
+        if action_id == "upload_sub2api":
+            return self._execute_platform_action(action_id, account, params)
         return super().execute_action(action_id, account, params)
 
     def _execute_platform_action(self, action_id: str, account: Account, params: dict) -> dict:
@@ -483,9 +584,13 @@ class ChatGPTPlatform(BasePlatform):
         a.session_token = extra.get("session_token", "")
         from .constants import OAUTH_CLIENT_ID
         a.client_id = extra.get("client_id", OAUTH_CLIENT_ID)
+        a.workspace_id = extra.get("workspace_id", "")
+        a.expires_at = extra.get("expires_at", "")
+        a.session = extra.get("session", {})
         a.cookies = extra.get("cookies", "")
         a.user_id = account.user_id or ""
         a.account_id = account.user_id or ""
+        a.extra = extra
 
         if action_id == "switch_desktop":
             from platforms.chatgpt.switch import (
@@ -542,6 +647,19 @@ class ChatGPTPlatform(BasePlatform):
                                     api_key=params.get("api_key"))
             return {"ok": ok, "data": msg}
 
+        if action_id == "upload_sub2api":
+            from platforms.chatgpt.sub2api_upload import upload_to_sub2api
+            ok, msg = upload_to_sub2api(
+                a,
+                api_url=params.get("api_url") or params.get("sub2api_url"),
+                email=params.get("email") or params.get("sub2api_email"),
+                password=params.get("password") or params.get("sub2api_password"),
+                group_name=params.get("group_name") or params.get("sub2api_group_name"),
+                account_priority=params.get("account_priority") or params.get("sub2api_account_priority"),
+                default_proxy_name=params.get("default_proxy_name") or params.get("sub2api_default_proxy_name"),
+            )
+            return {"ok": ok, "data": msg}
+
         if action_id == "upload_tm":
             from platforms.chatgpt.cpa_upload import upload_to_team_manager
             ok, msg = upload_to_team_manager(a, api_url=params.get("api_url"),
@@ -556,8 +674,14 @@ class ChatGPTPlatform(BasePlatform):
     # Override specific capability handlers
     def _handle_query_state(self, account: Account, params: dict) -> dict:
         """Handle query_state capability for ChatGPT."""
-        proxy = self.config.proxy if self.config else None
         extra = account.extra or {}
+        region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+        proxy = _resolve_action_proxy(
+            self.config.proxy if self.config else None,
+            region=region,
+            log_fn=getattr(self, "_log_fn", None),
+            action_label="查询账号状态",
+        )
 
         class _A: pass
         a = _A()
@@ -572,6 +696,9 @@ class ChatGPTPlatform(BasePlatform):
             session_token=a.session_token,
             cookies=a.cookies,
             proxy=proxy,
+            chatgpt_account_id=str(account.user_id or extra.get("account_id") or extra.get("chatgpt_account_id") or ""),
+            existing_extra=extra,
+            force_usage=True,
         )
         data["local_app_account"] = read_current_codex_account()
         data["desktop_app_state"] = get_codex_desktop_state()
@@ -805,7 +932,14 @@ class ChatGPTPlatform(BasePlatform):
 
         browser_mode = str(params.get("browser_mode") or "camoufox_headed")
         record_har = _bool_param(params, "record_har", False)
-        proxy = self.config.proxy if self.config else None
+        extra = account.extra or {}
+        region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+        proxy = _resolve_action_proxy(
+            self.config.proxy if self.config else None,
+            region=region,
+            log_fn=log_fn,
+            action_label="获取rt",
+        )
 
         if not account.password:
             return {"ok": False, "error": "账号缺少密码，无法进行 OAuth 登录"}
@@ -850,7 +984,7 @@ class ChatGPTPlatform(BasePlatform):
 
             # ★ 手机号 OTP 回调（可选）
             phone_callback = None
-            sms_provider = str(params.get("sms_provider") or "").strip().lower()
+            sms_provider = _normalize_get_rt_sms_provider(params.get("sms_provider"))
             supplied_phone_callback = params.get("phone_callback")
             if callable(supplied_phone_callback):
                 phone_callback = supplied_phone_callback
@@ -869,7 +1003,10 @@ class ChatGPTPlatform(BasePlatform):
                 else:
                     log_fn(f"  获取rt: 手机 OTP 已就绪 provider={sms_provider}")
 
-            log_fn(f"获取rt: {account.email}, browser_mode={browser_mode}, sms={sms_provider or '(无)'}")
+            log_fn(
+                f"获取rt: {account.email}, browser_mode={browser_mode}, "
+                f"sms={sms_provider or '(无)'}, proxy={_proxy_log_value(proxy)}"
+            )
 
             # 创建一个只用于 get_rt 的轻量 register 实例
             reg = ChatGPTBrowserRegister(
@@ -933,6 +1070,9 @@ class ChatGPTPlatform(BasePlatform):
                         f" access_token={access_token[:20]}..."
                         f" refresh_token={'有' if refresh_token else '无'}"
                     )
+                    backup_json_path = _save_get_rt_token_backup(account, result, action_label="get_rt")
+                    if backup_json_path:
+                        log_fn(f"  获取rt token 本地备份: {backup_json_path}")
 
                     return {
                         "ok": True,
@@ -943,6 +1083,7 @@ class ChatGPTPlatform(BasePlatform):
                             "account_id": str(result.get("account_id") or ""),
                             "email": account.email,
                             "record_har_path": record_har_path or "",
+                            "token_backup_path": backup_json_path,
                             "message": "refresh_token 获取成功" if refresh_token else "access_token 获取成功（无 refresh_token）",
                         },
                     }
@@ -981,7 +1122,14 @@ class ChatGPTPlatform(BasePlatform):
         cancel_fn = getattr(self, "_cancel_check_fn", None)
 
         browser_mode = str(params.get("browser_mode") or "camoufox_headed")
-        proxy = self.config.proxy if self.config else None
+        extra = account.extra or {}
+        region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+        proxy = _resolve_action_proxy(
+            self.config.proxy if self.config else None,
+            region=region,
+            log_fn=log_fn,
+            action_label="获取rt(绕过)",
+        )
 
         if not account.password:
             return {"ok": False, "error": "账号缺少密码，无法进行 OAuth 登录"}
@@ -1022,7 +1170,10 @@ class ChatGPTPlatform(BasePlatform):
             if not otp_callback:
                 return {"ok": False, "error": f"获取rt失败: {otp_error}"}
 
-            log_fn(f"获取rt(绕过): {account.email}, browser_mode={browser_mode}")
+            log_fn(
+                f"获取rt(绕过): {account.email}, browser_mode={browser_mode}, "
+                f"proxy={_proxy_log_value(proxy)}"
+            )
 
             reg = ChatGPTBrowserRegister(
                 headless=backend_config.is_headless,
@@ -1064,6 +1215,9 @@ class ChatGPTPlatform(BasePlatform):
                     try:
                         import curl_cffi.requests as _curl_requests
                         s = _curl_requests.Session()
+                        if proxy:
+                            s.proxies = {"http": proxy, "https": proxy}
+                            log_fn(f"  获取rt(绕过): curl 补全使用代理 {_proxy_log_value(proxy)}")
                         cookie_parts = [f'{k}={v}' for k, v in cookies_dict.items() if v]
                         cookie_header = '; '.join(cookie_parts)
                         headers = {
@@ -1168,6 +1322,10 @@ class ChatGPTPlatform(BasePlatform):
                     f" access_token={access_token[:20]}..."
                     f" refresh_token={'有' if refresh_token else '无'}"
                 )
+                backup_json_path = _save_get_rt_token_backup(account, result_data, action_label="get_rt_bypass")
+                if backup_json_path:
+                    result_data["token_backup_path"] = backup_json_path
+                    log_fn(f"  获取rt token 本地备份: {backup_json_path}")
 
                 return {
                     "ok": True,

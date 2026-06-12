@@ -146,6 +146,12 @@ def _build_account_overview(platform: str, data: dict[str, Any]) -> dict[str, An
             if limit not in (None, ""):
                 chip += f" / {limit}"
             overview["chips"].append(chip)
+    if isinstance(data.get("codex_usage"), dict):
+        overview["codex_usage"] = data.get("codex_usage")
+    if isinstance(data.get("chatgpt_usage"), dict):
+        overview["chatgpt_usage"] = data.get("chatgpt_usage")
+    if data.get("codex_usage_error"):
+        overview["codex_usage_error"] = data.get("codex_usage_error")
 
     usage_summary = data.get("usage_summary") or {}
     if platform == "cursor" and isinstance(usage_summary.get("models"), dict):
@@ -247,6 +253,18 @@ def _build_oauth_result_overview(platform: str, data: dict[str, Any]) -> dict[st
         "oauth": oauth_summary,
         "codex_oauth": oauth_summary,
     }
+    if str(data.get("refresh_token") or "").strip():
+        overview.update(
+            {
+                "lifecycle_status": "authorized",
+                "display_status": "authorized",
+                "valid": True,
+                "authorized_at": _utcnow_iso(),
+            }
+        )
+        if data.get("token_backup_path"):
+            overview["token_backup_path"] = str(data.get("token_backup_path") or "")
+            oauth_summary["token_backup_path"] = overview["token_backup_path"]
     if remote_email:
         overview["remote_email"] = remote_email
     if remote_user:
@@ -375,9 +393,15 @@ class PlatformRuntime:
                     needs_save = True
                 if needs_save:
                     model.updated_at = datetime.now(timezone.utc)
+                    lifecycle_update = (
+                        str(summary_updates.get("lifecycle_status") or "").strip()
+                        if summary_updates
+                        else ""
+                    )
                     patch_account_graph(
                         session,
                         model,
+                        lifecycle_status=lifecycle_update or None,
                         summary_updates=summary_updates or None,
                         cashier_url=summary_updates.get("cashier_url") if "cashier_url" in summary_updates else None,
                         credential_updates=credential_updates or None,

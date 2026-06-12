@@ -30,7 +30,9 @@ from core.base_mailbox import BaseMailbox, MailboxAccount, _extract_verification
 
 GRAPH_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 GRAPH_CONSUMERS_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
-GRAPH_MESSAGES_URL = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
+GRAPH_MESSAGES_URL_TEMPLATE = "https://graph.microsoft.com/v1.0/me/mailFolders/{folder}/messages"
+GRAPH_MESSAGE_FOLDERS = ("inbox", "junkemail")
+IMAP_MESSAGE_FOLDERS = ("INBOX", "Junk", "Junk Email", "垃圾邮件", "Spam")
 DEFAULT_GRAPH_SCOPE = "offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read"
 GRAPH_DEFAULT_SCOPE = "https://graph.microsoft.com/.default"
 DEFAULT_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / ".local_ms_mailbox_pool_state.json"
@@ -430,21 +432,35 @@ class LocalMicrosoftMailboxPool(BaseMailbox):
 
     def _graph_messages(self, entry: LocalMicrosoftMailboxEntry) -> list[dict]:
         token = self._graph_access_token(entry)
-        response = requests.get(
-            GRAPH_MESSAGES_URL,
-            headers={"authorization": f"Bearer {token}", "accept": "application/json"},
-            params={
-                "$top": "25",
-                "$orderby": "receivedDateTime desc",
-                "$select": "id,subject,bodyPreview,receivedDateTime,from,toRecipients,body",
-            },
-            proxies=self.proxy,
-            timeout=25,
-        )
-        if response.status_code != 200:
-            raise RuntimeError(f"Microsoft Graph 读取邮件失败: HTTP {response.status_code} {response.text[:200]}")
-        payload = response.json() or {}
-        return list(payload.get("value") or [])
+        items: list[dict] = []
+        errors: list[str] = []
+        any_success = False
+        # 验证码常被 Microsoft 投递到垃圾邮件，Graph 默认同时轮询收件箱与 junkemail。
+        for folder in GRAPH_MESSAGE_FOLDERS:
+            response = requests.get(
+                GRAPH_MESSAGES_URL_TEMPLATE.format(folder=folder),
+                headers={"authorization": f"Bearer {token}", "accept": "application/json"},
+                params={
+                    "$top": "25",
+                    "$orderby": "receivedDateTime desc",
+                    "$select": "id,subject,bodyPreview,receivedDateTime,from,toRecipients,body",
+                },
+                proxies=self.proxy,
+                timeout=25,
+            )
+            if response.status_code != 200:
+                errors.append(f"{folder}: HTTP {response.status_code} {response.text[:200]}")
+                continue
+            any_success = True
+            payload = response.json() or {}
+            for item in list(payload.get("value") or []):
+                if isinstance(item, dict):
+                    item.setdefault("folder", folder)
+                    items.append(item)
+        if any_success:
+            return items
+        detail = " | ".join(errors) if errors else "未读取到任何文件夹"
+        raise RuntimeError(f"Microsoft Graph 读取邮件失败: {detail}")
 
     def _imap_connect(self, entry: LocalMicrosoftMailboxEntry):
         host = entry.imap_host.strip()
@@ -462,39 +478,56 @@ class LocalMicrosoftMailboxPool(BaseMailbox):
             raise RuntimeError(f"微软邮箱没有可用的 Graph token，也没有 IMAP 收件配置: {entry.email}")
         conn = self._imap_connect(entry)
         messages: list[dict] = []
+        errors: list[str] = []
+        any_selected = False
         try:
             conn.login(entry.login_account or entry.email, entry.password)
-            conn.select("INBOX", readonly=True)
-            _, msg_nums = conn.search(None, "ALL")
-            ids = msg_nums[0].split() if msg_nums and msg_nums[0] else []
-            for mid in reversed(ids[-30:]):
-                _, data = conn.fetch(mid, "(RFC822)")
-                if not data or not data[0]:
+            # 兼容不同 IMAP 服务的垃圾邮件命名；文件夹不存在时跳过，避免误伤收件箱读取。
+            for folder in IMAP_MESSAGE_FOLDERS:
+                try:
+                    status, _ = conn.select(folder, readonly=True)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{folder}: {str(exc)[:120]}")
                     continue
-                msg = email_lib.message_from_bytes(data[0][1])
-                subject = self._decode_mime(str(msg.get("Subject", "") or ""))
-                parts: list[str] = []
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() not in ("text/plain", "text/html"):
-                            continue
-                        payload = part.get_payload(decode=True)
+                if str(status or "").upper() != "OK":
+                    errors.append(f"{folder}: select {status}")
+                    continue
+                any_selected = True
+                _, msg_nums = conn.search(None, "ALL")
+                ids = msg_nums[0].split() if msg_nums and msg_nums[0] else []
+                for mid in reversed(ids[-30:]):
+                    _, data = conn.fetch(mid, "(RFC822)")
+                    if not data or not data[0]:
+                        continue
+                    msg = email_lib.message_from_bytes(data[0][1])
+                    subject = self._decode_mime(str(msg.get("Subject", "") or ""))
+                    parts: list[str] = []
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() not in ("text/plain", "text/html"):
+                                continue
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                parts.append(payload.decode(part.get_content_charset() or "utf-8", errors="replace"))
+                    else:
+                        payload = msg.get_payload(decode=True)
                         if payload:
-                            parts.append(payload.decode(part.get_content_charset() or "utf-8", errors="replace"))
-                else:
-                    payload = msg.get_payload(decode=True)
-                    if payload:
-                        parts.append(payload.decode(msg.get_content_charset() or "utf-8", errors="replace"))
-                messages.append({
-                    "id": str(msg.get("Message-ID") or mid.decode("ascii", errors="ignore")),
-                    "subject": subject,
-                    "bodyPreview": " ".join(parts),
-                })
+                            parts.append(payload.decode(msg.get_content_charset() or "utf-8", errors="replace"))
+                    mid_text = mid.decode("ascii", errors="ignore")
+                    messages.append({
+                        "id": str(msg.get("Message-ID") or f"{folder}:{mid_text}"),
+                        "subject": subject,
+                        "bodyPreview": " ".join(parts),
+                        "folder": folder,
+                    })
         finally:
             try:
                 conn.logout()
             except Exception:
                 pass
+        if not any_selected:
+            detail = " | ".join(errors) if errors else "未读取到任何文件夹"
+            raise RuntimeError(f"IMAP 读取邮件失败: {detail}")
         return messages
 
     def _messages(self, account: MailboxAccount) -> list[dict]:

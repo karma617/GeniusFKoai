@@ -4,7 +4,9 @@ import { useI18n } from '@/lib/i18n-context'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Globe2, ShieldCheck, CircleOff, Activity } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Globe2, ShieldCheck, CircleOff, Activity, Save } from 'lucide-react'
+
+const DEFAULT_FALLBACK_PROXY_URL = 'http://127.0.0.1:7897'
 
 export default function Proxies() {
   const { t } = useI18n()
@@ -12,8 +14,20 @@ export default function Proxies() {
   const [newProxy, setNewProxy] = useState('')
   const [region, setRegion] = useState('')
   const [checking, setChecking] = useState(false)
+  const [proxyStrategy, setProxyStrategy] = useState('pool_then_default')
+  const [fallbackProxyUrl, setFallbackProxyUrl] = useState(DEFAULT_FALLBACK_PROXY_URL)
+  const [savingProxyConfig, setSavingProxyConfig] = useState(false)
+  const [proxyConfigSaved, setProxyConfigSaved] = useState(false)
 
-  const load = () => apiFetch('/proxies').then(setProxies)
+  const load = async () => {
+    const [proxyItems, config] = await Promise.all([
+      apiFetch('/proxies'),
+      apiFetch('/config'),
+    ])
+    setProxies(proxyItems)
+    setProxyStrategy(config.proxy_strategy || 'pool_then_default')
+    setFallbackProxyUrl(config.proxy_fallback_url || DEFAULT_FALLBACK_PROXY_URL)
+  }
 
   useEffect(() => { load() }, [])
 
@@ -49,6 +63,25 @@ export default function Proxies() {
     setChecking(true)
     await apiFetch('/proxies/check', { method: 'POST' })
     setTimeout(() => { load(); setChecking(false) }, 3000)
+  }
+
+  const saveProxyConfig = async () => {
+    setSavingProxyConfig(true)
+    try {
+      await apiFetch('/config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          data: {
+            proxy_strategy: proxyStrategy,
+            proxy_fallback_url: fallbackProxyUrl,
+          },
+        }),
+      })
+      setProxyConfigSaved(true)
+      setTimeout(() => setProxyConfigSaved(false), 1800)
+    } finally {
+      setSavingProxyConfig(false)
+    }
   }
 
   const activeCount = proxies.filter((item) => item.is_active).length
@@ -96,6 +129,35 @@ export default function Proxies() {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,330px)_minmax(0,1fr)]">
         <Card className="bg-[var(--bg-pane)]/60">
           <div className="space-y-4">
+            <div className="space-y-3 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-elevated)]/45 p-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">代理策略</div>
+                <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">默认访问代理</div>
+              </div>
+              <select
+                value={proxyStrategy}
+                onChange={e => setProxyStrategy(e.target.value)}
+                className="control-surface"
+              >
+                <option value="pool_then_default">代理池优先，空则本地代理</option>
+                <option value="pool_only">只使用代理池</option>
+                <option value="default_only">只使用默认代理</option>
+                <option value="direct">不使用代理</option>
+              </select>
+              <input
+                value={fallbackProxyUrl}
+                onChange={e => setFallbackProxyUrl(e.target.value)}
+                placeholder={DEFAULT_FALLBACK_PROXY_URL}
+                className="control-surface control-surface-mono"
+              />
+              <div className="text-xs leading-5 text-[var(--text-muted)]">
+                代理池无可用代理时，将按这里的默认代理访问授权页并交换 token。
+              </div>
+              <Button onClick={saveProxyConfig} disabled={savingProxyConfig} className="w-full">
+                <Save className="h-4 w-4 mr-1.5" />
+                {proxyConfigSaved ? '已保存' : (savingProxyConfig ? '保存中...' : '保存代理策略')}
+              </Button>
+            </div>
             <div>
               <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">{t('common.add')}</div>
               <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">{t('proxies.addTitle')}</div>

@@ -156,10 +156,40 @@ class CtfPlusAccountsService:
                 )
             backend_config = parse_checkout_mode(browser_mode, bit_profile_id=bit_profile_id)
             log(f"准备为 {account.email} 执行 Codex OAuth，浏览器模式 {browser_mode}")
+            otp_callback = None
+            try:
+                from core.base_platform import Account as PlatformAccount
+                from core.base_platform import RegisterConfig
+                from platforms.chatgpt.plugin import ChatGPTPlatform
+
+                # Codex OAuth 可能触发邮箱 OTP；复用账号注册时绑定的邮箱资源读取验证码。
+                platform_account = PlatformAccount(
+                    platform=account.platform,
+                    email=account.email,
+                    password=account.password,
+                    user_id=account.user_id,
+                    token=account.primary_token,
+                    trial_end_time=account.trial_end_time,
+                    extra={
+                        "account_overview": dict(account.overview or {}),
+                        "provider_accounts": list(account.provider_accounts or []),
+                        "provider_resources": list(account.provider_resources or []),
+                    },
+                )
+                otp_callback, otp_error = ChatGPTPlatform(
+                    RegisterConfig(proxy=None)
+                )._build_get_rt_mailbox_otp_callback(platform_account, log, None)
+                if otp_callback:
+                    log("Codex OAuth 已接入账号邮箱 OTP callback")
+                else:
+                    log(f"Codex OAuth 邮箱 OTP callback 不可用: {otp_error}")
+            except Exception as exc:
+                log(f"Codex OAuth 邮箱 OTP callback 初始化失败: {exc}")
             worker = ChatGPTBrowserRegister(
                 headless=backend_config.is_headless,
                 log_fn=log,
                 backend_config=backend_config,
+                otp_callback=otp_callback,
             )
             result = worker._retry_oauth_fresh_browser(account.email, account.password)
             if not isinstance(result, dict) or not result.get("access_token"):

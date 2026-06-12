@@ -22,7 +22,6 @@ import CtfGptPlus from "@/pages/CtfGptPlus";
 import GoPayGptPlus from "@/pages/GoPayGptPlus";
 import PlusManager from "@/pages/PlusManager";
 import UpdateBanner from "@/components/UpdateBanner";
-import WelcomeDialog from "@/components/WelcomeDialog";
 import {
   ChevronRight,
   History,
@@ -373,7 +372,6 @@ function Shell({
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-base)]">
-      <WelcomeDialog />
       <Sidebar
         theme={theme}
         toggleTheme={toggleTheme}

@@ -16,7 +16,7 @@ import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
 import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
-  registered: 'default', trial: 'success', subscribed: 'success',
+  registered: 'default', authorized: 'success', trial: 'success', subscribed: 'success',
   expired: 'warning', invalid: 'danger',
   free: 'secondary', eligible: 'secondary', valid: 'success', unknown: 'secondary',
 }
@@ -652,7 +652,7 @@ function AddModal({ platform, onClose, onDone }: { platform: string; onClose: ()
             <label className="text-xs text-[var(--text-muted)] block mb-1">生命周期状态</label>
             <select value={form.lifecycle_status} onChange={e => set('lifecycle_status', e.target.value)}
               className="control-surface appearance-none">
-              <option value="registered">已注册</option>
+              <option value="registered">仅注册</option>
               <option value="trial">试用中</option>
               <option value="subscribed">已订阅</option>
             </select>
@@ -1689,6 +1689,18 @@ export default function Accounts() {
   const [getRtSmsapiUrl, setGetRtSmsapiUrl] = useState('')
   const [getRtRecordHar, setGetRtRecordHar] = useState(false)
   const [getRtPhoneReuseCount, setGetRtPhoneReuseCount] = useState(3)
+  const [configOptions, setConfigOptions] = useState<ConfigOptionsResponse>({
+    mailbox_providers: [],
+    captcha_providers: [],
+    sms_providers: [],
+    mailbox_settings: [],
+    captcha_settings: [],
+    sms_settings: [],
+    captcha_policy: {},
+    executor_options: [],
+    identity_mode_options: [],
+    oauth_provider_options: [],
+  })
 
   useEffect(() => {
     getPlatforms().then((list: any[]) => {
@@ -1705,6 +1717,16 @@ export default function Accounts() {
     const timer = setTimeout(() => setDebouncedSearch(search), 400)
     return () => clearTimeout(timer)
   }, [search])
+
+  useEffect(() => {
+    let active = true
+    getConfigOptions()
+      .then(options => {
+        if (active && options) setConfigOptions(options)
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [])
 
   useEffect(() => {
     setSelectedIds(new Set())
@@ -1751,6 +1773,29 @@ export default function Accounts() {
   const pageIds = accounts.map(acc => acc.id)
   const allSelectedOnPage = pageIds.length > 0 && pageIds.every(id => selectedIds.has(id))
   const selectedCount = selectedIds.size
+  const enabledSmsSettings = (configOptions.sms_settings || []).filter((item: any) => item?.enabled)
+  const defaultSmsSetting = enabledSmsSettings.find((item: any) => item?.is_default) || enabledSmsSettings[0] || null
+  const getRtSmsProviderOptions = [
+    { value: 'none', label: '(不启用)' },
+    ...(defaultSmsSetting ? [{
+      value: 'default',
+      label: `默认：${defaultSmsSetting.display_name || defaultSmsSetting.catalog_label || defaultSmsSetting.provider_key}`,
+    }] : []),
+    ...enabledSmsSettings
+      .filter((item: any) => item?.provider_key && item?.provider_key !== defaultSmsSetting?.provider_key)
+      .map((item: any) => ({
+        value: item.provider_key,
+        label: item.display_name || item.catalog_label || item.provider_key,
+      })),
+    { value: 'smspool', label: 'SMSPool' },
+    { value: 'smsapi', label: 'SmsApi（自有固定号）' },
+  ]
+
+  useEffect(() => {
+    if (!getRtSmsProvider) {
+      setGetRtSmsProvider(defaultSmsSetting?.provider_key ? 'default' : 'none')
+    }
+  }, [getRtSmsProvider, defaultSmsSetting?.provider_key])
 
   const toggleOne = (id: number) => {
     setSelectedIds(prev => {
@@ -2145,11 +2190,18 @@ export default function Accounts() {
                       onChange={e => setGetRtSmsProvider(e.target.value)}
                       className="control-surface control-surface-compact w-full"
                     >
-                      <option value="">(不启用)</option>
-                      <option value="smspool">SMSPool</option>
-                      <option value="smsapi">SmsApi（自有固定号）</option>
+                      {getRtSmsProviderOptions.map(option => (
+                        <option key={option.value || 'disabled'} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
+                  {getRtSmsProvider && getRtSmsProvider !== 'none' && !['smspool', 'smsapi'].includes(getRtSmsProvider) && (
+                    <div className="rounded-lg border border-[var(--border-soft)] bg-black/10 px-3 py-2 text-[11px] text-[var(--text-muted)]">
+                      使用设置页已保存的默认/指定接码配置，无需在此重复填写密钥或号码。
+                    </div>
+                  )}
                   {getRtSmsProvider === 'smspool' && (
                     <>
                       <div>

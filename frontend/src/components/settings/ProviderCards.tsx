@@ -12,6 +12,7 @@ const CATEGORY_GROUPS = [
   { key: 'free', labelKey: 'providers.category.free', descKey: 'providers.category.freeDesc' },
   { key: 'selfhost', labelKey: 'providers.category.selfhost', descKey: 'providers.category.selfhostDesc' },
   { key: 'thirdparty', labelKey: 'providers.category.thirdparty', descKey: 'providers.category.thirdpartyDesc' },
+  { key: 'local', labelKey: 'providers.category.local', descKey: 'providers.category.localDesc' },
   { key: 'custom', labelKey: 'providers.category.custom', descKey: 'providers.category.customDesc' },
 ] satisfies Array<{ key: string; labelKey: TranslationKey; descKey: TranslationKey }>
 

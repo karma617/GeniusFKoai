@@ -610,6 +610,16 @@ def _serialize_provider_resource_model(model: ProviderResourceModel) -> dict[str
     }
 
 
+def _has_stored_refresh_token(credentials: list[dict[str, Any]]) -> bool:
+    """判断账号图谱中是否已有 refresh_token；仅有 access_token 仍属“仅注册”。"""
+    for item in credentials:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("key") or "") in {"refresh_token", "refreshToken"} and _text(item.get("value")):
+            return True
+    return False
+
+
 def load_account_graphs(session: Session, account_ids: list[int]) -> dict[int, dict[str, Any]]:
     normalized_ids = [int(account_id) for account_id in account_ids if int(account_id or 0) > 0]
     if not normalized_ids:
@@ -636,6 +646,22 @@ def load_account_graphs(session: Session, account_ids: list[int]) -> dict[int, d
 
     for account_id, payload in graphs.items():
         overview = _safe_dict(payload.get("overview"))
+        has_oauth_summary = isinstance(overview.get("oauth"), dict) or isinstance(overview.get("codex_oauth"), dict)
+        if (
+            has_oauth_summary
+            and _has_stored_refresh_token(payload.get("credentials") or [])
+            and _text(overview.get("lifecycle_status") or "registered") == "registered"
+        ):
+            overview = dict(overview)
+            overview.update(
+                {
+                    "lifecycle_status": "authorized",
+                    "display_status": "authorized",
+                    "validity_status": "valid",
+                    "valid": True,
+                }
+            )
+            payload["overview"] = overview
         payload["lifecycle_status"] = _text(overview.get("lifecycle_status") or "registered") or "registered"
         payload["validity_status"] = _text(overview.get("validity_status") or "unknown") or "unknown"
         payload["plan_state"] = _text(overview.get("plan_state") or "unknown") or "unknown"

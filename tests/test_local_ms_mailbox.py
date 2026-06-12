@@ -79,3 +79,60 @@ def test_graph_access_token_tries_fallback_endpoint(monkeypatch):
     assert len(calls) == 2
     assert calls[0][0] == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
     assert calls[1][0] == "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+
+
+def test_graph_messages_checks_inbox_and_junkemail(monkeypatch):
+    get_calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code, payload=None, text=""):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, data, proxies=None, timeout=None):
+        return FakeResponse(200, {"access_token": "access-token-ok"})
+
+    def fake_get(url, headers=None, params=None, proxies=None, timeout=None):
+        get_calls.append(url)
+        if "/mailFolders/inbox/" in url:
+            return FakeResponse(200, {"value": []})
+        return FakeResponse(
+            200,
+            {
+                "value": [
+                    {
+                        "id": "junk-1",
+                        "subject": "OpenAI verification code",
+                        "bodyPreview": "Your code is 112233",
+                        "body": {"content": "Your code is 112233"},
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr("core.local_ms_mailbox.requests.post", fake_post)
+    monkeypatch.setattr("core.local_ms_mailbox.requests.get", fake_get)
+    pool = LocalMicrosoftMailboxPool()
+    account = MailboxAccount(
+        email="user@example.com",
+        account_id="user@example.com",
+        extra={
+            "provider_account": {
+                "credentials": {
+                    "email": "user@example.com",
+                    "client_id": "client-id-123",
+                    "refresh_token": "refresh-token-456",
+                }
+            }
+        },
+    )
+
+    assert pool.wait_for_code(account, keyword="OpenAI", timeout=1) == "112233"
+    assert get_calls == [
+        "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages",
+        "https://graph.microsoft.com/v1.0/me/mailFolders/junkemail/messages",
+    ]

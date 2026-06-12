@@ -501,6 +501,32 @@ def test_get_rt_task_forwards_record_har_to_platform_action(monkeypatch):
 
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
     assert seen_params[0]["record_har"] == "true"
+    assert seen_params[0]["sms_provider"] == "default"
+
+
+def test_get_rt_task_allows_explicit_sms_disable(monkeypatch):
+    seen_params = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            seen_params.append(dict(command.params))
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [123],
+            "browser_mode": "camoufox_headed",
+            "sms_provider": "none",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert seen_params[0]["sms_provider"] == ""
 
 
 def test_get_rt_task_uses_shared_phone_reuse_pool(monkeypatch):

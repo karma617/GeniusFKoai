@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from sqlmodel import Session, select
@@ -16,6 +17,36 @@ from core.platform_accounts import build_platform_account
 from core.registry import get
 
 logger = logging.getLogger(__name__)
+
+
+def _external_upload_targets_config() -> dict[str, str | bool]:
+    """读取外部面板配置；同步/上传必须按已配置目标精确执行。"""
+    try:
+        from core.config_store import config_store
+
+        cpa_api_url = str(config_store.get("cpa_api_url", "") or "").strip()
+        cpa_api_key = str(config_store.get("cpa_api_key", "") or "").strip()
+        sub2api_url = str(config_store.get("sub2api_url", "") or "").strip()
+    except Exception:
+        cpa_api_url, cpa_api_key, sub2api_url = "", "", ""
+    return {
+        "cpa_api_url": cpa_api_url,
+        "cpa_api_key": cpa_api_key,
+        "sub2api_url": sub2api_url,
+        "cpa_enabled": bool(cpa_api_url and cpa_api_key),
+        "sub2api_enabled": bool(sub2api_url),
+    }
+
+
+def _external_upload_target_label() -> str:
+    """返回后台同步目标名称；未配置任何外部目标时返回空字符串。"""
+    config = _external_upload_targets_config()
+    targets: list[str] = []
+    if config.get("cpa_enabled"):
+        targets.append("CPA")
+    if config.get("sub2api_enabled"):
+        targets.append("SUB2API")
+    return "+".join(targets)
 
 
 def _utcnow() -> datetime:
@@ -278,7 +309,7 @@ def refresh_and_sync_cpa(
     - 封禁账号标记为 disabled
     """
     log = log_fn or logger.info
-    results = {"refreshed": 0, "uploaded": 0, "dead": 0, "skipped": 0, "error": 0}
+    results = {"refreshed": 0, "uploaded": 0, "sub2api_uploaded": 0, "dead": 0, "skipped": 0, "error": 0}
 
     from curl_cffi import requests as cffi_requests
     import json
@@ -297,13 +328,15 @@ def refresh_and_sync_cpa(
         except Exception:
             return {}
 
-    # 读取 CPA 配置
-    try:
-        from core.config_store import config_store
-        cpa_api_url = config_store.get("cpa_api_url", "")
-        cpa_api_key = config_store.get("cpa_api_key", "")
-    except Exception:
-        cpa_api_url, cpa_api_key = "", ""
+    # 读取外部上传目标配置：从哪个面板配置取地址，就只上传到哪个面板。
+    target_config = _external_upload_targets_config()
+    cpa_api_url = str(target_config.get("cpa_api_url") or "")
+    cpa_api_key = str(target_config.get("cpa_api_key") or "")
+    sub2api_url = str(target_config.get("sub2api_url") or "")
+    cpa_enabled = bool(target_config.get("cpa_enabled"))
+    sub2api_enabled = bool(target_config.get("sub2api_enabled"))
+    if not cpa_enabled and not sub2api_enabled:
+        return results
 
     # 获取所有活跃 chatgpt 账号
     with Session(engine) as session:
@@ -401,7 +434,7 @@ def refresh_and_sync_cpa(
                 continue
 
             # 3. 上传到 CPA
-            if cpa_api_url and cpa_api_key:
+            if cpa_enabled:
                 from datetime import timedelta
                 tz8 = timezone(timedelta(hours=8))
                 jwt_payload = _decode_jwt(access_token)
@@ -437,8 +470,37 @@ def refresh_and_sync_cpa(
                     log(f"  ✓ {acc.email}: 刷新+上传成功")
                 else:
                     log(f"  ✗ {acc.email}: 上传失败 HTTP {upload_resp.status_code}")
-            else:
+            elif not sub2api_enabled:
                 log(f"  ✓ {acc.email}: 刷新成功 (CPA 未配置)")
+
+            # 中文说明：刷新拿到新 access_token 后，同步更新 SUB2API，避免远端仍用旧 token。
+            if sub2api_enabled and sub2api_url:
+                try:
+                    from platforms.chatgpt.sub2api_upload import upload_to_sub2api
+
+                    jwt_payload = _decode_jwt(access_token)
+                    auth_info = jwt_payload.get("https://api.openai.com/auth", {})
+                    target = SimpleNamespace(
+                        email=acc.email,
+                        access_token=access_token,
+                        refresh_token=credentials.get("refresh_token", ""),
+                        id_token=access_token,
+                        session_token=new_session,
+                        account_id=auth_info.get("chatgpt_account_id", ""),
+                        user_id=auth_info.get("chatgpt_account_id", ""),
+                        workspace_id=auth_info.get("organization_id", ""),
+                        expires_at=data.get("expires", ""),
+                        session=data,
+                        extra={"session": data, "expires_at": data.get("expires", "")},
+                    )
+                    ok, msg = upload_to_sub2api(target)
+                    if ok:
+                        results["sub2api_uploaded"] += 1
+                        log(f"  ✓ {acc.email}: SUB2API 同步成功 - {msg}")
+                    else:
+                        log(f"  ✗ {acc.email}: SUB2API 同步失败 - {msg}")
+                except Exception as exc:
+                    log(f"  ✗ {acc.email}: SUB2API 同步异常 {exc}")
 
             time.sleep(0.5)
 
@@ -446,8 +508,16 @@ def refresh_and_sync_cpa(
             results["error"] += 1
             log(f"  ✗ {acc.email}: 异常 {exc}")
 
-    log(f"[CPA Sync] 刷新 {results['refreshed']}, 上传 {results['uploaded']}, "
-        f"封禁 {results['dead']}, 跳过 {results['skipped']}, 错误 {results['error']}")
+    if cpa_enabled and sub2api_enabled:
+        log(f"[CPA+SUB2API Sync] 刷新 {results['refreshed']}, CPA {results['uploaded']}, "
+            f"SUB2API {results['sub2api_uploaded']}, "
+            f"封禁 {results['dead']}, 跳过 {results['skipped']}, 错误 {results['error']}")
+    elif cpa_enabled:
+        log(f"[CPA Sync] 刷新 {results['refreshed']}, 上传 {results['uploaded']}, "
+            f"封禁 {results['dead']}, 跳过 {results['skipped']}, 错误 {results['error']}")
+    elif sub2api_enabled:
+        log(f"[SUB2API Sync] 刷新 {results['refreshed']}, 上传 {results['sub2api_uploaded']}, "
+            f"封禁 {results['dead']}, 跳过 {results['skipped']}, 错误 {results['error']}")
     return results
 
 
@@ -510,8 +580,10 @@ class LifecycleManager:
 
                 # CPA sync (刷新 token + 存活检查 + 上传)
                 if now - self._last_cpa_sync >= self.cpa_sync_interval:
-                    print("[LifecycleManager] 开始 CPA 同步 (刷新+检查+上传)...")
-                    refresh_and_sync_cpa()
+                    target_label = _external_upload_target_label()
+                    if target_label:
+                        print(f"[LifecycleManager] 开始 {target_label} 同步 (刷新+检查+上传)...")
+                        refresh_and_sync_cpa()
                     self._last_cpa_sync = now
 
             except Exception as exc:

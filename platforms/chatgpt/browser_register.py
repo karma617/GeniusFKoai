@@ -6,8 +6,9 @@ import re
 import secrets
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from camoufox.sync_api import Camoufox
 
@@ -81,7 +82,7 @@ def _goto_with_retry(
             backoff = 1.5 * attempt
             _log(
                 f"打开页面瞬时网络失败（第 {attempt}/{attempts} 次，{backoff:.1f}s 后重试）："
-                f"{str(exc)[:120]}"
+                f"{str(exc)}"
             )
             time.sleep(backoff)
     if last_exc is not None:
@@ -307,6 +308,65 @@ PHONE_VERIFY_SELECTORS = [
     'button:has-text("次へ")',
 ]
 
+PHONE_CODE_TIMEOUT_SECONDS = 60
+PHONE_CODE_TIMEOUT_SENTINEL = "SMS_CODE_TIMEOUT_60S"
+PHONE_REJECTED_SENTINEL = "PHONE_REJECTED_RETRYABLE"
+PHONE_ATTEMPTS_PER_COUNTRY = 10
+PHONE_MAX_COUNTRIES = 2
+
+# add-phone 页面会把虚拟号、VOIP 号或不可用号码提示成多语言短句。
+# 这些错误不应终止整批任务，应立即换下一个号码继续尝试。
+PHONE_RETRYABLE_REJECTION_RE = re.compile(
+    r"virtual|voip|unsupported|not\s+support(?:ed)?|phone\s+number\s+is\s+not\s+supported|"
+    r"cannot\s+use|can't\s+use|unable\s+to\s+use|try\s+another|use\s+another|"
+    r"not\s+a\s+valid|invalid\s+phone|we\s+cannot\s+send|could(?:\s+not|n't)\s+send\s+a\s+text|"
+    r"can't\s+send\s+a\s+text|unable\s+to\s+send\s+a\s+text|switched\s+to\s+whats\s*app|"
+    r"too\s+many\s+phone\s+verification\s+requests|too\s+many\s+verification\s+requests|"
+    r"continue\s+to\s+send[\s\S]{0,80}whats\s*app|"
+    r"虚拟|不支持|无法使用|不能使用|换一个|更换|无效手机号|手机号无效|号码无效|无法发送短信|发送短信失败|切换到\s*whatsapp",
+    re.I,
+)
+
+_PLAYWRIGHT_PAGEERROR_PATCH_REPLACEMENTS = (
+    ('url: pageError.location.url,', 'url: pageError.location?.url || "",'),
+    ('line: pageError.location.lineNumber,', 'line: pageError.location?.lineNumber || 0,'),
+    ('column: pageError.location.columnNumber', 'column: pageError.location?.columnNumber || 0'),
+)
+
+
+def _playwright_core_bundle_path() -> Path:
+    import playwright
+
+    return Path(playwright.__file__).resolve().parent / "driver" / "package" / "lib" / "coreBundle.js"
+
+
+def _patch_playwright_firefox_pageerror_location_bug(
+    *,
+    bundle_path: str | Path | None = None,
+    log_fn: Callable[[str], None] | None = None,
+) -> bool:
+    """修复 Camoufox/Firefox pageerror 无 location 时导致 Playwright driver 崩溃。"""
+    log = log_fn or (lambda _message: None)
+    path = Path(bundle_path) if bundle_path is not None else _playwright_core_bundle_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        log(f"Playwright pageerror 热补丁读取失败: {exc}")
+        return False
+
+    patched = text
+    for old, new in _PLAYWRIGHT_PAGEERROR_PATCH_REPLACEMENTS:
+        patched = patched.replace(old, new)
+    if patched == text:
+        return False
+    try:
+        path.write_text(patched, encoding="utf-8")
+        log("已应用 Playwright Firefox pageerror 热补丁")
+        return True
+    except Exception as exc:
+        log(f"Playwright pageerror 热补丁写入失败: {exc}")
+        return False
+
 
 AUTH_TIMEOUT_TITLE_RE = re.compile(r"oops,\s*an\s*error\s*occurred|出错|發生錯誤|エラーが発生|問題が発生", re.I)
 AUTH_TIMEOUT_DETAIL_RE = re.compile(
@@ -337,6 +397,11 @@ def _parse_phone_country_and_local(phone_number: str) -> tuple[str, str, str]:
         if prefix in PHONE_COUNTRY_CODE_MAP:
             return prefix, num[length:], PHONE_COUNTRY_CODE_MAP[prefix]
     return "", num, ""
+
+
+def _is_retryable_phone_rejection_text(text: str) -> bool:
+    """识别 add-phone 页可通过换号恢复的拒号提示。"""
+    return bool(PHONE_RETRYABLE_REJECTION_RE.search(str(text or "")))
 
 
 def _select_phone_country_ui(page, dial_code: str, country_name: str, log) -> bool:
@@ -939,7 +1004,7 @@ def _recover_auth_timeout_retry_page(
         "recovered": False,
         "clicks": max_clicks,
         "url": str(last_state.get("url") or page.url),
-        "text": str(last_state.get("text") or "")[:300],
+        "text": str(last_state.get("text") or ""),
     }
 
 
@@ -1013,6 +1078,7 @@ def _submit_add_phone_dom(
                 return { input, label, root, channel, text };
               }).filter((entry) => entry.channel || entry.text);
               const sms = radioEntries.find((entry) => entry.channel === 'sms');
+              let channelMethod = '';
               if (sms) {
                 const target = sms.label || sms.root || sms.input;
                 target?.click?.();
@@ -1028,11 +1094,26 @@ def _submit_add_phone_dom(
                   channelInput.value = 'sms';
                   dispatchInputEvents(channelInput);
                 }
+                channelMethod = 'sms_radio';
               }
 
-              // ★ 跳过国家选择器：OpenAI 使用 React Aria 自定义组件（非原生 select），
-              // 触碰隐藏的 a11y <select> 会触发下拉浮层弹出遮挡提交按钮。
-              // 默认国家已是美国 (+1)，无需切换。
+              // 图中短信/WhatsApp 是分段控件时，页面未必有 radio；按可见文案再点一次短信模式。
+              const modeCandidates = Array.from(form.querySelectorAll('button, [role="button"], label, [role="radio"], div, span'));
+              const smsMode = modeCandidates.find((el) => {
+                if (!visible(el)) return false;
+                const text = normalize([el.textContent, el.getAttribute?.('aria-label'), el.getAttribute?.('title')].filter(Boolean).join(' '));
+                if (!text || /whats\\s*app/i.test(text)) return false;
+                return /\\b(text\\s*message|sms)\\b/i.test(text) || /短信/.test(text);
+              });
+              if (smsMode) {
+                smsMode.click();
+                await sleep(120);
+                if (channelInput) {
+                  channelInput.value = 'sms';
+                  dispatchInputEvents(channelInput);
+                }
+                channelMethod = channelMethod || 'sms_segment';
+              }
 
               const phoneInput = form.querySelector('input[type="tel"], input[name="__reservedForPhoneNumberInput_tel"], input[autocomplete="tel"]');
               if (!phoneInput) return { ok: false, reason: 'missing_phone_input', url: location.href };
@@ -1045,17 +1126,29 @@ def _submit_add_phone_dom(
                 setNativeValue(hidden, payload.phoneNumber);
               }
               await sleep(120);
+              document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+              document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true }));
+              await sleep(80);
 
               const buttons = Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"], button'));
-              const submit = buttons.find((button) => visible(button) && !button.disabled && button.getAttribute('aria-disabled') !== 'true')
-                || buttons.find((button) => visible(button));
+              const isSubmitCandidate = (button) => {
+                if (!visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true') return false;
+                const label = normalize([button.value, button.textContent, button.getAttribute('aria-label'), button.getAttribute('title')].filter(Boolean).join(' '));
+                if (button.getAttribute('aria-haspopup') === 'listbox' || button.getAttribute('role') === 'combobox') return false;
+                if (/whats\\s*app|text\\s*message|\\bsms\\b|短信/i.test(label)) return false;
+                if (/\\(\\+\\d+\\)/.test(label)) return false;
+                return button.type === 'submit'
+                  || /continue|send\\s*code|send|next|verify|继续|发送|下一步|次へ|続ける|続行/i.test(label);
+              };
+              const submit = buttons.find(isSubmitCandidate);
               if (!submit) return { ok: false, reason: 'missing_submit_button', url: location.href };
               submit.click();
+              const countrySelect = Array.from(document.querySelectorAll('select')).find((sel) => sel.options && sel.options.length > 10);
               return {
                 ok: true,
                 url: location.href,
-                selectedCountry: select ? select.value : '',
-                channel: channelInput ? channelInput.value : (sms ? 'sms' : ''),
+                selectedCountry: countrySelect ? countrySelect.value : '',
+                channel: channelInput ? channelInput.value : (channelMethod || (sms ? 'sms' : '')),
                 visibleValue: phoneInput.value || '',
                 hiddenValue: hidden ? hidden.value : '',
               };
@@ -1572,7 +1665,7 @@ def _wait_for_signup_entry_transition(page, log, timeout: int = 20) -> dict:
             return state
         error_text = _extract_auth_error_text(page)
         if error_text:
-            raise RuntimeError(f"邮箱页提交失败: {error_text[:300]}")
+            raise RuntimeError(f"邮箱页提交失败: {error_text}")
         time.sleep(0.25)
     raise RuntimeError("邮箱页提交后未进入密码/验证码页面")
 
@@ -1760,10 +1853,10 @@ def _fetch_chatgpt_session_via_same_origin(page, cookies_dict: dict, log, sessio
     status = int(payload.get("status") or 0)
     response_url = str(payload.get("url") or "")
     text = str(payload.get("text") or "")
-    log(f"ChatGPT session API 浏览器内请求状态: {status} url={response_url[:120]}")
+    log(f"ChatGPT session API 浏览器内请求状态: {status} url={response_url}")
     if status == 200 and text:
         return (*_chatgpt_session_result_from_text(text, page, cookies_dict, log), True)
-    return None, f"session API HTTP {status}: {text[:200]}", True
+    return None, f"session API HTTP {status}: {text}", True
 
 
 def _fetch_chatgpt_session_from_page(page, cookies_dict: dict, log, timeout: int = 45) -> dict:
@@ -1801,14 +1894,14 @@ def _fetch_chatgpt_session_from_page(page, cookies_dict: dict, log, timeout: int
             else:
                 text = page.locator("body").inner_text(timeout=3000)
             current_url = str(getattr(page, "url", "") or "")
-            log(f"ChatGPT session API 状态: {status} url={current_url[:120]}")
+            log(f"ChatGPT session API 状态: {status} url={current_url}")
             if status == 200 and text:
                 result, error = _chatgpt_session_result_from_text(text, page, cookies_dict, log)
                 if result:
                     return result
                 last_error = error
             else:
-                last_error = f"session API HTTP {status}: {text[:200]}"
+                last_error = f"session API HTTP {status}: {text}"
             log(f"ChatGPT session API 暂未拿到 token: {last_error}")
         except Exception as exc:
             last_error = str(exc)
@@ -1946,13 +2039,127 @@ def _extract_code_from_url(url: str) -> str:
     if not url or "code=" not in url:
         return ""
     try:
-        from urllib.parse import parse_qs, urlparse as _up
-
-        parsed = _up(url)
+        parsed = urlparse(url)
         values = parse_qs(parsed.query, keep_blank_values=True)
         return str((values.get("code") or [""])[0] or "").strip()
     except Exception:
         return ""
+
+
+def _mask_log_value(value: str, *, head: int = 8, tail: int = 4) -> str:
+    """日志用脱敏：保留可定位前后缀，不打印完整授权码/代理密码。"""
+    text = str(value or "")
+    if not text:
+        return "(空)"
+    if len(text) <= head + tail + 3:
+        return text
+    return f"{text[:head]}...{text[-tail:]}(len={len(text)})"
+
+
+def _mask_proxy_for_log(proxy: str | None) -> str:
+    """代理日志脱敏；空代理意味着 token exchange 使用本机出口 IP。"""
+    value = str(proxy or "").strip()
+    if not value:
+        return "(无，使用本机出口 IP)"
+    try:
+        parsed = urlparse(value if "://" in value else f"http://{value}")
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        scheme = parsed.scheme or "proxy"
+        auth = "有认证@" if parsed.username or parsed.password else ""
+        return f"{scheme}://{auth}{host}{port}"
+    except Exception:
+        return _mask_log_value(value)
+
+
+def _oauth_authorize_debug_summary(oauth_start, proxy: str | None) -> str:
+    """说明授权登录链接的生成来源与关键参数，便于排查地区/代理问题。"""
+    parsed = urlparse(str(getattr(oauth_start, "auth_url", "") or ""))
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    def one(key: str) -> str:
+        return str((query.get(key) or [""])[0] or "")
+
+    return (
+        "  OAuth 授权链接来源: 本地 generate_oauth_url(Codex client + PKCE); "
+        f"host={parsed.netloc or '-'} "
+        f"client_id={one('client_id') or getattr(oauth_start, 'client_id', '')} "
+        f"redirect_uri={one('redirect_uri') or getattr(oauth_start, 'redirect_uri', '')} "
+        f"scope={one('scope') or '-'} "
+        f"prompt={one('prompt') or '-'} "
+        f"state={_mask_log_value(one('state') or getattr(oauth_start, 'state', ''))} "
+        f"code_challenge={_mask_log_value(one('code_challenge'))} "
+        f"proxy={_mask_proxy_for_log(proxy)}"
+    )
+
+
+def _callback_debug_summary(callback_url: str, oauth_start, proxy: str | None) -> str:
+    """记录 callback 与 token exchange 关键参数；不打印完整 code。"""
+    parsed = urlparse(str(callback_url or ""))
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    def one(key: str) -> str:
+        return str((query.get(key) or [""])[0] or "")
+
+    code = one("code")
+    state = one("state")
+    expected_state = str(getattr(oauth_start, "state", "") or "")
+    state_status = "missing" if not state else ("match" if state == expected_state else "mismatch")
+    return (
+        "  OAuth callback 捕获: "
+        f"host={parsed.netloc or '-'} path={parsed.path or '-'} "
+        f"code={_mask_log_value(code)} "
+        f"state={_mask_log_value(state)} state_status={state_status} "
+        f"expected_state={_mask_log_value(expected_state)} "
+        f"scope={one('scope') or '-'} "
+        f"token_client_id={getattr(oauth_start, 'client_id', '')} "
+        f"token_redirect_uri={getattr(oauth_start, 'redirect_uri', '')} "
+        f"proxy={_mask_proxy_for_log(proxy)}"
+    )
+
+
+def _extract_callback_error_from_url(callback_url: str) -> str:
+    """提取 OAuth error callback；有 code 时仍按成功 callback 处理。"""
+    value = str(callback_url or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlparse(value)
+        if "localhost" not in parsed.netloc.lower() or not parsed.path.endswith("/auth/callback"):
+            return ""
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if query.get("code"):
+            return ""
+        error = str((query.get("error") or [""])[0] or "").strip()
+        if not error:
+            return ""
+        description = str((query.get("error_description") or [""])[0] or "").strip()
+        return f"{error}: {description}" if description else error
+    except Exception:
+        return ""
+
+
+def _oauth_restart_required_result(callback_url: str, reason: str) -> dict:
+    """返回给 OAuth 状态机的内部重启标记。"""
+    return {
+        "oauth_restart_required": True,
+        "callback_captured": True,
+        "callback_url": str(callback_url or ""),
+        "error": str(reason or "OAuth callback error"),
+    }
+
+
+def _oauth_resume_url_after_phone(auth_url: str) -> str:
+    """手机号验证通过后重访 OAuth 时改用 prompt=none，避免强制二次登录。"""
+    value = str(auth_url or "").strip()
+    if not value:
+        return ""
+    if "prompt=login" in value:
+        return value.replace("prompt=login", "prompt=none")
+    if "prompt=" not in value:
+        sep = "&" if "?" in value else "?"
+        return f"{value}{sep}prompt=none"
+    return value
 
 
 def _normalize_url(target_url: str, base_url: str = OPENAI_AUTH) -> str:
@@ -2230,7 +2437,7 @@ def _follow_redirects_for_code(session, start_url: str, log, *, max_redirects: i
     current_url = start_url
     for idx in range(max_redirects):
         response = session.get(current_url, allow_redirects=False, timeout=30)
-        log(f"  redirect-follow[{idx+1}] {response.status_code} {str(current_url)[:140]}")
+        log(f"  redirect-follow[{idx+1}] {response.status_code} {str(current_url)}")
         location = str(response.headers.get("Location") or "").strip()
         if not location:
             break
@@ -2357,18 +2564,105 @@ def _complete_oauth_with_session(cookies_dict: dict, oauth_start, proxy: str | N
         return None
 
 
-def _submit_callback_result(callback_url: str, oauth_start, proxy: str | None) -> dict:
-    from .oauth import submit_callback_url
+def _exchange_callback_code_without_state(callback_url: str, oauth_start, proxy: str | None) -> dict:
+    """Codex 简化流偶发 callback 只带 code；此时仍可用 PKCE code_verifier 换 token。"""
+    code = _extract_code_from_url(callback_url)
+    if not code:
+        raise ValueError("callback url missing ?code=")
 
-    result_json = submit_callback_url(
-        callback_url=callback_url,
-        expected_state=oauth_start.state,
-        code_verifier=oauth_start.code_verifier,
-        redirect_uri=oauth_start.redirect_uri,
-        client_id=oauth_start.client_id,
+    from .oauth import OAUTH_TOKEN_URL, _jwt_claims_no_verify, _post_form
+    import time as _time
+
+    token_resp = _post_form(
+        OAUTH_TOKEN_URL,
+        {
+            "grant_type": "authorization_code",
+            "client_id": str(getattr(oauth_start, "client_id", "") or ""),
+            "code": code,
+            "redirect_uri": str(getattr(oauth_start, "redirect_uri", "") or ""),
+            "code_verifier": str(getattr(oauth_start, "code_verifier", "") or ""),
+        },
         proxy_url=proxy,
     )
-    return json.loads(result_json)
+    access_token = str(token_resp.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("OAuth token response missing access_token")
+    refresh_token = str(token_resp.get("refresh_token") or "").strip()
+    id_token = str(token_resp.get("id_token") or "").strip()
+    expires_in = int(token_resp.get("expires_in") or 0)
+    claims = _jwt_claims_no_verify(id_token)
+    auth_claims = claims.get("https://api.openai.com/auth") or {}
+    now = int(_time.time())
+    return {
+        "id_token": id_token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "account_id": str(auth_claims.get("chatgpt_account_id") or ""),
+        "email": str(claims.get("email") or ""),
+        "type": "codex",
+        "expired": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(now + max(expires_in, 0))),
+        "last_refresh": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(now)),
+    }
+
+
+def _submit_callback_result(callback_url: str, oauth_start, proxy: str | None, log=None) -> dict:
+    from .oauth import submit_callback_url
+
+    try:
+        result_json = submit_callback_url(
+            callback_url=callback_url,
+            expected_state=oauth_start.state,
+            code_verifier=oauth_start.code_verifier,
+            redirect_uri=oauth_start.redirect_uri,
+            client_id=oauth_start.client_id,
+            proxy_url=proxy,
+        )
+        return json.loads(result_json)
+    except ValueError as exc:
+        message = str(exc)
+        if "missing ?state=" not in message or not _extract_code_from_url(callback_url):
+            raise
+        if callable(log):
+            log("  OAuth callback 缺少 state，改用 code+PKCE 直接换 token")
+        return _exchange_callback_code_without_state(callback_url, oauth_start, proxy)
+
+
+def _format_callback_exchange_error(exc: Exception) -> str:
+    """把 callback code 已拿到但 token 交换失败的原因转成用户可行动提示。"""
+    message = str(exc or "").strip() or "unknown error"
+    if "unsupported_country_region_territory" in message or "Country, region, or territory not supported" in message:
+        return (
+            "已捕获 OAuth callback code，但 token 交换失败："
+            "OpenAI 返回 unsupported_country_region_territory，当前代理/IP 地区不受支持。"
+            "请更换支持地区代理后重试。"
+        )
+    return f"已捕获 OAuth callback code，但 token 交换失败：{message}"
+
+
+def _submit_callback_result_or_error(callback_url: str, oauth_start, proxy: str | None, log=None) -> dict:
+    """callback 是 OAuth 终点；成功返回 token，失败返回错误，不再回退找 workspace。"""
+    callback_error = _extract_callback_error_from_url(callback_url)
+    if callback_error:
+        if callable(log):
+            log(f"  OAuth callback 返回 error，需重走授权登录: {callback_error}")
+        return _oauth_restart_required_result(callback_url, callback_error)
+    if callable(log):
+        log(_callback_debug_summary(callback_url, oauth_start, proxy))
+        try:
+            from .oauth import OAUTH_TOKEN_URL
+
+            log(f"  OAuth token exchange 请求: endpoint={OAUTH_TOKEN_URL}")
+        except Exception:
+            pass
+    try:
+        return _submit_callback_result(callback_url, oauth_start, proxy, log=log)
+    except Exception as exc:
+        if callable(log):
+            log(f"  OAuth callback token exchange 失败: {exc}")
+        return {
+            "error": _format_callback_exchange_error(exc),
+            "callback_captured": True,
+        }
 
 
 def _wait_for_oauth_callback_result(
@@ -2401,16 +2695,17 @@ def _wait_for_oauth_callback_result(
                 continue
             seen_urls.add(url)
             if "localhost" in url or "code=" in url:
-                log(f"  OAuth callback wait 检测到 URL: {url[:160]}")
+                log(f"  OAuth callback wait 检测到 URL: {url}")
+            callback_error = _extract_callback_error_from_url(url)
+            if callback_error:
+                log(f"  OAuth callback wait 检测到 error callback，准备重走授权登录: {callback_error}")
+                return _oauth_restart_required_result(url, callback_error)
             if not _extract_code_from_url(url):
                 continue
-            try:
-                result = _submit_callback_result(url, oauth_start, proxy)
+            result = _submit_callback_result_or_error(url, oauth_start, proxy, log=log)
+            if result.get("access_token"):
                 log("  OAuth callback 已换取 token")
-                return result
-            except Exception as exc:
-                log(f"  OAuth callback token exchange 失败: {exc}")
-                return {"error": f"OAuth callback token exchange 失败: {exc}"}
+            return result
         time.sleep(0.8)
     return None
 
@@ -2552,6 +2847,46 @@ def _do_codex_oauth(
     device_id = str(cookies_dict.get("oai-did") or uuid.uuid4())
     log(f"  Codex OAuth 授权链接: {oauth_start.auth_url}")
     log(f"  OAuth state={oauth_start.state[:20]}...")
+    log(_oauth_authorize_debug_summary(oauth_start, proxy))
+    resume_auth_url = _oauth_resume_url_after_phone(oauth_start.auth_url)
+    oauth_restart_count = 0
+
+    def _restart_oauth_login_from_error(callback_url: str, reason: str) -> bool:
+        """callback?error 代表当前授权链断开，重建 PKCE/state 后重新登录授权。"""
+        nonlocal oauth_start, resume_auth_url, oauth_restart_count
+        if oauth_restart_count >= 2:
+            log(f"  OAuth callback error 重试已达上限，停止重走授权: {reason}")
+            return False
+        oauth_restart_count += 1
+        oauth_start = generate_oauth_url(
+            redirect_uri=CODEX_REDIRECT_URI,
+            scope=CODEX_SCOPE,
+            client_id=CODEX_CLIENT_ID,
+        )
+        resume_auth_url = _oauth_resume_url_after_phone(oauth_start.auth_url)
+        log(
+            f"  OAuth callback error={reason}，重新走授权登录流程 "
+            f"({oauth_restart_count}/2): {str(callback_url or '')}"
+        )
+        log(f"  Codex OAuth 授权链接(重启): {oauth_start.auth_url}")
+        log(f"  OAuth state(重启)={oauth_start.state[:20]}...")
+        log(_oauth_authorize_debug_summary(oauth_start, proxy))
+        try:
+            _goto_with_retry(page, oauth_start.auth_url, wait_until="domcontentloaded", timeout=30000, log=log)
+            return True
+        except Exception as exc:
+            log(f"  OAuth 重走授权导航失败: {exc}")
+            return False
+
+    def _maybe_restart_oauth_from_result(result: dict | None) -> bool | None:
+        if not isinstance(result, dict) or not result.get("oauth_restart_required"):
+            return None
+        if _restart_oauth_login_from_error(
+            str(result.get("callback_url") or ""),
+            str(result.get("error") or "OAuth callback error"),
+        ):
+            return True
+        return False
 
     try:
         try:
@@ -2559,12 +2894,12 @@ def _do_codex_oauth(
         except Exception as exc:
             callback_url = _extract_callback_url_from_exception(exc)
             if callback_url:
-                log(f"  OAuth bootstrap 直接捕获 callback: {callback_url[:100]}...")
-                return _submit_callback_result(callback_url, oauth_start, proxy)
+                log(f"  OAuth bootstrap 直接捕获 callback: {callback_url}")
+                return _submit_callback_result_or_error(callback_url, oauth_start, proxy, log=log)
             raise
 
         current_url = str(page.url or "")
-        log(f"  OAuth bootstrap -> {current_url[:100]}...")
+        log(f"  OAuth bootstrap -> {current_url}")
 
         for step in range(20):
             state = _derive_oauth_state_from_page(page)
@@ -2572,8 +2907,8 @@ def _do_codex_oauth(
             next_url = str(state.get("continue_url") or "").strip()
             log(
                 f"  OAuth state step[{step+1}/20]: "
-                f"page={state.get('page_type') or '-'} next={next_url[:60]}"
-                f" url={current_url[:120]}"
+                f"page={state.get('page_type') or '-'} next={next_url}"
+                f" url={current_url}"
             )
 
             callback_url = ""
@@ -2582,7 +2917,14 @@ def _do_codex_oauth(
             elif _extract_code_from_url(next_url):
                 callback_url = next_url
             if callback_url:
-                return _submit_callback_result(callback_url, oauth_start, proxy)
+                return _submit_callback_result_or_error(callback_url, oauth_start, proxy, log=log)
+
+            callback_error = _extract_callback_error_from_url(current_url) or _extract_callback_error_from_url(next_url)
+            if callback_error:
+                error_url = current_url if _extract_callback_error_from_url(current_url) else next_url
+                if _restart_oauth_login_from_error(error_url, callback_error):
+                    continue
+                return {"error": f"OAuth callback error 后重走授权失败: {callback_error}"}
 
             page_oauth_url = _get_page_oauth_url(page)
             if (
@@ -2599,7 +2941,7 @@ def _do_codex_oauth(
                 email_resp = _submit_login_email_via_page(page, email, log)
                 log(f"  OAuth 邮箱页提交状态: {email_resp.get('status', 0)}")
                 if not email_resp.get("ok"):
-                    raise RuntimeError(f"OAuth 邮箱页提交失败: {(email_resp.get('text') or '')[:300]}")
+                    raise RuntimeError(f"OAuth 邮箱页提交失败: {(email_resp.get('text') or '')}")
                 continue
 
             if state["page_type"] in {"login_password", "create_account_password"}:
@@ -2608,7 +2950,7 @@ def _do_codex_oauth(
                 password_resp = _submit_oauth_password_direct(page, password, log)
                 log(f"  OAuth 密码页提交状态: {password_resp.get('status', 0)}")
                 if not password_resp.get("ok"):
-                    raise RuntimeError(f"OAuth 密码页提交失败: {(password_resp.get('text') or '')[:300]}")
+                    raise RuntimeError(f"OAuth 密码页提交失败: {(password_resp.get('text') or '')}")
                 continue
 
             if state["page_type"] == "email_otp_verification":
@@ -2623,7 +2965,7 @@ def _do_codex_oauth(
                 otp_resp = _submit_otp_via_page(page, code, log)
                 log(f"  OAuth 验证码页提交状态: {otp_resp.get('status', 0)}")
                 if not otp_resp.get("ok"):
-                    raise RuntimeError(f"OAuth 验证码校验失败: {(otp_resp.get('text') or '')[:300]}")
+                    raise RuntimeError(f"OAuth 验证码校验失败: {(otp_resp.get('text') or '')}")
                 continue
 
             if state["page_type"] == "about_you":
@@ -2631,12 +2973,17 @@ def _do_codex_oauth(
                 about_resp = _submit_about_you_via_page(page, log)
                 log(f"  OAuth about_you 提交状态: {about_resp.get('status', 0)}")
                 if not about_resp.get("ok"):
-                    raise RuntimeError(f"OAuth about_you 提交失败: {(about_resp.get('text') or '')[:300]}")
+                    raise RuntimeError(f"OAuth about_you 提交失败: {(about_resp.get('text') or '')}")
                 continue
 
             if state["page_type"] in {"consent", "workspace_selection", "organization_selection", "external_url"}:
                 browser_result = _complete_oauth_in_browser(page, oauth_start, proxy, log)
                 if browser_result:
+                    restart_decision = _maybe_restart_oauth_from_result(browser_result)
+                    if restart_decision is True:
+                        continue
+                    if restart_decision is False:
+                        return {"error": str(browser_result.get("error") or "OAuth callback error")}
                     return browser_result
                 cookies_dict = _get_cookies(page)
                 session_result = _complete_oauth_with_session(cookies_dict, oauth_start, proxy, log)
@@ -2649,20 +2996,72 @@ def _do_codex_oauth(
                 if phone_callback:
                     log("  OAuth 检测到 add_phone，优先执行短信验证...")
                     try:
-                        _handle_add_phone_challenge(
+                        phone_state = _handle_add_phone_challenge(
                             page, phone_callback,
                             device_id=device_id, user_agent=user_agent,
-                            log=log, resume_url=oauth_start.auth_url,
+                            log=log, resume_url=resume_auth_url or oauth_start.auth_url,
                         )
+                        for candidate_url in (
+                            str(page.url or ""),
+                            str((phone_state or {}).get("continue_url") or ""),
+                            str((phone_state or {}).get("current_url") or ""),
+                        ):
+                            if _extract_code_from_url(candidate_url):
+                                log("  手机验证后已到 OAuth callback，开始换 token")
+                                return _submit_callback_result_or_error(candidate_url, oauth_start, proxy, log=log)
+                        if (phone_state or {}).get("page_type") in {"consent", "workspace_selection", "organization_selection", "external_url"}:
+                            browser_result = _complete_oauth_in_browser(page, oauth_start, proxy, log)
+                            if browser_result:
+                                restart_decision = _maybe_restart_oauth_from_result(browser_result)
+                                if restart_decision is True:
+                                    continue
+                                if restart_decision is False:
+                                    return {"error": str(browser_result.get("error") or "OAuth callback error")}
+                                return browser_result
                         callback_result = _wait_for_oauth_callback_result(
                             page,
                             oauth_start,
                             proxy,
                             log,
-                            timeout_sec=45,
+                            timeout_sec=15,
                         )
                         if callback_result:
+                            restart_decision = _maybe_restart_oauth_from_result(callback_result)
+                            if restart_decision is True:
+                                continue
+                            if restart_decision is False:
+                                return {"error": str(callback_result.get("error") or "OAuth callback error")}
                             return callback_result
+                        if resume_auth_url:
+                            log("  手机验证后未捕获 callback，重访 OAuth(prompt=none) 承接授权...")
+                            _goto_with_retry(page, resume_auth_url, wait_until="domcontentloaded", timeout=30000, log=log)
+                            callback_result = _wait_for_oauth_callback_result(
+                                page,
+                                oauth_start,
+                                proxy,
+                                log,
+                                timeout_sec=20,
+                            )
+                            if callback_result:
+                                restart_decision = _maybe_restart_oauth_from_result(callback_result)
+                                if restart_decision is True:
+                                    continue
+                                if restart_decision is False:
+                                    return {"error": str(callback_result.get("error") or "OAuth callback error")}
+                                return callback_result
+                            post_phone_state = _derive_oauth_state_from_page(page)
+                            if post_phone_state.get("page_type") in {"consent", "workspace_selection", "organization_selection", "external_url"}:
+                                browser_result = _complete_oauth_in_browser(page, oauth_start, proxy, log)
+                                if browser_result:
+                                    restart_decision = _maybe_restart_oauth_from_result(browser_result)
+                                    if restart_decision is True:
+                                        continue
+                                    if restart_decision is False:
+                                        return {"error": str(browser_result.get("error") or "OAuth callback error")}
+                                    return browser_result
+                            if post_phone_state.get("page_type") == "login_email":
+                                log("  ⚠️ 手机验证后 OAuth 仍返回登录页，已停止重复登录")
+                                return {"error": "手机号验证后 OAuth 会话仍返回登录页，未重复登录"}
                         continue
                     except Exception as exc:
                         log(f"  短信验证失败，停止 OAuth 流程: {exc}")
@@ -2678,6 +3077,11 @@ def _do_codex_oauth(
                         timeout_sec=180,
                     )
                     if callback_result:
+                        restart_decision = _maybe_restart_oauth_from_result(callback_result)
+                        if restart_decision is True:
+                            continue
+                        if restart_decision is False:
+                            return {"error": str(callback_result.get("error") or "OAuth callback error")}
                         return callback_result
                     return {"error": "OpenAI OAuth 要求手机号验证，等待后未捕获 callback URL"}
 
@@ -2685,7 +3089,7 @@ def _do_codex_oauth(
                 # 用户已登录，重新访问 auth URL 应该能直接跳到 callback
                 log("  检测到 add_phone，尝试跳过...")
                 try:
-                    _goto_with_retry(page, oauth_start.auth_url, wait_until="domcontentloaded", timeout=15000, log=log)
+                    _goto_with_retry(page, resume_auth_url or oauth_start.auth_url, wait_until="domcontentloaded", timeout=15000, log=log)
                     time.sleep(2)
                     current_url = str(page.url or "")
 
@@ -2704,7 +3108,7 @@ def _do_codex_oauth(
 
                     if callback_url:
                         log("  ✓ 成功跳过 add_phone，获取到 OAuth callback")
-                        return _submit_callback_result(callback_url, oauth_start, proxy)
+                        return _submit_callback_result_or_error(callback_url, oauth_start, proxy, log=log)
 
                     # 检查页面状态
                     skip_state = _derive_registration_state_from_page(page)
@@ -2713,6 +3117,11 @@ def _do_codex_oauth(
                         # 尝试在浏览器里完成 consent 流程
                         browser_result = _complete_oauth_in_browser(page, oauth_start, proxy, log)
                         if browser_result:
+                            restart_decision = _maybe_restart_oauth_from_result(browser_result)
+                            if restart_decision is True:
+                                continue
+                            if restart_decision is False:
+                                return {"error": str(browser_result.get("error") or "OAuth callback error")}
                             return browser_result
                         # 回退到 curl session 方式
                         cookies_dict = _get_cookies(page)
@@ -2730,7 +3139,7 @@ def _do_codex_oauth(
                 except Exception as exc:
                     callback_url = _extract_callback_url_from_exception(exc)
                     if callback_url:
-                        return _submit_callback_result(callback_url, oauth_start, proxy)
+                        return _submit_callback_result_or_error(callback_url, oauth_start, proxy, log=log)
                     log(f"  跳过 add_phone 异常: {exc}")
 
                 log("  ⚠️ add_phone 无法跳过且无可用接码服务")
@@ -2742,7 +3151,7 @@ def _do_codex_oauth(
                 # 检查是否是错误页面
                 if "error" in current_url:
                     error_msg = current_url.split("error=")[-1].split("&")[0] if "error=" in current_url else "unknown"
-                    log(f"  OAuth 错误页面: {error_msg} url={current_url[:150]}")
+                    log(f"  OAuth 错误页面: {error_msg} url={current_url}")
                     raise RuntimeError(f"OpenAI OAuth 错误: {error_msg}")
                 time.sleep(2)
                 new_url = str(page.url or "")
@@ -2766,14 +3175,14 @@ def _do_codex_oauth(
                 except Exception as exc:
                     callback_url = _extract_callback_url_from_exception(exc)
                     if callback_url:
-                        return _submit_callback_result(callback_url, oauth_start, proxy)
+                        return _submit_callback_result_or_error(callback_url, oauth_start, proxy, log=log)
                     log(f"  OAuth navigation failed: {exc}")
                     break
                 continue
 
             error_text = _extract_auth_error_text(page)
             if error_text:
-                raise RuntimeError(f"OAuth 页面错误: {error_text[:300]}")
+                raise RuntimeError(f"OAuth 页面错误: {error_text}")
             time.sleep(0.5)
     except Exception as e:
         log(f"  OAuth 异常: {e}")
@@ -2908,6 +3317,35 @@ def _is_invalid_phone_otp_response(result: dict) -> bool:
     return "invalid otp code" in text
 
 
+def _resolve_add_phone_attempt_limit(phone_callback, default_limit: int) -> int:
+    """根据接码来源决定 add_phone 拒号换号上限。"""
+    limit = max(1, int(default_limit or 1))
+    provider_key = str(getattr(phone_callback, "provider_key", "") or "").strip().lower()
+    if provider_key in {"codex_sms_pool", "codex_sms_pool_api", "chatgpt-api", "chatgpt_api"}:
+        try:
+            from core.base_sms import parse_codex_sms_pool_entries
+
+            config = getattr(phone_callback, "config", {}) or {}
+            pool_text = str(
+                config.get("codex_sms_pool_text")
+                or config.get("codex_sms_pool")
+                or config.get("chatGptApiSmsPoolText")
+                or ""
+            )
+            pool_size = len(parse_codex_sms_pool_entries(pool_text))
+            if pool_size > 0:
+                return pool_size
+        except Exception:
+            return limit
+    hook = getattr(phone_callback, "get_add_phone_attempt_limit", None)
+    if callable(hook):
+        try:
+            return max(1, int(hook(limit) or limit))
+        except Exception:
+            return limit
+    return limit
+
+
 def _handle_add_phone_challenge(
     page,
     phone_callback,
@@ -2916,12 +3354,12 @@ def _handle_add_phone_challenge(
     user_agent: str,
     log,
     resume_url: str = "",
-    max_phone_attempts: int = 3,
+    max_phone_attempts: int = PHONE_ATTEMPTS_PER_COUNTRY * PHONE_MAX_COUNTRIES,
 ) -> dict:
     """在 add-phone 页面通过 UI 交互完成手机号验证。
 
     流程: 选择国家 -> 输入本地号码 -> 点击发送 -> 填写 OTP -> 点击验证。
-    如果验证码超时未收到，自动换号重试（最多 max_phone_attempts 次）。
+    号码被拒时自动换号；进入验证码页后 60 秒无短信则跳过当前账号。
     """
     if not phone_callback:
         raise RuntimeError(
@@ -2929,10 +3367,11 @@ def _handle_add_phone_challenge(
             "请在 RegisterConfig.extra 中配置接码服务，或手动完成手机验证。"
         )
 
+    attempt_limit = _resolve_add_phone_attempt_limit(phone_callback, max_phone_attempts)
     last_error = None
-    for phone_attempt in range(max_phone_attempts):
+    for phone_attempt in range(attempt_limit):
         if phone_attempt > 0:
-            log(f"换号重试第 {phone_attempt + 1}/{max_phone_attempts} 次...")
+            log(f"换号重试第 {phone_attempt + 1}/{attempt_limit} 次...")
             # 回到 add-phone 页面
             try:
                 _goto_with_retry(page, f"{OPENAI_AUTH}/add-phone", wait_until="domcontentloaded", timeout=15000, log=log)
@@ -2950,16 +3389,23 @@ def _handle_add_phone_challenge(
         except RuntimeError as exc:
             last_error = exc
             error_msg = str(exc)
-            # 验证码超时或号码已被使用时换号重试，其他错误直接抛出
+            if PHONE_CODE_TIMEOUT_SENTINEL in error_msg:
+                log(f"⚠️ 短信验证码 {PHONE_CODE_TIMEOUT_SECONDS}s 未到达，跳过当前账号")
+                if hasattr(phone_callback, "cleanup"):
+                    phone_callback.cleanup()
+                raise
+
+            # 号码已被使用、虚拟号/不支持等页面拒号时换号重试，其他错误直接抛出
             should_retry = (
-                "未获取到短信验证码" in error_msg
+                PHONE_REJECTED_SENTINEL in error_msg
+                or _is_retryable_phone_rejection_text(error_msg)
                 or "phone_number_in_use" in error_msg
                 or "already" in error_msg.lower()
                 or "in use" in error_msg.lower()
             )
             if not should_retry:
                 raise
-            log(f"⚠️ 验证码超时未收到，准备换号重试...")
+            log(f"⚠️ 当前手机号不可用，准备换号重试: {error_msg}")
             # 取消当前号码
             if hasattr(phone_callback, "cleanup"):
                 phone_callback.cleanup()
@@ -3021,6 +3467,17 @@ def _do_add_phone_attempt(
 
     if hasattr(phone_callback, "set_resend_callback"):
         phone_callback.set_resend_callback(_request_openai_resend)
+    if hasattr(phone_callback, "set_code_timeout"):
+        phone_callback.set_code_timeout(PHONE_CODE_TIMEOUT_SECONDS)
+
+    def _raise_phone_send_failed(reason: str):
+        # 统一上报接码 provider，令本地号池/第三方 provider 能把当前号标失败。
+        text = str(reason or "").strip() or "手机号提交失败"
+        if hasattr(phone_callback, "mark_send_failed"):
+            phone_callback.mark_send_failed(text)
+        if _is_retryable_phone_rejection_text(text):
+            raise RuntimeError(f"{PHONE_REJECTED_SENTINEL}: {text}")
+        raise RuntimeError(f"手机号提交失败: {text}")
 
     # ---- 第1步: 获取手机号 ----
     log("注册流程已进入 add_phone，开始准备租号并接收短信验证码...")
@@ -3039,17 +3496,24 @@ def _do_add_phone_attempt(
         _goto_with_retry(page, f"{OPENAI_AUTH}/add-phone", wait_until="domcontentloaded", timeout=30000, log=log)
     time.sleep(1)
 
+    country_selected = False
+    if dial_code or country_name:
+        country_selected = _select_phone_country_ui(page, dial_code, country_name, log)
+        if not country_selected:
+            log("  国家区号选择未确认，将尝试用完整手机号提交")
+
     submit_result = _submit_add_phone_dom(
         page,
         phone_number=phone_number,
         dial_code=dial_code,
-        local_number=local_number,
+        local_number=local_number if country_selected else phone_number,
         country_name=country_name,
         log=log,
     )
     if not submit_result.get("ok"):
         log(f"  add-phone DOM 提交失败，回退旧 UI 路径: {submit_result.get('reason') or submit_result}")
-        country_selected = _select_phone_country_ui(page, dial_code, country_name, log)
+        if not country_selected:
+            country_selected = _select_phone_country_ui(page, dial_code, country_name, log)
         _browser_pause(page)
         phone_input_sel = _wait_for_any_selector(page, PHONE_INPUT_SELECTORS, timeout=10)
         if not phone_input_sel:
@@ -3067,23 +3531,20 @@ def _do_add_phone_attempt(
 
     phone_status = _wait_for_phone_verification_ready(page, timeout=30)
     if phone_status.get("addPhoneError"):
-        if hasattr(phone_callback, "mark_send_failed"):
-            phone_callback.mark_send_failed(str(phone_status.get("addPhoneError") or ""))
-        raise RuntimeError(f"手机号提交失败: {str(phone_status.get('addPhoneError') or '')[:200]}")
+        _raise_phone_send_failed(str(phone_status.get("addPhoneError") or ""))
     if not phone_status.get("phoneVerificationReady"):
         error_text = _extract_auth_error_text(page)
         if error_text:
-            if hasattr(phone_callback, "mark_send_failed"):
-                phone_callback.mark_send_failed(error_text)
-            raise RuntimeError(f"手机号提交失败: {error_text[:200]}")
+            _raise_phone_send_failed(error_text)
+        page_text = str(phone_status.get("text") or _get_visible_page_text(page) or "")
+        if _is_retryable_phone_rejection_text(page_text):
+            _raise_phone_send_failed(page_text)
         raise RuntimeError(f"手机号提交后未进入验证码页: {str(phone_status.get('url') or page.url)}")
 
     # 检查发送是否成功（页面应出现 OTP 输入框或 URL 变化）
     error_text = _extract_auth_error_text(page)
     if error_text:
-        if hasattr(phone_callback, "mark_send_failed"):
-            phone_callback.mark_send_failed(error_text)
-        raise RuntimeError(f"手机号提交失败: {error_text[:200]}")
+        _raise_phone_send_failed(error_text)
 
     if hasattr(phone_callback, "mark_send_succeeded"):
         phone_callback.mark_send_succeeded()
@@ -3091,9 +3552,15 @@ def _do_add_phone_attempt(
 
     # ---- 第5步: 等待 SMS 验证码并在页面 OTP 输入框中填写 ----
     for code_attempt in range(3):
-        sms_code = str(phone_callback() or "").strip()
+        try:
+            sms_code = str(phone_callback() or "").strip()
+        except RuntimeError as exc:
+            message = str(exc)
+            if "timeout" in message.lower() or "超时" in message:
+                raise RuntimeError(f"{PHONE_CODE_TIMEOUT_SENTINEL}: 等待短信验证码超过 {PHONE_CODE_TIMEOUT_SECONDS}s") from exc
+            raise
         if not sms_code:
-            raise RuntimeError("未获取到短信验证码")
+            raise RuntimeError(f"{PHONE_CODE_TIMEOUT_SENTINEL}: 未获取到短信验证码")
 
         phone_status = _wait_for_phone_verification_ready(page, timeout=12)
         if not phone_status.get("phoneVerificationReady"):
@@ -3125,14 +3592,14 @@ def _do_add_phone_attempt(
         # 检查是否是无效验证码
         page_error = _extract_auth_error_text(page)
         if page_error and any(kw in page_error.lower() for kw in ("invalid", "incorrect", "wrong", "expired")):
-            log(f"短信验证码被判定无效: {page_error[:100]}，继续等待下一条...")
+            log(f"短信验证码被判定无效: {page_error}，继续等待下一条...")
             if hasattr(phone_callback, "mark_code_failed"):
                 phone_callback.mark_code_failed(page_error or "invalid otp code")
             continue
 
         if hasattr(phone_callback, "mark_code_failed"):
             phone_callback.mark_code_failed(page_error or f"status {otp_status}")
-        raise RuntimeError(f"短信验证码校验失败: {page_error[:200] if page_error else f'status {otp_status}'}")
+        raise RuntimeError(f"短信验证码校验失败: {page_error if page_error else f'status {otp_status}'}")
 
     raise RuntimeError("短信验证码校验失败: 多次验证码均无效或未通过")
 
@@ -3228,7 +3695,7 @@ def _browser_authorize(page, auth_url: str, log) -> str:
     try:
         _goto_with_retry(page, auth_url, wait_until="domcontentloaded", timeout=30000, log=log)
         final_url = page.url
-        log(f"Authorize -> {final_url[:120]}")
+        log(f"Authorize -> {final_url}")
         return final_url
     except Exception as exc:
         log(f"Authorize 失败: {exc}")
@@ -3300,69 +3767,20 @@ def _complete_oauth_in_browser(page, oauth_start, proxy, log) -> dict | None:
     - 首选 form.requestSubmit(button) 而非 button.click()
     - 多轮重试: requestSubmit → click → dispatchEvent → 刷新重试
     """
-    from .oauth import submit_callback_url
-
     CONSENT_FORM_SEL = OAUTH_CONSENT_FORM_SELECTOR
     MAX_ROUNDS = 4
     CLICK_EFFECT_TIMEOUT = 30
 
     def _try_extract_callback(url: str) -> dict | None:
-        if not url or "code=" not in url:
+        if not url:
             return None
-        try:
-            return json.loads(submit_callback_url(
-                callback_url=url,
-                expected_state=oauth_start.state,
-                code_verifier=oauth_start.code_verifier,
-                redirect_uri=oauth_start.redirect_uri,
-                client_id=oauth_start.client_id,
-                proxy_url=proxy,
-            ))
-        except ValueError as ve:
-            # state 缺失或不匹配时，如果 URL 确实是我们的 callback，跳过 state 验证直接换 token
-            if "state" in str(ve) and "localhost" in url and "code=" in url:
-                try:
-                    # 手动提取 code，跳过 state 验证
-                    from urllib.parse import urlparse, parse_qs
-                    parsed = urlparse(url)
-                    params = parse_qs(parsed.query)
-                    code = (params.get("code") or [""])[0]
-                    if code:
-                        from .oauth import _post_form, _jwt_claims_no_verify, OAUTH_TOKEN_URL
-                        import time as _time
-                        token_resp = _post_form(
-                            OAUTH_TOKEN_URL,
-                            {
-                                "grant_type": "authorization_code",
-                                "client_id": oauth_start.client_id,
-                                "code": code,
-                                "redirect_uri": oauth_start.redirect_uri,
-                                "code_verifier": oauth_start.code_verifier,
-                            },
-                            proxy_url=proxy,
-                        )
-                        access_token = (token_resp.get("access_token") or "").strip()
-                        refresh_token = (token_resp.get("refresh_token") or "").strip()
-                        id_token = (token_resp.get("id_token") or "").strip()
-                        if access_token:
-                            claims = _jwt_claims_no_verify(id_token)
-                            auth_claims = claims.get("https://api.openai.com/auth") or {}
-                            now = int(_time.time())
-                            expires_in = int(token_resp.get("expires_in") or 0)
-                            return {
-                                "id_token": id_token,
-                                "access_token": access_token,
-                                "refresh_token": refresh_token,
-                                "account_id": str(auth_claims.get("chatgpt_account_id") or ""),
-                                "email": str(claims.get("email") or ""),
-                                "expired": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(now + max(expires_in, 0))),
-                                "last_refresh": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(now)),
-                            }
-                except Exception:
-                    pass
+        callback_error = _extract_callback_error_from_url(url)
+        if callback_error:
+            log(f"  [callback_wait] 检测到 error callback，准备重走授权登录: {callback_error}")
+            return _oauth_restart_required_result(url, callback_error)
+        if "code=" not in url:
             return None
-        except Exception:
-            return None
+        return _submit_callback_result_or_error(url, oauth_start, proxy, log=log)
 
     def _check_current_url() -> dict | None:
         url = str(page.url or "")
@@ -3388,7 +3806,7 @@ def _complete_oauth_in_browser(page, oauth_start, proxy, log) -> dict | None:
             if result:
                 return result
             # 也检查是否有导航到 localhost 的请求（即使页面加载失败）
-            if "localhost" in url and "code=" in url:
+            if "localhost" in url and ("code=" in url or "error=" in url):
                 result = _try_extract_callback(url)
                 if result:
                     return result
@@ -3396,8 +3814,8 @@ def _complete_oauth_in_browser(page, oauth_start, proxy, log) -> dict | None:
         # 最后再检查一次
         try:
             final_url = str(page.url or "")
-            if "code=" in final_url:
-                log(f"  [callback_wait] 超时后最终 URL: {final_url[:150]}")
+            if "code=" in final_url or "error=" in final_url:
+                log(f"  [callback_wait] 超时后最终 URL: {final_url}")
                 result = _try_extract_callback(final_url)
                 if result:
                     return result
@@ -3536,7 +3954,7 @@ def _complete_oauth_in_browser(page, oauth_start, proxy, log) -> dict | None:
 
     try:
         current_url = str(page.url or "")
-        log(f"  浏览器 consent 处理: {current_url[:100]}")
+        log(f"  浏览器 consent 处理: {current_url}")
 
         # 先检查当前 URL 是否已经有 code
         result = _check_current_url()
@@ -3596,7 +4014,12 @@ def _complete_oauth_in_browser(page, oauth_start, proxy, log) -> dict | None:
                     pass
                 time.sleep(2)
 
-        log(f"  consent {MAX_ROUNDS}轮尝试后仍未完成，当前: {str(page.url or '')[:100]}")
+        final_url = str(page.url or "")
+        final_result = _try_extract_callback(final_url)
+        if final_result:
+            log("  ✓ consent 末端从当前 callback URL 换取 token")
+            return final_result
+        log(f"  consent {MAX_ROUNDS}轮尝试后仍未完成，当前: {final_url}")
         return None
     except Exception as exc:
         cb = _extract_callback_url_from_exception(exc)
@@ -4518,7 +4941,7 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
         f"login_session={'yes' if auth_cookies.get('login_session') else 'no'}, "
         f"oai-did={'yes' if auth_cookies.get('oai-did') else 'no'}"
     )
-    log(f"注册状态起点: page={state.get('page_type') or '-'} url={(state.get('current_url') or '')[:100]}")
+    log(f"注册状态起点: page={state.get('page_type') or '-'} url={(state.get('current_url') or '')}")
     register_submitted = False
     seen_states: dict[str, int] = {}
 
@@ -4534,7 +4957,7 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
         seen_states[signature] = seen_states.get(signature, 0) + 1
         log(
             f"注册状态推进: step={step+1} page={state.get('page_type') or '-'} "
-            f"next={str(state.get('continue_url') or '')[:60]} seen={seen_states[signature]}"
+            f"next={str(state.get('continue_url') or '')} seen={seen_states[signature]}"
         )
         if seen_states[signature] > 2:
             raise RuntimeError(f"注册状态卡住: page={state.get('page_type') or '-'}")
@@ -4556,7 +4979,7 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
             reg_resp = _submit_password_via_page(page, password, log)
             log(f"密码页提交状态: {reg_resp.get('status', 0)}")
             if not reg_resp.get("ok"):
-                raise RuntimeError(f"密码页提交失败: {(reg_resp.get('text') or '')[:300]}")
+                raise RuntimeError(f"密码页提交失败: {(reg_resp.get('text') or '')}")
             register_submitted = True
             state = _extract_flow_state(reg_resp.get("data"), reg_resp.get("url", page.url))
             if not state.get("page_type") or _is_password_registration(state):
@@ -4571,7 +4994,7 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
             login_resp = _submit_oauth_password_direct(page, password, log)
             log(f"登录密码页提交状态: {login_resp.get('status', 0)}")
             if not login_resp.get("ok"):
-                raise RuntimeError(f"登录密码页提交失败: {(login_resp.get('text') or '')[:300]}")
+                raise RuntimeError(f"登录密码页提交失败: {(login_resp.get('text') or '')}")
             state = _extract_flow_state(login_resp.get("data"), login_resp.get("url", page.url))
             if not state.get("page_type"):
                 state = _derive_registration_state_from_page(page)
@@ -4587,7 +5010,7 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
             otp_resp = _submit_otp_via_page(page, code, log)
             log(f"验证码页提交状态: {otp_resp.get('status', 0)}")
             if not otp_resp.get("ok"):
-                raise RuntimeError(f"验证码校验失败: {(otp_resp.get('text') or '')[:300]}")
+                raise RuntimeError(f"验证码校验失败: {(otp_resp.get('text') or '')}")
             state = _extract_flow_state(otp_resp.get("data"), otp_resp.get("url", page.url))
             if not state.get("page_type"):
                 state = _derive_registration_state_from_page(page)
@@ -4605,7 +5028,7 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
             about_resp = _submit_about_you_via_page(page, log)
             log(f"about_you 提交状态: {about_resp.get('status', 0)}")
             if not about_resp.get("ok"):
-                raise RuntimeError(f"about_you 提交失败: {(about_resp.get('text') or '')[:300]}")
+                raise RuntimeError(f"about_you 提交失败: {(about_resp.get('text') or '')}")
             state = _extract_flow_state(about_resp.get("data"), about_resp.get("url", page.url))
             if not state.get("page_type"):
                 state = _derive_registration_state_from_page(page)
@@ -4690,6 +5113,8 @@ class ChatGPTBrowserRegister:
         保持兑现：按 ``self.backend_config`` 路由到 Camoufox 或 BitBrowser。
         BitBrowser 路径下 launch_opts 里的 proxy/geoip 会被忽略（profile
         自带代理）。"""
+        if self.backend_config.is_camoufox:
+            _patch_playwright_firefox_pageerror_location_bug(log_fn=self.log)
         return open_browser_backend(
             launch_opts=launch_opts,
             config=self.backend_config,

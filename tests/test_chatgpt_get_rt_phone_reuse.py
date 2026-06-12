@@ -133,3 +133,102 @@ def test_get_rt_phone_reuse_pool_uses_smsapi_lines_once(monkeypatch):
 
     with pytest.raises(RuntimeError, match="smsapi phone list exhausted"):
         pool.make_callback(label="7")()
+
+
+def test_build_get_rt_phone_callback_uses_default_sms_provider(monkeypatch):
+    from core import base_sms
+    from infrastructure import provider_settings_repository
+
+    seen = {}
+
+    class FakeSettingsRepo:
+        def get_default_provider_key(self, provider_type):
+            assert provider_type == "sms"
+            return "codex_sms_pool"
+
+        def resolve_runtime_settings(self, provider_type, provider_key, extra):
+            assert provider_type == "sms"
+            assert provider_key == "codex_sms_pool"
+            assert extra == {}
+            return {"codex_sms_pool_text": "+15550000001|https://sms.example"}
+
+    class FakePhoneCallbackController:
+        def __init__(self, provider_key, config, *, service, country="", log_fn=None):
+            seen.update(
+                {
+                    "provider_key": provider_key,
+                    "config": config,
+                    "service": service,
+                    "country": country,
+                    "log_fn": log_fn,
+                }
+            )
+
+        def __call__(self):
+            return "+15550000001"
+
+    monkeypatch.setattr(
+        provider_settings_repository,
+        "ProviderSettingsRepository",
+        lambda: FakeSettingsRepo(),
+    )
+    monkeypatch.setattr(base_sms, "PhoneCallbackController", FakePhoneCallbackController)
+
+    callback, error = browser_get_rt.build_get_rt_phone_callback(
+        sms_provider="default",
+        log_fn=lambda _message: None,
+    )
+
+    assert error == ""
+    assert callback() == "+15550000001"
+    assert seen["provider_key"] == "codex_sms_pool"
+    assert seen["service"] == "chatgpt"
+
+
+def test_build_get_rt_phone_callback_empty_provider_uses_default(monkeypatch):
+    from core import base_sms
+    from infrastructure import provider_settings_repository
+
+    class FakeSettingsRepo:
+        def get_default_provider_key(self, provider_type):
+            assert provider_type == "sms"
+            return "codex_sms_pool"
+
+        def resolve_runtime_settings(self, provider_type, provider_key, extra):
+            assert (provider_type, provider_key, extra) == ("sms", "codex_sms_pool", {})
+            return {"codex_sms_pool_text": "+15550000001|https://sms.example"}
+
+    class FakePhoneCallbackController:
+        def __init__(self, provider_key, config, *, service, country="", log_fn=None):
+            self.provider_key = provider_key
+
+        def __call__(self):
+            return "+15550000001"
+
+    monkeypatch.setattr(provider_settings_repository, "ProviderSettingsRepository", lambda: FakeSettingsRepo())
+    monkeypatch.setattr(base_sms, "PhoneCallbackController", FakePhoneCallbackController)
+
+    callback, error = browser_get_rt.build_get_rt_phone_callback(sms_provider="")
+
+    assert error == ""
+    assert callback.provider_key == "codex_sms_pool"
+
+
+def test_get_rt_phone_callback_respects_short_sms_timeout():
+    class FakeChannel:
+        def __init__(self):
+            self.timeout = None
+
+        def wait_code(self, _aid, timeout=30):
+            self.timeout = timeout
+            return "123456"
+
+    channel = FakeChannel()
+    callback = browser_get_rt.GetRtPhoneCallback(provider="smsapi")
+    callback._channel = channel
+    callback._aid = "aid-1"
+    callback._phase = "need_code"
+    callback.set_code_timeout(60)
+
+    assert callback() == "123456"
+    assert 1 <= channel.timeout <= 60

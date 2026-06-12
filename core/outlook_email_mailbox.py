@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import html
 import re
+import threading
 import time
-from urllib.parse import urlparse
+import uuid
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote, urlencode, urlparse
 from typing import Any
 
 import requests
@@ -14,6 +18,12 @@ from core.tls import mark_session_insecure, suppress_insecure_request_warning
 
 
 DEFAULT_CODE_PATTERN = r"(?<!#)(?<!\d)(\d{6})(?!\d)"
+OUTLOOK_EMAIL_PLUS_NOT_FOUND_CODES = {"HTTP_ERROR", "NOT_FOUND"}
+OUTLOOK_EMAIL_PLUS_FOLDERS = {"inbox", "junkemail", "deleteditems"}
+OUTLOOK_EMAIL_LOCAL_RESERVATION_TTL_SECONDS = 30 * 60
+
+_OUTLOOK_EMAIL_RESERVATION_LOCK = threading.Lock()
+_OUTLOOK_EMAIL_RESERVED_ACCOUNTS: dict[str, float] = {}
 
 
 def _text(value: Any) -> str:
@@ -38,6 +48,10 @@ def _split_names(value: Any) -> list[str]:
             seen.add(key)
             result.append(name)
     return result
+
+
+def _join_nonempty(parts: list[str]) -> str:
+    return "，".join(part for part in parts if part)
 
 
 def _normalize_base_url(value: str) -> str:
@@ -68,6 +82,10 @@ def _strip_markup(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+class OutlookEmailEndpointNotFound(RuntimeError):
+    """outlookEmail 旧版端点不存在，用于触发 outlookEmailPlus 兼容回退。"""
+
+
 class OutlookEmailMailbox(BaseMailbox):
     """通过 assast/outlookEmail 对外 API 读取 Outlook/Hotmail 邮件。"""
 
@@ -94,6 +112,7 @@ class OutlookEmailMailbox(BaseMailbox):
         skip_tag_names: str | list[str] = "",
         register_success_tag_names: str | list[str] = "",
         plus_success_tag_names: str | list[str] = "",
+        invalid_email_tag_names: str | list[str] = "",
         proxy: str | None = None,
     ):
         self.api = _normalize_base_url(api_url)
@@ -116,10 +135,12 @@ class OutlookEmailMailbox(BaseMailbox):
         self.skip_tag_names = _split_names(skip_tag_names)
         self.register_success_tag_names = _split_names(register_success_tag_names)
         self.plus_success_tag_names = _split_names(plus_success_tag_names)
+        self.invalid_email_tag_names = _split_names(invalid_email_tag_names) or ["无效邮箱"]
         self.proxy = {"http": proxy, "https": proxy} if proxy else None
         self._session: requests.Session | None = None
         self._admin_session: requests.Session | None = None
         self._csrf_token: str = ""
+        self._api_variant = ""
 
         self._assert_ready()
 
@@ -146,6 +167,7 @@ class OutlookEmailMailbox(BaseMailbox):
             skip_tag_names=config.get("outlook_email_skip_tag_names", ""),
             register_success_tag_names=config.get("outlook_email_register_success_tag_names", ""),
             plus_success_tag_names=config.get("outlook_email_plus_success_tag_names", ""),
+            invalid_email_tag_names=config.get("outlook_email_invalid_email_tag_names", ""),
             proxy=config.get("proxy") or config.get("mailbox_proxy"),
         )
 
@@ -187,6 +209,8 @@ class OutlookEmailMailbox(BaseMailbox):
         if response.status_code in {401, 403}:
             raise RuntimeError("outlookEmail API Key 认证失败")
         if response.status_code >= 400:
+            if response.status_code == 404 and self._is_endpoint_not_found(payload):
+                raise OutlookEmailEndpointNotFound(f"outlookEmail 端点不存在: {path}")
             message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
             raise RuntimeError(f"outlookEmail 请求失败: {message}")
         if isinstance(payload, dict) and payload.get("success") is False:
@@ -194,11 +218,46 @@ class OutlookEmailMailbox(BaseMailbox):
             raise RuntimeError(f"outlookEmail 请求失败: {message}")
         return payload if isinstance(payload, dict) else {"items": payload}
 
+    @staticmethod
+    def _is_endpoint_not_found(payload: dict[str, Any]) -> bool:
+        code = _text(payload.get("code")).upper()
+        message = _text(payload.get("message") or payload.get("error"))
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        status = data.get("status") if isinstance(data, dict) else None
+        return code in OUTLOOK_EMAIL_PLUS_NOT_FOUND_CODES or status == 404 or "资源不存在" in message
+
+    @staticmethod
+    def _data_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return data
+        email_payload = payload.get("email")
+        if isinstance(email_payload, dict):
+            return email_payload
+        return payload
+
+    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        session = self._get_session()
+        with suppress_insecure_request_warning():
+            response = session.post(f"{self.api}{path}", json=body, timeout=15)
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"outlookEmail 响应不是 JSON: HTTP {response.status_code}") from exc
+
+        if response.status_code in {401, 403}:
+            raise RuntimeError("outlookEmail API Key 认证失败")
+        if response.status_code >= 400 or (isinstance(payload, dict) and payload.get("success") is False):
+            message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
+            raise RuntimeError(f"outlookEmail 请求失败: {message}")
+        return payload if isinstance(payload, dict) else {"items": payload}
+
     def _get_admin_session(self) -> requests.Session:
         if self._admin_session is not None:
             return self._admin_session
         if not self.admin_password:
-            raise RuntimeError("outlookEmail 未配置管理员密码，无法执行打标签")
+            raise RuntimeError("outlookEmail 未配置管理员密码，无法执行管理操作")
 
         session = requests.Session()
         session.proxies = self.proxy or {}
@@ -257,6 +316,16 @@ class OutlookEmailMailbox(BaseMailbox):
             raise RuntimeError(f"outlookEmail 管理端请求失败: {message}")
         return payload
 
+    def _admin_delete_json(self, path: str) -> dict[str, Any]:
+        session = self._get_admin_session()
+        with suppress_insecure_request_warning():
+            response = session.delete(f"{self.api}{path}", timeout=15)
+        payload = self._response_json(response, f"outlookEmail DELETE {path}")
+        if response.status_code >= 400 or payload.get("success") is False:
+            message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
+            raise RuntimeError(f"outlookEmail 管理端删除失败: {message}")
+        return payload
+
     def _account_query_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             "limit": self.account_limit,
@@ -273,10 +342,104 @@ class OutlookEmailMailbox(BaseMailbox):
             params["include_untagged"] = "true" if self.account_include_untagged else "false"
         return params
 
-    def _email_query_params(self, account: MailboxAccount, runtime_keyword: str = "") -> dict[str, Any]:
+    def _admin_account_query_params(self) -> str:
+        params = {
+            "page": max(1, (self.account_offset // max(1, min(self.account_limit, 100))) + 1),
+            "page_size": max(1, min(self.account_limit, 100)),
+        }
+        if self.group_id:
+            params["group_id"] = self.group_id
+        if self.account_sort_by in {"email", "refresh_time"}:
+            params["sort_by"] = self.account_sort_by
+        if self.account_sort_order in {"asc", "desc"}:
+            params["sort_order"] = self.account_sort_order
+        if self.account_tag_ids:
+            params["tag_ids"] = self.account_tag_ids
+        return urlencode(params)
+
+    def _claim_context(self) -> tuple[str, str]:
+        caller_id = "GeniusFKoai"
+        task_id = f"mailbox-{uuid.uuid4().hex[:16]}"
+        return caller_id, task_id
+
+    def _claim_pool_account(self) -> dict[str, Any]:
+        caller_id, task_id = self._claim_context()
+        payload = self._post_json(
+            "/api/external/pool/claim-random",
+            {
+                "caller_id": caller_id,
+                "task_id": task_id,
+            },
+        )
+        data = self._data_payload(payload)
+        if not data.get("email"):
+            raise RuntimeError("outlookEmailPlus 领取邮箱后未返回 email")
+        data["_pool_caller_id"] = caller_id
+        data["_pool_task_id"] = task_id
+        self._api_variant = "plus"
+        return data
+
+    def _release_pool_claim(self, item: dict[str, Any], *, reason: str = "provider test") -> None:
+        account_id = item.get("account_id") or item.get("id")
+        claim_token = _text(item.get("claim_token"))
+        caller_id = _text(item.get("_pool_caller_id"))
+        task_id = _text(item.get("_pool_task_id"))
+        if not account_id or not claim_token or not caller_id or not task_id:
+            return
+        try:
+            self._post_json(
+                "/api/external/pool/claim-release",
+                {
+                    "account_id": account_id,
+                    "claim_token": claim_token,
+                    "caller_id": caller_id,
+                    "task_id": task_id,
+                    "reason": reason,
+                },
+            )
+        except Exception:
+            # 测试连接时尽力释放，不遮蔽原始可用邮箱结果。
+            return
+
+    def _complete_pool_claim(self, account: MailboxAccount, *, result: str, detail: str = "") -> None:
+        metadata = (account.extra.get("provider_account") or {}).get("metadata") or {}
+        account_id = metadata.get("account_id") or metadata.get("id") or account.account_id
+        claim_token = _text(metadata.get("claim_token"))
+        caller_id = _text(metadata.get("pool_caller_id"))
+        task_id = _text(metadata.get("pool_task_id"))
+        if not account_id or not claim_token or not caller_id or not task_id:
+            return
+        self._post_json(
+            "/api/external/pool/claim-complete",
+            {
+                "account_id": account_id,
+                "claim_token": claim_token,
+                "caller_id": caller_id,
+                "task_id": task_id,
+                "result": result,
+                "detail": detail,
+            },
+        )
+
+    def _message_folders(self) -> list[str]:
+        """返回需要轮询的邮件目录；all 表示同时扫收件箱与垃圾邮件。"""
+        folder = (self.email_folder or "inbox").strip().lower()
+        if folder == "all":
+            return ["inbox", "junkemail"]
+        if folder in OUTLOOK_EMAIL_PLUS_FOLDERS:
+            return [folder]
+        return ["inbox"]
+
+    def _email_query_params(
+        self,
+        account: MailboxAccount,
+        runtime_keyword: str = "",
+        *,
+        folder: str | None = None,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "email": account.email,
-            "folder": self.email_folder,
+            "folder": (folder or self.email_folder),
             "top": self.email_top,
         }
         if self.email_subject_contains:
@@ -290,10 +453,29 @@ class OutlookEmailMailbox(BaseMailbox):
 
     def _list_accounts(self) -> list[dict[str, Any]]:
         payload = self._get_json("/api/external/accounts", self._account_query_params())
+        self._api_variant = "legacy"
         items = payload.get("accounts")
         if not isinstance(items, list):
             items = payload.get("items") if isinstance(payload.get("items"), list) else []
         return [item for item in items if isinstance(item, dict)]
+
+    def _list_admin_accounts(self) -> list[dict[str, Any]]:
+        # outlookEmailPlus 未提供 /api/external/accounts；有管理员密码时走 Web 管理端分页接口。
+        query = self._admin_account_query_params()
+        payload = self._admin_get_json(f"/api/accounts?{query}")
+        items = payload.get("accounts")
+        if not isinstance(items, list):
+            items = []
+        self._api_variant = "plus_admin"
+        return [item for item in items if isinstance(item, dict)]
+
+    def _list_accounts_for_selection(self) -> list[dict[str, Any]]:
+        try:
+            return self._list_accounts()
+        except OutlookEmailEndpointNotFound:
+            if self.admin_password:
+                return self._list_admin_accounts()
+            raise
 
     @staticmethod
     def _account_email(item: dict[str, Any]) -> str:
@@ -313,10 +495,11 @@ class OutlookEmailMailbox(BaseMailbox):
         return result
 
     def _has_skip_tag(self, item: dict[str, Any]) -> bool:
-        if not self.skip_tag_names:
+        blocked_tag_names = [*self.skip_tag_names, *self.invalid_email_tag_names]
+        if not blocked_tag_names:
             return False
         account_tags = self._tag_names(item)
-        return any(name.lower() in account_tags for name in self.skip_tag_names)
+        return any(name.lower() in account_tags for name in blocked_tag_names)
 
     def _is_usable_account(self, item: dict[str, Any]) -> bool:
         if not OutlookEmailMailbox._account_email(item):
@@ -330,15 +513,90 @@ class OutlookEmailMailbox(BaseMailbox):
             return False
         return True
 
+    def _reservation_key_for_item(self, item: dict[str, Any]) -> str:
+        """生成本机邮箱占用键，避免并发任务重复领取同一邮箱。"""
+        email = self._account_email(item).lower()
+        if not email:
+            return ""
+        resource_id = _text(item.get("id") or item.get("account_id") or email)
+        group_id = _text(item.get("group_id") or self.group_id)
+        return "|".join([self.api, group_id, resource_id, email])
+
+    def _reservation_key_for_account(self, account: MailboxAccount) -> str:
+        metadata = {}
+        try:
+            provider_account = (account.extra or {}).get("provider_account") or {}
+            metadata = provider_account.get("metadata") or {}
+        except Exception:
+            metadata = {}
+        reserved_key = _text(metadata.get("local_reservation_key"))
+        if reserved_key:
+            return reserved_key
+        email = _text(getattr(account, "email", "")).lower()
+        if not email:
+            return ""
+        resource_id = _text(getattr(account, "account_id", "") or metadata.get("id") or metadata.get("account_id") or email)
+        group_id = _text(metadata.get("group_id") or self.group_id)
+        return "|".join([self.api, group_id, resource_id, email])
+
+    @staticmethod
+    def _prune_expired_reservations(now: float) -> None:
+        expired = [
+            key
+            for key, reserved_at in _OUTLOOK_EMAIL_RESERVED_ACCOUNTS.items()
+            if now - reserved_at > OUTLOOK_EMAIL_LOCAL_RESERVATION_TTL_SECONDS
+        ]
+        for key in expired:
+            _OUTLOOK_EMAIL_RESERVED_ACCOUNTS.pop(key, None)
+
+    def _reserve_local_account(self, item: dict[str, Any]) -> bool:
+        key = self._reservation_key_for_item(item)
+        if not key:
+            return True
+        now = time.time()
+        with _OUTLOOK_EMAIL_RESERVATION_LOCK:
+            self._prune_expired_reservations(now)
+            if key in _OUTLOOK_EMAIL_RESERVED_ACCOUNTS:
+                return False
+            _OUTLOOK_EMAIL_RESERVED_ACCOUNTS[key] = now
+        item["_local_reservation_key"] = key
+        item["_local_reserved_at"] = now
+        return True
+
+    def _release_local_account_reservation(self, account_or_item: MailboxAccount | dict[str, Any]) -> None:
+        """释放本机邮箱占用；终态后由标签/删除结果决定后续是否可取。"""
+        if isinstance(account_or_item, dict):
+            key = _text(account_or_item.get("_local_reservation_key")) or self._reservation_key_for_item(account_or_item)
+        else:
+            key = self._reservation_key_for_account(account_or_item)
+        if not key:
+            return
+        with _OUTLOOK_EMAIL_RESERVATION_LOCK:
+            _OUTLOOK_EMAIL_RESERVED_ACCOUNTS.pop(key, None)
+
     def _select_account(self) -> dict[str, Any]:
-        accounts = self._list_accounts()
+        try:
+            accounts = self._list_accounts_for_selection()
+        except OutlookEmailEndpointNotFound:
+            return self._claim_pool_account()
         usable = [item for item in accounts if self._is_usable_account(item)]
         if not usable:
             fallback = [item for item in accounts if self._account_email(item) and not self._has_skip_tag(item)]
             usable = fallback
         if not usable:
-            raise RuntimeError("outlookEmail 账号列表中没有可用邮箱")
-        return usable[0]
+            detail = _join_nonempty(
+                [
+                    f"group_id={self.group_id}" if self.group_id else "",
+                    f"tag_ids={self.account_tag_ids}" if self.account_tag_ids else "",
+                    f"skip_tags={','.join(self.skip_tag_names)}" if self.skip_tag_names else "",
+                ]
+            )
+            suffix = f"（筛选条件：{detail}）" if detail else ""
+            raise RuntimeError(f"outlookEmail 账号列表中没有可用邮箱{suffix}")
+        for item in usable:
+            if self._reserve_local_account(item):
+                return item
+        raise RuntimeError("outlookEmail 当前可用邮箱都已被本机其他任务占用，请稍后重试或降低并发")
 
     def _build_account(self, *, email: str, account_id: str = "", source: str, raw: dict[str, Any] | None = None) -> MailboxAccount:
         metadata = {
@@ -347,10 +605,28 @@ class OutlookEmailMailbox(BaseMailbox):
             "source": source,
         }
         raw = raw or {}
-        for key in ("id", "group_id", "group_name", "status", "account_type", "provider", "last_refresh_status"):
+        for key in (
+            "id",
+            "account_id",
+            "group_id",
+            "group_name",
+            "status",
+            "account_type",
+            "provider",
+            "last_refresh_status",
+            "claim_token",
+            "claimed_at",
+            "lease_expires_at",
+            "_local_reservation_key",
+            "_local_reserved_at",
+        ):
             value = raw.get(key)
             if value not in (None, ""):
-                metadata[key] = value
+                metadata["local_reservation_key" if key == "_local_reservation_key" else key] = value
+        if raw.get("_pool_caller_id"):
+            metadata["pool_caller_id"] = raw["_pool_caller_id"]
+        if raw.get("_pool_task_id"):
+            metadata["pool_task_id"] = raw["_pool_task_id"]
 
         resource_id = account_id or _text(raw.get("id")) or email
         return MailboxAccount(
@@ -384,13 +660,36 @@ class OutlookEmailMailbox(BaseMailbox):
 
         item = self._select_account()
         email = self._account_email(item)
-        return self._build_account(email=email, account_id=_text(item.get("id")), source="account_list", raw=item)
+        account_id = _text(item.get("id") or item.get("account_id"))
+        source = "outlook_email_plus_pool" if item.get("claim_token") else "account_list"
+        return self._build_account(email=email, account_id=account_id, source=source, raw=item)
+
+    def peek_email(self) -> str:
+        if self.fixed_email:
+            self._assert_fixed_email_not_skipped()
+            return self.fixed_email
+
+        try:
+            item = self._select_account()
+        except OutlookEmailEndpointNotFound:
+            item = self._claim_pool_account()
+        email = self._account_email(item)
+        self._release_local_account_reservation(item)
+        if item.get("claim_token"):
+            self._release_pool_claim(item)
+        if not email:
+            raise RuntimeError("outlookEmail 未返回可用邮箱")
+        return email
 
     def _assert_fixed_email_not_skipped(self) -> None:
         if not self.skip_tag_names:
             return
         target = self.fixed_email.lower()
-        for item in self._list_accounts():
+        try:
+            accounts = self._list_accounts_for_selection()
+        except OutlookEmailEndpointNotFound:
+            return
+        for item in accounts:
             if self._account_email(item).lower() == target and self._has_skip_tag(item):
                 raise RuntimeError(f"outlookEmail 固定邮箱带有跳过标签，已跳过: {self.fixed_email}")
 
@@ -401,7 +700,7 @@ class OutlookEmailMailbox(BaseMailbox):
             return explicit
         return "|".join(
             _text(mail.get(key))
-            for key in ("folder", "date", "from", "subject", "body_preview")
+            for key in ("folder", "date", "created_at", "from", "from_address", "subject", "body_preview", "content_preview")
             if _text(mail.get(key))
         )
 
@@ -410,22 +709,150 @@ class OutlookEmailMailbox(BaseMailbox):
         fields = (
             "subject",
             "body_preview",
+            "content_preview",
             "preview",
             "summary",
             "text",
             "content",
             "body",
+            "body_text",
+            "html_content",
+            "raw_content",
             "html",
             "from",
+            "from_address",
         )
         return _strip_markup(" ".join(_text(mail.get(field)) for field in fields))
 
-    def _list_emails(self, account: MailboxAccount, runtime_keyword: str = "") -> list[dict[str, Any]]:
-        payload = self._get_json("/api/external/emails", self._email_query_params(account, runtime_keyword))
-        items = payload.get("emails")
+    @staticmethod
+    def _message_epoch(mail: dict[str, Any]) -> float | None:
+        raw_timestamp = mail.get("timestamp")
+        try:
+            if raw_timestamp not in (None, ""):
+                value = float(raw_timestamp)
+                if value > 0:
+                    return value
+        except Exception:
+            pass
+
+        for key in ("receivedDateTime", "received_at", "created_at", "date"):
+            raw = _text(mail.get(key))
+            if not raw:
+                continue
+            try:
+                normalized = raw.replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(normalized)
+            except Exception:
+                try:
+                    parsed = parsedate_to_datetime(raw)
+                except Exception:
+                    parsed = None
+            if parsed is None:
+                for fmt in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        parsed = datetime.strptime(raw, fmt)
+                        break
+                    except Exception:
+                        parsed = None
+            if parsed is None:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        return None
+
+    @classmethod
+    def _is_after_otp_sent(cls, mail: dict[str, Any], otp_sent_at: float | None) -> bool:
+        """若 baseline 误含新邮件，则按发送时间放行，避免错过刚到垃圾箱的 OTP。"""
+        if not otp_sent_at:
+            return False
+        epoch = cls._message_epoch(mail)
+        return epoch is not None and epoch >= float(otp_sent_at) - 30
+
+    @staticmethod
+    def _emails_from_payload(payload_data: dict[str, Any]) -> list[dict[str, Any]]:
+        items = payload_data.get("emails")
         if not isinstance(items, list):
-            items = payload.get("items") if isinstance(payload.get("items"), list) else []
+            items = payload_data.get("items") if isinstance(payload_data.get("items"), list) else []
         return [item for item in items if isinstance(item, dict)]
+
+    def _list_external_emails(self, account: MailboxAccount, runtime_keyword: str = "") -> list[dict[str, Any]]:
+        """旧版 external/emails 也按目录拆查，避免 folder=all 漏掉 junkemail。"""
+        items: list[dict[str, Any]] = []
+        for folder in self._message_folders():
+            payload = self._get_json(
+                "/api/external/emails",
+                self._email_query_params(account, runtime_keyword, folder=folder),
+            )
+            folder_items = self._emails_from_payload(self._data_payload(payload))
+            for item in folder_items:
+                item.setdefault("folder", folder)
+            items.extend(folder_items)
+        return items
+
+    def _list_emails(self, account: MailboxAccount, runtime_keyword: str = "") -> list[dict[str, Any]]:
+        if self._api_variant.startswith("plus"):
+            payload_data = {"emails": self._list_plus_messages(account)}
+        else:
+            try:
+                return self._list_external_emails(account, runtime_keyword)
+            except OutlookEmailEndpointNotFound:
+                payload_data = {"emails": self._list_plus_messages(account)}
+        return self._emails_from_payload(payload_data)
+
+    def _message_scope_params(self, account: MailboxAccount, *, folder: str) -> dict[str, Any]:
+        metadata = (account.extra.get("provider_account") or {}).get("metadata") or {}
+        claim_token = _text(metadata.get("claim_token"))
+        params: dict[str, Any] = {"folder": folder}
+        if claim_token:
+            params["claim_token"] = claim_token
+        else:
+            params["email"] = account.email
+        return params
+
+    def _load_message_detail(self, account: MailboxAccount, mail: dict[str, Any]) -> dict[str, Any] | None:
+        """摘要不含验证码时读取详情正文；失败不打断轮询。"""
+        message_id = self._message_id(mail)
+        if not message_id:
+            return None
+        mail_folder = _text(mail.get("folder")).lower()
+        folders = [mail_folder] if mail_folder in OUTLOOK_EMAIL_PLUS_FOLDERS else self._message_folders()
+        encoded_id = quote(message_id, safe="")
+        for folder in folders:
+            try:
+                payload = self._get_json(
+                    f"/api/external/messages/{encoded_id}",
+                    self._message_scope_params(account, folder=folder),
+                )
+                detail = self._data_payload(payload)
+                if isinstance(detail, dict) and detail:
+                    detail.setdefault("folder", folder)
+                    return detail
+            except Exception:
+                continue
+        return None
+
+    def _list_plus_messages(self, account: MailboxAccount) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for folder in self._message_folders():
+            params: dict[str, Any] = {
+                **self._message_scope_params(account, folder=folder),
+                "top": self.email_top,
+                "skip": 0,
+            }
+            if self.email_subject_contains:
+                params["subject_contains"] = self.email_subject_contains
+            if self.email_from_contains:
+                params["from_contains"] = self.email_from_contains
+            payload = self._get_json("/api/external/messages", params)
+            data = self._data_payload(payload)
+            emails = data.get("emails") if isinstance(data.get("emails"), list) else []
+            for item in emails:
+                if isinstance(item, dict):
+                    item.setdefault("folder", folder)
+                    items.append(item)
+        self._api_variant = "plus"
+        return items
 
     def get_current_ids(self, account: MailboxAccount) -> set:
         return {self._message_id(mail) for mail in self._list_emails(account) if self._message_id(mail)}
@@ -444,6 +871,7 @@ class OutlookEmailMailbox(BaseMailbox):
         timeout: int = 120,
         before_ids: set = None,
         code_pattern: str = None,
+        otp_sent_at: float | None = None,
     ) -> str:
         seen = set(before_ids or [])
         pattern = re.compile(code_pattern or DEFAULT_CODE_PATTERN)
@@ -454,7 +882,9 @@ class OutlookEmailMailbox(BaseMailbox):
             try:
                 for mail in self._list_emails(account, runtime_keyword=keyword):
                     mid = self._message_id(mail)
-                    if not mid or mid in seen:
+                    if not mid:
+                        continue
+                    if mid in seen and not self._is_after_otp_sent(mail, otp_sent_at):
                         continue
                     seen.add(mid)
                     if not self._matches_keyword(mail, keyword):
@@ -463,6 +893,16 @@ class OutlookEmailMailbox(BaseMailbox):
                     match = pattern.search(text)
                     if match:
                         return match.group(1) if match.groups() else match.group(0)
+                    detail = self._load_message_detail(account, mail)
+                    if detail:
+                        detail_text = re.sub(
+                            r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+                            " ",
+                            self._message_text({**mail, **detail}),
+                        )
+                        match = pattern.search(detail_text)
+                        if match:
+                            return match.group(1) if match.groups() else match.group(0)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
             time.sleep(self.poll_interval)
@@ -528,7 +968,7 @@ class OutlookEmailMailbox(BaseMailbox):
             return numeric_id
 
         target = email.strip().lower()
-        for item in self._list_accounts():
+        for item in self._list_accounts_for_selection():
             if self._account_email(item).lower() == target:
                 try:
                     return int(item.get("id") or 0)
@@ -556,16 +996,53 @@ class OutlookEmailMailbox(BaseMailbox):
             applied.append(name)
         return applied
 
+    def delete_account(self, account: MailboxAccount, reason: str = "") -> bool:
+        """通过 outlookEmailPlus 管理端删除邮箱，防止异常邮箱再次被取用。"""
+        try:
+            resolved_account_id = self._resolve_account_id(email=account.email, account_id=account.account_id)
+            if resolved_account_id <= 0:
+                raise RuntimeError(f"outlookEmail 未找到可删除的账号 ID: {account.email}")
+
+            # 仅在明确判定该邮箱不可用于 OpenAI 创建账号时执行真实删除。
+            self._admin_delete_json(f"/api/accounts/{resolved_account_id}")
+            return True
+        finally:
+            self._release_local_account_reservation(account)
+
     def mark_registration_success(self, account: MailboxAccount) -> list[str]:
-        return self.add_tags_to_account(
-            email=account.email,
-            account_id=account.account_id,
-            tag_names=self.register_success_tag_names,
-        )
+        try:
+            applied = self.add_tags_to_account(
+                email=account.email,
+                account_id=account.account_id,
+                tag_names=self.register_success_tag_names,
+            )
+            self._complete_pool_claim(account, result="success", detail="registration_success")
+            return applied
+        finally:
+            self._release_local_account_reservation(account)
 
     def mark_plus_success(self, account: MailboxAccount) -> list[str]:
-        return self.add_tags_to_account(
-            email=account.email,
-            account_id=account.account_id,
-            tag_names=self.plus_success_tag_names,
-        )
+        try:
+            applied = self.add_tags_to_account(
+                email=account.email,
+                account_id=account.account_id,
+                tag_names=self.plus_success_tag_names,
+            )
+            self._complete_pool_claim(account, result="success", detail="plus_success")
+            return applied
+        finally:
+            self._release_local_account_reservation(account)
+
+    def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
+        """把收不到 OpenAI 验证码的邮箱打为无效，避免后续重复领取。"""
+        try:
+            applied = self.add_tags_to_account(
+                email=account.email,
+                account_id=account.account_id,
+                tag_names=self.invalid_email_tag_names,
+            )
+            detail = reason or "invalid_email_no_otp"
+            self._complete_pool_claim(account, result="failed", detail=detail)
+            return applied
+        finally:
+            self._release_local_account_reservation(account)

@@ -609,6 +609,28 @@ def _auto_push_any2api(task_logger: TaskLogger, account) -> None:
         task_logger.log(f"  [Any2API] 自动推送异常: {exc}", level="warning")
 
 
+def _build_chatgpt_upload_account(account):
+    """构造上传用轻量账号对象，统一给 CPA / SUB2API 等外部面板使用。"""
+    class _AccountProxy:
+        pass
+
+    target = _AccountProxy()
+    extra = account.extra or {}
+    target.email = account.email
+    target.access_token = extra.get("access_token") or account.token
+    target.refresh_token = extra.get("refresh_token", "")
+    target.id_token = extra.get("id_token", "")
+    target.session_token = extra.get("session_token", "")
+    target.workspace_id = extra.get("workspace_id", "")
+    target.expires_at = extra.get("expires_at", "")
+    target.session = extra.get("session", {})
+    target.user_id = account.user_id or ""
+    target.account_id = account.user_id or extra.get("account_id", "")
+    target.cookies = extra.get("cookies", "")
+    target.extra = extra
+    return target
+
+
 def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
     if getattr(account, "platform", "") != "chatgpt":
         return
@@ -616,28 +638,38 @@ def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
         from core.config_store import config_store
 
         cpa_url = config_store.get("cpa_api_url", "")
-        if cpa_url:
+        cpa_key = config_store.get("cpa_api_key", "")
+        if cpa_url and cpa_key:
             from platforms.chatgpt.cpa_upload import generate_token_json, upload_to_cpa
 
-            class _AccountProxy:
-                pass
-
-            target = _AccountProxy()
-            target.email = account.email
-            extra = account.extra or {}
-            target.access_token = extra.get("access_token") or account.token
-            target.refresh_token = extra.get("refresh_token", "")
-            target.id_token = extra.get("id_token", "")
-            target.session_token = extra.get("session_token", "")
-            target.user_id = account.user_id or ""
-            target.account_id = account.user_id or ""
-            target.cookies = extra.get("cookies", "")
-
+            target = _build_chatgpt_upload_account(account)
             token_data = generate_token_json(target)
             ok, msg = upload_to_cpa(token_data)
             task_logger.log(f"  [CPA] {'✓ ' + msg if ok else '✗ ' + msg}")
     except Exception as exc:
         task_logger.log(f"  [CPA] 自动上传异常: {exc}", level="warning")
+
+
+def _auto_upload_sub2api(task_logger: TaskLogger, account) -> None:
+    """获取 refresh_token 后自动导入 SUB2API；仅注册号不得上传。"""
+    if getattr(account, "platform", "") != "chatgpt":
+        return
+    try:
+        from core.config_store import config_store
+
+        sub2api_url = config_store.get("sub2api_url", "")
+        if not sub2api_url:
+            return
+        target = _build_chatgpt_upload_account(account)
+        if not str(getattr(target, "refresh_token", "") or "").strip():
+            task_logger.log("  [SUB2API] 跳过：账号尚未获取 rt，仅注册状态不上传")
+            return
+        from platforms.chatgpt.sub2api_upload import upload_to_sub2api
+
+        ok, msg = upload_to_sub2api(target)
+        task_logger.log(f"  [SUB2API] {'✓ ' + msg if ok else '✗ ' + msg}")
+    except Exception as exc:
+        task_logger.log(f"  [SUB2API] 自动上传异常: {exc}", level="warning")
 
 
 def _outlook_mailbox_account_from_platform_account(account) -> Any | None:
@@ -845,6 +877,18 @@ def _resolve_sms_provider_for_task(extra: dict[str, Any]) -> tuple[str, dict[str
     return provider_key, settings
 
 
+def _normalize_get_rt_sms_provider(value: Any) -> str:
+    """规范化 get_rt 的手机接码参数。
+
+    旧前端可能传空字符串；为避免用户已设置默认 SMS 却未生效，空值按 default 处理。
+    若要显式禁用手机接码，前端传 ``none``。
+    """
+    provider = str(value or "").strip().lower()
+    if provider in {"none", "off", "disabled", "disable", "false", "0", "不启用"}:
+        return ""
+    return provider or "default"
+
+
 def _bool_config(value: Any, default: bool) -> bool:
     if value in (None, ""):
         return default
@@ -866,9 +910,10 @@ def _resolve_registration_proxy_for_platform(
     explicit_proxy: str | None,
     proxy_getter: Callable[[], str | None],
 ) -> str | None:
-    if str(platform_name or "").strip().lower() == "chatgpt":
-        return None
-    return explicit_proxy or proxy_getter()
+    from core.proxy_pool import resolve_runtime_proxy
+
+    # 平台注册统一走全局代理策略：代理池空时可回退到用户配置的本地代理。
+    return resolve_runtime_proxy(explicit_proxy=explicit_proxy, proxy_getter=proxy_getter)
 
 
 def _auto_followup_windsurf_payment(
@@ -1821,9 +1866,10 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     from infrastructure.platform_runtime import PlatformRuntime
     from core.db import engine, AccountModel
+    from core.platform_accounts import build_platform_account
     from sqlmodel import Session
 
-    sms_provider = str(payload.get("sms_provider") or "").strip().lower()
+    sms_provider = _normalize_get_rt_sms_provider(payload.get("sms_provider"))
     try:
         phone_reuse_count = max(int(payload.get("phone_reuse_count") or 3), 3)
     except Exception:
@@ -1853,7 +1899,9 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             logger.log(f"获取rt: 手机号复用池初始化异常: {exc}", level="error")
             phone_reuse_pool = None
     elif sms_provider:
-        logger.log(f"获取rt: 未知手机号 provider={sms_provider}，将按原流程继续", level="error")
+        # 新版设置页 SMS provider（如 codex_sms_pool / herosms_api）由每个账号
+        # 的 get_rt action 内部构建 callback；这里不建任务级复用池。
+        logger.log(f"获取rt: 使用通用手机号 provider={sms_provider}，每个账号单独创建接码 callback")
 
     results: list[dict[str, Any] | None] = [None] * total
     completed = 0
@@ -1891,6 +1939,13 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             )
             if result.ok:
                 logger.log(f"[{index + 1}/{total}] 获取rt成功: 账号 #{account_id}")
+                try:
+                    with Session(engine) as upload_session:
+                        fresh_model = upload_session.get(AccountModel, account_id)
+                        if fresh_model:
+                            _auto_upload_sub2api(logger, build_platform_account(upload_session, fresh_model))
+                except Exception as exc:
+                    logger.log(f"  [SUB2API] 获取rt后自动上传异常: {exc}", level="warning")
                 return {"ok": True, "account_id": account_id, "data": result.data}
             else:
                 error = str(result.error or "unknown error")
@@ -1974,6 +2029,9 @@ def _execute_get_rt_bypass_task(payload: dict[str, Any], logger: TaskLogger) -> 
     logger.log(f"开始获取rt(绕过)：账号 {total} 个，并发 {concurrency}，{browser_mode}")
 
     from infrastructure.platform_runtime import PlatformRuntime
+    from core.db import AccountModel, engine
+    from core.platform_accounts import build_platform_account
+    from sqlmodel import Session
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
     results: list[dict[str, Any] | None] = [None] * total
@@ -1998,6 +2056,13 @@ def _execute_get_rt_bypass_task(payload: dict[str, Any], logger: TaskLogger) -> 
             )
             if result.ok:
                 logger.log(f"[{index + 1}/{total}] 获取rt(绕过)成功: 账号 #{account_id}")
+                try:
+                    with Session(engine) as upload_session:
+                        fresh_model = upload_session.get(AccountModel, account_id)
+                        if fresh_model:
+                            _auto_upload_sub2api(logger, build_platform_account(upload_session, fresh_model))
+                except Exception as exc:
+                    logger.log(f"  [SUB2API] 获取rt(绕过)后自动上传异常: {exc}", level="warning")
                 return {"ok": True, "account_id": account_id, "data": result.data}
             else:
                 error = str(result.error or "unknown error")

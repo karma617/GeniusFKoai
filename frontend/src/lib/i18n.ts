@@ -167,6 +167,7 @@ const ZH_MESSAGES = {
   "settings.provider.smsUsage":
     "当平台需要手机号验证时，会按这里启用的接码 provider 创建临时号码并回填短信验证码。列表行内可以直接查看详情、编辑、设默认和删除。",
   "settings.chatgpt.cpaDesc": "注册完成后自动上传到 CPA 管理平台",
+  "settings.chatgpt.sub2apiDesc": "注册完成后自动导入到 SUB2API openai 号池",
   "settings.chatgpt.teamManagerDesc": "上传到自建 Team Manager 系统",
   "settings.chatgpt.any2apiDesc": "同步账号到 Any2Api 服务，用于导出和对接",
 
@@ -383,6 +384,8 @@ const ZH_MESSAGES = {
   "providers.category.selfhostDesc": "需要自行部署后端服务",
   "providers.category.thirdparty": "第三方服务",
   "providers.category.thirdpartyDesc": "需要注册第三方平台获取凭据",
+  "providers.category.local": "本地服务",
+  "providers.category.localDesc": "使用本机或本地导入的数据源",
   "providers.category.custom": "自定义",
   "providers.category.customDesc": "通过通用 HTTP 驱动对接任意 API",
   "providers.selectPlaceholder": "请选择...",
@@ -426,7 +429,8 @@ const ZH_MESSAGES = {
   "taskStatus.claimed": "已领取",
   "taskStatus.pending": "排队中",
 
-  "accountStatus.registered": "已注册",
+  "accountStatus.registered": "仅注册",
+  "accountStatus.authorized": "已授权",
   "accountStatus.trial": "试用",
   "accountStatus.subscribed": "订阅",
   "accountStatus.expired": "过期",
@@ -624,6 +628,8 @@ const EN_MESSAGES: Record<TranslationKey, string> = {
     "When a platform requires phone verification, enabled SMS providers create temporary numbers and read SMS codes. Rows support details, editing, default selection, and deletion.",
   "settings.chatgpt.cpaDesc":
     "Automatically upload accounts to the CPA management platform after registration",
+  "settings.chatgpt.sub2apiDesc":
+    "Automatically import accounts into a SUB2API openai group after registration",
   "settings.chatgpt.teamManagerDesc":
     "Upload accounts to a self-hosted Team Manager system",
   "settings.chatgpt.any2apiDesc":
@@ -851,6 +857,9 @@ const EN_MESSAGES: Record<TranslationKey, string> = {
   "providers.category.thirdparty": "Third-party Services",
   "providers.category.thirdpartyDesc":
     "Requires third-party platform credentials",
+  "providers.category.local": "Local Services",
+  "providers.category.localDesc":
+    "Use local runtime data or imported local pools",
   "providers.category.custom": "Custom",
   "providers.category.customDesc":
     "Connect any API through the generic HTTP driver",
@@ -895,7 +904,8 @@ const EN_MESSAGES: Record<TranslationKey, string> = {
   "taskStatus.claimed": "Claimed",
   "taskStatus.pending": "Pending",
 
-  "accountStatus.registered": "Registered",
+  "accountStatus.registered": "Registered Only",
+  "accountStatus.authorized": "Authorized",
   "accountStatus.trial": "Trial",
   "accountStatus.subscribed": "Subscribed",
   "accountStatus.expired": "Expired",
@@ -946,6 +956,7 @@ const MESSAGE_MAP: Record<Language, Record<TranslationKey, string>> = {
 
 const STATUS_KEYS: Record<string, TranslationKey> = {
   registered: "accountStatus.registered",
+  authorized: "accountStatus.authorized",
   trial: "accountStatus.trial",
   subscribed: "accountStatus.subscribed",
   expired: "accountStatus.expired",

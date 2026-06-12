@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.proxy_pool import DEFAULT_FALLBACK_PROXY_URL, PROXY_STRATEGY_POOL_THEN_DEFAULT
 from core.config_store import config_store
 from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
 
@@ -12,6 +13,13 @@ class ConfigRepository:
         "cpa_api_url", "cpa_api_key",
         "team_manager_url", "team_manager_key",
         "any2api_url", "any2api_password",
+        "sub2api_url", "sub2api_email", "sub2api_password",
+        "sub2api_group_name", "sub2api_account_priority", "sub2api_default_proxy_name",
+        "proxy_strategy", "proxy_fallback_url",
+    }
+    DEFAULT_VALUES = {
+        "proxy_strategy": PROXY_STRATEGY_POOL_THEN_DEFAULT,
+        "proxy_fallback_url": DEFAULT_FALLBACK_PROXY_URL,
     }
 
     def __init__(self, definitions: ProviderDefinitionsRepository | None = None):
@@ -30,11 +38,15 @@ class ConfigRepository:
     def get_flat(self) -> dict[str, str]:
         data = config_store.get_all()
         allowed = self.get_allowed_keys()
-        return {
+        result = {
             key: str(value or "")
             for key, value in data.items()
             if key in allowed
         }
+        for key, value in self.DEFAULT_VALUES.items():
+            if key in allowed and not result.get(key):
+                result[key] = value
+        return result
 
     def update_flat(self, data: dict[str, str]) -> list[str]:
         allowed = self.get_allowed_keys()

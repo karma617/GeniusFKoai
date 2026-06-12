@@ -252,6 +252,14 @@ _BUILTIN_DEFINITIONS: list[dict] = [
                 "category": "tagging",
                 "hint": "逗号或换行分隔；需要填写管理员密码",
             },
+            {
+                "key": "outlook_email_invalid_email_tag_names",
+                "label": "无效邮箱打标签",
+                "placeholder": "无效邮箱",
+                "default_value": "无效邮箱",
+                "category": "tagging",
+                "hint": "验证码连续 3 轮未收到时打此标签；需要填写管理员密码",
+            },
         ],
     },
     {
@@ -472,6 +480,27 @@ _BUILTIN_DEFINITIONS: list[dict] = [
             {"key": "smsbower_auto_country", "label": "自动选择最优国家", "type": "toggle", "hint": "启用后忽略默认国家，自动选择价格最低且库存充足的国家"},
             {"key": "register_phone_extra_max", "label": "号码复用额外上限", "placeholder": "3"},
             {"key": "register_reuse_phone_to_max", "label": "复用号码至最大", "type": "toggle"},
+        ],
+    },
+    {
+        "provider_type": "sms",
+        "provider_key": "codex_sms_pool",
+        "label": "Codex接码池",
+        "description": "本地导入手机号，格式：+手机号|取码链接，一行一个",
+        "driver_type": "codex_sms_pool",
+        "default_auth_mode": "",
+        "enabled": True,
+        "category": "local",
+        "auth_modes": [],
+        "fields": [
+            {
+                "key": "codex_sms_pool_text",
+                "label": "本地号码池",
+                "type": "textarea",
+                "placeholder": "+12367724448|http://cdk.jijie.chat/sms-pickup?phone=12367724448",
+                "category": "connection",
+                "hint": "一行一个：+手机号|取码链接。也兼容 GuJumpgate 的 手机号----取码链接 格式。",
+            },
         ],
     },
     # ── proxy ────────────────────────────────────────────────────────

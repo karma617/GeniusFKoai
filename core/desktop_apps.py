@@ -2,11 +2,46 @@ from __future__ import annotations
 
 import csv
 import io
+import locale
 import os
 import platform
 import shutil
 import subprocess
 from typing import Iterable
+
+
+def _candidate_output_encodings() -> list[str]:
+    encodings: list[str] = []
+
+    def add(value: str | None) -> None:
+        name = (value or "").strip()
+        if name and name.lower() not in {item.lower() for item in encodings}:
+            encodings.append(name)
+
+    if hasattr(locale, "getencoding"):
+        add(locale.getencoding())
+    add(locale.getpreferredencoding(False))
+    if platform.system() == "Windows":
+        add("cp936")
+        add("gbk")
+        add("mbcs")
+    add("utf-8-sig")
+    add("utf-8")
+    return encodings
+
+
+def _decode_command_output(data: bytes) -> str:
+    if not data:
+        return ""
+
+    # Windows 系统命令常按本地代码页输出；逐个编码尝试，避免 UTF-8 模式下后台读线程崩溃。
+    encodings = _candidate_output_encodings()
+    for encoding in encodings:
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode(encodings[0] if encodings else "utf-8", errors="replace")
 
 
 def _run_command(cmd: list[str]) -> tuple[bool, str]:
@@ -15,11 +50,11 @@ def _run_command(cmd: list[str]) -> tuple[bool, str]:
         completed = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
             timeout=5,
             creationflags=creationflags,
         )
-        return completed.returncode == 0, (completed.stdout or completed.stderr or "").strip()
+        output = _decode_command_output(completed.stdout or completed.stderr or b"")
+        return completed.returncode == 0, output.strip()
     except Exception:
         return False, ""
 

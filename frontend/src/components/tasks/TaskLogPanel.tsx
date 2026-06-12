@@ -323,12 +323,9 @@ export function TaskLogPanel({
  *
  * 用 React 自身的虚拟 DOM diff 渲染日志列表，关键点：
  *   - 每条事件用稳定的 ``id`` 当 key（避免 React 整列重渲），
- *   - 折叠时 events 被卸载，DOM 不留滞；展开时按 100 条上限做软裁剪
- *     （单 worker 一般 50~80 条事件，超过 100 条只显示最近的 100 条，
- *     底部加提示让用户知道历史被截断），保护极端长任务不挂死浏览器。
+ *   - 折叠时 events 被卸载，DOM 不留滞；展开时完整展示后端已记录日志，
+ *     便于出错后按原文排查请求与响应。
  */
-const MAX_VISIBLE_PER_GROUP = 200;
-
 function LogGroupView({
   group,
   collapsed,
@@ -342,10 +339,7 @@ function LogGroupView({
 }) {
   const { t } = useI18n();
   const total = group.events.length;
-  const truncated = total > MAX_VISIBLE_PER_GROUP;
-  const visible = truncated
-    ? group.events.slice(total - MAX_VISIBLE_PER_GROUP)
-    : group.events;
+  const visible = group.events;
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // 展开时新事件到来自动滚到底部
@@ -375,19 +369,11 @@ function LogGroupView({
       </button>
       {!collapsed && (
         <div className="max-h-[280px] overflow-y-auto px-2 py-2">
-          {truncated && (
-            <div className="mb-2 rounded border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[10px] text-amber-200">
-              {t("taskLog.truncatedHint", {
-                shown: MAX_VISIBLE_PER_GROUP,
-                total,
-              })}
-            </div>
-          )}
           <div className="space-y-1">
             {visible.map((ev) => (
               <div
                 key={ev.id}
-                className={`rounded-md border border-white/5 bg-white/[0.025] px-3 py-1.5 leading-5 ${classifyLine(ev.line)}`}
+                className={`whitespace-pre-wrap break-words rounded-md border border-white/5 bg-white/[0.025] px-3 py-1.5 leading-5 ${classifyLine(ev.line)}`}
               >
                 {ev.line}
               </div>

@@ -1,9 +1,88 @@
-"""代理池 - 从数据库读取代理，支持轮询和按区域选取"""
+"""代理池 - 从数据库读取代理，支持轮询、按区域选取和全局回退策略。"""
 from typing import Optional
 from sqlmodel import Session, select
 from .db import ProxyModel, engine
 import time, threading, random
 from datetime import datetime, timezone
+
+
+DEFAULT_FALLBACK_PROXY_URL = "http://127.0.0.1:7897"
+PROXY_STRATEGY_POOL_THEN_DEFAULT = "pool_then_default"
+PROXY_STRATEGY_POOL_ONLY = "pool_only"
+PROXY_STRATEGY_DEFAULT_ONLY = "default_only"
+PROXY_STRATEGY_DIRECT = "direct"
+PROXY_STRATEGIES = {
+    PROXY_STRATEGY_POOL_THEN_DEFAULT,
+    PROXY_STRATEGY_POOL_ONLY,
+    PROXY_STRATEGY_DEFAULT_ONLY,
+    PROXY_STRATEGY_DIRECT,
+}
+
+
+def normalize_proxy_url(value: str | None) -> str | None:
+    """规范化用户输入的代理地址；无协议时默认补 http://。"""
+    proxy = str(value or "").strip()
+    if not proxy:
+        return None
+    if "://" not in proxy:
+        proxy = f"http://{proxy}"
+    return proxy
+
+
+def get_proxy_runtime_config() -> dict[str, str]:
+    """读取全局代理策略配置。
+
+    strategy:
+      - pool_then_default: 先取代理池，池空则用 fallback_url
+      - pool_only: 只取代理池
+      - default_only: 只用 fallback_url
+      - direct: 不使用代理
+    """
+    from core.config_store import config_store
+
+    strategy = str(
+        config_store.get("proxy_strategy", PROXY_STRATEGY_POOL_THEN_DEFAULT) or ""
+    ).strip()
+    if strategy not in PROXY_STRATEGIES:
+        strategy = PROXY_STRATEGY_POOL_THEN_DEFAULT
+    fallback_url = normalize_proxy_url(
+        config_store.get("proxy_fallback_url", DEFAULT_FALLBACK_PROXY_URL)
+    ) or ""
+    return {"strategy": strategy, "fallback_url": fallback_url}
+
+
+def resolve_runtime_proxy(
+    *,
+    explicit_proxy: str | None = None,
+    proxy_getter=None,
+    region: str = "",
+) -> str | None:
+    """按全局策略解析实际使用的代理。
+
+    显式传入的代理优先级最高；否则按用户在代理资源页选择的方式取代理。
+    """
+    explicit = normalize_proxy_url(explicit_proxy)
+    if explicit:
+        return explicit
+
+    config = get_proxy_runtime_config()
+    strategy = config["strategy"]
+    fallback_url = config["fallback_url"]
+
+    if strategy == PROXY_STRATEGY_DIRECT:
+        return None
+    if strategy == PROXY_STRATEGY_DEFAULT_ONLY:
+        return fallback_url or None
+
+    getter = proxy_getter
+    if getter is None:
+        getter = lambda: proxy_pool.get_next(region=region)
+    pooled = normalize_proxy_url(getter())
+    if pooled:
+        return pooled
+    if strategy == PROXY_STRATEGY_POOL_THEN_DEFAULT:
+        return fallback_url or None
+    return None
 
 
 class ProxyPool:

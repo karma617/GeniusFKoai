@@ -180,6 +180,92 @@ def test_protocol_mailbox_falls_back_to_browser_on_otp_timeout(monkeypatch):
 
 
 
+def test_protocol_mailbox_falls_back_to_browser_on_oauth_start_block(monkeypatch):
+
+    import platforms.chatgpt.browser_register as browser_register
+
+    import platforms.chatgpt.protocol_mailbox as protocol_mailbox
+
+    logs = []
+
+    class FakeEngine:
+
+        def __init__(self, **kwargs):
+
+            self.email = ""
+
+            self.password = ""
+
+        def run(self):
+
+            return ProtocolRegistrationResult(
+
+                success=False,
+
+                email=self.email,
+
+                password=self.password,
+
+                error_message="开始 OAuth 流程失败",
+
+            )
+
+    class FakeBrowserRegister:
+
+        def __init__(self, *, headless, proxy, otp_callback, phone_callback, log_fn):
+
+            assert headless is True
+
+            assert proxy == "http://proxy.local"
+
+            assert phone_callback is None
+
+        def run(self, *, email, password):
+
+            return {
+
+                "email": email,
+
+                "password": password,
+
+                "account_id": "acct_cf",
+
+                "access_token": "access-token",
+
+                "refresh_token": "refresh-token",
+
+            }
+
+    monkeypatch.setattr(protocol_mailbox, "RegistrationEngine", FakeEngine)
+
+    monkeypatch.setattr(browser_register, "ChatGPTBrowserRegister", FakeBrowserRegister)
+
+    worker = protocol_mailbox.ChatGPTProtocolMailboxWorker(
+
+        mailbox=_Mailbox(),
+
+        mailbox_account=_MailboxAccount(),
+
+        provider="outlook_email_api",
+
+        proxy_url="http://proxy.local",
+
+        log_fn=logs.append,
+
+    )
+
+    result = worker.run(email="new@example.com", password="Secret123!")
+
+    assert result.success is True
+
+    assert result.account_id == "acct_cf"
+
+    assert result.metadata["fallback"] == "browser"
+
+    assert any("协议模式被风控" in line for line in logs)
+
+
+
 def test_protocol_mailbox_keeps_non_otp_errors(monkeypatch):
 
     import platforms.chatgpt.protocol_mailbox as protocol_mailbox
@@ -236,6 +322,51 @@ def test_protocol_mailbox_keeps_non_otp_errors(monkeypatch):
 
 
 
+
+
+def test_protocol_mailbox_does_not_browser_fallback_after_invalid_email_mark(monkeypatch):
+
+    import platforms.chatgpt.protocol_mailbox as protocol_mailbox
+
+    class FakeEngine:
+
+        def __init__(self, **kwargs):
+
+            self.email = ""
+
+            self.password = ""
+
+        def run(self):
+
+            return ProtocolRegistrationResult(
+
+                success=False,
+
+                email=self.email,
+
+                password=self.password,
+
+                error_message="邮箱验证码三轮未收到，已标记无效邮箱",
+
+            )
+
+    monkeypatch.setattr(protocol_mailbox, "RegistrationEngine", FakeEngine)
+
+    worker = protocol_mailbox.ChatGPTProtocolMailboxWorker(
+
+        mailbox=_Mailbox(),
+
+        mailbox_account=_MailboxAccount(),
+
+        provider="cfworker_admin_api",
+
+        log_fn=lambda message: None,
+
+    )
+
+    with pytest.raises(RuntimeError, match="无效邮箱"):
+
+        worker.run(email="new@example.com", password="Secret123!")
 
 
 def test_protocol_mailbox_mapper_preserves_browser_fallback_metadata():

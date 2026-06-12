@@ -299,6 +299,17 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
         { key: 'cpa_api_key', label: 'API Key', secret: true },
       ],
     }, {
+      section: 'Sub2Api',
+      desc: '注册完成后自动导入到 SUB2API openai 号池',
+      items: [
+        { key: 'sub2api_url', label: '后台地址', placeholder: 'https://your-sub2api.example.com/admin/accounts' },
+        { key: 'sub2api_email', label: '登录邮箱', placeholder: 'admin@example.com' },
+        { key: 'sub2api_password', label: '登录密码', secret: true },
+        { key: 'sub2api_group_name', label: 'OpenAI 分组', placeholder: 'codex' },
+        { key: 'sub2api_account_priority', label: '账号优先级', placeholder: '1', type: 'number' },
+        { key: 'sub2api_default_proxy_name', label: '默认代理', placeholder: '留空不用代理；可填代理名称或 ID' },
+      ],
+    }, {
       section: 'Team Manager',
       desc: '上传到自建 Team Manager 系统',
       items: [
@@ -317,7 +328,7 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
 ]
 
 function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions }: any) {
-  const { key, label, placeholder, secret } = field
+  const { key, label, placeholder, secret, type } = field
   const options = (field.options && field.options.length > 0)
     ? field.options
     : ((selectOptions && selectOptions.length > 0) ? selectOptions : null)
@@ -336,7 +347,7 @@ function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions 
         ) : (
           <>
             <input
-              type={secret && !showSecret[key] ? 'password' : 'text'}
+              type={secret && !showSecret[key] ? 'password' : type === 'number' ? 'number' : 'text'}
               value={form[key] || ''}
               onChange={e => setForm((f: any) => ({ ...f, [key]: e.target.value }))}
               placeholder={placeholder}
@@ -932,12 +943,23 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
         ],
       }]
     : activeTab === 'chatgpt'
-      ? [{
+        ? [{
           section: 'CPA Panel',
           desc: t('settings.chatgpt.cpaDesc'),
           items: [
             { key: 'cpa_api_url', label: 'API URL', placeholder: 'https://your-cpa.example.com' },
             { key: 'cpa_api_key', label: 'API Key', secret: true },
+          ],
+        }, {
+          section: 'Sub2Api',
+          desc: t('settings.chatgpt.sub2apiDesc'),
+          items: [
+            { key: 'sub2api_url', label: '后台地址', placeholder: 'https://your-sub2api.example.com/admin/accounts' },
+            { key: 'sub2api_email', label: '登录邮箱', placeholder: 'admin@example.com' },
+            { key: 'sub2api_password', label: '登录密码', secret: true },
+            { key: 'sub2api_group_name', label: 'OpenAI 分组', placeholder: 'codex' },
+            { key: 'sub2api_account_priority', label: '账号优先级', placeholder: '1', type: 'number' },
+            { key: 'sub2api_default_proxy_name', label: '默认代理', placeholder: '留空不用代理；可填代理名称或 ID' },
           ],
         }, {
           section: 'Team Manager',

@@ -47,6 +47,14 @@ class BaseMailbox(ABC):
         """等待并返回验证链接。默认由具体 provider 自行实现。"""
         raise NotImplementedError(f"{self.__class__.__name__} 暂不支持 wait_for_link()")
 
+    def delete_account(self, account: MailboxAccount, reason: str = "") -> bool:
+        """删除或释放当前邮箱账号；默认 provider 不支持。"""
+        return False
+
+    def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
+        """标记当前邮箱为无效；默认 provider 不支持打标签。"""
+        return []
+
 
 class FallbackMailbox(BaseMailbox):
     """按顺序尝试多个 provider，创建邮箱成功后固定使用同一 provider 收件。"""
@@ -115,6 +123,22 @@ class FallbackMailbox(BaseMailbox):
             timeout=timeout,
             before_ids=before_ids,
         )
+
+    def delete_account(self, account: MailboxAccount, reason: str = "") -> bool:
+        """转发删除请求到实际领取该邮箱的 provider。"""
+        mailbox = self._resolve_mailbox(account)
+        delete = getattr(mailbox, "delete_account", None)
+        if not callable(delete):
+            return False
+        return bool(delete(account, reason=reason))
+
+    def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
+        """转发无效邮箱打标请求到实际领取该邮箱的 provider。"""
+        mailbox = self._resolve_mailbox(account)
+        marker = getattr(mailbox, "mark_invalid_email", None)
+        if not callable(marker):
+            return []
+        return list(marker(account, reason=reason) or [])
 
 
 def _extract_verification_link(text: str, keyword: str = "") -> str | None:
@@ -253,6 +277,7 @@ def _create_outlook_email(extra: dict, proxy: str | None) -> 'BaseMailbox':
         skip_tag_names=extra.get("outlook_email_skip_tag_names", ""),
         register_success_tag_names=extra.get("outlook_email_register_success_tag_names", ""),
         plus_success_tag_names=extra.get("outlook_email_plus_success_tag_names", ""),
+        invalid_email_tag_names=extra.get("outlook_email_invalid_email_tag_names", ""),
         proxy=proxy,
     )
 

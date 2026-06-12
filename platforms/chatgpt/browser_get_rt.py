@@ -564,6 +564,7 @@ class GetRtPhoneCallback:
         self._completed = False
         self._resend_callback = None
         self._last_error = ""
+        self._code_timeout = 180
 
     # ── public lifecycle (mirrors PhoneCallbackController) ─────
 
@@ -593,6 +594,12 @@ class GetRtPhoneCallback:
 
     def set_resend_callback(self, cb):
         self._resend_callback = cb
+
+    def set_code_timeout(self, timeout: int):
+        try:
+            self._code_timeout = max(1, int(timeout or self._code_timeout))
+        except (TypeError, ValueError):
+            pass
 
     def mark_send_failed(self, reason: str = ""):
         self._last_error = str(reason or "")
@@ -649,17 +656,18 @@ class GetRtPhoneCallback:
 
     def _wait_code(self) -> str:
         import time as _time
-        deadline = _time.monotonic() + 180
+        deadline = _time.monotonic() + self._code_timeout
         while _time.monotonic() < deadline:
             try:
-                code = self._channel.wait_code(self._aid, timeout=30)
+                remaining = max(1, int(deadline - _time.monotonic()))
+                code = self._channel.wait_code(self._aid, timeout=min(30, remaining))
                 if code:
                     self.log(f"  [phone-cb] 收到验证码: {code}")
                     return code
             except Exception as exc:
                 self.log(f"  [phone-cb] wait_code 异常: {exc}")
             _time.sleep(3)
-        raise RuntimeError(f"获取rt: {self._provider} 等短信验证码超时 (3min)")
+        raise RuntimeError(f"获取rt: {self._provider} 等短信验证码超时 ({self._code_timeout}s)")
 
     def _build_smspool(self):
         from platforms.gopay.sms_channel import SmsPoolChannel, SMSPOOL_DEFAULT_API_KEY
@@ -712,6 +720,9 @@ def build_get_rt_phone_callback(
 ):
     """便捷工厂：从 SMS 配置参数构建 GetRtPhoneCallback，未配置时返回 (None, reason)。"""
     provider = str(sms_provider or "").strip().lower()
+    if provider in {"none", "off", "disabled", "disable", "false", "0", "不启用"}:
+        return None, "未启用 SMS"
+    provider = provider or "default"
 
     if provider == "smspool":
         from platforms.gopay.sms_channel import SMSPOOL_DEFAULT_API_KEY
@@ -742,6 +753,39 @@ def build_get_rt_phone_callback(
             smsapi_url=url,
             log_fn=log_fn,
         ), ""
+
+    if provider in {"default", "default_sms", "__default__"}:
+        try:
+            from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+            provider = str(ProviderSettingsRepository().get_default_provider_key("sms") or "").strip().lower()
+        except Exception as exc:
+            return None, f"读取默认 SMS provider 失败: {exc}"
+        if not provider:
+            return None, "未配置默认 SMS provider"
+
+    if provider:
+        try:
+            from core.base_sms import PhoneCallbackController
+            from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+            settings = ProviderSettingsRepository().resolve_runtime_settings(
+                "sms",
+                provider,
+                {},
+            )
+
+            # 获取 rt 的 add_phone 流程需要“手机号 → 短信验证码”二段式 callback；
+            # 统一 SMS provider 已有 PhoneCallbackController，可直接复用。
+            return PhoneCallbackController(
+                provider,
+                settings,
+                service="chatgpt",
+                country="",
+                log_fn=(log_fn or (lambda _message: None)),
+            ), ""
+        except Exception as exc:
+            return None, f"{provider} 手机 OTP 回调创建失败: {exc}"
 
     # 无配置：不提供 phone callback，add_phone 将报错
     return None, "未配置 SMS（sms_provider 为空）"
@@ -803,18 +847,20 @@ class _GetRtPhoneLease:
                 f"use={self.next_use_no}/{self.max_uses}"
             )
 
-    def wait_code(self, log: Callable[[str], None]) -> str:
-        deadline = time.monotonic() + 180
+    def wait_code(self, log: Callable[[str], None], *, timeout_sec: int = 180) -> str:
+        timeout_sec = max(1, int(timeout_sec or 180))
+        deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             try:
+                remaining = max(1, int(deadline - time.monotonic()))
                 try:
                     code = self.channel.wait_code(
                         self.aid,
-                        timeout=30,
+                        timeout=min(30, remaining),
                         ignore_code=self.last_code or None,
                     )
                 except TypeError:
-                    code = self.channel.wait_code(self.aid, timeout=30)
+                    code = self.channel.wait_code(self.aid, timeout=min(30, remaining))
                 if code:
                     self.last_code = str(code)
                     log(f"  [phone-pool] received code phone={self.phone} code={code}")
@@ -822,7 +868,7 @@ class _GetRtPhoneLease:
             except Exception as exc:
                 log(f"  [phone-pool] wait_code failed phone={self.phone}: {exc}")
             time.sleep(3)
-        raise RuntimeError(f"get_rt: {self.provider} wait sms otp timeout (3min)")
+        raise RuntimeError(f"get_rt: {self.provider} wait sms otp timeout ({timeout_sec}s)")
 
     def close_success(self) -> None:
         if hasattr(self.channel, "done"):
@@ -1006,6 +1052,7 @@ class GetRtReusablePhoneCallback:
         self._completed = False
         self._resend_callback = None
         self._last_error = ""
+        self._code_timeout = 180
 
     @property
     def phase(self):
@@ -1037,6 +1084,12 @@ class GetRtReusablePhoneCallback:
     def set_resend_callback(self, cb):
         self._resend_callback = cb
 
+    def set_code_timeout(self, timeout: int):
+        try:
+            self._code_timeout = max(1, int(timeout or self._code_timeout))
+        except (TypeError, ValueError):
+            pass
+
     def mark_send_failed(self, reason: str = ""):
         self._last_error = str(reason or "")
         self._pool.log(f"  [phone-pool] send failed: {self._last_error[:120]}")
@@ -1056,7 +1109,7 @@ class GetRtReusablePhoneCallback:
         if self._phase == "need_code":
             if not self._lease:
                 raise RuntimeError("get_rt phone lease missing")
-            return self._lease.wait_code(self._pool.log)
+            return self._lease.wait_code(self._pool.log, timeout_sec=self._code_timeout)
         return ""
 
     def report_success(self):

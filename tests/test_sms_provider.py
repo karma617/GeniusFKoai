@@ -127,6 +127,53 @@ class TestCreatePhoneCallbacks:
         assert any("已成功租到号码" in item for item in logs)
         assert any("已释放未使用号码" in item for item in logs)
 
+    def test_number_fetch_logs_balance_and_current_price(self, monkeypatch):
+        logs = []
+
+        class FakeProvider:
+            def get_balance(self) -> float:
+                return 12.345
+
+            def get_current_price_info(self, *, service: str, country: str = ""):
+                return {"price": 0.075, "count": 80, "currency": "USD"}
+
+            def get_number(self, *, service: str, country: str = ""):
+                return SmsActivation(
+                    activation_id="act_price",
+                    phone_number="+15551234567",
+                    country=country,
+                    metadata={
+                        "activation_cost": "0.08",
+                        "price_info": {"price": 0.075, "count": 80, "currency": "USD"},
+                        "max_price": 0.225,
+                    },
+                )
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {"smsbower_api_key": "test"},
+            service="chatgpt",
+            country="52",
+            log_fn=logs.append,
+        )
+
+        assert callback() == "+15551234567"
+        cleanup()
+
+        joined = "\n".join(logs)
+        assert "余额=12.345 USD" in joined
+        assert "当前价=0.08 USD" in joined
+        assert "stock=80" in joined
+        assert "maxPrice=0.225" in joined
+
     def test_cleanup_does_not_cancel_after_success(self, monkeypatch):
         events = []
         logs = []
@@ -164,6 +211,34 @@ class TestCreatePhoneCallbacks:
         assert ("cancel", "act_2") not in events
         assert any("等待短信验证码" in item for item in logs)
         assert any("短信验证成功" in item for item in logs)
+
+    def test_code_timeout_can_be_lowered_for_get_rt_add_phone(self, monkeypatch):
+        events = []
+
+        class FakeProvider:
+            def get_number(self, *, service: str, country: str = ""):
+                return SmsActivation(activation_id="act_timeout", phone_number="+15557654321")
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                events.append(("get_code", activation_id, timeout))
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "sms_activate",
+            {"sms_activate_api_key": "test"},
+            service="chatgpt",
+        )
+        callback.set_code_timeout(60)
+
+        assert callback() == "+15557654321"
+        assert callback() == ""
+        cleanup()
+        assert ("get_code", "act_timeout", 60) in events
 
     def test_deferred_success_provider_reports_on_cleanup_for_legacy_callers(self, monkeypatch):
         events = []
@@ -291,6 +366,67 @@ class TestCreatePhoneCallbacks:
         cleanup()
         assert ("mark_send_succeeded", "act_sent") in events
 
+    def test_phone_callback_switches_country_after_ten_rejected_numbers(self, monkeypatch):
+        events = []
+        logs = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_top_countries(self, service: str | None = None):
+                events.append(("get_top_countries", service))
+                return [
+                    {"country": "6", "name": "Indonesia", "price": 0.045, "count": 100},
+                    {"country": "52", "name": "Thailand", "price": 0.075, "count": 80},
+                    {"country": "187", "name": "United States", "price": 0.12, "count": 50},
+                ]
+
+            def get_number(self, *, service: str, country: str = ""):
+                events.append(("get_number", service, country))
+                index = len([item for item in events if item[0] == "get_number"])
+                return SmsActivation(activation_id=f"act_{index}", phone_number=f"+1555000{index:04d}", country=country)
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                events.append(("cancel", activation_id))
+                return True
+
+            def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+                events.append(("mark_send_failed", activation_id, reason))
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "smsbower_default_country": "6",
+            },
+            service="chatgpt",
+            log_fn=logs.append,
+        )
+
+        assert callback.get_add_phone_attempt_limit(20) == 20
+
+        for _ in range(10):
+            callback()
+            callback.mark_send_failed("We couldn't send a text message to this phone number.")
+            cleanup()
+            callback.phase = "need_number"
+            callback.activation = None
+            callback.completed = False
+
+        callback()
+
+        countries = [item[2] for item in events if item[0] == "get_number"]
+        assert countries[:10] == ["6"] * 10
+        assert countries[10] == "52"
+        assert any("接码国家尝试计划" in item for item in logs)
+        assert any("切换下一国家" in item for item in logs)
+
 
 class TestSmsActivateProviderCountryResolution:
     def test_get_number_accepts_numeric_country_id(self, monkeypatch):
@@ -336,7 +472,7 @@ class TestHeroSmsProvider:
 
         assert activation.activation_id == "act_1"
         assert activation.phone_number == "+15551234"
-        assert calls[0]["action"] == "getNumberV2"
+        assert any(item["action"] == "getNumberV2" for item in calls)
 
     def test_get_number_falls_back_to_v1_text(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
@@ -365,7 +501,7 @@ class TestHeroSmsProvider:
 
         assert activation.activation_id == "act_2"
         assert activation.phone_number == "+15557654321"
-        assert calls == ["getNumberV2", "getNumber"]
+        assert calls == ["getPrices", "getNumberV2", "getNumber"]
 
     def test_get_code_skips_attempted_sms_event(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
@@ -394,6 +530,33 @@ class TestHeroSmsProvider:
         assert provider.get_code("act_3", timeout=1) == "111111"
         provider.mark_code_failed("act_3", "invalid otp")
         assert provider.get_code("act_3", timeout=1) == "222222"
+
+    def test_get_code_respects_short_timeout_for_get_rt(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
+        monkeypatch.setattr(sms_module, "_HERO_SMS_CACHE", {
+            "api_key_hash": sms_module._hash_secret("hero123"),
+            "service": "dr",
+            "country": "187",
+            "activation_id": "act_short",
+            "phone_number": "+15550000000",
+            "acquired_at": sms_module.time.time(),
+            "use_count": 0,
+            "used_codes": set(),
+            "attempted_sms_keys": set(),
+            "reuse_stopped": False,
+        })
+        provider = HeroSmsProvider("hero123")
+        seen = {}
+
+        def fake_wait_for_code(activation_id, *, timeout=180, poll_interval=3):
+            seen["activation_id"] = activation_id
+            seen["timeout"] = timeout
+            return None
+
+        monkeypatch.setattr(provider, "wait_for_code", fake_wait_for_code)
+
+        assert provider.get_code("act_short", timeout=60) == ""
+        assert seen == {"activation_id": "act_short", "timeout": 60}
 
     def test_mark_send_succeeded_sets_sms_sent_status(self, monkeypatch):
         calls = []

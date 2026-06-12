@@ -76,9 +76,36 @@ def test_provider(body: ProviderTestRequest):
     elif body.provider_type == "captcha":
         return {"ok": True, "message": "验证码服务暂不支持在线测试，请在注册任务中验证"}
     elif body.provider_type == "sms":
+        if (definition.driver_type or body.provider_key) == "codex_sms_pool":
+            return _test_codex_sms_pool(extra)
         return {"ok": True, "message": "接码服务暂不支持在线测试，请在注册任务中验证"}
     else:
         return {"ok": False, "error": f"不支持测试的 provider 类型: {body.provider_type}"}
+
+
+def _test_codex_sms_pool(extra: dict) -> dict:
+    """校验 Codex 本地接码池文本，不触发真实取码。"""
+    from core.base_sms import parse_codex_sms_pool_entries
+
+    pool_text = str(
+        extra.get("codex_sms_pool_text")
+        or extra.get("codex_sms_pool")
+        or extra.get("chatGptApiSmsPoolText")
+        or ""
+    )
+    entries = parse_codex_sms_pool_entries(pool_text)
+    if not entries:
+        return {
+            "ok": False,
+            "error": "未识别到有效号码，格式：+手机号|取码链接，一行一个",
+        }
+    first = entries[0]
+    return {
+        "ok": True,
+        "message": f"测试成功！已识别 {len(entries)} 个号码，首个号码: {first.phone_e164}",
+        "count": len(entries),
+        "first_phone": first.phone_e164,
+    }
 
 
 def _test_mailbox(driver_type: str, extra: dict, definition) -> dict:
