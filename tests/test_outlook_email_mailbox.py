@@ -126,6 +126,41 @@ def test_outlook_email_selects_first_usable_account_from_external_accounts(monke
     }
 
 
+def test_outlook_email_local_api_ignores_registration_proxy(monkeypatch):
+    session = FakeSession([FakeResponse({"success": True, "accounts": []})])
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="http://127.0.0.1:5001",
+        api_key="fake-api-key",
+        proxy="http://proxy.example.test:8080",
+    )
+
+    assert mailbox._list_accounts() == []
+    assert mailbox.proxy is None
+    assert session.proxies == {}
+    assert session.trust_env is False
+
+
+def test_outlook_email_remote_api_keeps_explicit_proxy(monkeypatch):
+    session = FakeSession([FakeResponse({"success": True, "accounts": []})])
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        proxy="http://proxy.example.test:8080",
+    )
+
+    assert mailbox._list_accounts() == []
+    assert mailbox.proxy == {
+        "http": "http://proxy.example.test:8080",
+        "https": "http://proxy.example.test:8080",
+    }
+    assert session.proxies == mailbox.proxy
+    assert session.trust_env is False
+
+
 def test_outlook_email_reserves_selected_account_locally(monkeypatch):
     accounts_payload = {
         "success": True,

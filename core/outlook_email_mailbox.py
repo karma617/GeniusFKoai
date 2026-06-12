@@ -66,6 +66,12 @@ def _normalize_base_url(value: str) -> str:
     return raw.rstrip("/")
 
 
+def _is_local_api_url(value: str) -> bool:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").strip().lower()
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".localhost")
+
+
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     try:
         number = int(value)
@@ -136,7 +142,12 @@ class OutlookEmailMailbox(BaseMailbox):
         self.register_success_tag_names = _split_names(register_success_tag_names)
         self.plus_success_tag_names = _split_names(plus_success_tag_names)
         self.invalid_email_tag_names = _split_names(invalid_email_tag_names) or ["无效邮箱"]
-        self.proxy = {"http": proxy, "https": proxy} if proxy else None
+        proxy_url = _text(proxy)
+        self.proxy = (
+            {"http": proxy_url, "https": proxy_url}
+            if proxy_url and not _is_local_api_url(self.api)
+            else None
+        )
         self._session: requests.Session | None = None
         self._admin_session: requests.Session | None = None
         self._csrf_token: str = ""
@@ -178,6 +189,7 @@ class OutlookEmailMailbox(BaseMailbox):
     def _get_session(self) -> requests.Session:
         if self._session is None:
             session = requests.Session()
+            session.trust_env = False
             session.proxies = self.proxy or {}
             mark_session_insecure(session)
             session.headers.update(
@@ -260,6 +272,7 @@ class OutlookEmailMailbox(BaseMailbox):
             raise RuntimeError("outlookEmail 未配置管理员密码，无法执行管理操作")
 
         session = requests.Session()
+        session.trust_env = False
         session.proxies = self.proxy or {}
         mark_session_insecure(session)
         session.headers.update(

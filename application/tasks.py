@@ -916,6 +916,111 @@ def _resolve_registration_proxy_for_platform(
     return resolve_runtime_proxy(explicit_proxy=explicit_proxy, proxy_getter=proxy_getter)
 
 
+def _mask_proxy_for_log(proxy: str | None) -> str:
+    value = str(proxy or "").strip()
+    if not value:
+        return "direct"
+    try:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(value)
+        if parsed.hostname:
+            port = f":{parsed.port}" if parsed.port else ""
+            scheme = f"{parsed.scheme}://" if parsed.scheme else ""
+            return f"{scheme}***@{parsed.hostname}{port}"
+    except Exception:
+        pass
+    if "@" in value:
+        prefix, host = value.rsplit("@", 1)
+        scheme = prefix.split("://", 1)[0] + "://" if "://" in prefix else ""
+        return f"{scheme}***@{host}"
+    return value
+
+
+def _chatgpt_proxy_preflight(proxy: str | None, *, timeout: int = 12) -> tuple[bool, str]:
+    if not proxy:
+        return True, "direct"
+    try:
+        from curl_cffi import requests as curl_requests
+
+        response = curl_requests.get(
+            "https://chatgpt.com/",
+            proxies={"http": proxy, "https": proxy},
+            timeout=timeout,
+            impersonate="chrome120",
+        )
+        if response.status_code >= 500:
+            return False, f"HTTP {response.status_code}"
+        return True, f"HTTP {response.status_code}"
+    except Exception as exc:
+        return False, f"{exc.__class__.__name__}: {str(exc)[:180]}"
+
+
+def _resolve_chatgpt_reachable_proxy(
+    *,
+    platform_name: str,
+    explicit_proxy: str | None,
+    proxy_getter: Callable[[], str | None],
+    logger: "TaskLogger",
+    max_attempts: int = 6,
+) -> str | None:
+    resolved = _resolve_registration_proxy_for_platform(
+        platform_name,
+        explicit_proxy=explicit_proxy,
+        proxy_getter=proxy_getter,
+    )
+    if platform_name != "chatgpt" or not resolved:
+        return resolved
+
+    attempts = 1 if str(explicit_proxy or "").strip() else max_attempts
+    seen: set[str] = set()
+    last_detail = ""
+    for attempt in range(1, attempts + 1):
+        if not resolved:
+            break
+        if resolved in seen:
+            if str(explicit_proxy or "").strip():
+                break
+            resolved = _resolve_registration_proxy_for_platform(
+                platform_name,
+                explicit_proxy=None,
+                proxy_getter=proxy_getter,
+            )
+            continue
+        seen.add(resolved)
+        ok, detail = _chatgpt_proxy_preflight(resolved)
+        if ok:
+            if attempt > 1:
+                logger.log(
+                    f"\u5df2\u5207\u6362\u5230\u53ef\u8bbf\u95ee ChatGPT \u7684\u4ee3\u7406: {_mask_proxy_for_log(resolved)}"
+                )
+            return resolved
+
+        last_detail = detail
+        logger.log(
+            f"ChatGPT \u4ee3\u7406\u9884\u68c0\u5931\u8d25\uff0c\u5c06\u8df3\u8fc7 {_mask_proxy_for_log(resolved)}: {detail}",
+            level="warning",
+        )
+        try:
+            from core.proxy_pool import proxy_pool as _proxy_pool
+
+            _proxy_pool.report_fail(resolved)
+        except Exception:
+            pass
+        if str(explicit_proxy or "").strip():
+            break
+        resolved = _resolve_registration_proxy_for_platform(
+            platform_name,
+            explicit_proxy=None,
+            proxy_getter=proxy_getter,
+        )
+
+    raise RuntimeError(
+        "\u6ca1\u6709\u627e\u5230\u53ef\u8bbf\u95ee ChatGPT \u7684\u4ee3\u7406"
+        + (f": {last_detail}" if last_detail else "")
+    )
+
+
 def _auto_followup_windsurf_payment(
     *,
     platform_name: str,
@@ -1369,10 +1474,11 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             )
             return next_entry
 
-        resolved_proxy = _resolve_registration_proxy_for_platform(
-            platform_name,
+        resolved_proxy = _resolve_chatgpt_reachable_proxy(
+            platform_name=platform_name,
             explicit_proxy=proxy,
             proxy_getter=proxy_pool.get_next,
+            logger=logger,
         )
         # 短链物理复用（CtfGptPlus / PayPal）：注册和打开短链必须同一浏览器。
         # 把 post_register 回调 + backend_config 注入 config.extra，让注册器在
