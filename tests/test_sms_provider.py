@@ -411,6 +411,20 @@ class TestCreatePhoneCallbacks:
 
         assert callback.get_add_phone_attempt_limit(20) == 20
 
+        explicit_callback, _ = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "smsbower_default_country": "6",
+                "sms_country_retry_limit": 1,
+                "phone_change_limit": 20,
+            },
+            service="chatgpt",
+            log_fn=logs.append,
+        )
+
+        assert explicit_callback.get_add_phone_attempt_limit(10) == 20
+
         for _ in range(10):
             callback()
             callback.mark_send_failed("We couldn't send a text message to this phone number.")

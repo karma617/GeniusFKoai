@@ -1000,6 +1000,7 @@ class ChatGPTPlatform(BasePlatform):
                     smspool_max_price=str(params.get("smspool_max_price") or "0.13"),
                     smsapi_phone=str(params.get("smsapi_phone") or ""),
                     smsapi_url=str(params.get("smsapi_url") or ""),
+                    phone_change_limit=phone_change_limit,
                     log_fn=log_fn,
                 )
                 if not phone_callback:

@@ -716,6 +716,7 @@ def build_get_rt_phone_callback(
     smspool_max_price: str = "0.13",
     smsapi_phone: str = "",
     smsapi_url: str = "",
+    phone_change_limit=None,
     log_fn=None,
 ):
     """便捷工厂：从 SMS 配置参数构建 GetRtPhoneCallback，未配置时返回 (None, reason)。"""
@@ -774,6 +775,13 @@ def build_get_rt_phone_callback(
                 provider,
                 {},
             )
+            try:
+                explicit_phone_limit = int(phone_change_limit or 0)
+            except Exception:
+                explicit_phone_limit = 0
+            if explicit_phone_limit > 0:
+                settings = dict(settings or {})
+                settings["phone_change_limit"] = explicit_phone_limit
 
             # 获取 rt 的 add_phone 流程需要“手机号 → 短信验证码”二段式 callback；
             # 统一 SMS provider 已有 PhoneCallbackController，可直接复用。

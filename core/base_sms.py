@@ -1908,6 +1908,16 @@ class PhoneCallbackController:
         return ", ".join(parts)
 
     def get_add_phone_attempt_limit(self, default_limit: int) -> int:
+        explicit_limit = _safe_int(
+            _first_nonempty_text(
+                self.config.get("add_phone_attempt_limit"),
+                self.config.get("phone_change_limit"),
+                self.config.get("sms_phone_change_limit"),
+            ),
+            0,
+        )
+        if explicit_limit > 0:
+            return max(1, explicit_limit)
         provider = self._provider()
         if self._country_plan_enabled(provider):
             plan = self._ensure_country_attempt_plan(provider)

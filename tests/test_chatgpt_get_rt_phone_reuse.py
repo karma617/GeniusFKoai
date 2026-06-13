@@ -176,12 +176,14 @@ def test_build_get_rt_phone_callback_uses_default_sms_provider(monkeypatch):
 
     callback, error = browser_get_rt.build_get_rt_phone_callback(
         sms_provider="default",
+        phone_change_limit=20,
         log_fn=lambda _message: None,
     )
 
     assert error == ""
     assert callback() == "+15550000001"
     assert seen["provider_key"] == "codex_sms_pool"
+    assert seen["config"]["phone_change_limit"] == 20
     assert seen["service"] == "chatgpt"
 
 
