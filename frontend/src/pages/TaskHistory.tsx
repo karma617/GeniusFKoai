@@ -131,15 +131,15 @@ export default function TaskHistory() {
 
       {/* Filters — inline with table header */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] overflow-hidden">
-        <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-2.5">
-          <span className="text-sm font-medium text-[var(--text-primary)]">{t('taskHistory.recent')}</span>
-          <div className="flex-1" />
-          <div className="flex items-center gap-2">
-            <div className="relative">
+        <div className="flex flex-col gap-3 border-b border-[var(--border)] px-4 py-3 sm:flex-row sm:items-center sm:py-2.5">
+          <span className="whitespace-nowrap text-sm font-medium text-[var(--text-primary)]">{t('taskHistory.recent')}</span>
+          <div className="hidden flex-1 sm:block" />
+          <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:items-center">
+            <div className="relative min-w-0">
               <select
                 value={platform}
                 onChange={(e) => setPlatform(e.target.value)}
-                className="h-8 appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                className="h-8 w-full appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-auto"
               >
                 <option value="">{t('taskHistory.allPlatforms')}</option>
                 {platforms.map((item: any) => (
@@ -148,11 +148,11 @@ export default function TaskHistory() {
               </select>
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--text-muted)]" />
             </div>
-            <div className="relative">
+            <div className="relative min-w-0">
               <select
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
-                className="h-8 appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                className="h-8 w-full appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-auto"
               >
                 <option value="">{t('taskHistory.allStatuses')}</option>
                 <option value="running">{t('taskHistory.running')}</option>

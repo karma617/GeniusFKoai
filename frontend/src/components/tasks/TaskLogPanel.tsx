@@ -26,10 +26,10 @@ type LogGroup = {
 const MAIN_GROUP_ID = "__main__";
 
 function classifyLine(line: string): string {
-  if (line.includes("✓") || line.includes("成功")) return "text-emerald-400";
+  if (line.includes("✓") || line.includes("成功")) return "text-emerald-700 dark:text-emerald-300";
   if (line.includes("✗") || line.includes("失败") || line.includes("错误"))
-    return "text-red-400";
-  return "text-[var(--text-secondary)]";
+    return "text-red-700 dark:text-red-300";
+  return "text-[var(--text-primary)]";
 }
 
 export function TaskLogPanel({
@@ -206,12 +206,12 @@ export function TaskLogPanel({
     : errorText;
   const statusTone =
     currentStatus === "succeeded"
-      ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
+      ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
       : currentStatus === "failed"
-        ? "border-red-400/40 bg-red-400/10 text-red-200"
+        ? "border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300"
         : currentStatus === "cancelled" || currentStatus === "interrupted"
-          ? "border-amber-400/40 bg-amber-400/10 text-amber-200"
-          : "border-sky-400/40 bg-sky-400/10 text-sky-200";
+          ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+          : "border-[rgba(var(--accent-rgb),0.24)] bg-[rgba(var(--accent-rgb),0.08)] text-[var(--accent)]";
 
   const copyLogs = () => {
     navigator.clipboard
@@ -220,26 +220,26 @@ export function TaskLogPanel({
   };
 
   return (
-    <div className="flex h-full flex-col gap-4">
-      <div className="grid gap-3 md:grid-cols-3">
-        <div className={`rounded-2xl border px-4 py-3 ${statusTone}`}>
-          <div className="text-[11px] uppercase tracking-[0.18em] opacity-70">
+    <div className="flex h-full min-h-0 flex-col gap-4 text-[var(--text-primary)]">
+      <div className="grid shrink-0 gap-3 md:grid-cols-3">
+        <div className={`rounded-lg border px-4 py-3 ${statusTone}`}>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] opacity-80">
             {t("taskLog.status")}
           </div>
           <div className="mt-1 text-sm font-semibold">
             {getTaskStatusText(currentStatus, language)}
           </div>
         </div>
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3">
-          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+        <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
             {t("taskLog.progress")}
           </div>
           <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
             {progress.label || task?.progress || "0/0"}
           </div>
         </div>
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3">
-          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+        <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
             {t("taskLog.events")}
           </div>
           <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
@@ -248,7 +248,7 @@ export function TaskLogPanel({
         </div>
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)] ring-1 ring-[var(--border)]">
+      <div className="h-2 shrink-0 overflow-hidden rounded-full bg-[var(--bg-pane)] ring-1 ring-[var(--border-soft)]">
         <div
           className={`h-full rounded-full transition-all duration-500 ${
             currentStatus === "failed"
@@ -264,17 +264,17 @@ export function TaskLogPanel({
       </div>
 
       {errorText ? (
-        <div className="rounded-2xl border border-red-400/35 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+        <div className="shrink-0 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
           <div className="mb-1 font-semibold">
             {t("taskLog.failureReason")}
           </div>
-          <div className="break-words text-red-100/85">{friendlyError}</div>
+          <div className="break-words text-red-700/90 dark:text-red-300/90">{friendlyError}</div>
         </div>
       ) : null}
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex shrink-0 items-center justify-between gap-3">
         <div>
-          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
             {t("taskLog.liveLog")}
           </div>
           <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
@@ -284,15 +284,15 @@ export function TaskLogPanel({
         <button
           type="button"
           onClick={copyLogs}
-          className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+          className="rounded-full border border-[var(--border-soft)] bg-[var(--bg-pane)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
         >
           {t("taskLog.copyLogs")}
         </button>
       </div>
 
-      <div className="min-h-[260px] flex-1 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--bg-input)] p-3 font-mono text-xs">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-3 font-mono text-xs shadow-sm">
         {events.length === 0 ? (
-          <div className="flex h-full min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-[var(--border)] text-[var(--text-muted)]">
+          <div className="flex h-full min-h-[180px] items-center justify-center rounded-lg border border-dashed border-[var(--border-soft)] text-[var(--text-secondary)]">
             {t("taskLog.waiting")}
           </div>
         ) : (
@@ -349,11 +349,11 @@ function LogGroupView({
   }, [collapsed, total]);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-pane)]/40">
+    <div className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)]">
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-hover)]/60 px-3 py-1.5 text-left text-[11px] uppercase tracking-[0.16em] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+        className="flex w-full items-center gap-2 border-b border-[var(--border-soft)] bg-[var(--bg-pane)]/70 px-3 py-1.5 text-left text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
       >
         {collapsed ? (
           <ChevronRight className="h-3.5 w-3.5" />
@@ -363,17 +363,17 @@ function LogGroupView({
         <span className="truncate">
           {isMain ? t("taskLog.mainGroup") : group.label}
         </span>
-        <span className="ml-auto text-[10px] text-[var(--text-muted)]">
+        <span className="ml-auto text-[10px] text-[var(--text-secondary)]">
           {t("taskLog.logCount", { count: total })}
         </span>
       </button>
       {!collapsed && (
-        <div className="max-h-[280px] overflow-y-auto px-2 py-2">
+        <div className="px-2 py-2">
           <div className="space-y-1">
             {visible.map((ev) => (
               <div
                 key={ev.id}
-                className={`whitespace-pre-wrap break-words rounded-md border border-white/5 bg-white/[0.025] px-3 py-1.5 leading-5 ${classifyLine(ev.line)}`}
+                className={`whitespace-pre-wrap break-words rounded-md border border-[var(--border-soft)] bg-[var(--bg-base)] px-3 py-1.5 leading-5 ${classifyLine(ev.line)}`}
               >
                 {ev.line}
               </div>

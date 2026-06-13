@@ -105,9 +105,9 @@ function Sidebar({
 
   const navLinkClass = (active: boolean) =>
     cn(
-      "group flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
+      "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
       active
-        ? "bg-[var(--accent-soft)] text-[var(--text-primary)]"
+        ? "bg-[var(--accent-soft)] font-semibold text-[var(--accent)]"
         : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]",
       collapsed && "justify-center px-0",
     );
@@ -123,36 +123,41 @@ function Sidebar({
   return (
     <aside
       className={cn(
-        "flex h-screen flex-col border-r border-[var(--border)] bg-[var(--bg-surface)] transition-[width] duration-200",
-        collapsed ? "w-16" : "w-[220px]",
+        "flex h-screen flex-col border-r border-[var(--border-soft)] bg-[var(--bg-surface)] shadow-[var(--shadow-soft)] backdrop-blur-xl transition-[width] duration-200",
+        collapsed ? "w-20" : "w-[260px]",
       )}
     >
       {/* Header */}
       <div
         className={cn(
-          "flex h-12 shrink-0 items-center border-b border-[var(--border)] px-3",
+          "mb-2 flex shrink-0 items-center px-4 py-6",
           collapsed && "justify-center",
         )}
       >
         {!collapsed && (
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(var(--accent-rgb),0.24)]">
               A
             </div>
-            <span className="truncate text-sm font-semibold text-[var(--text-primary)]">
-              aBaiAutoplus
-            </span>
+            <div className="min-w-0">
+              <span className="block truncate text-[15px] font-bold text-[var(--text-primary)]">
+                aBaiAutoplus
+              </span>
+              <span className="block truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                Enterprise
+              </span>
+            </div>
           </div>
         )}
         {collapsed && (
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent)] text-[11px] font-bold text-white">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--accent)] text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(var(--accent-rgb),0.24)]">
             A
           </div>
         )}
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-0.5">
+      <nav className="flex-1 space-y-1 overflow-y-auto px-4 py-2">
         {NAV_ITEMS.map(({ path, labelKey, label: itemLabel, icon: Icon, exact }) => {
           const active = exact
             ? location.pathname === path
@@ -199,7 +204,7 @@ function Sidebar({
             )}
           </button>
           {!collapsed && accountsOpen && (
-            <div className="ml-[21px] mt-0.5 space-y-px border-l border-[var(--border)] pl-3">
+            <div className="ml-[21px] mt-1 space-y-px border-l border-[var(--border)] pl-3">
               {platforms.filter((p) => p.key !== "chatgpt").map((p) => (
                 <NavLink
                   key={p.key}
@@ -235,7 +240,7 @@ function Sidebar({
 
         {/* Divider */}
         {!collapsed && (
-          <div className="!my-2 mx-1 border-t border-[var(--border)]" />
+          <div className="!my-4 mx-1 border-t border-[var(--border-soft)]" />
         )}
 
         {/* Settings with sub-items */}
@@ -255,7 +260,7 @@ function Sidebar({
             {!collapsed && <span>{t("nav.settings")}</span>}
           </button>
           {!collapsed && isSettings && (
-            <div className="ml-[21px] mt-0.5 space-y-px border-l border-[var(--border)] pl-3">
+            <div className="ml-[21px] mt-1 space-y-px border-l border-[var(--border)] pl-3">
               {[
                 { label: t("nav.settings.general"), hash: "general" },
                 { label: t("nav.settings.register"), hash: "register" },
@@ -295,7 +300,12 @@ function Sidebar({
       </nav>
 
       {/* Footer */}
-      <div className="shrink-0 border-t border-[var(--border)] px-2 py-1.5 flex items-center gap-1">
+      <div
+        className={cn(
+          "flex shrink-0 border-t border-[var(--border-soft)] px-4 py-4",
+          collapsed ? "flex-col items-center gap-1" : "items-center gap-1",
+        )}
+      >
         <button
           onClick={toggleTheme}
           className={cn(
@@ -363,12 +373,19 @@ function Shell({
   toggleTheme: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem("sidebar-collapsed") === "true",
+    () => {
+      const stored = localStorage.getItem("sidebar-collapsed");
+      if (stored !== null) return stored === "true";
+      return window.innerWidth < 768;
+    },
   );
 
   useEffect(() => {
     localStorage.setItem("sidebar-collapsed", String(collapsed));
   }, [collapsed]);
+
+  const location = useLocation();
+  const fullBleedContent = location.pathname.startsWith("/accounts");
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-base)]">
@@ -378,25 +395,34 @@ function Shell({
         collapsed={collapsed}
         setCollapsed={setCollapsed}
       />
-      <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6 lg:px-8">
+      <main className="min-w-0 flex-1 overflow-y-auto bg-[var(--bg-base)]">
+        <div
+          className={cn(
+            "mx-auto flex min-h-full w-full flex-col",
+            fullBleedContent
+              ? "max-w-none px-0 py-0"
+              : "max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8 xl:px-8",
+          )}
+        >
           <UpdateBanner />
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/accounts" element={<Accounts />} />
-            <Route path="/accounts/sms-pool" element={<SmsPoolBlacklist />} />
-            <Route path="/accounts/:platform" element={<Accounts />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/ctf-gpt-plus" element={<CtfGptPlus />} />
-            <Route path="/gopay-gpt-plus" element={<GoPayGptPlus />} />
-            <Route path="/plus-manager" element={<PlusManager />} />
-            <Route path="/history" element={<TaskHistory />} />
-            <Route path="/proxies" element={<Proxies />} />
-            <Route
-              path="/settings"
-              element={<SettingsPage theme={theme} setTheme={setTheme} />}
-            />
-          </Routes>
+          <div className="min-h-0 flex-1">
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/accounts" element={<Accounts />} />
+              <Route path="/accounts/sms-pool" element={<SmsPoolBlacklist />} />
+              <Route path="/accounts/:platform" element={<Accounts />} />
+              <Route path="/register" element={<Register />} />
+              <Route path="/ctf-gpt-plus" element={<CtfGptPlus />} />
+              <Route path="/gopay-gpt-plus" element={<GoPayGptPlus />} />
+              <Route path="/plus-manager" element={<PlusManager />} />
+              <Route path="/history" element={<TaskHistory />} />
+              <Route path="/proxies" element={<Proxies />} />
+              <Route
+                path="/settings"
+                element={<SettingsPage theme={theme} setTheme={setTheme} />}
+              />
+            </Routes>
+          </div>
         </div>
       </main>
     </div>
@@ -441,7 +467,7 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
     <div className="flex h-screen items-center justify-center bg-[var(--bg-base)]">
       <form
         onSubmit={submit}
-        className="w-80 space-y-4 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6"
+        className="w-80 space-y-4 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-[var(--shadow-hard)]"
       >
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--accent)] text-sm font-bold text-white">
@@ -480,7 +506,7 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
 function AppContent() {
   const { t } = useI18n();
   const [theme, setTheme] = useState(
-    () => localStorage.getItem("theme") || "dark",
+    () => localStorage.getItem("theme") || "light",
   );
   const [authState, setAuthState] = useState<
     "loading" | "open" | "locked" | "authed"
@@ -495,6 +521,7 @@ function AppContent() {
           : "dark";
       }
       document.documentElement.classList.toggle("light", effective === "light");
+      document.documentElement.classList.toggle("dark", effective === "dark");
     };
     applyTheme();
     localStorage.setItem("theme", theme);

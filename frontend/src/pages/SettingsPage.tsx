@@ -50,13 +50,13 @@ const THEME_OPTIONS = [
 function ThemeSelector({ theme, setTheme }: { theme: string; setTheme: (t: string) => void }) {
   const { t } = useI18n()
   return (
-    <div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--chip-bg)] p-1">
+    <div className="flex flex-wrap rounded-[8px] border border-[var(--border)] bg-[var(--chip-bg)] p-1">
       {THEME_OPTIONS.map(({ value, labelKey, icon: Icon }) => (
         <button
           key={value}
           onClick={() => setTheme(value)}
           className={cn(
-            'inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium transition-all',
+            'inline-flex items-center gap-2 rounded-[7px] px-4 py-2 text-sm font-medium transition-all',
             theme === value
               ? 'bg-[var(--accent)] text-white shadow-sm'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -78,13 +78,13 @@ function LanguageSelector({
   setLanguage: (language: Language) => void
 }) {
   return (
-    <div className="inline-flex rounded-xl border border-[var(--border)] bg-[var(--chip-bg)] p-1">
+    <div className="flex flex-wrap rounded-[8px] border border-[var(--border)] bg-[var(--chip-bg)] p-1">
       {LANGUAGE_OPTIONS.map(({ value, label }) => (
         <button
           key={value}
           onClick={() => setLanguage(value)}
           className={cn(
-            'inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium transition-all',
+            'inline-flex items-center gap-2 rounded-[7px] px-4 py-2 text-sm font-medium transition-all',
             language === value
               ? 'bg-[var(--accent)] text-white shadow-sm'
               : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -250,9 +250,9 @@ function GeneralTab({
 /* ------------------------------------------------------------------ */
 function SettingRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+    <div className="flex flex-col items-stretch gap-2 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <label className="shrink-0 text-sm font-medium text-[var(--text-secondary)]">{label}</label>
-      <div className="min-w-0 max-w-[320px] flex-1">{children}</div>
+      <div className="min-w-0 flex-1 sm:max-w-[360px]">{children}</div>
     </div>
   )
 }
@@ -398,9 +398,9 @@ function AboutTab() {
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between px-4 py-3">
+    <div className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <span className="text-sm text-[var(--text-muted)]">{label}</span>
-      <span className="text-sm font-medium text-[var(--text-primary)]">{value}</span>
+      <span className="break-all text-sm font-medium text-[var(--text-primary)]">{value}</span>
     </div>
   )
 }

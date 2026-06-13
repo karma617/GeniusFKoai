@@ -4,7 +4,7 @@ import { useParams } from 'react-router-dom'
 import { getConfig, getConfigOptions, getPlatforms } from '@/lib/app-data'
 import type { ConfigOptionsResponse } from '@/lib/config-options'
 import { getCaptchaStrategyLabel } from '@/lib/config-options'
-import { apiDownload, apiFetch, triggerBrowserDownload } from '@/lib/utils'
+import { apiDownload, apiFetch, triggerBrowserDownload, cn } from '@/lib/utils'
 import { formatDateTime, translateAccountStatus } from '@/lib/i18n'
 import { useI18n } from '@/lib/i18n-context'
 import { buildExecutorOptions, buildRegistrationOptions, hasReusableOAuthBrowser, pickOAuthExecutor } from '@/lib/registration'
@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
-import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck } from 'lucide-react'
+import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', authorized: 'success', trial: 'success', subscribed: 'success',
@@ -935,23 +935,50 @@ function ActionTaskModal({
   onClose: () => void
   onDone: (status: string) => void
 }) {
+  const { t } = useI18n()
+  return (
+    <TaskLogDialog
+      title={title}
+      taskId={taskId}
+      taskStatus={taskStatus}
+      onClose={onClose}
+      onDone={onDone}
+      footerLabel={t('taskHistory.taskId')}
+    />
+  )
+}
+
+function TaskLogDialog({
+  title,
+  taskId,
+  taskStatus,
+  onClose,
+  onDone,
+  footerLabel,
+}: {
+  title: string
+  taskId: string
+  taskStatus?: string | null
+  onClose: () => void
+  onDone: (status: string) => void
+  footerLabel?: string
+}) {
   const { t, language } = useI18n()
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
-        className="dialog-panel flex w-[min(960px,calc(100vw-32px))] max-w-none flex-col overflow-hidden"
+        className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
         onClick={e => e.stopPropagation()}
-        style={{ maxHeight: '90vh' }}
+        style={{ width: 'min(860px, calc(100vw - 32px))', height: 'min(760px, calc(100dvh - 48px))' }}
       >
-        <div className="relative overflow-hidden border-b border-[var(--border)] px-6 py-5">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_12%_0%,rgba(9,182,162,0.18),transparent_34%),linear-gradient(90deg,rgba(255,255,255,0.04),transparent)]" />
+        <div className="relative shrink-0 overflow-hidden border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
           <div className="relative flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <div className="mb-2 inline-flex rounded-full border border-[var(--border)] bg-[var(--chip-bg)] px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              <div className="mb-2 inline-flex rounded-full bg-[rgba(var(--accent-rgb),0.1)] px-3 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--accent)]">
                 Platform Action
               </div>
-              <h2 className="truncate text-lg font-semibold text-[var(--text-primary)]">{title}</h2>
-              <p className="mt-1 text-xs text-[var(--text-muted)]">任务状态、错误摘要与实时日志集中展示</p>
+              <h2 className="truncate text-[16px] font-bold text-[var(--text-primary)]">{title}</h2>
+              <p className="mt-1 text-[12px] font-medium text-[var(--text-secondary)]">{t('taskLog.dialogSubtitle')}</p>
             </div>
             <div className="flex items-center gap-2">
               {taskStatus ? (
@@ -959,17 +986,17 @@ function ActionTaskModal({
                   {getTaskStatusText(taskStatus, language)}
                 </Badge>
               ) : null}
-              <button onClick={onClose} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] p-2 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+              <button onClick={onClose} className="rounded-full border border-transparent bg-[var(--bg-pane)] p-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                 <X className="h-4 w-4" />
               </button>
             </div>
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="min-h-0 flex-1 overflow-hidden bg-[var(--bg-base)] px-6 py-5">
           <TaskLogPanel taskId={taskId} onDone={onDone} />
         </div>
-        <div className="flex items-center justify-between border-t border-[var(--border)] px-6 py-3 text-xs text-[var(--text-muted)]">
-          <span>{t('taskHistory.taskId')}: {taskId}</span>
+        <div className="flex shrink-0 items-center justify-between border-t border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-3 text-xs font-medium text-[var(--text-secondary)]">
+          <span className="min-w-0 truncate">{footerLabel || t('taskHistory.taskId')}: {taskId}</span>
           <Button variant="outline" size="sm" onClick={onClose}>
             {t('common.close')}
           </Button>
@@ -1084,7 +1111,7 @@ function ActionMenu({
   onResult: (title: string, payload: any) => void
   onChanged: () => void
 }) {
-  const { language } = useI18n()
+  const { t, language } = useI18n()
   const [open, setOpen] = useState(false)
   const [actions, setActions] = useState<any[]>([])
   const [running, setRunning] = useState<string | null>(null)
@@ -1104,7 +1131,7 @@ function ActionMenu({
         if (resp?.sync) {
           setRunning(null)
           if (!resp.ok) {
-            setToast({ type: 'error', text: resp.error || 'Operation failed' })
+            setToast({ type: 'error', text: resp.error || t('accounts.operationFailed') })
             return
           }
           onChanged()
@@ -1122,12 +1149,12 @@ function ActionMenu({
         }
         setActionTask({
           taskId: resp.task_id,
-          title: `${acc.email} · ${action.label}`,
+          title: `${acc.email} - ${action.label}`,
         })
       })
       .catch(() => {
         setRunning(null)
-        setToast({ type: 'error', text: 'Request failed' })
+        setToast({ type: 'error', text: t('login.requestFailed') })
       })
   }
 
@@ -1225,24 +1252,24 @@ function ActionMenu({
       }
       if (data && typeof data === 'object') {
         if (actionUrl) {
-          setToast({ type: 'success', text: data.message || '支付链接已在新标签打开，链接已复制' })
+          setToast({ type: 'success', text: data.message || t('accounts.paymentLinkOpened') })
           return
         }
         const detailKeys = Object.keys(data).filter(key => !['message', 'url', 'checkout_url', 'cashier_url'].includes(key))
         if (detailKeys.length > 0) {
           onResult(actionTask.title, data)
         }
-        setToast({ type: 'success', text: data.message || '操作成功' })
+        setToast({ type: 'success', text: data.message || t('accounts.actionSuccess') })
         return
       }
-      setToast({ type: 'success', text: typeof data === 'string' && data ? data : '操作成功' })
+      setToast({ type: 'success', text: typeof data === 'string' && data ? data : t('accounts.actionSuccess') })
     } catch (error: any) {
-      setToast({ type: 'error', text: error?.message || '读取任务结果失败' })
+      setToast({ type: 'error', text: error?.message || t('login.requestFailed') })
     }
   }
 
   return (
-    <div className="relative flex min-w-[136px] items-center justify-end gap-1.5 whitespace-nowrap">
+    <div className="relative flex min-w-[112px] items-center justify-end gap-1.5 whitespace-nowrap">
       {toast && (
         <div
           className="fixed top-5 right-5 z-[9999] flex items-center gap-2.5 rounded-xl border px-4 py-3 text-[13px] font-medium shadow-lg  cursor-pointer transition-all"
@@ -1284,11 +1311,11 @@ function ActionMenu({
           }}
         />
       )}
-      <button onClick={onDetail} className="table-action-btn">详情</button>
+      <button onClick={onDetail} className="table-action-btn">{t('accounts.details')}</button>
       {actions.length > 0 && (
         <div className="relative">
           <button ref={triggerRef} onClick={() => setOpen(o => !o)}
-            className="table-action-btn">更多 ▾</button>
+            className="table-action-btn">{t('common.more')} v</button>
           {open && typeof document !== 'undefined' && createPortal(
             <div
               ref={menuRef}
@@ -1310,20 +1337,20 @@ function ActionMenu({
                   }}
                   disabled={!!running}
                   className="w-full px-3 py-2 text-left text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-50">
-                  {running === a.id ? '执行中...' : a.label}
+                  {running === a.id ? t('taskStatus.running') : a.label}
                 </button>
               ))}
               <div className="my-1 border-t border-[var(--border)]/70" />
               <button
                 onClick={() => {
                   setOpen(false)
-                  if (confirm(`确认删除 ${acc.email}？`)) {
+                  if (confirm(t('accounts.deleteConfirm', { email: acc.email }))) {
                     apiFetch(`/accounts/${acc.id}`, { method: 'DELETE' }).then(onDelete)
                   }
                 }}
                 className="w-full px-3 py-2 text-left text-xs text-[#f0b0b0] transition-colors hover:bg-[rgba(239,68,68,0.08)] hover:text-[#ffd5d5]"
               >
-                删除
+                {t('common.delete')}
               </button>
             </div>,
             document.body,
@@ -1332,10 +1359,10 @@ function ActionMenu({
       )}
       {actions.length === 0 && (
         <button
-          onClick={() => { if (confirm(`确认删除 ${acc.email}？`)) apiFetch(`/accounts/${acc.id}`, { method: 'DELETE' }).then(onDelete) }}
+          onClick={() => { if (confirm(t('accounts.deleteConfirm', { email: acc.email }))) apiFetch(`/accounts/${acc.id}`, { method: 'DELETE' }).then(onDelete) }}
           className="table-action-btn table-action-btn-danger"
         >
-          删除
+          {t('common.delete')}
         </button>
       )}
     </div>
@@ -1562,13 +1589,18 @@ function ExportMenu({
   statusFilter,
   searchFilter,
   selectedIds,
+  triggerClassName,
+  showIcon = true,
 }: {
   platform: string
   total: number
   statusFilter: string
   searchFilter: string
   selectedIds: number[]
+  triggerClassName?: string
+  showIcon?: boolean
 }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -1599,19 +1631,19 @@ function ExportMenu({
       triggerBrowserDownload(blob, filename)
       setOpen(false)
     } catch (e: any) {
-      window.alert(e?.message || '导出失败')
+      window.alert(e?.message || t('accounts.exportFailed'))
     } finally {
       setLoading(null)
     }
   }
 
   const options = [
-    { key: 'json', label: '导出 JSON' },
-    { key: 'csv', label: '导出 CSV' },
-    { key: 'any2api', label: '导出 Any2Api' },
-    { key: 'sub2api', label: '导出 Sub2Api' },
-    { key: 'cpa', label: '导出 CPA' },
-    ...(platform === 'kiro' ? [{ key: 'kiro-go', label: '导出 Kiro-Go' }] : []),
+    { key: 'json', label: t('accounts.exportJson') },
+    { key: 'csv', label: t('accounts.exportCsv') },
+    { key: 'any2api', label: t('accounts.exportAny2Api') },
+    { key: 'sub2api', label: t('accounts.exportSub2Api') },
+    { key: 'cpa', label: t('accounts.exportCpa') },
+    ...(platform === 'kiro' ? [{ key: 'kiro-go', label: t('accounts.exportKiroGo') }] : []),
   ]
 
   return (
@@ -1621,15 +1653,15 @@ function ExportMenu({
         size="sm"
         onClick={() => setOpen(v => !v)}
         disabled={total === 0 || !!loading}
-        className={ACCOUNT_TOOL_BUTTON_CLASS}
+        className={cn(ACCOUNT_TOOL_BUTTON_CLASS, triggerClassName)}
       >
-        <Download className="h-4 w-4 mr-1 shrink-0" />
-        {loading ? '导出中...' : hasSelection ? `导出已选(${selectedIds.length})` : '导出'}
+        {showIcon && <Download className="h-4 w-4 mr-1 shrink-0" />}
+        {loading ? t('accounts.exporting') : hasSelection ? t('accounts.exportSelected', { count: selectedIds.length }) : t('accounts.export')}
       </Button>
       {open && (
         <div className="absolute right-0 top-10 z-20 min-w-[148px] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] py-1 shadow-lg">
           <div className="px-3 py-1 text-[11px] text-[var(--text-muted)]">
-            {hasSelection ? `导出 ${selectedIds.length} 个已选账号` : '导出当前筛选结果'}
+            {hasSelection ? t('accounts.exportSelected', { count: selectedIds.length }) : t('accounts.exportCurrentResults')}
           </div>
           {options.map(option => (
             <button
@@ -1650,7 +1682,7 @@ function ExportMenu({
 export default function Accounts() {
   const { t, language } = useI18n()
   const { platform } = useParams<{ platform: string }>()
-  const [tab, setTab] = useState(platform || '')
+  const [tab, setTab] = useState(platform || 'chatgpt')
   useEffect(() => { if (platform) { setTab(platform) } }, [platform])
 
   const [accounts, setAccounts] = useState<any[]>([])
@@ -1660,6 +1692,7 @@ export default function Accounts() {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
+  const [page, setPage] = useState(1)
   const [detail, setDetail] = useState<any | null>(null)
   const [showImport, setShowImport] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
@@ -1728,22 +1761,25 @@ export default function Accounts() {
     return () => { active = false }
   }, [])
 
+  const pageSize = 10
+
   useEffect(() => {
     setSelectedIds(new Set())
+    setPage(1)
   }, [tab, filterStatus, debouncedSearch])
 
-  const load = useCallback(async (p = tab, s = debouncedSearch, fs = filterStatus) => {
+  const load = useCallback(async (p = tab, s = debouncedSearch, fs = filterStatus, pg = page) => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({ platform: p, page: '1', page_size: '100' })
+      const params = new URLSearchParams({ platform: p, page: String(pg), page_size: String(pageSize) })
       if (s) params.set('email', s)
       if (fs) params.set('status', fs)
       const data = await apiFetch(`/accounts?${params}`)
       setAccounts(data.items); setTotal(data.total)
     } finally { setLoading(false) }
-  }, [tab, debouncedSearch, filterStatus])
+  }, [tab, debouncedSearch, filterStatus, page])
 
-  useEffect(() => { load(tab, debouncedSearch, filterStatus) }, [tab, debouncedSearch, filterStatus])
+  useEffect(() => { load(tab, debouncedSearch, filterStatus, page) }, [tab, debouncedSearch, filterStatus, page, load])
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -1928,14 +1964,18 @@ export default function Accounts() {
   }, [load])
 
   const currentPlatformMeta = platformsMap[tab]
-  const platformLabel = currentPlatformMeta?.display_name || tab
+  const platformLabel = currentPlatformMeta?.display_name || (tab === 'chatgpt' ? 'ChatGPT' : tab)
   const visibleTrial = accounts.filter(acc => getPlanState(acc) === 'trial').length
+  const visibleFree = accounts.filter(acc => getPlanState(acc) === 'free').length
   const visibleSubscribed = accounts.filter(acc => getPlanState(acc) === 'subscribed').length
   const visibleInvalid = accounts.filter(acc => getValidityStatus(acc) === 'invalid' || getLifecycleStatus(acc) === 'invalid').length
   const linkedCashier = accounts.filter(acc => Boolean(getCashierUrl(acc))).length
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const entryStart = total === 0 ? 0 : (page - 1) * pageSize + 1
+  const entryEnd = total === 0 ? 0 : Math.min((page - 1) * pageSize + accounts.length, total)
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
+    <div className="min-h-screen bg-[var(--bg-base)]">
       {detail && <DetailModal acc={detail} onClose={() => setDetail(null)} onSave={() => { setDetail(null); load() }} />}
       {showImport && <ImportModal platform={tab} onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); load() }} />}
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
@@ -1960,42 +2000,13 @@ export default function Accounts() {
         />
       )}
       {oauthTaskId && (
-        createPortal(
-          <div className="dialog-backdrop" onClick={() => setOauthTaskId('')}>
-            <div
-              className="dialog-panel flex max-h-[82vh] flex-col"
-              onClick={event => event.stopPropagation()}
-            >
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-                <div>
-                  <h2 className="text-base font-semibold text-[var(--text-primary)]">
-                    Codex OAuth
-                  </h2>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
-                    Task logs are shown here.
-                  </div>
-                </div>
-                <button
-                  onClick={() => setOauthTaskId('')}
-                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="min-h-0 flex-1 px-6 py-4">
-                <div className="h-[420px] min-h-0 rounded border border-[var(--border)] p-3">
-                  <TaskLogPanel taskId={oauthTaskId} onDone={handleOAuthTaskDone} />
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
-                <Button variant="outline" size="sm" onClick={() => setOauthTaskId('')}>
-                  {t('common.close')}
-                </Button>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )
+        <TaskLogDialog
+          title="Codex OAuth"
+          taskId={oauthTaskId}
+          taskStatus={null}
+          onClose={() => setOauthTaskId('')}
+          onDone={handleOAuthTaskDone}
+        />
       )}
       {oauthConfirmOpen && (
         createPortal(
@@ -2004,10 +2015,11 @@ export default function Accounts() {
             onClick={() => !oauthBusy && setOauthConfirmOpen(false)}
           >
             <div
-              className="dialog-panel flex max-h-[82vh] flex-col"
+              className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
               onClick={event => event.stopPropagation()}
+              style={{ width: 'min(560px, calc(100vw - 32px))', maxHeight: 'min(620px, calc(100dvh - 48px))' }}
             >
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+              <div className="shrink-0 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">
                     Codex OAuth
@@ -2023,7 +2035,7 @@ export default function Accounts() {
                   <X className="h-4 w-4" />
                 </button>
               </div>
-              <div className="space-y-4 px-6 py-4">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
                     Browser mode
@@ -2055,7 +2067,7 @@ export default function Accounts() {
                   />
                 </div>
               </div>
-              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+              <div className="shrink-0 flex justify-end gap-2 border-t border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-3">
                 <Button
                   variant="outline"
                   size="sm"
@@ -2092,10 +2104,11 @@ export default function Accounts() {
             onClick={() => !getRtBusy && setGetRtConfirmOpen(false)}
           >
             <div
-              className="dialog-panel flex max-h-[82vh] flex-col"
+              className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
               onClick={event => event.stopPropagation()}
+              style={{ width: 'min(720px, calc(100vw - 32px))', maxHeight: 'min(760px, calc(100dvh - 48px))' }}
             >
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+              <div className="shrink-0 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">
                     获取rt（refresh_token）
@@ -2111,7 +2124,7 @@ export default function Accounts() {
                   <X className="h-4 w-4" />
                 </button>
               </div>
-              <div className="space-y-4 px-6 py-4">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
                     Browser mode
@@ -2266,7 +2279,7 @@ export default function Accounts() {
                   </div>
                 </div>
               </div>
-              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+              <div className="shrink-0 flex justify-end gap-2 border-t border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-3">
                 <Button
                   variant="outline"
                   size="sm"
@@ -2297,49 +2310,24 @@ export default function Accounts() {
         )
       )}
       {getRtTaskId && (
-        createPortal(
-          <div className="dialog-backdrop" onClick={() => setGetRtTaskId('')}>
-            <div
-              className="dialog-panel flex max-h-[82vh] flex-col"
-              onClick={event => event.stopPropagation()}
-            >
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-                <div>
-                  <h2 className="text-base font-semibold text-[var(--text-primary)]">
-                    获取rt
-                  </h2>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
-                    Task logs are shown here.
-                  </div>
-                </div>
-                <button
-                  onClick={() => setGetRtTaskId('')}
-                  className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="min-h-0 flex-1 px-6 py-4">
-                <div className="h-[420px] min-h-0 rounded border border-[var(--border)] p-3">
-                  <TaskLogPanel taskId={getRtTaskId} onDone={handleGetRtTaskDone} />
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
-                <Button variant="outline" size="sm" onClick={() => setGetRtTaskId('')}>
-                  {t('common.close')}
-                </Button>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )
+        <TaskLogDialog
+          title={t('accounts.getRt')}
+          taskId={getRtTaskId}
+          taskStatus={null}
+          onClose={() => setGetRtTaskId('')}
+          onDone={handleGetRtTaskDone}
+        />
       )}
       {/* ── 获取rt(绕过) 确认弹窗 ── */}
       {getRtBypassConfirmOpen && (
         createPortal(
           <div className="dialog-backdrop" onClick={() => !getRtBypassBusy && setGetRtBypassConfirmOpen(false)}>
-            <div className="dialog-panel flex max-h-[82vh] flex-col" onClick={event => event.stopPropagation()}>
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
+            <div
+              className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+              onClick={event => event.stopPropagation()}
+              style={{ width: 'min(640px, calc(100vw - 32px))', maxHeight: 'min(620px, calc(100dvh - 48px))' }}
+            >
+              <div className="shrink-0 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">获取rt（绕过手机号）</h2>
                   <div className="mt-1 text-xs text-[var(--text-muted)]">
@@ -2348,7 +2336,7 @@ export default function Accounts() {
                 </div>
                 <button onClick={() => !getRtBypassBusy && setGetRtBypassConfirmOpen(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
               </div>
-              <div className="space-y-4 px-6 py-4">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">Browser mode</label>
                   <select value={browserMode} onChange={event => setBrowserMode(event.target.value)} className="control-surface control-surface-compact w-full">
@@ -2365,7 +2353,7 @@ export default function Accounts() {
                   拦截 POST session/select 响应，将 phone_otp_* 替换为 consent 类型，浏览器直接跳授权同意页。
                 </div>
               </div>
-              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
+              <div className="shrink-0 flex justify-end gap-2 border-t border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-3">
                 <Button variant="outline" size="sm" onClick={() => setGetRtBypassConfirmOpen(false)} disabled={getRtBypassBusy}>{t('common.close')}</Button>
                 <Button size="sm" onClick={async () => { setGetRtBypassConfirmOpen(false); await startGetRtBypass() }} disabled={getRtBypassBusy || selectedIds.size === 0}>
                   {getRtBypassBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
@@ -2379,25 +2367,13 @@ export default function Accounts() {
       )}
       {/* ── 获取rt(绕过) 任务日志 ── */}
       {getRtBypassTaskId && (
-        createPortal(
-          <div className="dialog-backdrop" onClick={() => setGetRtBypassTaskId('')}>
-            <div className="dialog-panel flex max-h-[82vh] flex-col" onClick={event => event.stopPropagation()}>
-              <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
-                <div><h2 className="text-base font-semibold text-[var(--text-primary)]">获取rt(绕过)</h2><div className="mt-1 text-xs text-[var(--text-muted)]">Task logs</div></div>
-                <button onClick={() => setGetRtBypassTaskId('')} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
-              </div>
-              <div className="min-h-0 flex-1 px-6 py-4">
-                <div className="h-[420px] min-h-0 rounded border border-[var(--border)] p-3">
-                  <TaskLogPanel taskId={getRtBypassTaskId} onDone={handleGetRtBypassTaskDone} />
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 border-t border-[var(--border)] px-6 py-3">
-                <Button variant="outline" size="sm" onClick={() => setGetRtBypassTaskId('')}>{t('common.close')}</Button>
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )
+        <TaskLogDialog
+          title={t('accounts.getRtBypass')}
+          taskId={getRtBypassTaskId}
+          taskStatus={null}
+          onClose={() => setGetRtBypassTaskId('')}
+          onDone={handleGetRtBypassTaskDone}
+        />
       )}
       {error && (
         <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
@@ -2405,7 +2381,468 @@ export default function Accounts() {
         </div>
       )}
 
-      <Card className="shrink-0 bg-[var(--bg-pane)]/40 border border-[var(--border)] shadow-sm">
+      <div className="min-h-screen bg-[var(--bg-base)] text-[var(--text-primary)]">
+        <header className="sticky top-0 z-40 flex h-16 items-center justify-between gap-4 border-b border-transparent bg-[var(--bg-base)]/80 px-8 backdrop-blur-md">
+          <div className="flex min-w-0 flex-1 items-center gap-4">
+            <h1 className="shrink-0 whitespace-nowrap text-[16px] font-semibold tracking-normal text-[var(--text-primary)]">
+              {t('accounts.managementTitle', { platform: platformLabel })}
+            </h1>
+            <div className={cn(
+              "relative hidden",
+              language === 'en-US' ? "w-[160px] shrink-0 xl:block" : "min-w-[112px] max-w-[180px] flex-1 md:block",
+            )}>
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
+              <input
+                type="text"
+                placeholder={t('accounts.searchPlaceholder')}
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="h-9 w-full rounded-lg border-0 bg-[#ededed] pl-10 pr-4 text-[12px] text-[var(--text-primary)] outline-none transition-all placeholder:text-[var(--text-muted)] focus:ring-2 focus:ring-[rgba(var(--accent-rgb),0.2)] dark:bg-[var(--bg-input)]"
+              />
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-4">
+            <nav className="hidden items-center gap-4 lg:flex">
+              <button onClick={() => setShowRegister(true)} className="border-b-2 border-[var(--accent)] pb-1 text-[11px] font-bold text-[var(--accent)]">
+                {t('accounts.autoRegister')}
+              </button>
+              <button onClick={() => setShowImport(true)} className="pb-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)]">
+                {t('accounts.import')}
+              </button>
+              {tab === 'chatgpt' ? (
+                <ExportMenu
+                  platform={tab}
+                  total={total}
+                  statusFilter={filterStatus}
+                  searchFilter={debouncedSearch}
+                  selectedIds={[...selectedIds]}
+                  showIcon={false}
+                  triggerClassName="h-auto border-0 bg-transparent px-0 py-0 pb-1 text-[11px] font-medium text-[var(--text-secondary)] shadow-none hover:bg-transparent hover:text-[var(--accent)]"
+                />
+              ) : (
+                <button onClick={exportCsv} disabled={accounts.length === 0} className="pb-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)] disabled:opacity-40">
+                  {t('accounts.export')}
+                </button>
+              )}
+              <button onClick={() => setShowAdd(true)} className="pb-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)]">
+                {t('accounts.manualAdd')}
+              </button>
+            </nav>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => load()}
+                disabled={loading}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-pane)] disabled:opacity-50"
+              >
+                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+              </button>
+              <div className="relative flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--accent)] text-[11px] font-bold text-white shadow-sm">
+                A
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <section className="mx-auto max-w-[1440px] p-8">
+          <div className="mb-8 flex flex-wrap items-center gap-4">
+            <Button
+              size="sm"
+              onClick={() => setShowRegister(true)}
+              className="h-10 rounded-lg px-5 text-[13px] font-semibold shadow-[var(--shadow-soft)] transition-all hover:-translate-y-0.5"
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              {t('accounts.autoRegister')}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowImport(true)}
+              className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
+            >
+              <Upload className="mr-2 h-4 w-4" />
+              {t('accounts.import')}
+            </Button>
+            {tab === 'chatgpt' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={oauthBusy}
+                onClick={() => {
+                  setError('')
+                  if (selectedCount === 0) {
+                    setError(t('accounts.selectAtLeastOne'))
+                    return
+                  }
+                  setOauthConfirmOpen(true)
+                }}
+                className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
+              >
+                {oauthBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <ShieldCheck className="mr-2 h-4 w-4" />
+                )}
+                {t('accounts.codexOAuth')}
+              </Button>
+            ) : null}
+            {tab === 'chatgpt' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={getRtBusy}
+                onClick={() => {
+                  setError('')
+                  if (selectedCount === 0) {
+                    setError(t('accounts.selectAtLeastOne'))
+                    return
+                  }
+                  setGetRtConfirmOpen(true)
+                }}
+                className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
+              >
+                {getRtBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Zap className="mr-2 h-4 w-4" />
+                )}
+                {t('accounts.getRt')}
+              </Button>
+            ) : null}
+            <div className="ml-auto flex flex-wrap items-center gap-4">
+              <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-4 py-2">
+                <span className="mr-2 text-[10px] font-semibold uppercase tracking-normal text-[var(--text-muted)]">
+                  {t('accounts.totalAccounts')}
+                </span>
+                <span className="text-[16px] font-bold text-[var(--text-primary)]">
+                  {total.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US')}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-soft)]">
+            <div className="flex flex-col gap-4 border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] p-6 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 flex-wrap items-center gap-4">
+                <h2 className="text-[16px] font-bold tracking-normal text-[var(--text-primary)]">
+                  {t('accounts.registryTitle')}
+                </h2>
+                <div className="flex flex-wrap gap-1">
+                  <span className="rounded-full bg-emerald-500/10 px-3 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                    {t('accounts.freeTier')}
+                    {visibleFree > 0 ? ` ${visibleFree}` : ''}
+                  </span>
+                  <span className="rounded-full bg-[rgba(var(--accent-rgb),0.1)] px-3 py-0.5 text-[11px] font-medium text-[var(--accent)]">
+                    {t('accounts.usRegion')}
+                  </span>
+                  {selectedCount > 0 && (
+                    <span className="rounded-full bg-[var(--bg-pane)] px-3 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+                      {t('accounts.selected', { count: selectedCount })}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={filterStatus}
+                  onChange={e => setFilterStatus(e.target.value)}
+                  className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] pl-3 pr-8 text-[12px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                >
+                  <option value="">{t('accounts.allStatuses')}</option>
+                  <option value="registered">{translateAccountStatus('registered', language)}</option>
+                  <option value="trial">{t('dashboard.trial')}</option>
+                  <option value="subscribed">{t('dashboard.subscribed')}</option>
+                  <option value="free">{t('accounts.free')}</option>
+                  <option value="eligible">{t('accounts.eligible')}</option>
+                  <option value="expired">{t('accounts.expired')}</option>
+                  <option value="invalid">{t('dashboard.invalid')}</option>
+                </select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={batchRefreshing || loading}
+                  className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
+                  title={t('accounts.refreshCreditsTitle')}
+                  onClick={async () => {
+                    setBatchRefreshing(true)
+                    try {
+                      const res = await apiFetch(`/accounts/check-all?platform=${tab}`, { method: 'POST' })
+                      if (res?.task_id) {
+                        setBatchTask({ taskId: res.task_id, title: t('accounts.refreshAllCreditsTask', { platform: platformLabel }) })
+                        setBatchTaskStatus(null)
+                      }
+                    } catch (e) {
+                      console.error(e)
+                      setBatchRefreshing(false)
+                    }
+                  }}
+                >
+                  <Zap className={cn("mr-1.5 h-3.5 w-3.5", batchRefreshing && "animate-pulse")} />
+                  {batchRefreshing ? t('accounts.refreshingCredits') : t('accounts.refreshCredits')}
+                </Button>
+                {selectedCount > 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={bulkDeleting}
+                    className="h-8 rounded-lg border-0 bg-red-500/10 px-3 text-[12px] font-medium text-red-600 hover:bg-red-500/15"
+                    onClick={async () => {
+                      if (!confirm(t('accounts.deleteSelectedConfirm', { count: selectedCount }))) return
+                      setBulkDeleting(true)
+                      try {
+                        await Promise.allSettled(
+                          [...selectedIds].map(id => apiFetch(`/accounts/${id}`, { method: 'DELETE' }))
+                        )
+                        setSelectedIds(new Set())
+                        load()
+                      } finally {
+                        setBulkDeleting(false)
+                      }
+                    }}
+                  >
+                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                    {bulkDeleting ? t('common.deleting') : t('common.delete')}
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full table-fixed border-collapse text-left">
+                <colgroup>
+                  <col className="w-[7%]" />
+                  <col className="w-[28%]" />
+                  <col className="w-[15%]" />
+                  <col className="w-[20%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[20%]" />
+                </colgroup>
+                <thead>
+                  <tr className="bg-[var(--bg-pane)]/30 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+                    <th className="px-4 py-4 text-center font-semibold">
+                      <input
+                        type="checkbox"
+                        checked={allSelectedOnPage}
+                        onChange={togglePage}
+                        className="checkbox-accent rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                      />
+                    </th>
+                    <th className="px-4 py-4 font-semibold">{t('accounts.accountInfo')}</th>
+                    <th className="px-4 py-4 font-semibold">{t('common.password')}</th>
+                    <th className="whitespace-nowrap px-4 py-4 font-semibold">{t('common.status')}</th>
+                    <th className="whitespace-nowrap px-4 py-4 font-semibold">{t('accounts.registeredAt')}</th>
+                    <th className="whitespace-nowrap px-2 py-4 text-right font-semibold">{t('common.actions')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-soft)]">
+                  {accounts.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-20 text-center">
+                        <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
+                          <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--bg-pane)]">
+                            <Mail className="h-5 w-5 text-[var(--text-muted)]" />
+                          </div>
+                          <div className="text-[13px] font-semibold text-[var(--text-primary)]">
+                            {t('accounts.emptyTitle')}
+                          </div>
+                          <div className="text-[12px] text-[var(--text-muted)]">
+                            {t('accounts.emptyDesc')}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {accounts.map(acc => (
+                    (() => {
+                      const overview = getAccountOverview(acc)
+                      const verificationMailbox = getVerificationMailbox(acc)
+                      const primaryMetrics = getPrimaryMetrics(acc)
+                      const displayBadges = getDisplayBadges(acc)
+                      const status = getDisplayStatus(acc)
+                      const variant = String(STATUS_VARIANT[status] || 'secondary')
+                      const statusStyles = (({
+                        success: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                        warning: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+                        danger: "bg-red-500/10 text-red-600 dark:text-red-400",
+                        secondary: "bg-[var(--bg-pane)] text-[var(--text-secondary)]",
+                        default: "bg-[rgba(var(--accent-rgb),0.1)] text-[var(--accent)]",
+                      } as Record<string, string>)[variant]) || "bg-[var(--bg-pane)] text-[var(--text-secondary)]"
+                      const statusDot = variant === 'success'
+                        ? 'bg-emerald-500'
+                        : variant === 'warning'
+                          ? 'bg-amber-500'
+                          : variant === 'danger'
+                            ? 'bg-red-500'
+                            : variant === 'default'
+                              ? 'bg-[var(--accent)]'
+                              : 'bg-[var(--text-muted)]'
+
+                      return (
+                        <tr
+                          key={acc.id}
+                          className="group cursor-pointer transition-colors hover:bg-[var(--bg-pane)]/35"
+                          onClick={() => setDetail(acc)}
+                        >
+                          <td className="px-4 py-4 text-center align-top" onClick={e => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.has(acc.id)}
+                              onChange={() => toggleOne(acc.id)}
+                              className="checkbox-accent rounded border-[var(--border)] text-[var(--accent)] opacity-60 transition-opacity group-hover:opacity-100 focus:ring-[var(--accent)]"
+                            />
+                          </td>
+                          <td className="overflow-hidden px-4 py-4 align-top">
+                            <div className="flex min-w-0 gap-2.5">
+                              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[rgba(var(--accent-rgb),0.08)] text-[var(--accent)]">
+                                <Mail className="h-4 w-4" />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="truncate font-mono text-[13px] font-medium text-[var(--text-primary)]" title={acc.email}>
+                                    {acc.email}
+                                  </span>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); copy(emailApiLine(acc.email)) }}
+                                    className="text-[var(--text-muted)] opacity-0 transition-opacity hover:text-[var(--accent)] group-hover:opacity-100"
+                                    aria-label="copy"
+                                  >
+                                    <Copy className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                                <div className="mt-1 truncate text-[11px] text-[var(--text-muted)]">
+                                  {verificationMailbox?.email || overview?.remote_email || acc.username || acc.email}
+                                </div>
+                                {displayBadges.length > 0 && (
+                                  <div className="mt-1.5 flex flex-wrap gap-1">
+                                    {displayBadges.slice(0, 2).map((badge: any, index: number) => (
+                                      <span key={`${badge?.label || 'badge'}-${index}`} className="rounded border border-[var(--border-soft)] bg-[var(--bg-pane)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]">
+                                        {badge?.label}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="overflow-hidden px-4 py-4 align-top">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="truncate font-mono text-[12px] text-[var(--text-muted)] blur-[3px] transition-all hover:blur-none" title={acc.password}>
+                                {acc.password || '-'}
+                              </span>
+                              {acc.password && (
+                                <button
+                                  onClick={e => { e.stopPropagation(); copy(acc.password) }}
+                                  className="text-[var(--text-muted)] opacity-0 transition-opacity hover:text-[var(--accent)] group-hover:opacity-100"
+                                  aria-label="copy"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td className="overflow-hidden px-4 py-4 align-top">
+                            <div className="flex min-w-0 flex-col items-start gap-1.5">
+                              <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold", statusStyles)}>
+                                <span className={cn("mr-1.5 h-1.5 w-1.5 rounded-full", statusDot)} />
+                                {translateAccountStatus(status, language)}
+                              </span>
+                              {primaryMetrics.length > 0 ? (
+                                <div className="min-w-0 max-w-full space-y-0.5 text-[11px] leading-4 text-[var(--text-muted)]">
+                                  {primaryMetrics.slice(0, 1).map((metric: any) => (
+                                    <div key={metric.key || metric.label} className="truncate">
+                                      <span className="font-medium text-[var(--text-secondary)]">{metric.label}: </span>
+                                      {metric.value}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="truncate text-[11px] text-[var(--text-muted)]">
+                                  {getCompactStatusMeta(acc)}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          <td className="overflow-hidden px-4 py-4 align-top font-mono text-[11px] leading-5 text-[var(--text-muted)]">
+                            {acc.created_at ? formatDateTime(acc.created_at, language, {
+                              month: '2-digit',
+                              day: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              hour12: false,
+                            }) : '-'}
+                          </td>
+                          <td className="px-2 py-4 align-top" onClick={e => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-1.5">
+                              {getCashierUrl(acc) && (
+                                <>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); copy(getCashierUrl(acc)) }}
+                                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--bg-pane)] text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)]"
+                                    aria-label="copy"
+                                  >
+                                    <Copy className="h-3.5 w-3.5" />
+                                  </button>
+                                  <a
+                                    href={getCashierUrl(acc)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={e => e.stopPropagation()}
+                                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--bg-pane)] text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)]"
+                                    aria-label="open"
+                                  >
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                  </a>
+                                </>
+                              )}
+                              <ActionMenu
+                                acc={acc}
+                                onDetail={() => setDetail(acc)}
+                                onDelete={() => load()}
+                                onResult={(title, payload) => setActionResult({ title, payload })}
+                                onChanged={() => load()}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })()
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-[var(--border-soft)] px-6 py-4 text-[11px] text-[var(--text-muted)] sm:flex-row sm:items-center sm:justify-between">
+              <span>
+                {t('accounts.showingEntries', { from: entryStart, to: entryEnd, total })}
+              </span>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setPage(current => Math.max(1, current - 1))}
+                  disabled={page <= 1}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-pane)] disabled:opacity-40"
+                >
+                  {'<'}
+                </button>
+                <span className="flex h-7 min-w-7 items-center justify-center rounded-md bg-[var(--accent)] px-2 text-[11px] font-bold text-white">
+                  {page}
+                </span>
+                <span className="px-1 text-[var(--text-muted)]">/</span>
+                <span className="min-w-5 text-center text-[11px] text-[var(--text-secondary)]">
+                  {pageCount}
+                </span>
+                <button
+                  onClick={() => setPage(current => Math.min(pageCount, current + 1))}
+                  disabled={page >= pageCount}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-pane)] disabled:opacity-40"
+                >
+                  {'>'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <Card className="hidden shrink-0 bg-[var(--bg-pane)]/40 border border-[var(--border)] shadow-sm">
         <div className="flex flex-col gap-3 px-5 py-4 border-b border-[var(--border)]/50 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-3">
             <h1 className="shrink-0 text-lg font-semibold tracking-tight text-[var(--text-primary)]">
@@ -2608,7 +3045,7 @@ export default function Accounts() {
         </div>
       </Card>
 
-      <Card className="min-h-0 flex-1 overflow-hidden p-0 border border-[var(--border)] shadow-sm">
+      <Card className="hidden min-h-0 flex-1 overflow-hidden p-0 border border-[var(--border)] shadow-sm">
         <div className="flex h-full min-h-0 flex-col">
           <div className="glass-table-wrap min-h-0 flex-1 overflow-auto">
         <table className="table-fixed w-full min-w-[900px] text-sm">
