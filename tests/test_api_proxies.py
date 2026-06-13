@@ -43,3 +43,16 @@ def test_bulk_add_proxies(client):
     assert resp.status_code == 200
     list_resp = client.get("/api/proxies")
     assert len(list_resp.json()) == 2
+
+
+def test_import_free_proxy_candidates(client):
+    resp = client.post("/api/proxies/free/import-valid", json={
+        "proxies": ["http://3.3.3.3:8080"],
+        "region": "FREE",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["added"] == 1
+    list_resp = client.get("/api/proxies")
+    data = list_resp.json()
+    assert data[0]["url"] == "http://3.3.3.3:8080"
+    assert data[0]["region"] == "FREE"

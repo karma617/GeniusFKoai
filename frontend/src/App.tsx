@@ -49,12 +49,12 @@ type NavItem = {
   exact?: boolean;
 };
 
-const NAV_ITEMS: NavItem[] = [
+const WORKBENCH_ITEMS: NavItem[] = [
   { path: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, exact: true },
   { path: "/ctf-gpt-plus", labelKey: "nav.ctfGptPlus", icon: Sparkles },
   { path: "/gopay-gpt-plus", labelKey: "nav.gopayGptPlus", icon: Sparkles },
   { path: "/plus-manager", labelKey: "nav.plusManager", icon: Sparkles },
-  { path: "/accounts/chatgpt", label: "chatgpt free", icon: Users },
+  { path: "/accounts/chatgpt", labelKey: "nav.chatgptFree", icon: Users },
   { path: "/history", labelKey: "nav.tasks", icon: History },
 ];
 
@@ -76,6 +76,14 @@ function Sidebar({
     [],
   );
   const isTopLevelChatGptAccounts = location.pathname === "/accounts/chatgpt";
+  const isWorkbenchPath = (pathname: string) =>
+    WORKBENCH_ITEMS.some(({ path, exact }) =>
+      exact ? pathname === path : pathname.startsWith(path),
+    );
+  const isWorkbench = isWorkbenchPath(location.pathname);
+  const [workbenchOpen, setWorkbenchOpen] = useState(
+    isWorkbenchPath(location.pathname),
+  );
   const [accountsOpen, setAccountsOpen] = useState(
     location.pathname.startsWith("/accounts") && !isTopLevelChatGptAccounts,
   );
@@ -92,6 +100,12 @@ function Sidebar({
       )
       .catch(() => setPlatforms([]));
   }, []);
+
+  useEffect(() => {
+    if (isWorkbench) {
+      setWorkbenchOpen(true);
+    }
+  }, [isWorkbench]);
 
   useEffect(() => {
     if (location.pathname.startsWith("/accounts") && !isTopLevelChatGptAccounts) {
@@ -158,24 +172,60 @@ function Sidebar({
 
       {/* Nav */}
       <nav className="flex-1 space-y-1 overflow-y-auto px-4 py-2">
-        {NAV_ITEMS.map(({ path, labelKey, label: itemLabel, icon: Icon, exact }) => {
-          const active = exact
-            ? location.pathname === path
-            : location.pathname.startsWith(path);
-          const label = itemLabel || (labelKey ? t(labelKey) : path);
-          return (
-            <NavLink
-              key={path}
-              to={path}
-              end={exact}
-              className={navLinkClass(active)}
-              title={collapsed ? label : undefined}
-            >
-              <Icon className={iconClass(active)} />
-              {!collapsed && <span>{label}</span>}
-            </NavLink>
-          );
-        })}
+        <div>
+          <button
+            onClick={() => {
+              if (collapsed) {
+                navigate("/");
+              } else {
+                setWorkbenchOpen(!workbenchOpen);
+              }
+            }}
+            className={cn(navLinkClass(isWorkbench), "w-full")}
+            title={collapsed ? t("nav.workbench") : undefined}
+          >
+            <LayoutDashboard className={iconClass(isWorkbench)} />
+            {!collapsed && (
+              <>
+                <span className="flex-1 text-left">{t("nav.workbench")}</span>
+                <ChevronRight
+                  className={cn(
+                    "h-3 w-3 text-[var(--text-muted)] transition-transform duration-150",
+                    workbenchOpen && "rotate-90",
+                  )}
+                />
+              </>
+            )}
+          </button>
+          {!collapsed && workbenchOpen && (
+            <div className="ml-[21px] mt-1 space-y-px border-l border-[var(--border)] pl-3">
+              {WORKBENCH_ITEMS.map(({ path, labelKey, label: itemLabel, exact }) => {
+                const active = exact
+                  ? location.pathname === path
+                  : location.pathname.startsWith(path);
+                const label = itemLabel || (labelKey ? t(labelKey) : path);
+                return (
+                  <NavLink
+                    key={path}
+                    to={path}
+                    end={exact}
+                    className={cn(
+                      "relative block rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+                      active
+                        ? "text-[var(--accent)] font-medium bg-[var(--accent-soft)]"
+                        : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+                    )}
+                  >
+                    {active && (
+                      <span className="absolute -left-[13.5px] top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-[var(--accent)]" />
+                    )}
+                    {label}
+                  </NavLink>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {/* Accounts with sub-items */}
         <div>

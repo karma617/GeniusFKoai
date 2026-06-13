@@ -57,8 +57,49 @@ const DEFAULT_PAYMENT = {
   use_stripe_init: "false",
   // 短链：checkout_ui_mode=custom → chatgpt.com/checkout/openai_llc 短链。
   use_short_link: "false",
+  use_ppboom: "false",
+  ppboom_base_url: "http://127.0.0.1:8787",
+  ppboom_max_attempts: 10,
+  ppboom_timeout: 900,
+  ppboom_proxy: "",
+  ppboom_default_proxy: "",
+  ppboom_provider_proxy: "",
+  ppboom_billing_country: "DE",
+  ppboom_billing_currency: "EUR",
+  ppboom_billing_name: "",
+  ppboom_billing_email: "",
+  ppboom_promo_campaign_id: "plus-1-month-free",
+  ppboom_stripe_publishable_key: "",
+  ppboom_payment_locale: "en",
+  ppboom_device_id: "",
+  ppboom_user_agent: "",
   // SMS 号码池（多行 `+phone----relay_url`），PayPal OTP 用。空串=不启用。
   sms_pool: "",
+};
+
+const PPBOOM_EXECUTOR = "ppboom";
+
+const PPBOOM_TEXT = {
+  mode: "\u7206\u7834\u6a21\u5f0f",
+  description:
+    "\u6ce8\u518c\u5b8c\u6210\u540e\u8c03\u7528 PPBoom \u751f\u6210 PayPal \u6388\u6743\u94fe\u63a5",
+  unavailable: "\u9700\u8981\u5f53\u524d\u5e73\u53f0\u652f\u6301\u534f\u8bae\u6ce8\u518c",
+  configTitle: "\u7206\u7834\u914d\u7f6e",
+  helperUrl: "PPBoom URL",
+  maxAttempts: "\u5c1d\u8bd5\u6b21\u6570",
+  timeout: "\u8d85\u65f6(\u79d2)",
+  directProxy: "\u521d\u59cb\u4ee3\u7406",
+  defaultProxy: "\u9ed8\u8ba4\u4ee3\u7406",
+  providerProxy: "\u652f\u4ed8\u4ee3\u7406",
+  billingCountry: "\u8d26\u5355\u56fd\u5bb6",
+  billingCurrency: "\u8d26\u5355\u5e01\u79cd",
+  billingName: "\u8d26\u5355\u59d3\u540d",
+  billingEmail: "\u8d26\u5355\u90ae\u7bb1",
+  promoCampaign: "\u4f18\u60e0\u6d3b\u52a8",
+  locale: "\u652f\u4ed8\u8bed\u8a00",
+  stripeKey: "Stripe PK",
+  deviceId: "Device ID",
+  userAgent: "User Agent",
 };
 
 const BROWSER_MODE_OPTIONS = [
@@ -238,13 +279,25 @@ function GeneratePlusModal({
     [platformMeta, language],
   );
   const reusableBrowser = hasReusableOAuthBrowser(config);
-  const executorOptions = buildExecutorOptions(
+  const baseExecutorOptions = buildExecutorOptions(
     selection.identityProvider,
     supportedExecutors,
     reusableBrowser,
     platformMeta?.supported_executor_options || [],
     language,
   );
+  const canUsePpBoom = baseExecutorOptions.some(
+    (option) => option.value === "protocol" && !option.disabled,
+  );
+  const executorOptions = [
+    ...baseExecutorOptions,
+    {
+      value: PPBOOM_EXECUTOR,
+      label: PPBOOM_TEXT.mode,
+      description: canUsePpBoom ? PPBOOM_TEXT.description : PPBOOM_TEXT.unavailable,
+      disabled: !canUsePpBoom,
+    },
+  ];
   const enabledExecutorOptions = executorOptions.filter(
     (option) => !option.disabled,
   );
@@ -256,6 +309,7 @@ function GeneratePlusModal({
   const selectedExecutor = executorOptions.find(
     (option) => option.value === selection.executorType,
   );
+  const isPpBoomMode = selection.executorType === PPBOOM_EXECUTOR;
   const defaultMailboxProvider = getDefaultProviderKey(
     configOptions.mailbox_settings || [],
   );
@@ -366,7 +420,12 @@ function GeneratePlusModal({
     if (!isShortLink) return;
     const reg = String(selection.executorType || "");
     // 只在注册用的是浏览器模式时同步（protocol 注册没浏览器可复用）。
-    if (reg && reg !== "protocol" && String(payment.checkout_mode) !== reg) {
+    if (
+      reg &&
+      reg !== "protocol" &&
+      reg !== PPBOOM_EXECUTOR &&
+      String(payment.checkout_mode) !== reg
+    ) {
       setPayment((cur) => ({ ...cur, checkout_mode: reg }));
     }
   }, [isShortLink, selection.executorType, payment.checkout_mode]);
@@ -374,6 +433,31 @@ function GeneratePlusModal({
   const updatePayment = (key: string, value: string | number) => {
     setPayment((current) => ({ ...current, [key]: value }));
   };
+  const effectiveExecutorType = isPpBoomMode
+    ? "protocol"
+    : selection.executorType;
+  const buildPpBoomParams = () => ({
+    use_ppboom: isPpBoomMode ? "true" : "false",
+    ppboom_base_url: payment.ppboom_base_url,
+    ppboom_max_attempts: Number(
+      payment.ppboom_max_attempts || DEFAULT_PAYMENT.ppboom_max_attempts,
+    ),
+    ppboom_timeout: Number(
+      payment.ppboom_timeout || DEFAULT_PAYMENT.ppboom_timeout,
+    ),
+    ppboom_proxy: payment.ppboom_proxy,
+    ppboom_default_proxy: payment.ppboom_default_proxy,
+    ppboom_provider_proxy: payment.ppboom_provider_proxy,
+    ppboom_billing_country: payment.ppboom_billing_country,
+    ppboom_billing_currency: payment.ppboom_billing_currency,
+    ppboom_billing_name: payment.ppboom_billing_name,
+    ppboom_billing_email: payment.ppboom_billing_email,
+    ppboom_promo_campaign_id: payment.ppboom_promo_campaign_id,
+    ppboom_stripe_publishable_key: payment.ppboom_stripe_publishable_key,
+    ppboom_payment_locale: payment.ppboom_payment_locale,
+    ppboom_device_id: payment.ppboom_device_id,
+    ppboom_user_agent: payment.ppboom_user_agent,
+  });
 
   const applyTerminalTask = useCallback(
     async (latest: any) => {
@@ -412,11 +496,13 @@ function GeneratePlusModal({
           plan: "plus",
           country: payment.country,
           currency: payment.currency,
-          auto_checkout: "true",
+          auto_checkout: isPpBoomMode ? "false" : "true",
           payment_method: "paypal",
           headless:
-            payment.checkout_mode === "camoufox_headless" ? "true" : "false",
-          checkout_mode: payment.checkout_mode,
+            isPpBoomMode || payment.checkout_mode !== "camoufox_headless"
+              ? "false"
+              : "true",
+          checkout_mode: isPpBoomMode ? PPBOOM_EXECUTOR : payment.checkout_mode,
           checkout_timeout: Number(
             payment.checkout_timeout || DEFAULT_PAYMENT.checkout_timeout,
           ),
@@ -431,6 +517,7 @@ function GeneratePlusModal({
           proxy_region: payment.country,
           address_region: payment.address_region || "US",
           sms_pool: payment.sms_pool,
+          ...buildPpBoomParams(),
           // 强制重新生成（用户每次点都期望换一条新链接），
           // 避免后端因 cashier_url 已在 extra 里就直接跳过重新拉取。
           regenerate: "true",
@@ -466,7 +553,7 @@ function GeneratePlusModal({
       Math.max(Number(count || 1), 1),
       5,
     );
-    if (validSmsLines.length < requestedConcurrency) {
+    if (!isPpBoomMode && validSmsLines.length < requestedConcurrency) {
       setError(
         t("ctfGptPlus.smsPoolNotEnough")
           .replace("{need}", String(requestedConcurrency))
@@ -487,11 +574,13 @@ function GeneratePlusModal({
           plan: "plus",
           country: payment.country,
           currency: payment.currency,
-          auto_checkout: "true",
+          auto_checkout: isPpBoomMode ? "false" : "true",
           payment_method: "paypal",
           headless:
-            payment.checkout_mode === "camoufox_headless" ? "true" : "false",
-          checkout_mode: payment.checkout_mode,
+            isPpBoomMode || payment.checkout_mode !== "camoufox_headless"
+              ? "false"
+              : "true",
+          checkout_mode: isPpBoomMode ? PPBOOM_EXECUTOR : payment.checkout_mode,
           checkout_timeout: Number(
             payment.checkout_timeout || DEFAULT_PAYMENT.checkout_timeout,
           ),
@@ -511,6 +600,7 @@ function GeneratePlusModal({
           address_region: payment.address_region || "US",
           // 号码池 textarea 原样透传给后端，由 parse_sms_pool 切分。
           sms_pool: payment.sms_pool,
+          ...buildPpBoomParams(),
         },
       };
       if (selection.identityProvider === "mailbox") {
@@ -527,7 +617,7 @@ function GeneratePlusModal({
             5,
           ),
           proxy: null,
-          executor_type: selection.executorType,
+          executor_type: effectiveExecutorType,
           captcha_solver: "auto",
           extra,
         }),
@@ -569,6 +659,25 @@ function GeneratePlusModal({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
         className="control-surface control-surface-compact text-center"
+      />
+    </div>
+  );
+  const textInput = (
+    label: string,
+    field: string,
+    placeholder = "",
+    className = "",
+  ) => (
+    <div className={className}>
+      <label className="mb-1 block text-xs text-[var(--text-muted)]">
+        {label}
+      </label>
+      <input
+        type="text"
+        value={String(payment[field] || "")}
+        placeholder={placeholder}
+        onChange={(event) => updatePayment(field, event.target.value)}
+        className="control-surface control-surface-compact w-full"
       />
     </div>
   );
@@ -937,6 +1046,72 @@ function GeneratePlusModal({
                   </div>
                 </section>
 
+                {isPpBoomMode ? (
+                  <section className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg-pane)]/40 p-4">
+                    <div className="text-sm font-semibold text-[var(--text-primary)]">
+                      {PPBOOM_TEXT.configTitle}
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      {textInput(PPBOOM_TEXT.helperUrl, "ppboom_base_url")}
+                      {numberInput(
+                        PPBOOM_TEXT.maxAttempts,
+                        Number(payment.ppboom_max_attempts),
+                        (value) => updatePayment("ppboom_max_attempts", value),
+                        1,
+                        20,
+                      )}
+                      {numberInput(
+                        PPBOOM_TEXT.timeout,
+                        Number(payment.ppboom_timeout),
+                        (value) => updatePayment("ppboom_timeout", value),
+                        30,
+                        3600,
+                      )}
+                      {textInput(PPBOOM_TEXT.directProxy, "ppboom_proxy")}
+                      {textInput(
+                        PPBOOM_TEXT.defaultProxy,
+                        "ppboom_default_proxy",
+                      )}
+                      {textInput(
+                        PPBOOM_TEXT.providerProxy,
+                        "ppboom_provider_proxy",
+                      )}
+                      {textInput(
+                        PPBOOM_TEXT.billingCountry,
+                        "ppboom_billing_country",
+                      )}
+                      {textInput(
+                        PPBOOM_TEXT.billingCurrency,
+                        "ppboom_billing_currency",
+                      )}
+                      {textInput(
+                        PPBOOM_TEXT.billingName,
+                        "ppboom_billing_name",
+                      )}
+                      {textInput(
+                        PPBOOM_TEXT.billingEmail,
+                        "ppboom_billing_email",
+                      )}
+                      {textInput(
+                        PPBOOM_TEXT.promoCampaign,
+                        "ppboom_promo_campaign_id",
+                      )}
+                      {textInput(PPBOOM_TEXT.locale, "ppboom_payment_locale")}
+                      {textInput(
+                        PPBOOM_TEXT.stripeKey,
+                        "ppboom_stripe_publishable_key",
+                      )}
+                      {textInput(PPBOOM_TEXT.deviceId, "ppboom_device_id")}
+                      {textInput(
+                        PPBOOM_TEXT.userAgent,
+                        "ppboom_user_agent",
+                        "",
+                        "md:col-span-3",
+                      )}
+                    </div>
+                  </section>
+                ) : null}
+
                 {/* SMS 号码池：PayPal SignUp 触发 PHONE_CONFIRMATION_REQUIRED 时
                     需要从这里挑一对 (phone, relay_url) 走 OTP 子链。每行一条，
                     格式 `+phone----relay_url`，留空则不启用 OTP 子链。 */}
@@ -978,7 +1153,7 @@ function GeneratePlusModal({
                         {t("accounts.verificationSummary")}:{" "}
                         <span className="text-[var(--text-primary)]">
                           {getCaptchaStrategyLabel(
-                            selection.executorType,
+                            effectiveExecutorType,
                             configOptions.captcha_policy,
                             configOptions.captcha_providers,
                             language,

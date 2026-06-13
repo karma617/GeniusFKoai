@@ -343,6 +343,73 @@ def test_chatgpt_auto_plus_followup_generates_payment_link(monkeypatch):
     assert "Plus" in account.extra["account_overview"]["chips"]
 
 
+def test_chatgpt_auto_plus_followup_ppboom_link_does_not_mark_subscribed(monkeypatch):
+    saved_accounts = []
+
+    class FakeLogger(_FakeLogger):
+        def add_cashier_url(self, url):
+            self.events.append(("cashier_url", url, {}))
+
+    class FakeAccount:
+        platform = "chatgpt"
+        email = "ctf@example.com"
+        password = "Secret123!"
+        extra = {"access_token": "access-token"}
+
+    class FakePlatform:
+        def __init__(self):
+            self.calls = []
+
+        def execute_action(self, action_id, account, params):
+            self.calls.append((action_id, params))
+            return {
+                "ok": True,
+                "data": {
+                    "cashier_url": "https://paypal.example/approve",
+                    "paypal_authorize_url": "https://paypal.example/approve",
+                    "checkout_mode": "ppboom",
+                    "subscription_submitted": False,
+                    "ppboom": {"ok": True},
+                },
+            }
+
+    monkeypatch.setattr(tasks_module, "save_account", lambda account: saved_accounts.append(dict(account.extra)))
+    logger = FakeLogger()
+    platform = FakePlatform()
+    account = FakeAccount()
+
+    error = tasks_module._auto_followup_chatgpt_plus_payment(
+        platform_name="chatgpt",
+        payload={
+            "extra": {
+                "auto_chatgpt_plus_payment": True,
+                "chatgpt_payment": {
+                    "country": "US",
+                    "currency": "USD",
+                    "use_ppboom": "true",
+                    "ppboom_base_url": "http://127.0.0.1:8787",
+                    "ppboom_max_attempts": 20,
+                },
+            }
+        },
+        platform=platform,
+        account=account,
+        logger=logger,
+    )
+
+    assert error == ""
+    assert platform.calls[0][0] == "payment_link"
+    assert platform.calls[0][1]["use_ppboom"] == "true"
+    assert platform.calls[0][1]["ppboom_base_url"] == "http://127.0.0.1:8787"
+    assert platform.calls[0][1]["ppboom_max_attempts"] == 20
+    assert account.extra["cashier_url"] == "https://paypal.example/approve"
+    assert account.extra["subscription_submitted"] is False
+    assert "account_overview" not in account.extra
+    assert not hasattr(account, "status")
+    assert saved_accounts[-1]["cashier_url"] == "https://paypal.example/approve"
+    assert ("cashier_url", "https://paypal.example/approve", {}) in logger.events
+
+
 def test_chatgpt_auto_plus_followup_logs_paypal_authorize_url_when_available(monkeypatch):
     class FakeLogger(_FakeLogger):
         def add_cashier_url(self, url):

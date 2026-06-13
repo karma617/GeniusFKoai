@@ -124,6 +124,17 @@ def build_phone_callbacks(ctx: RegistrationContext, *, service: str | None = Non
         or merged.get("herosms_default_country")
         or merged.get("smsbower_country")
         or merged.get("smsbower_default_country")
+        or merged.get("grizzlysms_country")
+        or merged.get("grizzlysms_default_country")
+        or merged.get("sms_verification_number_country")
+        or merged.get("sms_verification_number_default_country")
+        or merged.get("smspool_country")
+        or merged.get("smspool_default_country")
+        or merged.get("five_sim_country")
+        or merged.get("five_sim_default_country")
+        or merged.get("nexsms_default_country")
+        or merged.get("nexsms_country")
+        or merged.get("nexsms_country_order")
         or ""
     ).strip()
     sms_service = str(
@@ -134,6 +145,15 @@ def build_phone_callbacks(ctx: RegistrationContext, *, service: str | None = Non
         or merged.get("smsbower_default_service")
         or merged.get("sms_activate_service")
         or merged.get("sms_activate_default_service")
+        or merged.get("grizzlysms_service")
+        or merged.get("grizzlysms_default_service")
+        or merged.get("sms_verification_number_service")
+        or merged.get("sms_verification_number_default_service")
+        or merged.get("smspool_service")
+        or merged.get("smspool_default_service")
+        or merged.get("five_sim_product")
+        or merged.get("nexsms_service")
+        or merged.get("nexsms_default_service")
         or service
         or ctx.platform_name
     ).strip() or ctx.platform_name

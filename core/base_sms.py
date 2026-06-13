@@ -1200,6 +1200,844 @@ class SmsBowerProvider(HeroSmsProvider):
         return resp
 
 
+class GrizzlySmsProvider(SmsBowerProvider):
+    """GrizzlySMS provider using the SMS-Activate compatible API."""
+
+    BASE_URL = "https://api.grizzlysms.com/stubs/handler_api.php"
+
+
+class SmsVerificationNumberProvider(SmsBowerProvider):
+    """SMS Verification Number provider using the SMS-Activate compatible API."""
+
+    BASE_URL = "https://sms-verification-number.com/stubs/handler_api"
+    DEFAULT_LANG = "en"
+
+    def _request(self, params: dict, *, needs_key: bool = True, timeout: int = 30) -> requests.Response:
+        payload = dict(params)
+        if payload.get("action") in {"getPrices", "getServicesList"}:
+            payload.setdefault("lang", self.DEFAULT_LANG)
+        if needs_key or self.api_key:
+            payload["api_key"] = self.api_key
+        resp = requests.get(self.BASE_URL, params=payload, timeout=timeout, proxies=self.proxies)
+        resp.raise_for_status()
+        return resp
+
+    def get_countries(self) -> list:
+        try:
+            data = self._request({"action": "getCountryAndOperators", "lang": self.DEFAULT_LANG}).json()
+        except Exception:
+            return super().get_countries()
+        if not isinstance(data, list):
+            return super().get_countries()
+        rows = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            country_id = str(item.get("id") or item.get("countryId") or "").strip()
+            name = str(item.get("name") or item.get("eng") or item.get("chn") or country_id).strip()
+            if not country_id or not name:
+                continue
+            rows.append(
+                {
+                    "id": country_id,
+                    "name": name,
+                    "eng": name,
+                    "chn": name,
+                    "operators": item.get("operators") or {},
+                    "raw": item,
+                }
+            )
+        return rows
+
+
+REMOTE_SMS_POLL_INTERVAL = 5
+SMSPOOL_DEFAULT_BASE_URL = "https://api.smspool.net"
+SMSPOOL_DEFAULT_COMPAT_BASE_URL = "https://api.smspool.net/stubs/handler_api.php?setting=smspool"
+SMSPOOL_DEFAULT_SERVICE = "671"
+SMSPOOL_DEFAULT_COUNTRY = "1"
+FIVE_SIM_DEFAULT_BASE_URL = "https://5sim.net"
+FIVE_SIM_DEFAULT_PRODUCT = "openai"
+FIVE_SIM_DEFAULT_COUNTRY = "vietnam"
+FIVE_SIM_DEFAULT_OPERATOR = "any"
+NEXSMS_DEFAULT_BASE_URL = "https://api.nexsms.net"
+NEXSMS_DEFAULT_SERVICE = "ot"
+GENERIC_CHATGPT_SERVICE_NAMES = {"", "default", "chatgpt", "openai", "cursor", "gpt", "gptplus", "dr", "ot"}
+
+
+def _remote_sms_base_url(value: str, default: str) -> str:
+    raw = str(value or "").strip() or default
+    return raw.rstrip("/")
+
+
+def _remote_sms_join_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{str(path or '').lstrip('/')}"
+
+
+def _remote_sms_query_url(base_url: str, params: dict) -> str:
+    parsed = urlsplit(str(base_url or ""))
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in (params or {}).items():
+        if value not in (None, ""):
+            query[str(key)] = str(value)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+
+
+def _remote_sms_payload(text: str):
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    try:
+        return json.loads(raw)
+    except Exception:
+        return raw
+
+
+def _remote_sms_describe(payload) -> str:
+    if isinstance(payload, str):
+        return payload.strip()
+    if isinstance(payload, dict):
+        for key in ("message", "msg", "error", "title", "statusText", "status"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                return str(value).strip()
+        try:
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            return str(payload)
+    if isinstance(payload, list):
+        try:
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            return str(payload)
+    return str(payload or "").strip()
+
+
+def _remote_sms_success(payload) -> bool:
+    if isinstance(payload, str):
+        text = payload.strip().lower()
+        return text.startswith(("access_", "success", "ok"))
+    if not isinstance(payload, dict):
+        return False
+    for key in ("success", "ok"):
+        if key in payload:
+            value = payload.get(key)
+            return value is True or str(value).strip().lower() in {"1", "true", "ok", "success"}
+    if "code" in payload:
+        try:
+            return int(payload.get("code")) == 0
+        except (TypeError, ValueError):
+            return False
+    status = str(payload.get("status") or "").strip().lower()
+    return status in {"ok", "success", "access", "ready"}
+
+
+def _remote_sms_error_is_waiting(payload) -> bool:
+    text = _remote_sms_describe(payload).lower()
+    return bool(re.search(r"wait|pending|no\s*sms|no\s*code|not\s*arrived|empty", text))
+
+
+def _remote_sms_error_is_terminal(payload) -> bool:
+    text = _remote_sms_describe(payload).lower()
+    return bool(re.search(r"cancel|expired|timeout|closed|banned|finished|invalid|not\s*found", text))
+
+
+def _remote_sms_normalize_phone(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("+"):
+        return text
+    digits = re.sub(r"\D+", "", text)
+    return f"+{digits}" if digits else text
+
+
+def _remote_sms_code(payload) -> str:
+    try:
+        code = extract_codex_sms_verification_code(payload)
+        if code:
+            return code
+    except Exception:
+        pass
+    match = re.search(r"\b(\d{4,8})\b", _remote_sms_describe(payload))
+    return match.group(1) if match else ""
+
+
+def _remote_sms_first_dict(payload) -> dict:
+    if isinstance(payload, dict):
+        for key in ("data", "result", "response", "order", "activation"):
+            child = payload.get(key)
+            if isinstance(child, dict):
+                return child
+        return payload
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                return item
+    return {}
+
+
+def _remote_sms_service_code(service: str, default: str) -> str:
+    raw = str(service or "").strip()
+    if raw.lower() in GENERIC_CHATGPT_SERVICE_NAMES:
+        return str(default or "").strip()
+    return raw or str(default or "").strip()
+
+
+class SmsPoolProvider(BaseSmsProvider):
+    """SMSPool native API provider."""
+
+    auto_report_success_on_code = False
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        default_service: str = SMSPOOL_DEFAULT_SERVICE,
+        default_country: str = SMSPOOL_DEFAULT_COUNTRY,
+        base_url: str = SMSPOOL_DEFAULT_BASE_URL,
+        compat_base_url: str = SMSPOOL_DEFAULT_COMPAT_BASE_URL,
+        max_price: float = -1,
+        proxy: str | None = None,
+        poll_interval: int = REMOTE_SMS_POLL_INTERVAL,
+    ):
+        self.api_key = str(api_key or "").strip()
+        self.default_service = str(default_service or SMSPOOL_DEFAULT_SERVICE).strip()
+        self.default_country = str(default_country or SMSPOOL_DEFAULT_COUNTRY).strip()
+        self.base_url = _remote_sms_base_url(base_url, SMSPOOL_DEFAULT_BASE_URL)
+        self.compat_base_url = str(compat_base_url or SMSPOOL_DEFAULT_COMPAT_BASE_URL).strip()
+        self.max_price = float(max_price or -1)
+        self.proxies = {"http": proxy, "https": proxy} if proxy else None
+        self.poll_interval = max(1, int(poll_interval or REMOTE_SMS_POLL_INTERVAL))
+        self._ignored_codes: dict[str, set[str]] = {}
+        self._last_codes: dict[str, str] = {}
+
+    def _post_form(self, path: str, data: dict, *, action_label: str) -> Any:
+        if not self.api_key:
+            raise RuntimeError("SMSPool API Key is not configured")
+        body = dict(data or {})
+        body.setdefault("key", self.api_key)
+        response = requests.post(
+            _remote_sms_join_url(self.base_url, path),
+            data=body,
+            headers={
+                "Accept": "application/json,text/plain,*/*",
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            },
+            timeout=20,
+            proxies=self.proxies,
+        )
+        payload = _remote_sms_payload(response.text)
+        if not response.ok:
+            raise RuntimeError(f"{action_label} failed: {_remote_sms_describe(payload) or response.status_code}")
+        return payload
+
+    def _compat_get(self, params: dict, *, action_label: str) -> Any:
+        if not self.api_key:
+            raise RuntimeError("SMSPool API Key is not configured")
+        query = {"api_key": self.api_key, **dict(params or {})}
+        response = requests.get(
+            _remote_sms_query_url(self.compat_base_url, query),
+            timeout=20,
+            proxies=self.proxies,
+        )
+        payload = _remote_sms_payload(response.text)
+        if not response.ok:
+            raise RuntimeError(f"{action_label} failed: {_remote_sms_describe(payload) or response.status_code}")
+        return payload
+
+    def _normalize_activation(self, payload, *, service_code: str, country_code: str) -> SmsActivation | None:
+        record = _remote_sms_first_dict(payload)
+        activation_id = str(
+            record.get("activationId")
+            or record.get("orderid")
+            or record.get("order_id")
+            or record.get("orderCode")
+            or record.get("id")
+            or ""
+        ).strip()
+        phone_number = _remote_sms_normalize_phone(
+            record.get("phoneNumber")
+            or record.get("phonenumber")
+            or record.get("number")
+            or record.get("phone")
+            or ""
+        )
+        if not activation_id or not phone_number:
+            return None
+        return SmsActivation(
+            activation_id=activation_id,
+            phone_number=phone_number,
+            country=country_code,
+            metadata={
+                "provider": "smspool",
+                "service": service_code,
+                "country": country_code,
+                "number_info": record,
+                "activation_cost": record.get("cost") or record.get("price"),
+                "max_price": self.max_price if self.max_price > 0 else "",
+            },
+        )
+
+    def get_balance(self) -> float:
+        payload = self._post_form("/request/balance", {}, action_label="SMSPool balance")
+        record = _remote_sms_first_dict(payload)
+        value = record.get("balance") if isinstance(record, dict) else None
+        if value in (None, "") and isinstance(payload, dict):
+            value = payload.get("balance")
+        return float(value or 0)
+
+    def get_current_price_info(self, *, service: str, country: str = "") -> dict:
+        service_code = _remote_sms_service_code(service, self.default_service)
+        country_code = str(country or self.default_country or "").strip()
+        try:
+            payload = self._compat_get(
+                {"action": "getPrices", "service": service_code, "country": country_code},
+                action_label="SMSPool getPrices",
+            )
+        except Exception:
+            return {}
+        info = _extract_price_info_from_services(payload, service=service_code, country=country_code)
+        if info:
+            info.update({"service": service_code, "country": country_code})
+        return info
+
+    def get_number(self, *, service: str, country: str = "") -> SmsActivation:
+        service_code = _remote_sms_service_code(service, self.default_service)
+        country_code = str(country or self.default_country or SMSPOOL_DEFAULT_COUNTRY).strip()
+        payload = self._post_form(
+            "/purchase/sms",
+            {"country": country_code, "service": service_code, "quantity": 1},
+            action_label="SMSPool purchase",
+        )
+        activation = self._normalize_activation(payload, service_code=service_code, country_code=country_code)
+        if not activation:
+            raise RuntimeError(f"SMSPool purchase returned unusable response: {_remote_sms_describe(payload)}")
+        return activation
+
+    def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+        activation_key = str(activation_id or "").strip()
+        ignored = self._ignored_codes.setdefault(activation_key, set())
+        deadline = time.time() + max(1, int(timeout or 120))
+        while time.time() < deadline:
+            payload = self._post_form(
+                "/sms/check",
+                {"orderid": activation_key},
+                action_label="SMSPool check",
+            )
+            code = _remote_sms_code(payload)
+            if code and code not in ignored:
+                self._last_codes[activation_key] = code
+                return code
+            if _remote_sms_error_is_terminal(payload):
+                return ""
+            time.sleep(self.poll_interval)
+        self.cancel(activation_key)
+        return ""
+
+    def cancel(self, activation_id: str) -> bool:
+        try:
+            payload = self._post_form("/sms/cancel", {"orderid": activation_id}, action_label="SMSPool cancel")
+            return _remote_sms_success(payload)
+        except Exception as exc:
+            logger.warning("SMSPool cancel failed: %s", exc)
+            return False
+
+    def report_success(self, activation_id: str) -> bool:
+        return True
+
+    def mark_code_failed(self, activation_id: str, reason: str = "") -> None:
+        activation_key = str(activation_id or "").strip()
+        last_code = self._last_codes.get(activation_key)
+        if last_code:
+            self._ignored_codes.setdefault(activation_key, set()).add(last_code)
+        try:
+            probe = self._post_form("/sms/check_resend", {"orderid": activation_key}, action_label="SMSPool check resend")
+            if _remote_sms_success(probe):
+                self._post_form("/sms/resend", {"orderid": activation_key}, action_label="SMSPool resend")
+        except Exception:
+            return None
+
+    def get_countries(self) -> list:
+        response = requests.post(
+            _remote_sms_join_url(self.base_url, "/country/retrieve_all"),
+            headers={"Accept": "application/json,text/plain,*/*"},
+            timeout=20,
+            proxies=self.proxies,
+        )
+        payload = _remote_sms_payload(response.text)
+        if not response.ok:
+            raise RuntimeError(f"SMSPool countries failed: {_remote_sms_describe(payload) or response.status_code}")
+        if not isinstance(payload, list):
+            return []
+        rows = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            country_id = str(item.get("ID") or item.get("id") or item.get("country_id") or "").strip()
+            name = str(item.get("name") or item.get("short_name") or item.get("shortName") or country_id).strip()
+            if not country_id or not name:
+                continue
+            rows.append(
+                {
+                    "id": country_id,
+                    "name": name,
+                    "eng": name,
+                    "chn": name,
+                    "cc": str(item.get("cc") or "").strip(),
+                    "raw": item,
+                }
+            )
+        return rows
+
+    def get_services(self, country: str | int | None = None) -> list:
+        try:
+            response = requests.post(
+                _remote_sms_join_url(self.base_url, "/service/retrieve_all"),
+                headers={"Accept": "application/json,text/plain,*/*"},
+                timeout=20,
+                proxies=self.proxies,
+            )
+            payload = _remote_sms_payload(response.text)
+            if response.ok and isinstance(payload, list):
+                rows = []
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    code = str(
+                        item.get("ID")
+                        or item.get("id")
+                        or item.get("service_code")
+                        or item.get("code")
+                        or ""
+                    ).strip()
+                    name = str(item.get("name") or item.get("service") or item.get("title") or code).strip()
+                    if code:
+                        rows.append({"code": code, "name": name or code, "raw": item})
+                if rows:
+                    return rows
+        except Exception:
+            pass
+        return [{"code": SMSPOOL_DEFAULT_SERVICE, "name": "OpenAI / ChatGPT"}]
+
+
+class FiveSimProvider(BaseSmsProvider):
+    """5sim native API provider."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        country: str = FIVE_SIM_DEFAULT_COUNTRY,
+        operator: str = FIVE_SIM_DEFAULT_OPERATOR,
+        product: str = FIVE_SIM_DEFAULT_PRODUCT,
+        base_url: str = FIVE_SIM_DEFAULT_BASE_URL,
+        max_price: float = -1,
+        proxy: str | None = None,
+        reuse: bool = True,
+        poll_interval: int = REMOTE_SMS_POLL_INTERVAL,
+    ):
+        self.api_key = str(api_key or "").strip()
+        self.country = self._normalize_slug(country or FIVE_SIM_DEFAULT_COUNTRY)
+        self.operator = self._normalize_slug(operator or FIVE_SIM_DEFAULT_OPERATOR)
+        self.product = self._normalize_slug(product or FIVE_SIM_DEFAULT_PRODUCT)
+        self.base_url = _remote_sms_base_url(base_url, FIVE_SIM_DEFAULT_BASE_URL)
+        self.max_price = float(max_price or -1)
+        self.reuse = bool(reuse)
+        self.proxies = {"http": proxy, "https": proxy} if proxy else None
+        self.poll_interval = max(1, int(poll_interval or REMOTE_SMS_POLL_INTERVAL))
+
+    @staticmethod
+    def _normalize_slug(value: str) -> str:
+        return re.sub(r"[^a-z0-9_-]+", "", str(value or "").strip().lower())
+
+    def _request(self, path: str, *, query: dict | None = None, require_auth: bool = True) -> Any:
+        if require_auth and not self.api_key:
+            raise RuntimeError("5sim API Key is not configured")
+        headers = {"Accept": "application/json"}
+        if require_auth:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        response = requests.get(
+            _remote_sms_query_url(_remote_sms_join_url(self.base_url, path), query or {}),
+            headers=headers,
+            timeout=20,
+            proxies=self.proxies,
+        )
+        payload = _remote_sms_payload(response.text)
+        if not response.ok:
+            raise RuntimeError(f"5sim request failed: {_remote_sms_describe(payload) or response.status_code}")
+        return payload
+
+    def _product_for(self, service: str) -> str:
+        return _remote_sms_service_code(service, self.product) or FIVE_SIM_DEFAULT_PRODUCT
+
+    def get_balance(self) -> float:
+        payload = self._request("/v1/user/profile")
+        return float((payload or {}).get("balance") or 0) if isinstance(payload, dict) else 0.0
+
+    def get_current_price_info(self, *, service: str, country: str = "") -> dict:
+        country_slug = self._normalize_slug(country or self.country or FIVE_SIM_DEFAULT_COUNTRY)
+        product = self._product_for(service)
+        try:
+            payload = self._request(
+                f"/v1/guest/products/{country_slug}/{self.operator or FIVE_SIM_DEFAULT_OPERATOR}",
+                require_auth=False,
+            )
+        except Exception:
+            return {}
+        product_info = payload.get(product) if isinstance(payload, dict) else None
+        if not isinstance(product_info, dict):
+            return {}
+        price = _maybe_float(product_info.get("Price") or product_info.get("price") or product_info.get("cost"))
+        count = _maybe_int(product_info.get("Qty") or product_info.get("qty") or product_info.get("count"))
+        result = {"price": price, "count": count, "currency": "RUB", "raw": product_info}
+        result.update({"service": product, "country": country_slug})
+        return result
+
+    def get_number(self, *, service: str, country: str = "") -> SmsActivation:
+        country_slug = self._normalize_slug(country or self.country or FIVE_SIM_DEFAULT_COUNTRY)
+        operator = self.operator or FIVE_SIM_DEFAULT_OPERATOR
+        product = self._product_for(service)
+        query = {}
+        if self.max_price > 0:
+            query["maxPrice"] = _format_number_for_log(self.max_price)
+        if self.reuse:
+            query["reuse"] = "1"
+        payload = self._request(f"/v1/user/buy/activation/{country_slug}/{operator}/{product}", query=query)
+        record = _remote_sms_first_dict(payload)
+        activation_id = str(record.get("id") or record.get("activationId") or "").strip()
+        phone_number = _remote_sms_normalize_phone(record.get("phone") or record.get("phoneNumber") or "")
+        if not activation_id or not phone_number:
+            raise RuntimeError(f"5sim purchase returned unusable response: {_remote_sms_describe(payload)}")
+        return SmsActivation(
+            activation_id=activation_id,
+            phone_number=phone_number,
+            country=country_slug,
+            metadata={
+                "provider": "5sim",
+                "service": product,
+                "country": country_slug,
+                "number_info": record,
+                "activation_cost": record.get("price"),
+                "max_price": self.max_price if self.max_price > 0 else "",
+            },
+        )
+
+    def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+        deadline = time.time() + max(1, int(timeout or 120))
+        while time.time() < deadline:
+            payload = self._request(f"/v1/user/check/{activation_id}")
+            code = _remote_sms_code(payload)
+            if code:
+                return code
+            status = str((payload or {}).get("status") or "").strip().upper() if isinstance(payload, dict) else ""
+            if status in {"CANCELED", "BANNED", "FINISHED", "TIMEOUT"}:
+                return ""
+            time.sleep(self.poll_interval)
+        self.cancel(activation_id)
+        return ""
+
+    def cancel(self, activation_id: str) -> bool:
+        try:
+            self._request(f"/v1/user/cancel/{activation_id}")
+            return True
+        except Exception as exc:
+            logger.warning("5sim cancel failed: %s", exc)
+            return False
+
+    def report_success(self, activation_id: str) -> bool:
+        try:
+            self._request(f"/v1/user/finish/{activation_id}")
+            return True
+        except Exception:
+            return False
+
+    def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+        self.cancel(activation_id)
+
+    def get_countries(self) -> list:
+        payload = self._request("/v1/guest/countries", require_auth=False)
+        if not isinstance(payload, dict):
+            return []
+        rows = []
+        for slug, item in payload.items():
+            country_id = self._normalize_slug(slug)
+            if not country_id:
+                continue
+            item = item if isinstance(item, dict) else {}
+            name = str(item.get("text_en") or item.get("name") or slug).strip() or country_id
+            rows.append(
+                {
+                    "id": country_id,
+                    "name": name,
+                    "eng": name,
+                    "chn": name,
+                    "raw": item,
+                }
+            )
+        rows.sort(key=lambda item: str(item.get("name") or ""))
+        return rows
+
+    def get_services(self, country: str | int | None = None) -> list:
+        country_slug = self._normalize_slug(country or self.country or FIVE_SIM_DEFAULT_COUNTRY)
+        try:
+            payload = self._request(
+                f"/v1/guest/products/{country_slug}/{self.operator or FIVE_SIM_DEFAULT_OPERATOR}",
+                require_auth=False,
+            )
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            return [{"code": FIVE_SIM_DEFAULT_PRODUCT, "name": FIVE_SIM_DEFAULT_PRODUCT}]
+        rows = []
+        for code, item in payload.items():
+            service_code = self._normalize_slug(code)
+            if not service_code:
+                continue
+            item = item if isinstance(item, dict) else {}
+            name = str(item.get("Name") or item.get("name") or service_code).strip() or service_code
+            rows.append({"code": service_code, "name": name, "raw": item})
+        return rows or [{"code": FIVE_SIM_DEFAULT_PRODUCT, "name": FIVE_SIM_DEFAULT_PRODUCT}]
+
+
+class NexSmsProvider(BaseSmsProvider):
+    """NexSMS native API provider."""
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        country_order: str | list | tuple = "",
+        service_code: str = NEXSMS_DEFAULT_SERVICE,
+        base_url: str = NEXSMS_DEFAULT_BASE_URL,
+        max_price: float = -1,
+        proxy: str | None = None,
+        poll_interval: int = REMOTE_SMS_POLL_INTERVAL,
+    ):
+        self.api_key = str(api_key or "").strip()
+        self.country_order = self._normalize_country_order(country_order)
+        self.service_code = self._normalize_service_code(service_code)
+        self.base_url = _remote_sms_base_url(base_url, NEXSMS_DEFAULT_BASE_URL)
+        self.max_price = float(max_price or -1)
+        self.proxies = {"http": proxy, "https": proxy} if proxy else None
+        self.poll_interval = max(1, int(poll_interval or REMOTE_SMS_POLL_INTERVAL))
+
+    @staticmethod
+    def _normalize_service_code(value: str) -> str:
+        return re.sub(r"[^a-z0-9_-]+", "", str(value or "").strip().lower()) or NEXSMS_DEFAULT_SERVICE
+
+    @staticmethod
+    def _normalize_country_order(value) -> list[int]:
+        source = value if isinstance(value, (list, tuple)) else re.split(r"[\s,;|]+", str(value or ""))
+        countries: list[int] = []
+        seen: set[int] = set()
+        for item in source:
+            try:
+                country_id = int(float(str(item).strip()))
+            except (TypeError, ValueError):
+                continue
+            if country_id < 0 or country_id in seen:
+                continue
+            seen.add(country_id)
+            countries.append(country_id)
+        return countries
+
+    def _request(self, path: str, *, method: str = "GET", query: dict | None = None, body: dict | None = None) -> Any:
+        if not self.api_key:
+            raise RuntimeError("NexSMS API Key is not configured")
+        url = _remote_sms_query_url(
+            _remote_sms_join_url(self.base_url, path),
+            {"apiKey": self.api_key, **dict(query or {})},
+        )
+        method = method.upper()
+        response = requests.request(
+            method,
+            url,
+            json=body if method not in {"GET", "HEAD"} else None,
+            headers={"Accept": "application/json"},
+            timeout=20,
+            proxies=self.proxies,
+        )
+        payload = _remote_sms_payload(response.text)
+        if not response.ok:
+            raise RuntimeError(f"NexSMS request failed: {_remote_sms_describe(payload) or response.status_code}")
+        return payload
+
+    def _price_candidates(self, country_id: int) -> list[float | None]:
+        try:
+            payload = self._request(
+                "/api/getCountryByService",
+                query={"serviceCode": self.service_code, "countryId": country_id},
+            )
+        except Exception:
+            return [None]
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        values = []
+        if isinstance(data, dict):
+            for key in ("minPrice", "medianPrice", "maxPrice"):
+                value = _maybe_float(data.get(key))
+                if value is not None:
+                    values.append(value)
+            price_map = data.get("priceMap")
+            if isinstance(price_map, dict):
+                for price_key, count in price_map.items():
+                    price = _maybe_float(price_key)
+                    available = _maybe_int(count)
+                    if price is not None and (available is None or available > 0):
+                        values.append(price)
+        if self.max_price > 0:
+            values = [value for value in values if value <= self.max_price]
+        values = sorted(set(round(value, 4) for value in values if value and value > 0))
+        return values or [None]
+
+    def get_current_price_info(self, *, service: str, country: str = "") -> dict:
+        try:
+            country_id = int(float(str(country or (self.country_order[0] if self.country_order else 0))))
+        except (TypeError, ValueError):
+            return {}
+        if country_id < 0:
+            return {}
+        prices = [value for value in self._price_candidates(country_id) if value is not None]
+        if not prices:
+            return {}
+        return {
+            "price": prices[0],
+            "count": None,
+            "currency": "USD",
+            "service": self.service_code,
+            "country": str(country_id),
+            "raw": {"prices": prices},
+        }
+
+    def _normalize_activation(self, payload, *, country_id: int, price: float | None) -> SmsActivation | None:
+        record = _remote_sms_first_dict(payload)
+        data = record.get("data") if isinstance(record.get("data"), dict) else record
+        candidates = data.get("phoneNumbers") if isinstance(data, dict) else None
+        if not isinstance(candidates, list):
+            candidates = data.get("numbers") if isinstance(data, dict) and isinstance(data.get("numbers"), list) else []
+        phone_number = _remote_sms_normalize_phone(
+            (data or {}).get("phoneNumber")
+            or (data or {}).get("phone")
+            or (candidates[0] if candidates else "")
+        )
+        if not phone_number:
+            return None
+        return SmsActivation(
+            activation_id=phone_number,
+            phone_number=phone_number,
+            country=str(country_id),
+            metadata={
+                "provider": "nexsms",
+                "service": self.service_code,
+                "country": str(country_id),
+                "number_info": data,
+                "activation_cost": price,
+                "max_price": self.max_price if self.max_price > 0 else "",
+            },
+        )
+
+    def get_number(self, *, service: str, country: str = "") -> SmsActivation:
+        service_code = _remote_sms_service_code(service, self.service_code)
+        if service_code:
+            self.service_code = self._normalize_service_code(service_code)
+        countries = self._normalize_country_order(country) if country else list(self.country_order)
+        if not countries:
+            raise RuntimeError("NexSMS country order is not configured")
+        last_error = ""
+        for country_id in countries:
+            for price in self._price_candidates(country_id):
+                body = {"serviceCode": self.service_code, "countryId": country_id, "quantity": 1}
+                if price is not None:
+                    body["price"] = price
+                try:
+                    payload = self._request("/api/order/purchase", method="POST", body=body)
+                    if not _remote_sms_success(payload):
+                        last_error = _remote_sms_describe(payload)
+                        continue
+                    activation = self._normalize_activation(payload, country_id=country_id, price=price)
+                    if activation:
+                        return activation
+                    last_error = _remote_sms_describe(payload)
+                except Exception as exc:
+                    last_error = str(exc)
+        raise RuntimeError(f"NexSMS purchase failed: {last_error or 'no available number'}")
+
+    def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+        deadline = time.time() + max(1, int(timeout or 120))
+        while time.time() < deadline:
+            payload = self._request(
+                "/api/sms/messages",
+                query={"phoneNumber": activation_id, "format": "json_latest"},
+            )
+            if _remote_sms_success(payload):
+                code = _remote_sms_code(payload.get("data") if isinstance(payload, dict) else payload)
+                if code:
+                    return code
+            elif not _remote_sms_error_is_waiting(payload) and _remote_sms_error_is_terminal(payload):
+                return ""
+            time.sleep(self.poll_interval)
+        self.cancel(activation_id)
+        return ""
+
+    def cancel(self, activation_id: str) -> bool:
+        try:
+            payload = self._request(
+                "/api/close/activation",
+                method="POST",
+                body={"phoneNumber": activation_id},
+            )
+            return _remote_sms_success(payload)
+        except Exception as exc:
+            logger.warning("NexSMS cancel failed: %s", exc)
+            return False
+
+    def report_success(self, activation_id: str) -> bool:
+        return True
+
+    def get_countries(self) -> list:
+        payload = self._request("/api/countries")
+        data = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(data, list):
+            return []
+        rows = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            country_id = str(item.get("id") or item.get("countryId") or item.get("country_id") or "").strip()
+            name = str(item.get("name") or item.get("countryName") or item.get("title") or country_id).strip()
+            if not country_id or not name:
+                continue
+            rows.append(
+                {
+                    "id": country_id,
+                    "name": name,
+                    "eng": name,
+                    "chn": name,
+                    "raw": item,
+                }
+            )
+        rows.sort(key=lambda item: str(item.get("name") or ""))
+        return rows
+
+    def get_services(self, country: str | int | None = None) -> list:
+        try:
+            payload = self._request("/api/services")
+            data = payload.get("data") if isinstance(payload, dict) else payload
+            if isinstance(data, list):
+                rows = []
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    code = str(item.get("code") or item.get("serviceCode") or item.get("id") or "").strip()
+                    name = str(item.get("name") or item.get("title") or code).strip()
+                    if code:
+                        rows.append({"code": code, "name": name or code, "raw": item})
+                if rows:
+                    return rows
+        except Exception:
+            pass
+        return [{"code": self.service_code or NEXSMS_DEFAULT_SERVICE, "name": self.service_code or NEXSMS_DEFAULT_SERVICE}]
+
+
 # ---------------------------------------------------------------------------
 # Codex local SMS pool implementation
 # ---------------------------------------------------------------------------
@@ -1647,6 +2485,82 @@ def create_sms_provider(provider_key: str, config: dict) -> BaseSmsProvider:
             reuse_phone_to_max=_safe_bool(config.get("register_reuse_phone_to_max"), True),
             phone_success_max=max(0, _safe_int(config.get("register_phone_extra_max") or config.get("register_phone_success_max"), 3)),
         )
+    if provider_key in ("grizzlysms", "grizzlysms_api", "grizzly_sms", "grizzly_sms_api"):
+        api_key = str(config.get("grizzlysms_api_key") or config.get("grizzly_sms_api_key") or "").strip()
+        if not api_key:
+            raise RuntimeError("GrizzlySMS API Key is not configured")
+        provider = GrizzlySmsProvider(
+            api_key=api_key,
+            default_service=str(config.get("sms_service") or config.get("grizzlysms_service") or config.get("grizzlysms_default_service") or HERO_SMS_DEFAULT_SERVICE),
+            default_country=str(config.get("sms_country") or config.get("grizzlysms_country") or config.get("grizzlysms_default_country") or "52"),
+            max_price=_safe_float(config.get("grizzlysms_max_price"), -1),
+            proxy=str(config.get("sms_proxy") or config.get("proxy") or "") or None,
+            reuse_phone_to_max=_safe_bool(config.get("register_reuse_phone_to_max"), True),
+            phone_success_max=max(0, _safe_int(config.get("register_phone_extra_max") or config.get("register_phone_success_max"), 3)),
+        )
+        base_url = str(config.get("grizzlysms_base_url") or "").strip()
+        if base_url:
+            provider.BASE_URL = base_url
+        return provider
+    if provider_key in ("sms_verification_number", "sms_verification_number_api", "sms-verification-number"):
+        api_key = str(config.get("sms_verification_number_api_key") or "").strip()
+        if not api_key:
+            raise RuntimeError("SMS Verification Number API Key is not configured")
+        provider = SmsVerificationNumberProvider(
+            api_key=api_key,
+            default_service=str(config.get("sms_service") or config.get("sms_verification_number_service") or config.get("sms_verification_number_default_service") or HERO_SMS_DEFAULT_SERVICE),
+            default_country=str(config.get("sms_country") or config.get("sms_verification_number_country") or config.get("sms_verification_number_default_country") or "33"),
+            max_price=_safe_float(config.get("sms_verification_number_max_price"), -1),
+            proxy=str(config.get("sms_proxy") or config.get("proxy") or "") or None,
+            reuse_phone_to_max=_safe_bool(config.get("register_reuse_phone_to_max"), True),
+            phone_success_max=max(0, _safe_int(config.get("register_phone_extra_max") or config.get("register_phone_success_max"), 3)),
+        )
+        base_url = str(config.get("sms_verification_number_base_url") or "").strip()
+        if base_url:
+            provider.BASE_URL = base_url
+        return provider
+    if provider_key in ("smspool", "smspool_api", "sms_pool", "sms_pool_api"):
+        api_key = str(config.get("smspool_api_key") or config.get("smsPoolApiKey") or "").strip()
+        if not api_key:
+            raise RuntimeError("SMSPool API Key is not configured")
+        return SmsPoolProvider(
+            api_key=api_key,
+            default_service=str(config.get("smspool_service") or config.get("smspool_default_service") or config.get("smsPoolServiceCode") or SMSPOOL_DEFAULT_SERVICE),
+            default_country=str(config.get("smspool_country") or config.get("smspool_default_country") or config.get("smsPoolCountry") or SMSPOOL_DEFAULT_COUNTRY),
+            base_url=str(config.get("smspool_base_url") or SMSPOOL_DEFAULT_BASE_URL),
+            compat_base_url=str(config.get("smspool_compat_base_url") or SMSPOOL_DEFAULT_COMPAT_BASE_URL),
+            max_price=_safe_float(config.get("smspool_max_price"), -1),
+            proxy=str(config.get("sms_proxy") or config.get("proxy") or "") or None,
+            poll_interval=max(1, _safe_int(config.get("sms_poll_interval"), REMOTE_SMS_POLL_INTERVAL)),
+        )
+    if provider_key in ("5sim", "five_sim", "five_sim_api"):
+        api_key = str(config.get("five_sim_api_key") or config.get("fiveSimApiKey") or "").strip()
+        if not api_key:
+            raise RuntimeError("5sim API Key is not configured")
+        return FiveSimProvider(
+            api_key=api_key,
+            country=str(config.get("five_sim_country") or config.get("five_sim_default_country") or config.get("fiveSimCountryId") or FIVE_SIM_DEFAULT_COUNTRY),
+            operator=str(config.get("five_sim_operator") or FIVE_SIM_DEFAULT_OPERATOR),
+            product=str(config.get("five_sim_product") or config.get("fiveSimProduct") or FIVE_SIM_DEFAULT_PRODUCT),
+            base_url=str(config.get("five_sim_base_url") or FIVE_SIM_DEFAULT_BASE_URL),
+            max_price=_safe_float(config.get("five_sim_max_price"), -1),
+            proxy=str(config.get("sms_proxy") or config.get("proxy") or "") or None,
+            reuse=_safe_bool(config.get("five_sim_reuse"), True),
+            poll_interval=max(1, _safe_int(config.get("sms_poll_interval"), REMOTE_SMS_POLL_INTERVAL)),
+        )
+    if provider_key in ("nexsms", "nexsms_api", "nex_sms", "nex_sms_api"):
+        api_key = str(config.get("nexsms_api_key") or config.get("nexSmsApiKey") or "").strip()
+        if not api_key:
+            raise RuntimeError("NexSMS API Key is not configured")
+        return NexSmsProvider(
+            api_key=api_key,
+            country_order=config.get("nexsms_default_country") or config.get("nexsms_country_order") or config.get("nexsms_country") or config.get("nexSmsCountryOrder") or "",
+            service_code=str(config.get("nexsms_service") or config.get("nexsms_default_service") or config.get("nexSmsServiceCode") or NEXSMS_DEFAULT_SERVICE),
+            base_url=str(config.get("nexsms_base_url") or NEXSMS_DEFAULT_BASE_URL),
+            max_price=_safe_float(config.get("nexsms_max_price"), -1),
+            proxy=str(config.get("sms_proxy") or config.get("proxy") or "") or None,
+            poll_interval=max(1, _safe_int(config.get("sms_poll_interval"), REMOTE_SMS_POLL_INTERVAL)),
+        )
     if provider_key in ("codex_sms_pool", "codex_sms_pool_api", "chatgpt-api", "chatgpt_api"):
         pool_text = str(
             config.get("codex_sms_pool_text")
@@ -1717,6 +2631,17 @@ class PhoneCallbackController:
             self.config.get("herosms_default_country"),
             self.config.get("smsbower_country"),
             self.config.get("smsbower_default_country"),
+            self.config.get("grizzlysms_country"),
+            self.config.get("grizzlysms_default_country"),
+            self.config.get("sms_verification_number_country"),
+            self.config.get("sms_verification_number_default_country"),
+            self.config.get("smspool_country"),
+            self.config.get("smspool_default_country"),
+            self.config.get("five_sim_country"),
+            self.config.get("five_sim_default_country"),
+            self.config.get("nexsms_default_country"),
+            self.config.get("nexsms_country"),
+            self.config.get("nexsms_country_order"),
             self.config.get("sms_activate_country"),
             self.config.get("sms_activate_default_country"),
         )
@@ -1724,18 +2649,36 @@ class PhoneCallbackController:
     def _country_plan_enabled(self, provider: BaseSmsProvider) -> bool:
         if not isinstance(provider, HeroSmsProvider):
             return False
-        if str(self.provider_key or "").strip().lower() in {"smsbower", "smsbower_api"}:
+        provider_key = str(self.provider_key or "").strip().lower()
+        if provider_key in {"smsbower", "smsbower_api"}:
             raw = self.config.get("smsbower_auto_country")
+        elif provider_key in {"grizzlysms", "grizzlysms_api", "grizzly_sms", "grizzly_sms_api"}:
+            raw = self.config.get("grizzlysms_auto_country")
+        elif provider_key in {"sms_verification_number", "sms_verification_number_api", "sms-verification-number"}:
+            raw = self.config.get("sms_verification_number_auto_country")
         else:
             raw = self.config.get("herosms_auto_country")
         # 默认启用价格排序国家计划；用户显式设 false 时关闭。
         return _safe_bool(raw, True)
 
     def _country_price_limit(self) -> float:
-        if str(self.provider_key or "").strip().lower() in {"smsbower", "smsbower_api"}:
+        provider_key = str(self.provider_key or "").strip().lower()
+        if provider_key in {"smsbower", "smsbower_api"}:
             return _safe_float(
                 self.config.get("smsbower_auto_country_max_price")
                 or self.config.get("smsbower_max_price"),
+                0,
+            )
+        if provider_key in {"grizzlysms", "grizzlysms_api", "grizzly_sms", "grizzly_sms_api"}:
+            return _safe_float(
+                self.config.get("grizzlysms_auto_country_max_price")
+                or self.config.get("grizzlysms_max_price"),
+                0,
+            )
+        if provider_key in {"sms_verification_number", "sms_verification_number_api", "sms-verification-number"}:
+            return _safe_float(
+                self.config.get("sms_verification_number_auto_country_max_price")
+                or self.config.get("sms_verification_number_max_price"),
                 0,
             )
         return _safe_float(
@@ -1790,7 +2733,9 @@ class PhoneCallbackController:
         max_price = self._country_price_limit()
         min_stock = _safe_int(
             self.config.get("herosms_auto_country_min_stock")
-            or self.config.get("smsbower_auto_country_min_stock"),
+            or self.config.get("smsbower_auto_country_min_stock")
+            or self.config.get("grizzlysms_auto_country_min_stock")
+            or self.config.get("sms_verification_number_auto_country_min_stock"),
             20,
         )
 

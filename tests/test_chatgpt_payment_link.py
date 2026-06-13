@@ -3592,6 +3592,55 @@ def test_chatgpt_payment_link_action_uses_stored_access_token_and_currency(monke
     }
 
 
+def test_chatgpt_payment_link_ppboom_uses_helper(monkeypatch):
+    from application import ppboom as ppboom_module
+
+    captured = {}
+
+    def fake_run_ppboom_paypal_link(account_arg, params, *, log_fn=None):
+        captured["account"] = account_arg
+        captured["params"] = params
+        captured["log_fn"] = log_fn
+        return {
+            "ok": True,
+            "url": "https://paypal.example/approve",
+            "checkout_url": "https://paypal.example/approve",
+            "cashier_url": "https://paypal.example/approve",
+            "checkout_mode": "ppboom",
+            "subscription_submitted": False,
+        }
+
+    monkeypatch.setattr(ppboom_module, "run_ppboom_paypal_link", fake_run_ppboom_paypal_link)
+
+    platform = ChatGPTPlatform(config=RegisterConfig())
+    account = Account(
+        platform="chatgpt",
+        email="user@example.com",
+        password="Secret123!",
+        token="",
+        extra={"access_token": "at_123"},
+    )
+
+    result = platform.execute_action(
+        "payment_link",
+        account,
+        {
+            "use_ppboom": "true",
+            "ppboom_base_url": "http://127.0.0.1:8787",
+            "ppboom_max_attempts": 20,
+            "regenerate": "true",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["checkout_mode"] == "ppboom"
+    assert result["data"]["subscription_submitted"] is False
+    assert result["data"]["url"] == "https://paypal.example/approve"
+    assert captured["account"] is account
+    assert captured["params"]["ppboom_max_attempts"] == 20
+    assert callable(captured["log_fn"])
+
+
 def test_chatgpt_payment_link_auto_checkout_passes_browser_options(monkeypatch):
     captured = {}
 

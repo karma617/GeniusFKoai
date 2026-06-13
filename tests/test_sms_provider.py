@@ -1,11 +1,18 @@
 """SMS provider unit tests."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from core.base_sms import (
+    FiveSimProvider,
+    GrizzlySmsProvider,
     HeroSmsProvider,
+    NexSmsProvider,
     SmsActivation,
     SmsActivateProvider,
+    SmsPoolProvider,
+    SmsVerificationNumberProvider,
     create_sms_provider,
     create_phone_callbacks,
     SMS_ACTIVATE_SERVICES,
@@ -70,6 +77,43 @@ class TestCreateSmsProvider:
     def test_herosms_missing_key(self):
         with pytest.raises(RuntimeError, match="HeroSMS 未配置"):
             create_sms_provider("herosms", {})
+
+    def test_gujumpgate_sms_providers_are_available(self):
+        grizzly = create_sms_provider("grizzlysms_api", {"grizzlysms_api_key": "key"})
+        assert isinstance(grizzly, GrizzlySmsProvider)
+        assert grizzly.default_country == "52"
+
+        svn = create_sms_provider("sms_verification_number_api", {"sms_verification_number_api_key": "key"})
+        assert isinstance(svn, SmsVerificationNumberProvider)
+        assert svn.default_country == "33"
+
+        smspool = create_sms_provider(
+            "smspool_api",
+            {"smspool_api_key": "key", "sms_service": "dr"},
+        )
+        assert isinstance(smspool, SmsPoolProvider)
+        assert smspool.default_service == "671"
+
+        five_sim = create_sms_provider(
+            "five_sim_api",
+            {"five_sim_api_key": "key", "sms_service": "dr"},
+        )
+        assert isinstance(five_sim, FiveSimProvider)
+        assert five_sim.product == "openai"
+
+        nexsms = create_sms_provider(
+            "nexsms_api",
+            {"nexsms_api_key": "key", "nexsms_country_order": "1,2"},
+        )
+        assert isinstance(nexsms, NexSmsProvider)
+        assert nexsms.country_order == [1, 2]
+
+        nexsms_default = create_sms_provider(
+            "nexsms_api",
+            {"nexsms_api_key": "key", "nexsms_default_country": "7"},
+        )
+        assert isinstance(nexsms_default, NexSmsProvider)
+        assert nexsms_default.country_order == [7]
 
     def test_unknown_provider(self):
         with pytest.raises(RuntimeError, match="未知"):
@@ -631,6 +675,131 @@ class TestHeroSmsProvider:
 
         assert events == [("finish", "act_6")]
         assert sms_module._HERO_SMS_CACHE is None
+
+
+class _RemoteCatalogResp:
+    def __init__(self, data, *, ok=True):
+        self._data = data
+        self.ok = ok
+        self.status_code = 200 if ok else 502
+        self.text = json.dumps(data)
+
+    def json(self):
+        return self._data
+
+    def raise_for_status(self):
+        if not self.ok:
+            raise RuntimeError("HTTP error")
+
+
+class TestRemoteSmsProviderCatalogs:
+    def test_sms_verification_number_gets_countries_from_provider_api(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, params, timeout=30, proxies=None):
+            calls.append(params)
+            return _RemoteCatalogResp([
+                {"id": 33, "name": "United States", "operators": {"any": "Any"}},
+            ])
+
+        monkeypatch.setattr("core.base_sms.requests.get", fake_get)
+
+        provider = SmsVerificationNumberProvider("KEY")
+        countries = provider.get_countries()
+
+        assert calls[0]["action"] == "getCountryAndOperators"
+        assert calls[0]["api_key"] == "KEY"
+        assert countries[0]["id"] == "33"
+        assert countries[0]["chn"] == "United States"
+
+    def test_smspool_catalogs_parse_native_api(self, monkeypatch):
+        def fake_post(url, data=None, headers=None, timeout=20, proxies=None):
+            if url.endswith("/country/retrieve_all"):
+                return _RemoteCatalogResp([
+                    {"ID": 1, "name": "United States", "short_name": "US", "cc": "1"},
+                ])
+            if url.endswith("/service/retrieve_all"):
+                return _RemoteCatalogResp([
+                    {"ID": 671, "name": "OpenAI / ChatGPT"},
+                ])
+            return _RemoteCatalogResp({}, ok=False)
+
+        monkeypatch.setattr("core.base_sms.requests.post", fake_post)
+
+        provider = SmsPoolProvider("KEY")
+
+        assert provider.default_country == "1"
+        assert provider.get_countries()[0]["id"] == "1"
+        assert provider.get_services()[0] == {
+            "code": "671",
+            "name": "OpenAI / ChatGPT",
+            "raw": {"ID": 671, "name": "OpenAI / ChatGPT"},
+        }
+
+    def test_five_sim_catalogs_use_guest_endpoints(self, monkeypatch):
+        def fake_get(url, headers=None, timeout=20, proxies=None):
+            if "/v1/guest/countries" in url:
+                return _RemoteCatalogResp({"vietnam": {"text_en": "Vietnam"}})
+            if "/v1/guest/products/vietnam/any" in url:
+                return _RemoteCatalogResp({"openai": {"Name": "OpenAI", "Qty": 5}})
+            return _RemoteCatalogResp({}, ok=False)
+
+        monkeypatch.setattr("core.base_sms.requests.get", fake_get)
+
+        provider = FiveSimProvider("")
+
+        assert provider.get_countries()[0]["id"] == "vietnam"
+        assert provider.get_services()[0]["code"] == "openai"
+
+    def test_nexsms_catalogs_parse_api(self, monkeypatch):
+        def fake_request(method, url, json=None, headers=None, timeout=20, proxies=None):
+            if "/api/countries" in url:
+                return _RemoteCatalogResp({"code": 0, "data": [{"id": 1, "name": "United States"}]})
+            if "/api/services" in url:
+                return _RemoteCatalogResp({"code": 0, "data": [{"code": "ot", "name": "OpenAI"}]})
+            return _RemoteCatalogResp({}, ok=False)
+
+        monkeypatch.setattr("core.base_sms.requests.request", fake_request)
+
+        provider = NexSmsProvider("KEY")
+
+        assert provider.get_countries()[0]["id"] == "1"
+        assert provider.get_services()[0]["code"] == "ot"
+
+
+class TestSmsProviderDefinitions:
+    def test_gujumpgate_provider_country_and_service_fields_are_async_selects(self):
+        from infrastructure.provider_definitions_repository import _BUILTIN_DEFINITIONS
+
+        expected = {
+            "grizzlysms_api": (
+                ("grizzlysms_default_country", "/sms/grizzlysms/countries"),
+                ("grizzlysms_default_service", "/sms/grizzlysms/services"),
+            ),
+            "sms_verification_number_api": (
+                ("sms_verification_number_default_country", "/sms/sms-verification-number/countries"),
+                ("sms_verification_number_default_service", "/sms/sms-verification-number/services"),
+            ),
+            "smspool_api": (
+                ("smspool_default_country", "/sms/smspool/countries"),
+                ("smspool_default_service", "/sms/smspool/services"),
+            ),
+            "five_sim_api": (
+                ("five_sim_country", "/sms/five-sim/countries"),
+                ("five_sim_product", "/sms/five-sim/services"),
+            ),
+            "nexsms_api": (
+                ("nexsms_default_country", "/sms/nexsms/countries"),
+                ("nexsms_default_service", "/sms/nexsms/services"),
+            ),
+        }
+        definitions = {item["provider_key"]: item for item in _BUILTIN_DEFINITIONS}
+
+        for provider_key, field_expectations in expected.items():
+            fields = {field["key"]: field for field in definitions[provider_key]["fields"]}
+            for field_key, async_url in field_expectations:
+                assert fields[field_key]["type"] == "async-select"
+                assert fields[field_key]["asyncUrl"] == async_url
 
 
 class TestSmsActivation:

@@ -4,6 +4,11 @@ import threading
 
 from core.proxy_pool import proxy_pool
 from domain.proxies import ProxyBulkCreateCommand, ProxyCheckSummary, ProxyCreateCommand, ProxyRecord
+from application.free_proxy_checker import (
+    check_free_proxies,
+    fetch_free_proxies,
+    get_free_proxy_sources,
+)
 from infrastructure.proxies_repository import ProxiesRepository
 
 
@@ -34,6 +39,33 @@ class ProxiesService:
     def trigger_check(self) -> dict:
         threading.Thread(target=proxy_pool.check_all, daemon=True, name="proxy-check").start()
         return {"message": "检测任务已启动"}
+
+    def free_proxy_capabilities(self) -> dict:
+        return get_free_proxy_sources()
+
+    def fetch_free_proxies(self, *, source: str, limit: int) -> dict:
+        return fetch_free_proxies(source, limit=limit)
+
+    def check_free_proxies(
+        self,
+        *,
+        proxies: list[str],
+        rounds: int = 1,
+        timeout: int = 10,
+        concurrency: int = 20,
+        limit: int = 120,
+    ) -> dict:
+        return check_free_proxies(
+            proxies,
+            rounds=rounds,
+            timeout=timeout,
+            concurrency=concurrency,
+            limit=limit,
+        )
+
+    def import_free_proxies(self, *, proxies: list[str], region: str = "") -> dict:
+        added = self.repository.bulk_create(proxies, region or "FREE")
+        return {"added": added, "total": len(proxies)}
 
     @staticmethod
     def _serialize(item: ProxyRecord) -> dict:

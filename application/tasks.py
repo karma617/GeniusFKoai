@@ -1223,6 +1223,10 @@ def _auto_followup_chatgpt_plus_payment(
         params["sms_pool"] = sms_pool_override
     elif payment_cfg.get("sms_pool") not in (None, ""):
         params["sms_pool"] = str(payment_cfg.get("sms_pool") or "")
+    for key, value in payment_cfg.items():
+        key_text = str(key)
+        if key_text.startswith("ppboom_") or key_text in {"use_ppboom", "ppboom_enabled"}:
+            params[key_text] = value
     # 透传 phone swap callback —— Camoufox checkout 在 PayPal 拒号时会
     # 回调换一条全局空闲号继续。callback 由 ``_execute_register_task``
     # 持有 slot_queue 的闭包构造。
@@ -1246,12 +1250,13 @@ def _auto_followup_chatgpt_plus_payment(
     ).strip()
     protocol_extract = data.get("paypal_protocol_extract")
     action_ok = bool(result.get("ok"))
+    subscription_submitted = _bool_config(data.get("subscription_submitted"), True)
     if data or action_ok:
         merged_extra = dict(getattr(account, "extra", {}) or {})
         merged_extra.update(data)
         if cashier_url:
             merged_extra["cashier_url"] = cashier_url
-        if action_ok:
+        if action_ok and subscription_submitted:
             overview = dict(merged_extra.get("account_overview") or {})
             chips = [
                 str(item)
@@ -1808,6 +1813,15 @@ def _execute_platform_action_task(payload: dict[str, Any], logger: TaskLogger) -
     message = ""
     if isinstance(result.data, dict):
         message = str(result.data.get("message", "") or "")
+        open_url = str(
+            result.data.get("paypal_authorize_url")
+            or result.data.get("checkout_url")
+            or result.data.get("url")
+            or result.data.get("cashier_url")
+            or ""
+        ).strip()
+        if open_url:
+            logger.add_cashier_url(open_url)
     if message:
         logger.log(message, event_type="summary")
     logger.set_progress(1, 1)

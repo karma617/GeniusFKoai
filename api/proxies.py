@@ -20,6 +20,24 @@ class ProxyBulkCreateRequest(BaseModel):
     region: str = ""
 
 
+class FreeProxyFetchRequest(BaseModel):
+    source: str = "proxifly"
+    limit: int = 200
+
+
+class FreeProxyCheckRequest(BaseModel):
+    proxies: list[str]
+    rounds: int = 1
+    timeout: int = 10
+    concurrency: int = 20
+    limit: int = 120
+
+
+class FreeProxyImportRequest(BaseModel):
+    proxies: list[str]
+    region: str = "FREE"
+
+
 @router.get("")
 def list_proxies():
     return service.list_proxies()
@@ -36,6 +54,32 @@ def create_proxy(body: ProxyCreateRequest):
 @router.post("/bulk")
 def bulk_create_proxies(body: ProxyBulkCreateRequest):
     return service.bulk_create_proxies(ProxyBulkCreateCommand(proxies=body.proxies, region=body.region))
+
+
+@router.get("/free/capabilities")
+def free_proxy_capabilities():
+    return service.free_proxy_capabilities()
+
+
+@router.post("/free/fetch")
+def fetch_free_proxy_candidates(body: FreeProxyFetchRequest):
+    return service.fetch_free_proxies(source=body.source, limit=body.limit)
+
+
+@router.post("/free/check")
+def check_free_proxy_candidates(body: FreeProxyCheckRequest):
+    return service.check_free_proxies(
+        proxies=body.proxies,
+        rounds=body.rounds,
+        timeout=body.timeout,
+        concurrency=body.concurrency,
+        limit=body.limit,
+    )
+
+
+@router.post("/free/import-valid")
+def import_free_proxy_candidates(body: FreeProxyImportRequest):
+    return service.import_free_proxies(proxies=body.proxies, region=body.region)
 
 
 @router.delete("/{proxy_id}")

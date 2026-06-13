@@ -1428,6 +1428,27 @@ class ChatGPTPlatform(BasePlatform):
         a.session_token = extra.get("session_token", "")
         a.cookies = extra.get("cookies", "")
 
+        if _bool_param(params, "use_ppboom", False) or _bool_param(params, "ppboom_enabled", False):
+            try:
+                from application.ppboom import run_ppboom_paypal_link
+
+                data = run_ppboom_paypal_link(
+                    account,
+                    params,
+                    log_fn=getattr(self, "_log_fn", print),
+                )
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "data": {},
+                    "error": f"PPBoom payment link failed: {exc}",
+                }
+            return {
+                "ok": bool(data.get("ok")),
+                "data": data,
+                "error": str(data.get("error") or ""),
+            }
+
         from platforms.chatgpt import payment as payment_module
         plan = params.get("plan", "plus")
         country = params.get("country", "ID")

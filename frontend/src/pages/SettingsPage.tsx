@@ -438,7 +438,7 @@ export default function SettingsPage({
   }
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <div className="w-full">
       <h1 className="mb-6 text-xl font-semibold text-[var(--text-primary)]">
         {titles[tab] || t('settings.title.fallback')}
       </h1>
