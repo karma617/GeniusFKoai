@@ -932,6 +932,10 @@ class ChatGPTPlatform(BasePlatform):
 
         browser_mode = str(params.get("browser_mode") or "camoufox_headed")
         record_har = _bool_param(params, "record_har", False)
+        try:
+            phone_change_limit = max(int(params.get("phone_change_limit") or 10), 1)
+        except Exception:
+            phone_change_limit = 10
         extra = account.extra or {}
         region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
         proxy = _resolve_action_proxy(
@@ -1055,6 +1059,7 @@ class ChatGPTPlatform(BasePlatform):
                         otp_callback,
                         phone_callback,
                         proxy, log_fn,
+                        max_phone_attempts=phone_change_limit,
                     )
 
                     if not isinstance(result, dict) or not result.get("access_token"):

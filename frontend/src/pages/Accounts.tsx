@@ -975,7 +975,7 @@ function TaskLogDialog({
           <div className="relative flex items-start justify-between gap-4">
             <div className="min-w-0">
               <div className="mb-2 inline-flex rounded-full bg-[rgba(var(--accent-rgb),0.1)] px-3 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--accent)]">
-                Platform Action
+                {t('taskLog.platformAction')}
               </div>
               <h2 className="truncate text-[16px] font-bold text-[var(--text-primary)]">{title}</h2>
               <p className="mt-1 text-[12px] font-medium text-[var(--text-secondary)]">{t('taskLog.dialogSubtitle')}</p>
@@ -1722,6 +1722,7 @@ export default function Accounts() {
   const [getRtSmsapiUrl, setGetRtSmsapiUrl] = useState('')
   const [getRtRecordHar, setGetRtRecordHar] = useState(false)
   const [getRtPhoneReuseCount, setGetRtPhoneReuseCount] = useState(3)
+  const [getRtPhoneChangeLimit, setGetRtPhoneChangeLimit] = useState(10)
   const [configOptions, setConfigOptions] = useState<ConfigOptionsResponse>({
     mailbox_providers: [],
     captcha_providers: [],
@@ -1914,6 +1915,7 @@ export default function Accounts() {
           smsapi_phone: getRtSmsapiPhone.trim(),
           smsapi_url: getRtSmsapiUrl.trim(),
           phone_reuse_count: Math.max(Number(getRtPhoneReuseCount || 3), 3),
+          phone_change_limit: Math.max(Number(getRtPhoneChangeLimit || 10), 1),
         }),
       })
       setGetRtTaskId(String(data?.task_id || data?.id || ''))
@@ -2025,7 +2027,7 @@ export default function Accounts() {
                     Codex OAuth
                   </h2>
                   <div className="mt-1 text-xs text-[var(--text-muted)]">
-                    Selected {selectedIds.size} account(s). Choose browser mode and concurrency.
+                    {t('accounts.selected', { count: selectedIds.size })}
                   </div>
                 </div>
                 <button
@@ -2038,7 +2040,7 @@ export default function Accounts() {
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                    Browser mode
+                    {t('accounts.browserMode')}
                   </label>
                   <select
                     value={browserMode}
@@ -2054,7 +2056,7 @@ export default function Accounts() {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                    Concurrency
+                    {t('accounts.concurrency')}
                   </label>
                   <input
                     type="number"
@@ -2089,7 +2091,7 @@ export default function Accounts() {
                   ) : (
                     <ShieldCheck className="mr-2 h-4 w-4" />
                   )}
-                  Start
+                  {t('accounts.startGetRt')}
                 </Button>
               </div>
             </div>
@@ -2127,7 +2129,7 @@ export default function Accounts() {
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                    Browser mode
+                    {t('accounts.browserMode')}
                   </label>
                   <select
                     value={browserMode}
@@ -2143,7 +2145,7 @@ export default function Accounts() {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                    Concurrency
+                    {t('accounts.concurrency')}
                   </label>
                   <input
                     type="number"
@@ -2157,7 +2159,7 @@ export default function Accounts() {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                    Phone reuse count
+                    {t('accounts.phoneReuseCount')}
                   </label>
                   <input
                     type="number"
@@ -2169,7 +2171,24 @@ export default function Accounts() {
                     className="control-surface control-surface-compact w-full text-center"
                   />
                   <div className="mt-1 text-[11px] text-[var(--text-muted)]">
-                    One phone is reused for at least 3 successful accounts, then the task switches to a new phone.
+                    {t('accounts.phoneReuseHint')}
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    {t('accounts.phoneChangeLimit')}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={getRtPhoneChangeLimit}
+                    onChange={event =>
+                      setGetRtPhoneChangeLimit(Math.max(Number(event.target.value || 10), 1))
+                    }
+                    className="control-surface control-surface-compact w-full text-center"
+                  />
+                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                    {t('accounts.phoneChangeLimitHint')}
                   </div>
                 </div>
                 <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
@@ -2181,14 +2200,14 @@ export default function Accounts() {
                   />
                   <div className="flex-1 text-xs text-[var(--text-secondary)]">
                     <div className="text-sm font-medium text-[var(--text-primary)]">
-                      Capture Camoufox HAR
+                      {t('accounts.captureCamoufoxHar')}
                     </div>
                     <div className="mt-0.5">
-                      Saves the OAuth browser network log to tools/captures. Use camoufox_headed or camoufox_headless.
+                      {t('accounts.captureCamoufoxHarDesc')}
                     </div>
                     {getRtRecordHar && !browserMode.startsWith('camoufox_') ? (
                       <div className="mt-2 text-[11px] text-amber-400">
-                        Current browser mode does not support HAR recording. Switch to Camoufox to write a HAR file.
+                        {t('accounts.captureHarUnsupported')}
                       </div>
                     ) : null}
                   </div>
@@ -2197,7 +2216,7 @@ export default function Accounts() {
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">手机号接码（可选，跳过则遇到 add_phone 会失败）</div>
                   <div>
-                    <label className="mb-1 block text-xs text-[var(--text-muted)]">接码渠道</label>
+                    <label className="mb-1 block text-xs text-[var(--text-muted)]">{t('accounts.smsChannel')}</label>
                     <select
                       value={getRtSmsProvider}
                       onChange={e => setGetRtSmsProvider(e.target.value)}
@@ -2212,7 +2231,7 @@ export default function Accounts() {
                   </div>
                   {getRtSmsProvider && getRtSmsProvider !== 'none' && !['smspool', 'smsapi'].includes(getRtSmsProvider) && (
                     <div className="rounded-lg border border-[var(--border-soft)] bg-black/10 px-3 py-2 text-[11px] text-[var(--text-muted)]">
-                      使用设置页已保存的默认/指定接码配置，无需在此重复填写密钥或号码。
+                      {t('accounts.smsSavedConfigHint')}
                     </div>
                   )}
                   {getRtSmsProvider === 'smspool' && (
@@ -2301,7 +2320,7 @@ export default function Accounts() {
                   ) : (
                     <Zap className="mr-2 h-4 w-4" />
                   )}
-                  开始获取
+                  {t('accounts.startGetRt')}
                 </Button>
               </div>
             </div>
@@ -2338,13 +2357,13 @@ export default function Accounts() {
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">Browser mode</label>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">{t('accounts.browserMode')}</label>
                   <select value={browserMode} onChange={event => setBrowserMode(event.target.value)} className="control-surface control-surface-compact w-full">
                     {BROWSER_MODE_OPTIONS.map(option => (<option key={option.value} value={option.value}>{option.label}</option>))}
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">Concurrency</label>
+                  <label className="mb-1 block text-xs text-[var(--text-muted)]">{t('accounts.concurrency')}</label>
                   <input type="number" min={1} value={actionConcurrency}
                     onChange={event => setActionConcurrency(Math.max(Number(event.target.value || 1), 1))}
                     className="control-surface control-surface-compact w-full text-center" />
@@ -2357,7 +2376,7 @@ export default function Accounts() {
                 <Button variant="outline" size="sm" onClick={() => setGetRtBypassConfirmOpen(false)} disabled={getRtBypassBusy}>{t('common.close')}</Button>
                 <Button size="sm" onClick={async () => { setGetRtBypassConfirmOpen(false); await startGetRtBypass() }} disabled={getRtBypassBusy || selectedIds.size === 0}>
                   {getRtBypassBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
-                  开始
+                  {t('accounts.startGetRt')}
                 </Button>
               </div>
             </div>

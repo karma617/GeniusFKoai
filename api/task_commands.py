@@ -157,6 +157,7 @@ class GetRtTaskRequest(BaseModel):
     smsapi_phone: str = ""
     smsapi_url: str = ""
     phone_reuse_count: int = 3
+    phone_change_limit: int = 10
 
 
 @router.post("/get-rt")

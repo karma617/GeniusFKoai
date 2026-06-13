@@ -1980,6 +1980,10 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         phone_reuse_count = max(int(payload.get("phone_reuse_count") or 3), 3)
     except Exception:
         phone_reuse_count = 3
+    try:
+        phone_change_limit = max(int(payload.get("phone_change_limit") or 10), 1)
+    except Exception:
+        phone_change_limit = 10
     phone_reuse_pool = None
     if sms_provider in {"smspool", "smsapi"}:
         try:
@@ -2028,6 +2032,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 "smsapi_phone": str(payload.get("smsapi_phone") or ""),
                 "smsapi_url": str(payload.get("smsapi_url") or ""),
                 "phone_reuse_count": str(phone_reuse_count),
+                "phone_change_limit": str(phone_change_limit),
             }
             if phone_reuse_pool:
                 command_params["phone_callback"] = phone_reuse_pool.make_callback(

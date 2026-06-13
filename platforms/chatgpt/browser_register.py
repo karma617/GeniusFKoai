@@ -2824,6 +2824,7 @@ def _do_codex_oauth(
     log,
     *,
     allow_add_phone_retry: bool = True,
+    max_phone_attempts: int | None = None,
     oauth_start=None,
 ) -> dict | None:
     """在真实浏览器会话内完成 Codex OAuth，返回完整 token 包。
@@ -2850,6 +2851,13 @@ def _do_codex_oauth(
     log(_oauth_authorize_debug_summary(oauth_start, proxy))
     resume_auth_url = _oauth_resume_url_after_phone(oauth_start.auth_url)
     oauth_restart_count = 0
+    try:
+        add_phone_attempt_limit = max(
+            1,
+            int(max_phone_attempts or PHONE_ATTEMPTS_PER_COUNTRY * PHONE_MAX_COUNTRIES),
+        )
+    except Exception:
+        add_phone_attempt_limit = PHONE_ATTEMPTS_PER_COUNTRY * PHONE_MAX_COUNTRIES
 
     def _restart_oauth_login_from_error(callback_url: str, reason: str) -> bool:
         """callback?error 代表当前授权链断开，重建 PKCE/state 后重新登录授权。"""
@@ -3000,6 +3008,7 @@ def _do_codex_oauth(
                             page, phone_callback,
                             device_id=device_id, user_agent=user_agent,
                             log=log, resume_url=resume_auth_url or oauth_start.auth_url,
+                            max_phone_attempts=add_phone_attempt_limit,
                         )
                         for candidate_url in (
                             str(page.url or ""),
