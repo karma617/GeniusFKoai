@@ -108,6 +108,25 @@ def _continue_error_message(resp) -> str:
     return _safe_json_or_text(resp, limit=240)
 
 
+def _refresh_otp_callback_baseline(otp_callback, log_fn: Callable[[str], None]) -> None:
+    refresh = getattr(otp_callback, "refresh_before_ids", None)
+    if not callable(refresh):
+        return
+    try:
+        before_ids = refresh()
+        try:
+            count = len(before_ids or [])
+        except Exception:
+            count = 0
+        log_fn(f"  get_rt(protocol): mailbox baseline refreshed before OTP resend: before_ids={count}")
+    except Exception as exc:
+        log_fn(f"  get_rt(protocol): mailbox baseline refresh failed before OTP resend: {exc}")
+
+
+def _is_retryable_email_otp_status(status: int) -> bool:
+    return int(status or 0) in {400, 401, 409}
+
+
 def run_protocol_get_rt(
     *,
     email: str,
@@ -160,7 +179,7 @@ def run_protocol_get_rt(
     except Exception as exc:
         raise RuntimeError(f"获取rt协议模式 Sentinel 初始化失败: {exc}") from exc
 
-    continue_body = {"username": {"kind": "email", "value": email}, "screen_hint": "login"}
+    continue_body = {"username": {"kind": "email", "value": email}}
     continue_headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/log-in")
     continue_headers["openai-sentinel-token"] = sentinel_header
     log_fn(
@@ -204,17 +223,38 @@ def run_protocol_get_rt(
     log_fn(f"  获取rt(协议): authorize/continue -> page={page_type or '(unknown)'}")
 
     if page_type == "email_otp_verification":
-        send_ok = engine._send_platform_login_otp(client)
-        if not send_ok:
-            raise RuntimeError("获取rt协议模式发送邮箱验证码失败")
-        code = engine._wait_platform_login_code(client)
-        if not code:
-            raise RuntimeError("获取rt协议模式等待邮箱验证码失败")
-        otp_resp = engine._validate_platform_login_otp(client, device_id, code)
-        log_fn(f"  获取rt(协议): email OTP validate -> {otp_resp.status_code}")
-        if otp_resp.status_code != 200:
-            raise RuntimeError(f"获取rt协议模式邮箱验证码校验失败: HTTP {otp_resp.status_code}")
-        otp_data = otp_resp.json() or {}
+        otp_data = None
+        max_invalid_retries = 3
+        last_status = 0
+        for validate_attempt in range(1, max_invalid_retries + 2):
+            if validate_attempt > 1:
+                log_fn(
+                    "  get_rt(protocol): previous email OTP was rejected, "
+                    f"resending a fresh code ({validate_attempt - 1}/{max_invalid_retries})"
+                )
+                _refresh_otp_callback_baseline(otp_callback, log_fn)
+                send_ok = engine._send_platform_login_otp(client)
+                if not send_ok:
+                    raise RuntimeError("获取rt协议模式发送邮箱验证码失败")
+
+            code = engine._wait_platform_login_code(client)
+            if not code:
+                raise RuntimeError("获取rt协议模式等待邮箱验证码失败")
+            otp_resp = engine._validate_platform_login_otp(client, device_id, code)
+            last_status = int(getattr(otp_resp, "status_code", 0) or 0)
+            log_fn(
+                f"  获取rt(协议): email OTP validate -> {last_status} "
+                f"attempt={validate_attempt}/{max_invalid_retries + 1}"
+            )
+            _log_response_debug(log_fn, f"email OTP validate attempt {validate_attempt}", otp_resp)
+            if last_status == 200:
+                otp_data = otp_resp.json() or {}
+                break
+            if _is_retryable_email_otp_status(last_status) and validate_attempt <= max_invalid_retries:
+                continue
+            raise RuntimeError(f"获取rt协议模式邮箱验证码校验失败: HTTP {last_status}")
+        if otp_data is None:
+            raise RuntimeError(f"获取rt协议模式邮箱验证码校验失败: HTTP {last_status}")
     else:
         otp_data = continue_data
 

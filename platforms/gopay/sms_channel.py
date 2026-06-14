@@ -73,6 +73,8 @@ SMSPOOL_RELEASE_QUEUE_PATH = Path(
     )
 )
 SMSPOOL_RELEASE_RETRY_SECONDS = int(os.environ.get("OPAI_SMSPOOL_RELEASE_RETRY_SECONDS", "60") or "60")
+SMSPOOL_RELEASE_DRAIN_POLL_SECONDS = int(os.environ.get("OPAI_SMSPOOL_RELEASE_DRAIN_POLL_SECONDS", "10") or "10")
+SMSPOOL_RELEASE_DRAIN_MAX_WAIT_SECONDS = int(os.environ.get("OPAI_SMSPOOL_RELEASE_DRAIN_MAX_WAIT_SECONDS", "0") or "0")
 
 _release_queue_lock = threading.RLock()
 _release_worker_started = False
@@ -107,6 +109,83 @@ def _save_release_queue(items: list[dict]) -> None:
         )
     except Exception as exc:
         log.warning("smspool release queue save failed: %s", exc)
+
+
+def _smspool_text(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return str(value or "").strip()
+
+
+def is_smspool_insufficient_balance_response(value) -> bool:
+    text = _smspool_text(value)
+    lower = text.lower()
+    if "\u4f59\u989d\u4e0d\u8db3" in text or "no_balance" in lower:
+        return True
+    money_word = any(word in lower for word in ("balance", "fund", "funds", "credit", "credits"))
+    lack_word = any(
+        word in lower
+        for word in (
+            "insufficient",
+            "not enough",
+            "too low",
+            "low balance",
+            "no balance",
+            "no funds",
+            "not have enough",
+        )
+    )
+    return money_word and lack_word
+
+
+def _release_queue_item_matches(item: dict, *, api_key: str = "", base_url: str = "") -> bool:
+    api_key = str(api_key or "").strip()
+    base_url = str(base_url or "").strip().rstrip("/")
+    if api_key and str(item.get("api_key") or "").strip() != api_key:
+        return False
+    if base_url and str(item.get("base_url") or "").strip().rstrip("/") != base_url:
+        return False
+    return True
+
+
+def get_smspool_release_queue_size(*, api_key: str = "", base_url: str = "") -> int:
+    with _release_queue_lock:
+        return sum(
+            1
+            for item in _load_release_queue()
+            if _release_queue_item_matches(item, api_key=api_key, base_url=base_url)
+        )
+
+
+def wait_for_smspool_release_queue_drain(
+    *,
+    api_key: str = "",
+    base_url: str = "",
+    log_fn=None,
+    poll_seconds: int | None = None,
+    max_wait_seconds: int | None = None,
+) -> bool:
+    poll = max(1, int(poll_seconds or SMSPOOL_RELEASE_DRAIN_POLL_SECONDS or 1))
+    max_wait = SMSPOOL_RELEASE_DRAIN_MAX_WAIT_SECONDS if max_wait_seconds is None else int(max_wait_seconds or 0)
+    started = time.monotonic()
+    while True:
+        pending = get_smspool_release_queue_size(api_key=api_key, base_url=base_url)
+        if pending <= 0:
+            return True
+        if callable(log_fn):
+            log_fn(f"smspool release queue pending={pending}; trying to release before purchase retry")
+        _process_release_queue_once()
+        pending = get_smspool_release_queue_size(api_key=api_key, base_url=base_url)
+        if pending <= 0:
+            return True
+        if max_wait > 0 and time.monotonic() - started >= max_wait:
+            if callable(log_fn):
+                log_fn(f"smspool release queue still pending={pending}; max wait reached")
+            return False
+        time.sleep(poll)
 
 
 def _cancel_smspool_order_once(*, api_key: str, base_url: str, order_id: str) -> tuple[bool, dict]:
@@ -170,6 +249,25 @@ def _enqueue_smspool_release(
     _ensure_release_worker()
 
 
+def enqueue_smspool_release_retry(
+    *,
+    api_key: str,
+    base_url: str,
+    order_id: str,
+    phone: str = "",
+    reason: str = "",
+    last_response: dict | None = None,
+) -> None:
+    _enqueue_smspool_release(
+        api_key=api_key,
+        base_url=base_url,
+        order_id=order_id,
+        phone=phone,
+        reason=reason,
+        last_response=last_response,
+    )
+
+
 def _process_release_queue_once() -> tuple[int, int]:
     now = _utc_ts()
     released = 0
@@ -216,6 +314,10 @@ def _remove_smspool_release(order_id: str) -> None:
         next_items = [item for item in items if str(item.get("order_id") or "") != order_id]
         if len(next_items) != len(items):
             _save_release_queue(next_items)
+
+
+def remove_smspool_release(order_id: str) -> None:
+    _remove_smspool_release(order_id)
 
 
 def _release_worker_loop() -> None:
@@ -325,9 +427,24 @@ class SmsPoolChannel:
             params["max_price"] = str(self.max_price)
         if self.pricing_option not in ("", None):
             params["pricing_option"] = str(self.pricing_option)
-        data = self._post("/purchase/sms", params)
-        self.last_response = data
-        if not isinstance(data, dict) or int(data.get("success") or 0) != 1:
+        while True:
+            data = self._post("/purchase/sms", params)
+            self.last_response = data
+            if isinstance(data, dict) and int(data.get("success") or 0) == 1:
+                break
+            pending_releases = get_smspool_release_queue_size(api_key=self.api_key, base_url=self.base_url)
+            if pending_releases > 0 and is_smspool_insufficient_balance_response(data):
+                log.warning(
+                    "smspool purchase returned balance error while release queue has %s pending; waiting before retry: %s",
+                    pending_releases,
+                    data,
+                )
+                wait_for_smspool_release_queue_drain(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    log_fn=log.warning,
+                )
+                continue
             log.warning("smspool purchase failed (max_price=%s): %s", self.max_price, data)
             return None, None
         number = str(data.get("number") or data.get("phonenumber") or "").strip()

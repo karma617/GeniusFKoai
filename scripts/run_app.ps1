@@ -13,6 +13,10 @@ $VenvDir = Join-Path $Root ".venv"
 $PythonExe = Join-Path $VenvDir "Scripts\python.exe"
 $RequirementsFile = Join-Path $Root "requirements.txt"
 $RequirementsStamp = Join-Path $VenvDir ".requirements.stamp"
+$FrontendDir = Join-Path $Root "frontend"
+$FrontendDepsStamp = Join-Path $FrontendDir ".frontend-deps.stamp"
+$FrontendStamp = Join-Path $FrontendDir ".frontend-build.stamp"
+$StaticIndex = Join-Path $Root "static\index.html"
 
 function Invoke-Native {
     param(
@@ -39,6 +43,20 @@ function Get-BootstrapPython {
     throw "Python 3.12+ not found. Please install Python or add python/py to PATH."
 }
 
+function Get-NpmCommand {
+    $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if ($npmCommand) {
+        return $npmCommand.Source
+    }
+
+    $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npmCommand) {
+        return $npmCommand.Source
+    }
+
+    throw "npm not found. Please install Node.js or add npm to PATH."
+}
+
 function Get-FileSha256 {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -55,6 +73,74 @@ function Get-FileSha256 {
         }
     } finally {
         $stream.Dispose()
+    }
+}
+
+function Get-FrontendBuildHash {
+    if (-not (Test-Path -LiteralPath $FrontendDir)) {
+        return ""
+    }
+
+    $hashInput = New-Object System.Text.StringBuilder
+    $paths = @(
+        (Join-Path $FrontendDir "package.json"),
+        (Join-Path $FrontendDir "package-lock.json"),
+        (Join-Path $FrontendDir "vite.config.ts"),
+        (Join-Path $FrontendDir "tsconfig.json"),
+        (Join-Path $FrontendDir "tsconfig.app.json"),
+        (Join-Path $FrontendDir "tsconfig.node.json"),
+        (Join-Path $FrontendDir "index.html")
+    )
+
+    $srcDir = Join-Path $FrontendDir "src"
+    if (Test-Path -LiteralPath $srcDir) {
+        $paths += Get-ChildItem -LiteralPath $srcDir -Recurse -File |
+            Sort-Object FullName |
+            ForEach-Object { $_.FullName }
+    }
+
+    foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path) {
+            [void]$hashInput.AppendLine($path)
+            [void]$hashInput.AppendLine((Get-FileSha256 -Path $path))
+        }
+    }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($hashInput.ToString())
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha256.ComputeHash($bytes)
+        return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "")
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-FrontendDependencyHash {
+    if (-not (Test-Path -LiteralPath $FrontendDir)) {
+        return ""
+    }
+
+    $hashInput = New-Object System.Text.StringBuilder
+    $paths = @(
+        (Join-Path $FrontendDir "package.json"),
+        (Join-Path $FrontendDir "package-lock.json")
+    )
+
+    foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path) {
+            [void]$hashInput.AppendLine($path)
+            [void]$hashInput.AppendLine((Get-FileSha256 -Path $path))
+        }
+    }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($hashInput.ToString())
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha256.ComputeHash($bytes)
+        return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "")
+    } finally {
+        $sha256.Dispose()
     }
 }
 
@@ -93,6 +179,40 @@ function Ensure-PythonEnvironment {
         Invoke-Native -FilePath $PythonExe -Arguments @("-m", "pip", "install", "-r", $RequirementsFile)
         Set-Content -LiteralPath $RequirementsStamp -Value $currentHash -Encoding UTF8
         Write-Host "Python dependencies ready." -ForegroundColor Green
+    }
+}
+
+function Ensure-FrontendBuild {
+    if (-not (Test-Path -LiteralPath $FrontendDir)) {
+        Write-Host "frontend directory not found; skip frontend build." -ForegroundColor Yellow
+        return
+    }
+
+    $npm = Get-NpmCommand
+    $nodeModules = Join-Path $FrontendDir "node_modules"
+    $currentDepsHash = Get-FrontendDependencyHash
+    $installedDepsHash = ""
+    if (Test-Path -LiteralPath $FrontendDepsStamp) {
+        $installedDepsHash = (Get-Content -LiteralPath $FrontendDepsStamp -Raw).Trim()
+    }
+
+    if ((-not (Test-Path -LiteralPath $nodeModules)) -or ($currentDepsHash -ne $installedDepsHash)) {
+        Write-Host "Installing frontend dependencies with npm install..." -ForegroundColor Yellow
+        Invoke-Native -FilePath $npm -Arguments @("install", "--prefix", $FrontendDir)
+        Set-Content -LiteralPath $FrontendDepsStamp -Value $currentDepsHash -Encoding UTF8
+    }
+
+    $currentHash = Get-FrontendBuildHash
+    $builtHash = ""
+    if (Test-Path -LiteralPath $FrontendStamp) {
+        $builtHash = (Get-Content -LiteralPath $FrontendStamp -Raw).Trim()
+    }
+
+    if (($currentHash -ne $builtHash) -or (-not (Test-Path -LiteralPath $StaticIndex))) {
+        Write-Host "Building frontend static files with npm run build..." -ForegroundColor Yellow
+        Invoke-Native -FilePath $npm -Arguments @("run", "build", "--prefix", $FrontendDir)
+        Set-Content -LiteralPath $FrontendStamp -Value $currentHash -Encoding UTF8
+        Write-Host "Frontend static files ready." -ForegroundColor Green
     }
 }
 
@@ -172,6 +292,7 @@ $env:PYTHONUTF8 = "1"
 
 Set-Location -LiteralPath $Root
 Ensure-PythonEnvironment
+Ensure-FrontendBuild
 
 Write-Host "Project root: $Root"
 Write-Host "URL: $Url"

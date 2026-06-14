@@ -1410,6 +1410,7 @@ class SmsPoolProvider(BaseSmsProvider):
         self.poll_interval = max(1, int(poll_interval or REMOTE_SMS_POLL_INTERVAL))
         self._ignored_codes: dict[str, set[str]] = {}
         self._last_codes: dict[str, str] = {}
+        self._activation_phones: dict[str, str] = {}
 
     def _post_form(self, path: str, data: dict, *, action_label: str) -> Any:
         if not self.api_key:
@@ -1502,16 +1503,57 @@ class SmsPoolProvider(BaseSmsProvider):
         return info
 
     def get_number(self, *, service: str, country: str = "") -> SmsActivation:
+        from platforms.gopay.sms_channel import (
+            get_smspool_release_queue_size,
+            is_smspool_insufficient_balance_response,
+            wait_for_smspool_release_queue_drain,
+        )
+
         service_code = _remote_sms_service_code(service, self.default_service)
         country_code = str(country or self.default_country or SMSPOOL_DEFAULT_COUNTRY).strip()
-        payload = self._post_form(
-            "/purchase/sms",
-            {"country": country_code, "service": service_code, "quantity": 1},
-            action_label="SMSPool purchase",
-        )
+        purchase_body = {"country": country_code, "service": service_code, "quantity": 1}
+        if self.max_price > 0:
+            purchase_body["max_price"] = self.max_price
+        while True:
+            try:
+                payload = self._post_form(
+                    "/purchase/sms",
+                    purchase_body,
+                    action_label="SMSPool purchase",
+                )
+            except Exception as exc:
+                if (
+                    get_smspool_release_queue_size(api_key=self.api_key, base_url=self.base_url) > 0
+                    and is_smspool_insufficient_balance_response(str(exc))
+                ):
+                    logger.warning(
+                        "SMSPool purchase balance error while release queue is pending; waiting for release queue"
+                    )
+                    wait_for_smspool_release_queue_drain(
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        log_fn=logger.warning,
+                    )
+                    continue
+                raise
+            if (
+                get_smspool_release_queue_size(api_key=self.api_key, base_url=self.base_url) > 0
+                and is_smspool_insufficient_balance_response(payload)
+            ):
+                logger.warning(
+                    "SMSPool purchase returned balance error while release queue is pending; waiting for release queue"
+                )
+                wait_for_smspool_release_queue_drain(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    log_fn=logger.warning,
+                )
+                continue
+            break
         activation = self._normalize_activation(payload, service_code=service_code, country_code=country_code)
         if not activation:
             raise RuntimeError(f"SMSPool purchase returned unusable response: {_remote_sms_describe(payload)}")
+        self._activation_phones[activation.activation_id] = activation.phone_number
         return activation
 
     def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
@@ -1535,11 +1577,34 @@ class SmsPoolProvider(BaseSmsProvider):
         return ""
 
     def cancel(self, activation_id: str) -> bool:
+        from platforms.gopay.sms_channel import enqueue_smspool_release_retry, remove_smspool_release
+
+        activation_key = str(activation_id or "").strip()
         try:
-            payload = self._post_form("/sms/cancel", {"orderid": activation_id}, action_label="SMSPool cancel")
-            return _remote_sms_success(payload)
+            payload = self._post_form("/sms/cancel", {"orderid": activation_key}, action_label="SMSPool cancel")
+            ok = _remote_sms_success(payload)
+            if ok:
+                remove_smspool_release(activation_key)
+                return True
+            enqueue_smspool_release_retry(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                order_id=activation_key,
+                phone=self._activation_phones.get(activation_key, ""),
+                reason="cancel_failed",
+                last_response=payload if isinstance(payload, dict) else {"raw": _remote_sms_describe(payload)},
+            )
+            return False
         except Exception as exc:
             logger.warning("SMSPool cancel failed: %s", exc)
+            enqueue_smspool_release_retry(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                order_id=activation_key,
+                phone=self._activation_phones.get(activation_key, ""),
+                reason="cancel_exception",
+                last_response={"error": str(exc)[:300]},
+            )
             return False
 
     def report_success(self, activation_id: str) -> bool:
@@ -1556,6 +1621,9 @@ class SmsPoolProvider(BaseSmsProvider):
                 self._post_form("/sms/resend", {"orderid": activation_key}, action_label="SMSPool resend")
         except Exception:
             return None
+
+    def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+        self.cancel(activation_id)
 
     def get_countries(self) -> list:
         response = requests.post(
@@ -2975,6 +3043,9 @@ class PhoneCallbackController:
             if callable(hook):
                 hook(self.activation.activation_id, reason=reason)
             self.awaiting_external_success = False
+            self.activation = None
+            self.phase = "need_number"
+            self.completed = False
 
     def mark_send_succeeded(self) -> None:
         if self.activation and self.provider:

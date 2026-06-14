@@ -505,6 +505,59 @@ class TestSmsActivateProviderCountryResolution:
         assert captured["params"]["country"] == "52"
 
 
+class TestSmsPoolProviderReleaseQueue:
+    def test_mark_send_failed_cancels_and_queues_when_platform_blocks_cancel(self, monkeypatch, tmp_path):
+        from platforms.gopay import sms_channel
+
+        queue_path = tmp_path / "release-queue.json"
+        monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+        monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
+
+        calls = []
+
+        class FakeResp:
+            ok = True
+
+            def __init__(self, data):
+                self.text = json.dumps(data)
+
+        def fake_post(url, data=None, **_kwargs):
+            calls.append((url, dict(data or {})))
+            if url.endswith("/purchase/sms"):
+                return FakeResp({"success": 1, "number": "6288899", "order_id": "ORDER123"})
+            if url.endswith("/sms/cancel"):
+                return FakeResp({
+                    "success": 0,
+                    "message": "Your order cannot be cancelled yet, please try again later.",
+                })
+            return FakeResp({"success": 0, "message": "unexpected"})
+
+        monkeypatch.setattr(sms_module.requests, "post", fake_post)
+
+        logs = []
+        callback, cleanup = create_phone_callbacks(
+            "smspool_api",
+            {
+                "smspool_api_key": "KEY",
+                "smspool_default_country": "9",
+                "smspool_default_service": "671",
+            },
+            service="chatgpt",
+            log_fn=logs.append,
+        )
+
+        assert callback() == "+6288899"
+        callback.mark_send_failed("phone rejected by target")
+
+        assert callback.phase == "need_number"
+        assert callback.activation is None
+        assert any(call[0].endswith("/sms/cancel") for call in calls)
+        queued = json.loads(queue_path.read_text(encoding="utf-8"))
+        assert queued[0]["order_id"] == "ORDER123"
+        assert queued[0]["phone"] == "+6288899"
+        cleanup()
+
+
 class TestHeroSmsProvider:
     def test_get_number_uses_v2_json(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")

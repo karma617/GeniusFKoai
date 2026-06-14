@@ -248,6 +248,43 @@ def test_get_rt_phone_callback_defaults_smspool_country_to_channel_default(monke
     assert instances[0].kwargs["service"] == "671"
 
 
+def test_get_rt_phone_callback_resets_after_smspool_send_failure(monkeypatch):
+    instances = []
+
+    class FakeSmsPoolChannel:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            self.index = len(instances) + 1
+            self.phone = f"+62812345678{self.index}"
+            self.order_id = f"order-{self.index}"
+            self.cancel_ids = []
+            instances.append(self)
+
+        def get_number(self):
+            return self.phone, self.order_id
+
+        def cancel(self, order_id):
+            self.cancel_ids.append(order_id)
+            self.last_response = {"success": 0, "message": "try again later"}
+            return False
+
+    monkeypatch.setattr(sms_channel, "SmsPoolChannel", FakeSmsPoolChannel)
+
+    callback, error = browser_get_rt.build_get_rt_phone_callback(
+        sms_provider="smspool",
+        smspool_api_key="KEY",
+        log_fn=lambda _message: None,
+    )
+
+    assert error == ""
+    assert callback() == "+628123456781"
+    callback.mark_send_failed("phone rejected")
+
+    assert instances[0].cancel_ids == ["order-1"]
+    assert callback() == "+628123456782"
+    assert len(instances) == 2
+
+
 def test_get_rt_phone_reuse_pool_uses_smsapi_lines_once(monkeypatch):
     instances = []
 

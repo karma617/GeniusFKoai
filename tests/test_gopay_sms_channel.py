@@ -234,6 +234,51 @@ def test_smspool_release_queue_retries_and_removes_success(monkeypatch, tmp_path
     assert json.loads(queue_path.read_text(encoding="utf-8")) == []
 
 
+def test_smspool_purchase_waits_for_release_queue_on_balance_error(monkeypatch, tmp_path):
+    from platforms.gopay import sms_channel
+
+    queue_path = tmp_path / "release-queue.json"
+    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_DRAIN_POLL_SECONDS", 1)
+    monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
+    monkeypatch.setattr(sms_channel.time, "sleep", lambda _seconds: None)
+    now = int(sms_channel.time.time())
+    queue_path.write_text(json.dumps([{
+        "order_id": "OLD_ORDER",
+        "api_key": "KEY",
+        "base_url": "https://api.smspool.net",
+        "phone": "+6283167052029",
+        "reason": "cancel_failed",
+        "created_at": now - 60,
+        "updated_at": now - 60,
+        "attempts": 1,
+        "next_attempt_at": now - 1,
+        "last_response": {},
+    }]), encoding="utf-8")
+
+    purchase_calls = {"count": 0}
+
+    def purchase_route(_kwargs):
+        purchase_calls["count"] += 1
+        if purchase_calls["count"] == 1:
+            return _FakeResp({"success": 0, "message": "Insufficient balance"})
+        return _FakeResp({"success": 1, "number": "6288899", "order_id": "NEW_ORDER"})
+
+    routes = {
+        "/purchase/sms": purchase_route,
+        "/sms/cancel": _FakeResp({"success": 1}),
+    }
+    monkeypatch.setattr(sms_channel, "_new_session", lambda: _FakeSession(routes))
+
+    ch = sms_channel.SmsPoolChannel(api_key="KEY")
+    phone, order_id = ch.get_number()
+
+    assert phone == "+6288899"
+    assert order_id == "NEW_ORDER"
+    assert purchase_calls["count"] == 2
+    assert json.loads(queue_path.read_text(encoding="utf-8")) == []
+
+
 def test_smspool_channel_init_starts_release_worker(monkeypatch):
     from platforms.gopay import sms_channel
 

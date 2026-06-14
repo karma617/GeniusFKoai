@@ -659,6 +659,12 @@ class GetRtPhoneCallback:
         self._last_error = str(reason or "")
         self.log(f"  [phone-cb] send failed: {self._last_error[:120]}")
         self.cleanup()
+        self._channel = None
+        self._aid = ""
+        self._phone = ""
+        self._phase = "need_number"
+        self._completed = False
+        self._released = False
 
     def mark_send_succeeded(self):
         self.log("  [phone-cb] send succeeded")
