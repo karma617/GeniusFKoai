@@ -68,6 +68,17 @@ export function buildRegistrationOptions(platformMeta: any, language?: Language)
     })
   }
 
+  if (supportedModes.includes('sms_oauth')) {
+    const label = getOptionLabel('sms_oauth', identityModeOptions, language)
+    options.push({
+      key: 'sms_oauth',
+      label: label === 'sms_oauth' ? '\u5148\u624b\u673a\u53f7\u6ce8\u518c OAuth' : label,
+      description: '\u624b\u673a\u53f7\u6ce8\u518c + \u7ed1\u5b9a\u90ae\u7bb1 + OAuth \u56de\u8c03\u94fe',
+      identityProvider: 'sms_oauth',
+      oauthProvider: '',
+    })
+  }
+
   if (supportedModes.includes('oauth_browser')) {
     supportedOAuth.forEach((provider: string) => {
       const providerLabel = getOptionLabel(provider, oauthProviderOptions, language)
@@ -104,15 +115,19 @@ export function buildExecutorOptions(
       option.description = translate('executor.protocolDescription', language)
       if (identityProvider !== 'mailbox' && identityProvider !== 'phone') {
         option.disabled = true
-        option.reason = translate('executor.oauthRequiresBrowser', language)
+        option.reason = identityProvider === 'sms_oauth'
+          ? '\u5148\u624b\u673a\u53f7\u6ce8\u518c OAuth \u6682\u65f6\u53ea\u652f\u6301\u6d4f\u89c8\u5668\u81ea\u52a8'
+          : translate('executor.oauthRequiresBrowser', language)
       }
       return option
     }
 
     if (executor === 'headless') {
-      option.description = identityProvider === 'mailbox'
-        ? translate('executor.headlessMailboxDescription', language)
-        : translate('executor.headlessOauthDescription', language)
+      option.description = identityProvider === 'sms_oauth'
+        ? '\u540e\u53f0\u6253\u5f00\u6d4f\u89c8\u5668\uff0c\u81ea\u52a8\u5b8c\u6210\u624b\u673a\u53f7\u6ce8\u518c\u3001\u7ed1\u5b9a\u90ae\u7bb1\u548c OAuth'
+        : identityProvider === 'mailbox'
+          ? translate('executor.headlessMailboxDescription', language)
+          : translate('executor.headlessOauthDescription', language)
       if (identityProvider === 'oauth_browser' && !reusableBrowser) {
         option.disabled = true
         option.reason = translate('executor.requiresChromeProfile', language)

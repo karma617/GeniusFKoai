@@ -22,3 +22,16 @@ def test_platform_has_required_fields(client):
         assert "version" in platform
         assert "supported_executors" in platform
         assert isinstance(platform["supported_executors"], list)
+
+
+def test_chatgpt_platform_exposes_sms_oauth_identity_mode(client):
+    resp = client.get("/api/platforms")
+    data = resp.json()
+    chatgpt = next(item for item in data if item["name"] == "chatgpt")
+
+    assert "sms_oauth" in chatgpt["supported_identity_modes"]
+    values = {
+        item["value"]
+        for item in chatgpt.get("supported_identity_mode_options", [])
+    }
+    assert "sms_oauth" in values

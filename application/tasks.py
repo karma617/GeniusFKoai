@@ -58,6 +58,56 @@ ACTIVE_TASK_STATUSES = {
     TASK_STATUS_CANCEL_REQUESTED,
 }
 
+
+def _normalize_task_ids(values: Any) -> list[int]:
+    ids: list[int] = []
+    for item in values or []:
+        try:
+            account_id = int(item or 0)
+        except Exception:
+            continue
+        if account_id > 0 and account_id not in ids:
+            ids.append(account_id)
+    return ids
+
+
+def _filter_registered_get_rt_ids(
+    ids: list[int],
+    *,
+    platform: str = "chatgpt",
+) -> tuple[list[int], list[int]]:
+    """Keep only accounts whose display status is exactly registered for get_rt."""
+    normalized_ids = _normalize_task_ids(ids)
+    if not normalized_ids:
+        return [], []
+    with Session(engine) as session:
+        statement = select(AccountModel).where(AccountModel.id.in_(normalized_ids))
+        if platform:
+            statement = statement.where(AccountModel.platform == platform)
+        models = session.exec(statement).all()
+        model_map = {int(model.id or 0): model for model in models if model.id}
+        graphs = load_account_graphs(session, list(model_map.keys()))
+    allowed: list[int] = []
+    skipped: list[int] = []
+    for account_id in normalized_ids:
+        model = model_map.get(account_id)
+        if not model:
+            skipped.append(account_id)
+            continue
+        graph = graphs.get(account_id, {}) or {}
+        status = str(
+            graph.get("display_status")
+            or graph.get("lifecycle_status")
+            or getattr(model, "display_status", "")
+            or getattr(model, "lifecycle_status", "")
+            or AccountStatus.REGISTERED.value
+        ).strip().lower()
+        if status == AccountStatus.REGISTERED.value:
+            allowed.append(account_id)
+        else:
+            skipped.append(account_id)
+    return allowed, skipped
+
 _task_locks: dict[str, threading.Lock] = {}
 _task_locks_guard = threading.Lock()
 
@@ -291,7 +341,20 @@ def create_get_rt_task(payload: dict[str, Any]) -> dict[str, Any]:
 
     payload 包含 ids（账号 ID 列表）、browser_mode、concurrency。
     """
-    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    payload = dict(payload or {})
+    ids = _normalize_task_ids(payload.get("ids"))
+    if not ids:
+        account_id = int(payload.get("account_id") or 0)
+        if account_id > 0:
+            ids = [account_id]
+    ids, skipped_ids = _filter_registered_get_rt_ids(
+        ids,
+        platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+    )
+    payload["ids"] = ids
+    payload["account_id"] = 0
+    if skipped_ids:
+        payload["skipped_non_registered_ids"] = skipped_ids
     total = len(ids) if ids else 1
     return create_task(
         task_type=TASK_TYPE_GET_RT,
@@ -760,7 +823,7 @@ def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger
     )
     identity_provider = normalize_identity_provider(extra.get("identity_provider", "mailbox"))
     mailbox = shared_mailbox
-    if mailbox is None and identity_provider == "mailbox":
+    if mailbox is None and identity_provider in {"mailbox", "sms_oauth"}:
         if not extra.get("mail_provider"):
             from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
@@ -886,6 +949,10 @@ def _normalize_get_rt_sms_provider(value: Any) -> str:
     provider = str(value or "").strip().lower()
     if provider in {"none", "off", "disabled", "disable", "false", "0", "不启用"}:
         return ""
+    if provider in {"smspool_api", "sms_pool", "sms_pool_api"}:
+        return "smspool"
+    if provider == "sms_api":
+        return "smsapi"
     return provider or "default"
 
 
@@ -1307,6 +1374,31 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     proxy = payload.get("proxy") or None
     extra = dict(payload.get("extra") or {})
 
+    if platform_name == "chatgpt" and _bool_config(
+        extra.get("auto_chatgpt_plus_payment"), False
+    ):
+        payment_cfg_for_start = dict(extra.get("chatgpt_payment") or {})
+        if _bool_config(payment_cfg_for_start.get("use_ppboom"), False) or _bool_config(
+            payment_cfg_for_start.get("ppboom_enabled"), False
+        ):
+            try:
+                from application.ppboom import (
+                    DEFAULT_PPBOOM_BASE_URL,
+                    ensure_ppboom_service,
+                )
+
+                ppboom_base_url = (
+                    str(payment_cfg_for_start.get("ppboom_base_url") or "").strip()
+                    or DEFAULT_PPBOOM_BASE_URL
+                ).rstrip("/")
+                logger.log(f"PPBoom: ensuring helper service at {ppboom_base_url}")
+                ensure_ppboom_service(ppboom_base_url, log_fn=logger.log)
+            except Exception as exc:
+                msg = f"PPBoom helper startup failed: {exc}"
+                logger.log(msg, level="error")
+                logger.finish(TASK_STATUS_FAILED, error=msg)
+                return
+
     # 强校验：ChatGPT Plus 自动支付链接 + sms_pool 模式下，**每个并发线程
     # 独占一条 SMS 号**——所以数量约束是 ``len(pool) >= concurrency``，**不是**
     # ``>= count``（注册数量）。多个 batch 跑下来，每个并发槽会被复用，但同
@@ -1400,7 +1492,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         from core.base_mailbox import create_mailbox
 
         identity_provider = normalize_identity_provider(extra.get("identity_provider", "mailbox"))
-        if identity_provider == "mailbox":
+        if identity_provider in {"mailbox", "sms_oauth"}:
             if not extra.get("mail_provider"):
                 from infrastructure.provider_settings_repository import ProviderSettingsRepository
                 extra["mail_provider"] = ProviderSettingsRepository().get_default_provider_key("mailbox")
@@ -1885,7 +1977,7 @@ def _execute_codex_oauth_task(payload: dict[str, Any], logger: TaskLogger) -> No
         if account_id > 0:
             ids = [account_id]
     if not ids:
-        logger.finish(TASK_STATUS_FAILED, error="缺少 account_id")
+        logger.finish(TASK_STATUS_FAILED, error="\u7f3a\u5c11 account_id")
         return
     total = len(ids)
     concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
@@ -1975,8 +2067,16 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         account_id = int(payload.get("account_id") or 0)
         if account_id > 0:
             ids = [account_id]
+    ids, skipped_now = _filter_registered_get_rt_ids(
+        ids,
+        platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+    )
+    skipped_before = _normalize_task_ids(payload.get("skipped_non_registered_ids"))
+    skipped_ids = skipped_before + [item for item in skipped_now if item not in skipped_before]
+    if skipped_ids:
+        logger.log(f"获取rt: 已过滤非仅注册账号 {len(skipped_ids)} 个: {skipped_ids}")
     if not ids:
-        logger.finish(TASK_STATUS_FAILED, error="缺少 account_id")
+        logger.finish(TASK_STATUS_FAILED, error="\u83b7\u53d6rt\u53ea\u80fd\u5bf9\u4ec5\u6ce8\u518c\u72b6\u6001\u8d26\u53f7\u8d77\u4efb\u52a1")
         return
     total = len(ids)
     concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)

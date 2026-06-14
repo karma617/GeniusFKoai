@@ -1735,6 +1735,135 @@ def _start_browser_signup_via_authorize(page, email: str, device_id: str, log) -
     return _derive_registration_state_from_page(page)
 
 
+def _find_visible_phone_input_selector(page) -> str:
+    for selector in PHONE_INPUT_SELECTORS:
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=800)
+            return selector
+        except Exception:
+            continue
+    return ""
+
+
+def _click_phone_entry_if_available(page, log) -> bool:
+    try:
+        clicked = bool(
+            page.evaluate(
+                """
+                () => {
+                  const nodes = Array.from(document.querySelectorAll('button, [role="button"], a'));
+                  const visible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                  };
+                  const target = nodes.find((el) => {
+                    const text = String(el.innerText || el.textContent || el.getAttribute('aria-label') || '')
+                      .replace(/\\s+/g, ' ')
+                      .trim()
+                      .toLowerCase();
+                    return visible(el) && /(phone|mobile|sms|text message|\\u624b\\u673a|\\u624b\\u673a\\u53f7|\\u7535\\u8bdd|\\u96fb\\u8a71|\\u96fb\\u8a71\\u756a\\u53f7)/i.test(text);
+                  });
+                  if (!target) return false;
+                  target.click();
+                  return true;
+                }
+                """
+            )
+        )
+    except Exception:
+        clicked = False
+    if clicked:
+        log("Phone-first signup: switched to phone entry")
+        time.sleep(1)
+    return clicked
+
+
+def _sync_generic_phone_hidden_value(page, e164_phone_number: str) -> None:
+    try:
+        page.evaluate(
+            """
+            (value) => {
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+              const inputs = Array.from(document.querySelectorAll('input[type="hidden"], input[name*="phone" i]'));
+              inputs.forEach((input) => {
+                const name = String(input.getAttribute('name') || input.id || '').toLowerCase();
+                if (!/(phone|mobile|tel)/.test(name)) return;
+                if (setter) setter.call(input, value);
+                else input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+              });
+            }
+            """,
+            e164_phone_number,
+        )
+    except Exception:
+        pass
+
+
+def _submit_phone_identity_via_page(page, phone_number: str, log) -> dict:
+    input_selector = _find_visible_phone_input_selector(page)
+    if not input_selector:
+        _click_phone_entry_if_available(page, log)
+        input_selector = _find_visible_phone_input_selector(page)
+    if not input_selector:
+        raise RuntimeError("Phone-first signup did not find a phone input")
+
+    dial_code, local_number, country_name = _parse_phone_country_and_local(phone_number)
+    country_selected = False
+    if dial_code:
+        country_selected = _select_phone_country_ui(page, dial_code, country_name, log)
+    fill_value = local_number if country_selected and local_number else str(phone_number or "").strip()
+    if not _fill_input_like_user(page, input_selector, fill_value):
+        raise RuntimeError("Phone-first signup failed to fill phone input")
+    if dial_code:
+        _sync_generic_phone_hidden_value(page, "+" + str(phone_number or "").lstrip("+").strip())
+    log(f"Phone-first signup phone submitted: {_mask_phone_number(phone_number)}")
+
+    submit_selector = _click_first(page, EMAIL_SUBMIT_SELECTORS, timeout=8)
+    if submit_selector:
+        log(f"Phone-first signup clicked continue: {submit_selector}")
+    elif _submit_form_with_fallback(page, input_selector):
+        log("Phone-first signup used form fallback submit")
+    else:
+        raise RuntimeError("Phone-first signup did not find a continue button")
+
+    return _wait_for_signup_entry_transition(page, log)
+
+
+def _start_browser_phone_signup_via_authorize(page, phone_callback, device_id: str, log) -> tuple[dict, str]:
+    if not phone_callback:
+        raise RuntimeError("Phone-first signup requires an SMS phone callback")
+    phone_number = str(phone_callback() or "").strip()
+    if not phone_number:
+        raise RuntimeError("Phone-first signup did not receive a phone number")
+
+    log(f"Phone-first signup using phone: {_mask_phone_number(phone_number)}")
+    _goto_with_retry(page, f"{CHATGPT_APP}/", wait_until="domcontentloaded", timeout=30000, log=log)
+
+    csrf_token = _get_browser_csrf_token(page)
+    if csrf_token:
+        authorize_url = _start_browser_signin(page, phone_number, device_id, csrf_token)
+        if authorize_url:
+            _browser_authorize(page, authorize_url, log)
+
+    state = _derive_registration_state_from_page(page)
+    if state.get("page_type") in {
+        "create_account_password",
+        "login_password",
+        "email_otp_verification",
+        "about_you",
+        "add_phone",
+        "chatgpt_home",
+        "oauth_callback",
+    }:
+        return state, phone_number
+
+    return _submit_phone_identity_via_page(page, phone_number, log), phone_number
+
+
 def _dump_debug(page, prefix: str) -> None:
     page.screenshot(path=f"/tmp/{prefix}.png")
     with open(f"/tmp/{prefix}.html", "w") as f:
@@ -2010,6 +2139,8 @@ def _infer_page_type(data: dict | None, current_url: str = "") -> str:
         return "organization_selection"
     if "add-phone" in url:
         return "add_phone"
+    if "add-email" in url:
+        return "add_email"
     if "/api/oauth/oauth2/auth" in url:
         return "external_url"
     if "chatgpt.com" in url:
@@ -2721,11 +2852,34 @@ def _extract_callback_url_from_exception(exc: Exception) -> str:
     return callback_url if _extract_code_from_url(callback_url) else ""
 
 
+def _is_add_email_page(page) -> bool:
+    current_url = str(getattr(page, "url", "") or "")
+    if "add-email" in current_url.lower():
+        return True
+    if not _find_first_selector(page, EMAIL_INPUT_SELECTORS):
+        return False
+    try:
+        text = str(page.evaluate("() => document.body?.innerText || ''") or "")
+    except Exception:
+        text = ""
+    return bool(
+        re.search(
+            "add[\\s-]*email|email\\s+address\\s+required|provide\\s+(?:an?\\s+)?email|"
+            "\u6dfb\u52a0(?:\u7535\u5b50\u90ae\u4ef6|\u90ae\u7bb1)|"
+            "\u7ed1\u5b9a(?:\u7535\u5b50\u90ae\u4ef6|\u90ae\u7bb1)",
+            text,
+            flags=re.I,
+        )
+    )
+
+
 def _derive_oauth_state_from_page(page) -> dict:
     state = _derive_registration_state_from_page(page)
     if state.get("page_type"):
         return state
     current_url = str(page.url or "")
+    if _is_add_email_page(page):
+        return _build_manual_flow_state("add_email", current_url)
     if _find_first_selector(page, EMAIL_INPUT_SELECTORS):
         return _build_manual_flow_state("login_email", current_url)
     return _extract_flow_state(None, current_url)
@@ -2950,6 +3104,14 @@ def _do_codex_oauth(
                 log(f"  OAuth 邮箱页提交状态: {email_resp.get('status', 0)}")
                 if not email_resp.get("ok"):
                     raise RuntimeError(f"OAuth 邮箱页提交失败: {(email_resp.get('text') or '')}")
+                continue
+
+            if state["page_type"] == "add_email":
+                log("  OAuth requires binding email; submitting mailbox address...")
+                email_resp = _submit_login_email_via_page(page, email, log)
+                log(f"  OAuth add-email submit status: {email_resp.get('status', 0)}")
+                if not email_resp.get("ok"):
+                    raise RuntimeError(f"OAuth add-email submit failed: {(email_resp.get('text') or '')}")
                 continue
 
             if state["page_type"] in {"login_password", "create_account_password"}:
@@ -4930,8 +5092,18 @@ def _submit_about_you_via_page(page, log) -> dict:
     return {"ok": False, "status": 0, "url": last_url, "data": None, "text": "about_you 提交后未跳转"}
 
 
-def _browser_registration_flow(page, email: str, password: str, otp_callback, phone_callback, log) -> dict:
+def _browser_registration_flow(
+    page,
+    email: str,
+    password: str,
+    otp_callback,
+    phone_callback,
+    log,
+    *,
+    signup_method: str = "email",
+) -> dict:
     device_id = str(uuid.uuid4())
+    phone_first_signup = str(signup_method or "").strip().lower() == "phone"
     try:
         user_agent = str(page.evaluate("() => navigator.userAgent") or "").strip() or _random_chrome_ua()
     except Exception:
@@ -4939,8 +5111,17 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
 
     _seed_browser_device_id(page, device_id)
     try:
-        log("使用 ChatGPT NextAuth 注册入口启动浏览器注册")
-        state = _start_browser_signup_via_authorize(page, email, device_id, log)
+        if phone_first_signup:
+            log("Phone-first signup: starting with SMS phone registration")
+            state, _signup_phone = _start_browser_phone_signup_via_authorize(
+                page,
+                phone_callback,
+                device_id,
+                log,
+            )
+        else:
+            log("使用 ChatGPT NextAuth 注册入口启动浏览器注册")
+            state = _start_browser_signup_via_authorize(page, email, device_id, log)
     except Exception as exc:
         log(f"ChatGPT NextAuth 注册入口失败: {exc}")
         raise
@@ -5010,16 +5191,27 @@ def _browser_registration_flow(page, email: str, password: str, otp_callback, ph
             continue
 
         if _is_email_otp(state):
-            if not otp_callback:
-                raise RuntimeError("ChatGPT 注册需要邮箱验证码但未提供 otp_callback")
+            active_otp_callback = phone_callback if phone_first_signup else otp_callback
+            if not active_otp_callback:
+                raise RuntimeError("ChatGPT 注册需要验证码但未提供 callback")
             log("等待 ChatGPT 验证码")
-            code = otp_callback()
+            code = active_otp_callback()
             if not code:
                 raise RuntimeError("未获取到验证码")
             otp_resp = _submit_otp_via_page(page, code, log)
             log(f"验证码页提交状态: {otp_resp.get('status', 0)}")
             if not otp_resp.get("ok"):
+                if phone_first_signup and hasattr(phone_callback, "mark_code_failed"):
+                    try:
+                        phone_callback.mark_code_failed(str(otp_resp.get("text") or "invalid otp"))
+                    except Exception:
+                        pass
                 raise RuntimeError(f"验证码校验失败: {(otp_resp.get('text') or '')}")
+            if phone_first_signup and hasattr(phone_callback, "report_success"):
+                try:
+                    phone_callback.report_success()
+                except Exception:
+                    pass
             state = _extract_flow_state(otp_resp.get("data"), otp_resp.get("url", page.url))
             if not state.get("page_type"):
                 state = _derive_registration_state_from_page(page)
@@ -5093,12 +5285,16 @@ class ChatGPTBrowserRegister:
         log_fn: Callable[[str], None] = print,
         backend_config: Optional[BrowserBackendConfig] = None,
         post_register_in_browser: Optional[Callable[[Any, dict], dict]] = None,
+        phone_first_oauth: bool = False,
+        bind_email_after_phone_signup: bool = False,
     ):
         self.headless = headless
         self.proxy = proxy
         self.otp_callback = otp_callback
         self.phone_callback = phone_callback
         self.log = log_fn
+        self.phone_first_oauth = bool(phone_first_oauth)
+        self.bind_email_after_phone_signup = bool(bind_email_after_phone_signup)
         # post_register_in_browser(page, session_info) -> dict|None：
         # 注册拿到 session 后、**浏览器还开着**时回调。短链复用流程用它在
         # 同一个浏览器/同一 page 里打开短链并抓 midtrans_url。返回的 dict 会
@@ -5152,6 +5348,7 @@ class ChatGPTBrowserRegister:
                 self.otp_callback,
                 self.phone_callback,
                 self.log,
+                signup_method="phone" if self.phone_first_oauth else "email",
             )
             self.log(f"注册流程完成: page={final_state.get('page_type') or '-'}")
 
@@ -5173,6 +5370,30 @@ class ChatGPTBrowserRegister:
                 "session": session_info.get("session", {}),
                 "registration_state": final_state,
             }
+
+            if self.phone_first_oauth and self.bind_email_after_phone_signup:
+                self.log("Phone-first signup: binding email and completing Codex OAuth")
+                oauth_result = _do_codex_oauth(
+                    page,
+                    cookies_dict,
+                    email,
+                    password,
+                    self.otp_callback,
+                    self.phone_callback,
+                    self.proxy,
+                    self.log,
+                )
+                if not isinstance(oauth_result, dict) or not oauth_result.get("access_token"):
+                    raise RuntimeError("Phone-first signup OAuth callback did not return access_token")
+                result.update(
+                    {
+                        "account_id": oauth_result.get("account_id") or result.get("account_id", ""),
+                        "access_token": oauth_result.get("access_token", ""),
+                        "refresh_token": oauth_result.get("refresh_token", ""),
+                        "id_token": oauth_result.get("id_token", ""),
+                        "oauth": oauth_result,
+                    }
+                )
 
             # 短链复用流程：注册拿到 session 后、**浏览器还开着**时，在同一个
             # page 里继续打开短链 + 抓 midtrans_url。结果合并进返回值。

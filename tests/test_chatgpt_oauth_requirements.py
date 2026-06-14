@@ -187,6 +187,45 @@ def test_browser_oauth_adapter_still_requires_complete_oauth_result():
         })
 
 
+def test_sms_oauth_browser_adapter_enables_phone_first_flow(monkeypatch):
+    captured = {}
+
+    class _FakeBrowserRegister:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(browser_register_module, "ChatGPTBrowserRegister", _FakeBrowserRegister)
+    platform = object.__new__(ChatGPTPlatform)
+    adapter = ChatGPTPlatform.build_browser_registration_adapter(platform)
+    ctx = SimpleNamespace(
+        executor_type="headless",
+        proxy=None,
+        log=lambda message: None,
+        identity=SimpleNamespace(identity_provider="sms_oauth", email="user@example.com"),
+        extra={},
+    )
+    artifacts = SimpleNamespace(otp_callback="otp-callback", phone_callback="phone-callback")
+
+    worker = adapter.browser_worker_builder(ctx, artifacts)
+
+    assert isinstance(worker, _FakeBrowserRegister)
+    assert captured["phone_first_oauth"] is True
+    assert captured["bind_email_after_phone_signup"] is True
+    assert captured["otp_callback"] == "otp-callback"
+    assert captured["phone_callback"] == "phone-callback"
+
+
+def test_sms_oauth_protocol_mailbox_adapter_rejects_protocol_flow():
+    platform = object.__new__(ChatGPTPlatform)
+    platform.mailbox = None
+    platform.config = RegisterConfig()
+    adapter = ChatGPTPlatform.build_protocol_mailbox_adapter(platform)
+    ctx = SimpleNamespace(identity=SimpleNamespace(identity_provider="sms_oauth"))
+
+    with pytest.raises(RuntimeError, match="browser executors"):
+        adapter.preflight(ctx)
+
+
 def test_fetch_chatgpt_session_opens_session_api_directly():
     calls = []
 

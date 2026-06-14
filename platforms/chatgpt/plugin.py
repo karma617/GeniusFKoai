@@ -249,7 +249,7 @@ class ChatGPTPlatform(BasePlatform):
     display_name = "ChatGPT"
     version = "1.0.0"
     supported_executors = ["protocol", "headless", "headed"]
-    supported_identity_modes = ["mailbox", "oauth_browser"]
+    supported_identity_modes = ["mailbox", "oauth_browser", "sms_oauth"]
     supported_oauth_providers = ["google", "microsoft"]
     protocol_captcha_order = ("yescaptcha_api", "twocaptcha_api", "local_solver")
 
@@ -390,7 +390,8 @@ class ChatGPTPlatform(BasePlatform):
         return BrowserRegistrationAdapter(
             result_mapper=lambda ctx, result: self._map_chatgpt_result(
                 result,
-                require_oauth=getattr(ctx.identity, "identity_provider", "") == "oauth_browser",
+                require_oauth=getattr(ctx.identity, "identity_provider", "")
+                in {"oauth_browser", "sms_oauth"},
             ),
             browser_worker_builder=lambda ctx, artifacts: __import__("platforms.chatgpt.browser_register", fromlist=["ChatGPTBrowserRegister"]).ChatGPTBrowserRegister(
                 headless=(ctx.executor_type == "headless"),
@@ -404,6 +405,10 @@ class ChatGPTPlatform(BasePlatform):
                 # 普通注册这两个 key 不存在，行为不变（默认 Camoufox、无回调）。
                 backend_config=(ctx.extra or {}).get("_reuse_backend_config"),
                 post_register_in_browser=(ctx.extra or {}).get("_post_register_in_browser"),
+                phone_first_oauth=getattr(ctx.identity, "identity_provider", "") == "sms_oauth",
+                bind_email_after_phone_signup=bool(
+                    (ctx.extra or {}).get("phone_signup_relogin_after_bind_email", True)
+                ),
             ),
             browser_register_runner=lambda worker, ctx, artifacts: worker.run(
                 email=ctx.identity.email or "",
@@ -425,6 +430,12 @@ class ChatGPTPlatform(BasePlatform):
         )
 
     def build_protocol_mailbox_adapter(self):
+        def _preflight(ctx):
+            if getattr(ctx.identity, "identity_provider", "") == "sms_oauth":
+                raise RuntimeError(
+                    "sms_oauth currently supports only browser executors: headless or headed"
+                )
+
         def _build_worker(ctx, artifacts):
             from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
 
@@ -469,6 +480,7 @@ class ChatGPTPlatform(BasePlatform):
                 email=ctx.identity.email,
                 password=ctx.password,
             ),
+            preflight=_preflight,
         )
 
     def get_platform_actions(self) -> list:
@@ -1428,13 +1440,19 @@ class ChatGPTPlatform(BasePlatform):
         a.session_token = extra.get("session_token", "")
         a.cookies = extra.get("cookies", "")
 
+        record_har = _bool_param(params, "record_har", False)
+        record_har_path = _build_checkout_har_path(account.email) if record_har else None
+
         if _bool_param(params, "use_ppboom", False) or _bool_param(params, "ppboom_enabled", False):
             try:
                 from application.ppboom import run_ppboom_paypal_link
 
+                ppboom_params = dict(params)
+                if record_har_path:
+                    ppboom_params["record_har_path"] = record_har_path
                 data = run_ppboom_paypal_link(
                     account,
-                    params,
+                    ppboom_params,
                     log_fn=getattr(self, "_log_fn", print),
                 )
             except Exception as exc:
@@ -1466,8 +1484,6 @@ class ChatGPTPlatform(BasePlatform):
         headless = _bool_param(params, "headless", False)
         checkout_timeout = _int_param(params, "checkout_timeout", 180)
         checkout_hold_seconds = _optional_int_param(params, "checkout_hold_seconds")
-        record_har = _bool_param(params, "record_har", False)
-        record_har_path = _build_checkout_har_path(account.email) if record_har else None
         checkout_mode = str(params.get("checkout_mode") or "").strip().lower()
         if not checkout_mode:
             checkout_mode = "camoufox_headless" if headless else "camoufox_headed"

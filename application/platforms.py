@@ -12,6 +12,7 @@ EXECUTOR_LABELS = {
 IDENTITY_MODE_LABELS = {
     "mailbox": "系统邮箱",
     "oauth_browser": "第三方账号",
+    "sms_oauth": "\u5148\u624b\u673a\u53f7\u6ce8\u518c OAuth",
     "phone": "手机号（接码）",
 }
 

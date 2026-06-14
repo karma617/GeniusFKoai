@@ -13,6 +13,9 @@ IDENTITY_PROVIDER_ALIASES = {
     "oauth_browser": "oauth_browser",
     "oauth_manual": "oauth_browser",   # backward-compat
     "manual_oauth": "oauth_browser",   # backward-compat
+    "sms_oauth": "sms_oauth",
+    "phone_sms_oauth": "sms_oauth",
+    "phone_first_oauth": "sms_oauth",
 }
 
 OAUTH_PROVIDER_ALIASES = {
@@ -121,10 +124,28 @@ class BrowserOAuthIdentityProvider(BaseIdentityProvider):
 ManualOAuthIdentityProvider = BrowserOAuthIdentityProvider
 
 
+class SmsOAuthIdentityProvider(MailboxIdentityProvider):
+    identity_provider = "sms_oauth"
+
+    def resolve(self, requested_email: Optional[str] = None) -> IdentityMaterial:
+        material = super().resolve(requested_email)
+        material.identity_provider = self.identity_provider
+        material.metadata.update(
+            {
+                "plus_account_access_strategy": "sms_oauth",
+                "signup_method": "phone",
+                "phone_signup_relogin_after_bind_email": True,
+            }
+        )
+        return material
+
+
 def create_identity_provider(mode: Optional[str], *, mailbox=None, extra: dict = None) -> BaseIdentityProvider:
     normalized = normalize_identity_provider(mode)
     if normalized == "mailbox":
         return MailboxIdentityProvider(mailbox=mailbox, extra=extra)
     if normalized == "oauth_browser":
         return BrowserOAuthIdentityProvider(mailbox=mailbox, extra=extra)
+    if normalized == "sms_oauth":
+        return SmsOAuthIdentityProvider(mailbox=mailbox, extra=extra)
     raise ValueError(f"未知 identity_provider: {mode}")

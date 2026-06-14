@@ -553,6 +553,7 @@ def test_get_rt_task_forwards_record_har_to_platform_action(monkeypatch):
             seen_params.append(dict(command.params))
             return ActionExecutionResult(ok=True, data={"message": "ok"})
 
+    monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
     monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
     logger = _FakeLogger()
 
@@ -571,6 +572,66 @@ def test_get_rt_task_forwards_record_har_to_platform_action(monkeypatch):
     assert seen_params[0]["sms_provider"] == "default"
 
 
+def test_get_rt_sms_provider_aliases_are_normalized():
+    assert tasks_module._normalize_get_rt_sms_provider("smspool_api") == "smspool"
+    assert tasks_module._normalize_get_rt_sms_provider("sms_pool_api") == "smspool"
+    assert tasks_module._normalize_get_rt_sms_provider("sms_api") == "smsapi"
+
+
+def test_create_get_rt_task_filters_non_registered_ids(monkeypatch):
+    captured = {}
+
+    def fake_filter(ids, *, platform="chatgpt"):
+        assert ids == [1, 2, 3]
+        assert platform == "chatgpt"
+        return [2], [1, 3]
+
+    def fake_create_task(**kwargs):
+        captured.update(kwargs)
+        return {"id": "task-1"}
+
+    monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", fake_filter)
+    monkeypatch.setattr(tasks_module, "create_task", fake_create_task)
+
+    result = tasks_module.create_get_rt_task({"platform": "chatgpt", "ids": [1, 2, 3]})
+
+    assert result == {"id": "task-1"}
+    assert captured["payload"]["ids"] == [2]
+    assert captured["payload"]["account_id"] == 0
+    assert captured["payload"]["skipped_non_registered_ids"] == [1, 3]
+    assert captured["progress_total"] == 1
+
+
+def test_execute_get_rt_task_filters_non_registered_ids(monkeypatch):
+    seen_account_ids = []
+
+    def fake_filter(ids, *, platform="chatgpt"):
+        assert ids == [1, 2, 3]
+        return [2], [1, 3]
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            seen_account_ids.append(command.account_id)
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", fake_filter)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [1, 2, 3],
+            "browser_mode": "camoufox_headed",
+            "concurrency": 3,
+        },
+        logger,
+    )
+
+    assert seen_account_ids == [2]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert any("过滤" in str(event[1]) for event in logger.events)
+
+
 def test_get_rt_task_allows_explicit_sms_disable(monkeypatch):
     seen_params = []
 
@@ -579,6 +640,7 @@ def test_get_rt_task_allows_explicit_sms_disable(monkeypatch):
             seen_params.append(dict(command.params))
             return ActionExecutionResult(ok=True, data={"message": "ok"})
 
+    monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
     monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
     logger = _FakeLogger()
 
@@ -626,6 +688,7 @@ def test_get_rt_task_uses_shared_phone_reuse_pool(monkeypatch):
             assert command.params["phone_reuse_count"] == "3"
             return ActionExecutionResult(ok=True, data={"phone": command.params["phone_callback"]()})
 
+    monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
     monkeypatch.setattr(browser_get_rt_module, "build_get_rt_phone_reuse_pool", fake_build_pool)
     monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
     logger = _FakeLogger()

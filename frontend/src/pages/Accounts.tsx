@@ -33,6 +33,14 @@ const BROWSER_MODE_OPTIONS = [
 ]
 
 const ACCOUNT_TOOL_BUTTON_CLASS = 'h-8 shrink-0 whitespace-nowrap bg-transparent'
+const ACCOUNT_STATUS_FILTER_OPTIONS = [
+  'registered',
+  'authorized',
+  'subscribed',
+  'eligible',
+  'expired',
+  'invalid',
+]
 
 function getAccountOverview(acc: any) {
   return acc?.overview || {}
@@ -61,6 +69,27 @@ function getLifecycleStatus(acc: any) {
 
 function getDisplayStatus(acc: any) {
   return getDisplaySummary(acc)?.status?.display || acc?.display_status || acc?.plan_state || getLifecycleStatus(acc)
+}
+
+function isRegisteredOnlyAccount(acc: any) {
+  return String(getDisplayStatus(acc) || '').trim().toLowerCase() === 'registered'
+}
+
+function normalizeGetRtSmsProviderKey(value: any) {
+  const key = String(value || '').trim().toLowerCase()
+  if (['smspool', 'smspool_api', 'sms_pool', 'sms_pool_api'].includes(key)) return 'smspool'
+  if (['smsapi', 'sms_api'].includes(key)) return 'smsapi'
+  return key
+}
+
+function appendUniqueProviderOption(
+  options: { value: string; label: string }[],
+  seen: Set<string>,
+  option: { value: string; label: string },
+) {
+  if (!option.value || seen.has(option.value)) return
+  seen.add(option.value)
+  options.push(option)
 }
 
 function getPlanState(acc: any) {
@@ -1810,23 +1839,36 @@ export default function Accounts() {
   const pageIds = accounts.map(acc => acc.id)
   const allSelectedOnPage = pageIds.length > 0 && pageIds.every(id => selectedIds.has(id))
   const selectedCount = selectedIds.size
+  const selectedAccounts = accounts.filter(acc => selectedIds.has(acc.id))
+  const getRtEligibleIds = selectedAccounts
+    .filter(isRegisteredOnlyAccount)
+    .map(acc => Number(acc.id))
+    .filter(id => Number.isFinite(id) && id > 0)
   const enabledSmsSettings = (configOptions.sms_settings || []).filter((item: any) => item?.enabled)
   const defaultSmsSetting = enabledSmsSettings.find((item: any) => item?.is_default) || enabledSmsSettings[0] || null
-  const getRtSmsProviderOptions = [
-    { value: 'none', label: '(不启用)' },
-    ...(defaultSmsSetting ? [{
-      value: 'default',
-      label: `默认：${defaultSmsSetting.display_name || defaultSmsSetting.catalog_label || defaultSmsSetting.provider_key}`,
-    }] : []),
-    ...enabledSmsSettings
+  const getRtSmsProviderOptions = (() => {
+    const options: { value: string; label: string }[] = []
+    const seen = new Set<string>()
+    appendUniqueProviderOption(options, seen, { value: 'none', label: '(不启用)' })
+    if (defaultSmsSetting) {
+      appendUniqueProviderOption(options, seen, {
+        value: 'default',
+        label: `默认：${defaultSmsSetting.display_name || defaultSmsSetting.catalog_label || defaultSmsSetting.provider_key}`,
+      })
+    }
+    enabledSmsSettings
       .filter((item: any) => item?.provider_key && item?.provider_key !== defaultSmsSetting?.provider_key)
-      .map((item: any) => ({
-        value: item.provider_key,
-        label: item.display_name || item.catalog_label || item.provider_key,
-      })),
-    { value: 'smspool', label: 'SMSPool' },
-    { value: 'smsapi', label: 'SmsApi（自有固定号）' },
-  ]
+      .forEach((item: any) => {
+        const value = normalizeGetRtSmsProviderKey(item.provider_key)
+        appendUniqueProviderOption(options, seen, {
+          value,
+          label: item.display_name || item.catalog_label || item.provider_key,
+        })
+      })
+    appendUniqueProviderOption(options, seen, { value: 'smspool', label: 'SMSPool' })
+    appendUniqueProviderOption(options, seen, { value: 'smsapi', label: 'SmsApi（自有固定号）' })
+    return options
+  })()
 
   useEffect(() => {
     if (!getRtSmsProvider) {
@@ -1894,9 +1936,9 @@ export default function Accounts() {
   // ── 获取rt（refresh_token）──
   const startGetRt = async () => {
     setError('')
-    const ids = [...selectedIds].map(Number)
+    const ids = getRtEligibleIds
     if (ids.length === 0) {
-      setError('请选择至少 1 个账户获取 refresh_token')
+      setError('\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5df2\u6388\u6743\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002')
       return
     }
     setGetRtBusy(true)
@@ -1909,7 +1951,7 @@ export default function Accounts() {
           browser_mode: browserMode,
           concurrency: Math.max(Number(actionConcurrency || 1), 1),
           record_har: getRtRecordHar ? 'true' : '',
-          sms_provider: getRtSmsProvider,
+          sms_provider: normalizeGetRtSmsProviderKey(getRtSmsProvider),
           smspool_api_key: getRtSmspoolKey.trim(),
           smspool_max_price: getRtSmspoolMaxPrice.trim() || '0.13',
           smsapi_phone: getRtSmsapiPhone.trim(),
@@ -1933,6 +1975,19 @@ export default function Accounts() {
   }, [load])
 
   // ── 获取rt(绕过手机号) ──
+  const openGetRtConfirm = () => {
+    setError('')
+    if (selectedCount === 0) {
+      setError(t('accounts.selectAtLeastOne'))
+      return
+    }
+    if (getRtEligibleIds.length === 0) {
+      setError('\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5df2\u6388\u6743\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002')
+      return
+    }
+    setGetRtConfirmOpen(true)
+  }
+
   const startGetRtBypass = async () => {
     setError('')
     const ids = [...selectedIds].map(Number)
@@ -2509,14 +2564,7 @@ export default function Accounts() {
                 size="sm"
                 variant="outline"
                 disabled={getRtBusy}
-                onClick={() => {
-                  setError('')
-                  if (selectedCount === 0) {
-                    setError(t('accounts.selectAtLeastOne'))
-                    return
-                  }
-                  setGetRtConfirmOpen(true)
-                }}
+                onClick={openGetRtConfirm}
                 className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
               >
                 {getRtBusy ? (
@@ -2567,13 +2615,11 @@ export default function Accounts() {
                   className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] pl-3 pr-8 text-[12px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent)]"
                 >
                   <option value="">{t('accounts.allStatuses')}</option>
-                  <option value="registered">{translateAccountStatus('registered', language)}</option>
-                  <option value="trial">{t('dashboard.trial')}</option>
-                  <option value="subscribed">{t('dashboard.subscribed')}</option>
-                  <option value="free">{t('accounts.free')}</option>
-                  <option value="eligible">{t('accounts.eligible')}</option>
-                  <option value="expired">{t('accounts.expired')}</option>
-                  <option value="invalid">{t('dashboard.invalid')}</option>
+                  {ACCOUNT_STATUS_FILTER_OPTIONS.map(status => (
+                    <option key={status} value={status}>
+                      {status === 'eligible' ? t('accounts.eligible') : translateAccountStatus(status, language)}
+                    </option>
+                  ))}
                 </select>
                 <Button
                   variant="outline"
@@ -2928,14 +2974,7 @@ export default function Accounts() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  setError('')
-                  if (selectedIds.size === 0) {
-                    setError('请选择至少 1 个账户获取 refresh_token')
-                    return
-                  }
-                  setGetRtConfirmOpen(true)
-                }}
+                onClick={openGetRtConfirm}
                 disabled={getRtBusy || selectedCount === 0}
                 className={ACCOUNT_TOOL_BUTTON_CLASS}
               >
@@ -2999,13 +3038,11 @@ export default function Accounts() {
               style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundPosition: 'right 8px center', backgroundRepeat: 'no-repeat' }}
             >
               <option value="">{t('accounts.allStatuses')}</option>
-              <option value="registered">{translateAccountStatus('registered', language)}</option>
-              <option value="trial">{t('dashboard.trial')}</option>
-              <option value="subscribed">{t('dashboard.subscribed')}</option>
-              <option value="free">{t('accounts.free')}</option>
-              <option value="eligible">{t('accounts.eligible')}</option>
-              <option value="expired">{t('accounts.expired')}</option>
-              <option value="invalid">{t('dashboard.invalid')}</option>
+              {ACCOUNT_STATUS_FILTER_OPTIONS.map(status => (
+                <option key={status} value={status}>
+                  {status === 'eligible' ? t('accounts.eligible') : translateAccountStatus(status, language)}
+                </option>
+              ))}
             </select>
           </div>
           
