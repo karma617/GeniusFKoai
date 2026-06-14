@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from application import tasks as tasks_module
+from application.tasks import _mark_get_rt_upload_status
+from core.account_graph import load_account_graphs
 from core.base_platform import Account
+from core.db import AccountModel, engine
 from domain.actions import ActionExecutionResult
 from domain.actions import ActionExecutionCommand
 from infrastructure import platform_runtime as runtime_module
+from sqlmodel import Session
 
 
 class _FakeLogger:
@@ -570,6 +574,101 @@ def test_get_rt_task_forwards_record_har_to_platform_action(monkeypatch):
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
     assert seen_params[0]["record_har"] == "true"
     assert seen_params[0]["sms_provider"] == "default"
+    assert seen_params[0]["executor_type"] == "browser"
+
+
+def test_get_rt_task_forwards_executor_type_to_platform_action(monkeypatch):
+    seen_params = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            seen_params.append(dict(command.params))
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [123],
+            "browser_mode": "camoufox_headed",
+            "executor_type": "protocol",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert seen_params[0]["executor_type"] == "protocol"
+
+
+def test_get_rt_api_request_preserves_executor_type():
+    from api.task_commands import GetRtTaskRequest
+
+    body = GetRtTaskRequest(
+        platform="chatgpt",
+        ids=[123],
+        executor_type="protocol",
+        browser_mode="camoufox_headless",
+    )
+
+    assert body.model_dump()["executor_type"] == "protocol"
+
+
+def test_auto_upload_sub2api_retries_request_exception_six_times(monkeypatch):
+    from core import config_store
+    from platforms.chatgpt import sub2api_upload
+
+    calls = []
+
+    monkeypatch.setattr(config_store.config_store, "get", lambda key, default="": "https://sub2api.example" if key == "sub2api_url" else default)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+
+    def fake_upload(_target):
+        calls.append(1)
+        return False, "SUB2API 请求异常：curl: (35) TLS connect error"
+
+    monkeypatch.setattr(sub2api_upload, "upload_to_sub2api", fake_upload)
+    logger = _FakeLogger()
+    account = Account(
+        platform="chatgpt",
+        email="rt@test.com",
+        password="Secret123!",
+        extra={
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        },
+    )
+
+    result = tasks_module._auto_upload_sub2api(logger, account)
+
+    assert result is False
+    assert len(calls) == 6
+    assert any("重试 6 次仍失败" in str(event[1]) for event in logger.events)
+
+
+def test_mark_get_rt_upload_status_persists_new_lifecycle_status():
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="rt-status@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 上传失败")
+    with Session(engine) as session:
+        graph = load_account_graphs(session, [account_id])[account_id]
+        assert graph["lifecycle_status"] == "rt_pending_upload"
+        assert graph["display_status"] == "rt_pending_upload"
+        assert graph["overview"]["rt_upload_status"] == "pending_upload"
+
+    _mark_get_rt_upload_status(account_id, uploaded=True, upload_message="SUB2API 上传成功")
+    with Session(engine) as session:
+        graph = load_account_graphs(session, [account_id])[account_id]
+        assert graph["lifecycle_status"] == "rt_uploaded"
+        assert graph["display_status"] == "rt_uploaded"
+        assert graph["overview"]["rt_upload_status"] == "uploaded"
 
 
 def test_get_rt_sms_provider_aliases_are_normalized():
@@ -712,6 +811,88 @@ def test_get_rt_task_uses_shared_phone_reuse_pool(monkeypatch):
     assert callbacks[0][0] == "1/3"
     assert callbacks[-1][0] == "3/3"
     assert fake_pool.cleaned is True
+
+
+def test_get_rt_task_uses_saved_default_smspool_settings(monkeypatch):
+    from platforms.chatgpt import browser_get_rt as browser_get_rt_module
+
+    built = []
+    seen_params = []
+
+    class FakeSettingsRepo:
+        def get_default_provider_key(self, provider_type):
+            assert provider_type == "sms"
+            return "smspool_api"
+
+        def resolve_runtime_settings(self, provider_type, provider_key, overrides=None):
+            assert provider_type == "sms"
+            assert provider_key == "smspool_api"
+            return {
+                "smspool_api_key": "SAVED_KEY",
+                "smspool_max_price": "0.08",
+                "smspool_default_country": "9",
+                "smspool_default_service": "671",
+                "smspool_base_url": "https://api.example.test",
+                "smspool_compat_base_url": "https://compat.example.test",
+                "smspool_pricing_option": "0",
+                "sms_poll_interval": "2",
+            }
+
+    class FakePhonePool:
+        def make_callback(self, *, label=""):
+            return lambda: "+15550000001"
+
+        def cleanup(self):
+            pass
+
+    def fake_build_pool(**kwargs):
+        built.append(dict(kwargs))
+        return FakePhonePool(), ""
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            seen_params.append(dict(command.params))
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "ProviderSettingsRepository", FakeSettingsRepo, raising=False)
+    monkeypatch.setattr(
+        "infrastructure.provider_settings_repository.ProviderSettingsRepository",
+        FakeSettingsRepo,
+    )
+    monkeypatch.setattr(browser_get_rt_module, "build_get_rt_phone_reuse_pool", fake_build_pool)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [123],
+            "browser_mode": "camoufox_headed",
+            "sms_provider": "default",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert built[0]["sms_provider"] == "smspool"
+    assert built[0]["smspool_api_key"] == "SAVED_KEY"
+    assert built[0]["smspool_max_price"] == "0.08"
+    assert built[0]["smspool_country"] == "9"
+    assert built[0]["smspool_service"] == "671"
+    assert built[0]["smspool_base_url"] == "https://api.example.test"
+    assert built[0]["smspool_compat_base_url"] == "https://compat.example.test"
+    assert built[0]["smspool_pricing_option"] == "0"
+    assert built[0]["smspool_poll_interval"] == "2"
+    assert seen_params[0]["sms_provider"] == "smspool"
+    assert seen_params[0]["smspool_api_key"] == "SAVED_KEY"
+    assert seen_params[0]["smspool_max_price"] == "0.08"
+    assert seen_params[0]["smspool_country"] == "9"
+    assert seen_params[0]["smspool_service"] == "671"
+    assert seen_params[0]["smspool_base_url"] == "https://api.example.test"
+    assert seen_params[0]["smspool_compat_base_url"] == "https://compat.example.test"
+    assert seen_params[0]["smspool_pricing_option"] == "0"
+    assert seen_params[0]["smspool_poll_interval"] == "2"
 
 
 def test_chatgpt_auto_plus_followup_returns_error_when_payment_link_fails(monkeypatch):
@@ -986,3 +1167,133 @@ def test_platform_runtime_persists_get_rt_tokens_and_user_info(monkeypatch):
     assert summary["codex_oauth"]["account_id"] == "acct-123"
     assert summary["codex_oauth"]["profile"]["name"] == "Real User"
     assert summary["codex_oauth"]["id_token_claims"]["sub"] == "auth0|abc"
+    assert summary["lifecycle_status"] == "rt_pending_upload"
+
+
+def test_platform_runtime_marks_sub2api_manual_upload_success(monkeypatch):
+    patched = {}
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.added = []
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model_cls, account_id):
+            return type("Model", (), {"id": account_id, "platform": "chatgpt", "updated_at": None})()
+
+        def add(self, model):
+            self.added.append(model)
+
+        def commit(self):
+            self.committed = True
+
+    class FakePlatform:
+        def __init__(self, config=None):
+            pass
+
+        def execute_action(self, action_id, account, params):
+            return {
+                "ok": True,
+                "data": {
+                    "message": "SUB2API 上传成功",
+                    "upload_target": "sub2api",
+                    "upload_status": "uploaded",
+                },
+            }
+
+    def fake_patch_account_graph(session, model, **kwargs):
+        patched.update(kwargs)
+
+    monkeypatch.setattr(runtime_module, "Session", FakeSession)
+    monkeypatch.setattr(runtime_module, "load_all", lambda: None)
+    monkeypatch.setattr(runtime_module, "get", lambda platform: FakePlatform)
+    monkeypatch.setattr(runtime_module, "build_platform_account", lambda session, model: object())
+    monkeypatch.setattr(runtime_module, "patch_account_graph", fake_patch_account_graph)
+
+    result = runtime_module.PlatformRuntime().execute_action(
+        ActionExecutionCommand(
+            platform="chatgpt",
+            account_id=123,
+            action_id="upload_sub2api",
+            params={},
+        )
+    )
+
+    assert result.ok is True
+    assert patched["lifecycle_status"] == "rt_uploaded"
+    assert patched["summary_updates"]["display_status"] == "rt_uploaded"
+    assert patched["summary_updates"]["rt_upload_status"] == "uploaded"
+
+
+def test_load_account_graphs_normalizes_legacy_authorized_rt_status():
+    from core.account_graph import load_account_graphs, patch_account_graph
+
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="legacy-rt@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        patch_account_graph(
+            session,
+            model,
+            lifecycle_status="authorized",
+            summary_updates={
+                "oauth": {"type": "codex"},
+                "codex_oauth": {"type": "codex"},
+                "valid": True,
+            },
+            credential_updates={
+                "refresh_token": "refresh-token",
+                "access_token": "access-token",
+            },
+        )
+        session.commit()
+        account_id = int(model.id or 0)
+
+    with Session(engine) as session:
+        graph = load_account_graphs(session, [account_id])[account_id]
+
+    assert graph["lifecycle_status"] == "rt_pending_upload"
+    assert graph["display_status"] == "rt_pending_upload"
+    assert graph["overview"]["rt_upload_status"] == "pending_upload"
+
+
+def test_load_account_graphs_preserves_uploaded_rt_status():
+    from core.account_graph import load_account_graphs, patch_account_graph
+
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="legacy-uploaded@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        patch_account_graph(
+            session,
+            model,
+            lifecycle_status="authorized",
+            summary_updates={
+                "oauth": {"type": "codex"},
+                "codex_oauth": {"type": "codex"},
+                "valid": True,
+                "rt_upload_status": "uploaded",
+                "rt_uploaded_at": "2026-06-14T00:00:00Z",
+            },
+            credential_updates={
+                "refresh_token": "refresh-token",
+                "access_token": "access-token",
+            },
+        )
+        session.commit()
+        account_id = int(model.id or 0)
+
+    with Session(engine) as session:
+        graph = load_account_graphs(session, [account_id])[account_id]
+
+    assert graph["lifecycle_status"] == "rt_uploaded"
+    assert graph["display_status"] == "rt_uploaded"
+    assert graph["overview"]["rt_upload_status"] == "uploaded"

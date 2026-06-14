@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { getPlatforms } from '@/lib/app-data'
 import { apiFetch } from '@/lib/utils'
 import { formatDateTime } from '@/lib/i18n'
 import { useI18n } from '@/lib/i18n-context'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { TaskLogPanel } from '@/components/tasks/TaskLogPanel'
 import { getTaskStatusText, isCancellableTaskStatus, isTerminalTaskStatus, TASK_STATUS_VARIANTS } from '@/lib/tasks'
-import { RefreshCw, Activity, CheckCircle2, AlertTriangle, Clock3, ChevronDown, CircleStop } from 'lucide-react'
+import { RefreshCw, Activity, CheckCircle2, AlertTriangle, Clock3, ChevronDown, CircleStop, FileText, X } from 'lucide-react'
 
 function shortId(id: string) {
   if (!id) return '-'
@@ -33,6 +35,79 @@ function formatError(error: string | null | undefined): string {
   return error.length > 100 ? error.slice(0, 100) + '...' : error
 }
 
+function TaskLogDialog({
+  task,
+  onClose,
+  onTaskDone,
+}: {
+  task: any
+  onClose: () => void
+  onTaskDone: (taskId: string, status: string) => void
+}) {
+  const { t, language } = useI18n()
+  const taskId = String(task?.id || task?.task_id || '')
+  const taskType = String(task?.type || '')
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose])
+
+  if (!taskId) return null
+
+  const dialog = (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-sm">
+      <div className="flex h-[min(86vh,760px)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-6 py-5">
+          <div>
+            <Badge variant="secondary" className="mb-3">
+              {task.platform || t('taskLog.platformAction')}
+            </Badge>
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-lg font-semibold text-[var(--text-primary)]">
+                {taskType || t('taskHistory.taskLogs')}
+              </h2>
+              <Badge variant={TASK_STATUS_VARIANTS[task.status] || 'secondary'}>
+                {getTaskStatusText(task.status, language)}
+              </Badge>
+            </div>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              {t('taskLog.dialogSubtitle')}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-secondary)] transition hover:text-[var(--text-primary)]"
+            aria-label={t('common.close')}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 bg-[var(--bg-base)] px-6 py-5">
+          <TaskLogPanel
+            taskId={taskId}
+            onDone={(nextStatus) => onTaskDone(taskId, nextStatus)}
+          />
+        </div>
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--border)] px-6 py-3">
+          <div className="truncate font-mono text-xs text-[var(--text-muted)]">
+            {t('taskHistory.taskId')}: {taskId}
+          </div>
+          <Button variant="outline" size="sm" onClick={onClose}>
+            {t('common.close')}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+
+  return typeof document !== 'undefined' ? createPortal(dialog, document.body) : dialog
+}
+
 export default function TaskHistory() {
   const { t, language } = useI18n()
   const [tasks, setTasks] = useState<any[]>([])
@@ -41,6 +116,7 @@ export default function TaskHistory() {
   const [platforms, setPlatforms] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [terminatingTaskIds, setTerminatingTaskIds] = useState<Set<string>>(() => new Set())
+  const [logTask, setLogTask] = useState<any | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -85,6 +161,21 @@ export default function TaskHistory() {
         return next
       })
     }
+  }
+
+  const handleLogTaskDone = (taskId: string, nextStatus: string) => {
+    setTasks((items) =>
+      items.map((item) =>
+        String(item.id || item.task_id || '') === taskId
+          ? { ...item, status: nextStatus }
+          : item
+      )
+    )
+    setLogTask((current: any | null) =>
+      current && String(current.id || current.task_id || '') === taskId
+        ? { ...current, status: nextStatus }
+        : current
+    )
   }
 
   const succeeded = tasks.filter((t) => t.status === 'succeeded').length
@@ -286,7 +377,18 @@ export default function TaskHistory() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {canTerminate || terminating || task.status === 'cancel_requested' ? (
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setLogTask(task)}
+                          title={t('taskHistory.viewLogsTitle')}
+                          className="gap-1.5 whitespace-nowrap"
+                        >
+                          <FileText className="h-3.5 w-3.5" />
+                          {t('taskHistory.viewLogs')}
+                        </Button>
+                        {canTerminate || terminating || task.status === 'cancel_requested' ? (
                         <Button
                           variant={task.status === 'cancel_requested' ? 'outline' : 'destructive'}
                           size="sm"
@@ -300,9 +402,8 @@ export default function TaskHistory() {
                             ? t('taskHistory.terminating')
                             : t('taskHistory.terminate')}
                         </Button>
-                      ) : (
-                        <span className="text-xs text-[var(--text-muted)]">-</span>
-                      )}
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 )
@@ -311,6 +412,13 @@ export default function TaskHistory() {
           </table>
         </div>
       </div>
+      {logTask ? (
+        <TaskLogDialog
+          task={logTask}
+          onClose={() => setLogTask(null)}
+          onTaskDone={handleLogTaskDone}
+        />
+      ) : null}
     </div>
   )
 }

@@ -111,6 +111,31 @@ def test_wait_for_oauth_callback_result_stops_on_token_exchange_region_error(mon
     assert any("proxy=http://proxy.example" in item for item in logs)
 
 
+def test_submit_callback_result_retries_transient_token_exchange_error(monkeypatch):
+    calls = []
+    logs = []
+
+    def fake_submit_callback_result(_callback_url, _oauth_start, _proxy, log=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("token exchange failed: network error: TLS reset")
+        return {"access_token": "access-token", "refresh_token": "refresh-token"}
+
+    monkeypatch.setattr(browser_register, "_submit_callback_result", fake_submit_callback_result)
+    monkeypatch.setattr(browser_register.time, "sleep", lambda _seconds: None)
+
+    result = browser_register._submit_callback_result_or_error(
+        "http://localhost:1455/auth/callback?code=ac_test&state=state_123",
+        SimpleNamespace(state="state_123"),
+        proxy="http://proxy.example",
+        log=logs.append,
+    )
+
+    assert result["refresh_token"] == "refresh-token"
+    assert len(calls) == 3
+    assert any("准备重试 (2/6)" in item for item in logs)
+
+
 def test_oauth_authorize_debug_summary_mentions_local_pkce_source():
     summary = browser_register._oauth_authorize_debug_summary(
         SimpleNamespace(

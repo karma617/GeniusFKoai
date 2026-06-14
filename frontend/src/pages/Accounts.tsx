@@ -16,7 +16,7 @@ import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
 import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
-  registered: 'default', authorized: 'success', trial: 'success', subscribed: 'success',
+  registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', trial: 'success', subscribed: 'success',
   expired: 'warning', invalid: 'danger',
   free: 'secondary', eligible: 'secondary', valid: 'success', unknown: 'secondary',
 }
@@ -35,7 +35,8 @@ const BROWSER_MODE_OPTIONS = [
 const ACCOUNT_TOOL_BUTTON_CLASS = 'h-8 shrink-0 whitespace-nowrap bg-transparent'
 const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'registered',
-  'authorized',
+  'rt_pending_upload',
+  'rt_uploaded',
   'subscribed',
   'eligible',
   'expired',
@@ -1745,13 +1746,12 @@ export default function Accounts() {
   const [getRtBypassBusy, setGetRtBypassBusy] = useState(false)
   const [getRtBypassConfirmOpen, setGetRtBypassConfirmOpen] = useState(false)
   const [getRtSmsProvider, setGetRtSmsProvider] = useState('')
-  const [getRtSmspoolKey, setGetRtSmspoolKey] = useState('')
-  const [getRtSmspoolMaxPrice, setGetRtSmspoolMaxPrice] = useState('0.13')
   const [getRtSmsapiPhone, setGetRtSmsapiPhone] = useState('')
   const [getRtSmsapiUrl, setGetRtSmsapiUrl] = useState('')
   const [getRtRecordHar, setGetRtRecordHar] = useState(false)
   const [getRtPhoneReuseCount, setGetRtPhoneReuseCount] = useState(3)
   const [getRtPhoneChangeLimit, setGetRtPhoneChangeLimit] = useState(10)
+  const [getRtExecutorType, setGetRtExecutorType] = useState('browser')
   const [configOptions, setConfigOptions] = useState<ConfigOptionsResponse>({
     mailbox_providers: [],
     captcha_providers: [],
@@ -1855,6 +1855,8 @@ export default function Accounts() {
         value: 'default',
         label: `默认：${defaultSmsSetting.display_name || defaultSmsSetting.catalog_label || defaultSmsSetting.provider_key}`,
       })
+      const defaultValue = normalizeGetRtSmsProviderKey(defaultSmsSetting.provider_key)
+      if (defaultValue) seen.add(defaultValue)
     }
     enabledSmsSettings
       .filter((item: any) => item?.provider_key && item?.provider_key !== defaultSmsSetting?.provider_key)
@@ -1948,12 +1950,11 @@ export default function Accounts() {
         body: JSON.stringify({
           platform: 'chatgpt',
           ids,
-          browser_mode: browserMode,
+          executor_type: getRtExecutorType,
+          browser_mode: getRtExecutorType === 'protocol' ? '' : browserMode,
           concurrency: Math.max(Number(actionConcurrency || 1), 1),
-          record_har: getRtRecordHar ? 'true' : '',
+          record_har: getRtExecutorType === 'protocol' ? '' : (getRtRecordHar ? 'true' : ''),
           sms_provider: normalizeGetRtSmsProviderKey(getRtSmsProvider),
-          smspool_api_key: getRtSmspoolKey.trim(),
-          smspool_max_price: getRtSmspoolMaxPrice.trim() || '0.13',
           smsapi_phone: getRtSmsapiPhone.trim(),
           smsapi_url: getRtSmsapiUrl.trim(),
           phone_reuse_count: Math.max(Number(getRtPhoneReuseCount || 3), 3),
@@ -2093,22 +2094,24 @@ export default function Accounts() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
-                <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                    {t('accounts.browserMode')}
-                  </label>
-                  <select
-                    value={browserMode}
-                    onChange={event => setBrowserMode(event.target.value)}
-                    className="control-surface control-surface-compact w-full"
-                  >
-                    {BROWSER_MODE_OPTIONS.map(option => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {getRtExecutorType !== 'protocol' && (
+                  <div>
+                    <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                      {t('accounts.browserMode')}
+                    </label>
+                    <select
+                      value={browserMode}
+                      onChange={event => setBrowserMode(event.target.value)}
+                      className="control-surface control-surface-compact w-full"
+                    >
+                      {BROWSER_MODE_OPTIONS.map(option => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
                     {t('accounts.concurrency')}
@@ -2184,20 +2187,38 @@ export default function Accounts() {
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                    {t('accounts.browserMode')}
+                    {'\u6267\u884c\u65b9\u5f0f'}
                   </label>
                   <select
-                    value={browserMode}
-                    onChange={event => setBrowserMode(event.target.value)}
+                    value={getRtExecutorType}
+                    onChange={event => setGetRtExecutorType(event.target.value)}
                     className="control-surface control-surface-compact w-full"
                   >
-                    {BROWSER_MODE_OPTIONS.map(option => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
+                    <option value="browser">{'\u6d4f\u89c8\u5668\u6a21\u5f0f'}</option>
+                    <option value="protocol">{'\u534f\u8bae\u6a21\u5f0f'}</option>
                   </select>
+                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                    {'\u534f\u8bae\u6a21\u5f0f\u6309 HAR \u590d\u523b OAuth \u94fe\u8def\uff1b\u6d4f\u89c8\u5668\u6a21\u5f0f\u4fdd\u7559\u73b0\u6709\u9875\u9762\u81ea\u52a8\u5316\u6d41\u7a0b\u3002'}
+                  </div>
                 </div>
+                {getRtExecutorType !== 'protocol' && (
+                  <div>
+                    <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                      {t('accounts.browserMode')}
+                    </label>
+                    <select
+                      value={browserMode}
+                      onChange={event => setBrowserMode(event.target.value)}
+                      className="control-surface control-surface-compact w-full"
+                    >
+                      {BROWSER_MODE_OPTIONS.map(option => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
                     {t('accounts.concurrency')}
@@ -2246,27 +2267,29 @@ export default function Accounts() {
                     {t('accounts.phoneChangeLimitHint')}
                   </div>
                 </div>
-                <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
-                  <input
-                    type="checkbox"
-                    checked={getRtRecordHar}
-                    onChange={event => setGetRtRecordHar(event.target.checked)}
-                    className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
-                  />
-                  <div className="flex-1 text-xs text-[var(--text-secondary)]">
-                    <div className="text-sm font-medium text-[var(--text-primary)]">
-                      {t('accounts.captureCamoufoxHar')}
-                    </div>
-                    <div className="mt-0.5">
-                      {t('accounts.captureCamoufoxHarDesc')}
-                    </div>
-                    {getRtRecordHar && !browserMode.startsWith('camoufox_') ? (
-                      <div className="mt-2 text-[11px] text-amber-400">
-                        {t('accounts.captureHarUnsupported')}
+                {getRtExecutorType !== 'protocol' && (
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                    <input
+                      type="checkbox"
+                      checked={getRtRecordHar}
+                      onChange={event => setGetRtRecordHar(event.target.checked)}
+                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                    />
+                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        {t('accounts.captureCamoufoxHar')}
                       </div>
-                    ) : null}
-                  </div>
-                </label>
+                      <div className="mt-0.5">
+                        {t('accounts.captureCamoufoxHarDesc')}
+                      </div>
+                      {getRtRecordHar && !browserMode.startsWith('camoufox_') ? (
+                        <div className="mt-2 text-[11px] text-amber-400">
+                          {t('accounts.captureHarUnsupported')}
+                        </div>
+                      ) : null}
+                    </div>
+                  </label>
+                )}
                 {/* ── 手机号接码（可选）── */}
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">手机号接码（可选，跳过则遇到 add_phone 会失败）</div>
@@ -2290,35 +2313,9 @@ export default function Accounts() {
                     </div>
                   )}
                   {getRtSmsProvider === 'smspool' && (
-                    <>
-                      <div>
-                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                          SMSPool API Key（留空用内置默认 key）
-                        </label>
-                        <input
-                          type="text"
-                          value={getRtSmspoolKey}
-                          onChange={e => setGetRtSmspoolKey(e.target.value)}
-                          placeholder="SMSPool API key"
-                          className="control-surface control-surface-compact w-full"
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
-                          价格上限 USD（默认 0.13）
-                        </label>
-                        <input
-                          type="text"
-                          value={getRtSmspoolMaxPrice}
-                          onChange={e => setGetRtSmspoolMaxPrice(e.target.value.replace(/[^0-9.]/g, ''))}
-                          placeholder="0.13"
-                          className="control-surface control-surface-compact w-full text-center font-mono"
-                        />
-                      </div>
-                      <div className="text-[11px] text-[var(--text-muted)]">
-                        租美国号（country=1），OpenAI/ChatGPT service=671
-                      </div>
-                    </>
+                    <div className="rounded-lg border border-[var(--border-soft)] bg-black/10 px-3 py-2 text-[11px] text-[var(--text-muted)]">
+                      {'SMSPool API Key\u3001\u56fd\u5bb6\u3001\u670d\u52a1\u3001\u4ef7\u683c\u4e0a\u9650\u7b49\u53c2\u6570\u5c06\u76f4\u63a5\u4f7f\u7528\u201c\u8bbe\u7f6e -> \u63a5\u7801\u670d\u52a1\u201d\u91cc\u7684 SMSPool \u914d\u7f6e\u3002'}
+                    </div>
                   )}
                   {getRtSmsProvider === 'smsapi' && (
                     <>

@@ -127,12 +127,25 @@ def _resolve_action_proxy(
     action_label: str = "操作",
 ) -> str | None:
     """按代理页配置解析平台动作代理，并输出可排查日志。"""
-    runtime_config = get_proxy_runtime_config()
-    resolved = resolve_runtime_proxy(
-        explicit_proxy=configured_proxy,
-        proxy_getter=lambda: proxy_pool.get_next(region=region),
-        region=region,
-    )
+    try:
+        runtime_config = get_proxy_runtime_config()
+    except Exception as exc:
+        runtime_config = {
+            "strategy": "fallback",
+            "fallback_url": configured_proxy or "",
+        }
+        if callable(log_fn):
+            log_fn(f"  {action_label}: 代理配置读取失败，改用降级策略: {exc}")
+    try:
+        resolved = resolve_runtime_proxy(
+            explicit_proxy=configured_proxy,
+            proxy_getter=lambda: proxy_pool.get_next(region=region),
+            region=region,
+        )
+    except Exception as exc:
+        resolved = str(configured_proxy or runtime_config.get("fallback_url") or "").strip() or None
+        if callable(log_fn):
+            log_fn(f"  {action_label}: 代理解析失败，改用 fallback={_proxy_log_value(resolved)}: {exc}")
     if callable(log_fn):
         source = "显式代理" if str(configured_proxy or "").strip() else (
             f"全局策略={runtime_config['strategy']}"
@@ -578,7 +591,7 @@ class ChatGPTPlatform(BasePlatform):
             return self._handle_get_rt(account, params)
         if action_id == "get_rt_bypass":
             return self._handle_get_rt_bypass(account, params)
-        if action_id == "upload_sub2api":
+        if action_id in {"upload_cpa", "upload_sub2api", "upload_tm"}:
             return self._execute_platform_action(action_id, account, params)
         return super().execute_action(action_id, account, params)
 
@@ -657,7 +670,7 @@ class ChatGPTPlatform(BasePlatform):
             token_data = generate_token_json(a)
             ok, msg = upload_to_cpa(token_data, api_url=params.get("api_url"),
                                     api_key=params.get("api_key"))
-            return {"ok": ok, "data": msg}
+            return {"ok": ok, "data": {"message": msg, "upload_target": "cpa", "upload_status": "uploaded" if ok else "failed"}}
 
         if action_id == "upload_sub2api":
             from platforms.chatgpt.sub2api_upload import upload_to_sub2api
@@ -670,13 +683,13 @@ class ChatGPTPlatform(BasePlatform):
                 account_priority=params.get("account_priority") or params.get("sub2api_account_priority"),
                 default_proxy_name=params.get("default_proxy_name") or params.get("sub2api_default_proxy_name"),
             )
-            return {"ok": ok, "data": msg}
+            return {"ok": ok, "data": {"message": msg, "upload_target": "sub2api", "upload_status": "uploaded" if ok else "failed"}}
 
         if action_id == "upload_tm":
             from platforms.chatgpt.cpa_upload import upload_to_team_manager
             ok, msg = upload_to_team_manager(a, api_url=params.get("api_url"),
                                              api_key=params.get("api_key"))
-            return {"ok": ok, "data": msg}
+            return {"ok": ok, "data": {"message": msg, "upload_target": "team_manager", "upload_status": "uploaded" if ok else "failed"}}
 
         if action_id == "payment_link":
             return self._handle_generate_link(account, params)
@@ -926,6 +939,20 @@ class ChatGPTPlatform(BasePlatform):
                 before_ids=before_ids or None,
             )
 
+        def _refresh_before_ids():
+            nonlocal before_ids
+            try:
+                before_ids = set(mailbox.get_current_ids(mailbox_account) or set())
+                log_fn(
+                    f"  get_rt: email OTP baseline refreshed provider={selected_provider_name} "
+                    f"email={selected_mailbox_email} before_ids={len(before_ids)}"
+                )
+            except Exception as exc:
+                before_ids = set()
+                log_fn(f"  get_rt: email OTP baseline refresh failed: {exc}")
+            return set(before_ids or set())
+
+        _otp_callback.refresh_before_ids = _refresh_before_ids  # type: ignore[attr-defined]
         return _otp_callback, ""
 
     def _handle_get_rt(self, account: Account, params: dict) -> dict:
@@ -942,6 +969,7 @@ class ChatGPTPlatform(BasePlatform):
         log_fn = getattr(self, "log", print)
         cancel_fn = getattr(self, "_cancel_check_fn", None)
 
+        executor_type = str(params.get("executor_type") or "browser").strip().lower() or "browser"
         browser_mode = str(params.get("browser_mode") or "camoufox_headed")
         record_har = _bool_param(params, "record_har", False)
         try:
@@ -964,16 +992,101 @@ class ChatGPTPlatform(BasePlatform):
         bit_profile_id = ""
 
         try:
+            from platforms.chatgpt.browser_get_rt import (
+                build_get_rt_phone_callback,
+            )
+            otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
+            if not otp_callback:
+                return {"ok": False, "error": f"获取rt失败: {otp_error}"}
+
+            # ★ 手机号 OTP 回调（可选）
+            phone_callback = None
+            sms_provider = _normalize_get_rt_sms_provider(params.get("sms_provider"))
+            supplied_phone_callback = params.get("phone_callback")
+            if callable(supplied_phone_callback):
+                phone_callback = supplied_phone_callback
+                log_fn(f"  获取rt: 使用任务级手机号复用 callback provider={sms_provider or '(unknown)'}")
+            elif sms_provider:
+                phone_callback, phone_error = build_get_rt_phone_callback(
+                    sms_provider=sms_provider,
+                    smspool_api_key=str(params.get("smspool_api_key") or ""),
+                    smspool_max_price=str(params.get("smspool_max_price") or "0.13"),
+                    smspool_country=str(params.get("smspool_country") or ""),
+                    smspool_service=str(params.get("smspool_service") or ""),
+                    smspool_base_url=str(params.get("smspool_base_url") or ""),
+                    smspool_compat_base_url=str(params.get("smspool_compat_base_url") or ""),
+                    smspool_pricing_option=str(params.get("smspool_pricing_option") or ""),
+                    smspool_poll_interval=str(params.get("smspool_poll_interval") or ""),
+                    smsapi_phone=str(params.get("smsapi_phone") or ""),
+                    smsapi_url=str(params.get("smsapi_url") or ""),
+                    phone_change_limit=phone_change_limit,
+                    log_fn=log_fn,
+                )
+                if not phone_callback:
+                    log_fn(f"  获取rt: 手机 OTP 回调创建失败: {phone_error}，继续仅邮箱流程")
+                else:
+                    log_fn(f"  获取rt: 手机 OTP 已就绪 provider={sms_provider}")
+
+            if executor_type == "protocol":
+                log_fn(
+                    f"获取rt: {account.email}, executor=protocol, "
+                    f"sms={sms_provider or '(无)'}, proxy={_proxy_log_value(proxy)}"
+                )
+            else:
+                log_fn(
+                    f"获取rt: {account.email}, executor={executor_type}, browser_mode={browser_mode}, "
+                    f"sms={sms_provider or '(无)'}, proxy={_proxy_log_value(proxy)}"
+                )
+
+            if executor_type == "protocol":
+                from platforms.chatgpt.protocol_get_rt import run_protocol_get_rt
+
+                result = run_protocol_get_rt(
+                    email=account.email,
+                    password=account.password,
+                    proxy=proxy,
+                    otp_callback=otp_callback,
+                    log_fn=log_fn,
+                    sms_provider=sms_provider,
+                    smspool_api_key=str(params.get("smspool_api_key") or ""),
+                    smspool_max_price=str(params.get("smspool_max_price") or "0.13"),
+                    smspool_country=str(params.get("smspool_country") or ""),
+                    smspool_service=str(params.get("smspool_service") or ""),
+                    smspool_base_url=str(params.get("smspool_base_url") or ""),
+                    smspool_compat_base_url=str(params.get("smspool_compat_base_url") or ""),
+                    smspool_pricing_option=str(params.get("smspool_pricing_option") or ""),
+                    smspool_poll_interval=str(params.get("smspool_poll_interval") or ""),
+                    smsapi_phone=str(params.get("smsapi_phone") or ""),
+                    smsapi_url=str(params.get("smsapi_url") or ""),
+                    phone_callback=phone_callback,
+                    phone_change_limit=phone_change_limit,
+                )
+                refresh_token = str(result.get("refresh_token") or "")
+                access_token = str(result.get("access_token") or "")
+                backup_json_path = _save_get_rt_token_backup(account, result, action_label="get_rt_protocol")
+                if backup_json_path:
+                    log_fn(f"  获取rt token 本地备份: {backup_json_path}")
+                return {
+                    "ok": True,
+                    "data": {
+                        "access_token": access_token,
+                        "refresh_token": refresh_token,
+                        "id_token": str(result.get("id_token") or ""),
+                        "account_id": str(result.get("account_id") or ""),
+                        "email": account.email,
+                        "record_har_path": "",
+                        "token_backup_path": backup_json_path,
+                        "message": "refresh_token 获取成功" if refresh_token else "access_token 获取成功（无 refresh_token）",
+                    },
+                }
+
             from platforms._browser_backend import parse_checkout_mode
             from platforms.chatgpt.browser_register import (
                 ChatGPTBrowserRegister,
                 _build_proxy_config,
                 _do_codex_oauth,
             )
-            from platforms.chatgpt.browser_get_rt import (
-                setup_oauth_state_capture,
-                build_get_rt_phone_callback,
-            )
+            from platforms.chatgpt.browser_get_rt import setup_oauth_state_capture
 
             # ★ BitBrowser 模式：自动从 Profile 池获取可用的 profile ID
             if str(browser_mode or "").startswith("bitbrowser_"):
@@ -994,36 +1107,6 @@ class ChatGPTPlatform(BasePlatform):
                     "does not support Playwright record_har_path"
                 )
                 record_har_path = None
-            otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
-            if not otp_callback:
-                return {"ok": False, "error": f"获取rt失败: {otp_error}"}
-
-            # ★ 手机号 OTP 回调（可选）
-            phone_callback = None
-            sms_provider = _normalize_get_rt_sms_provider(params.get("sms_provider"))
-            supplied_phone_callback = params.get("phone_callback")
-            if callable(supplied_phone_callback):
-                phone_callback = supplied_phone_callback
-                log_fn(f"  获取rt: 使用任务级手机号复用 callback provider={sms_provider or '(unknown)'}")
-            elif sms_provider:
-                phone_callback, phone_error = build_get_rt_phone_callback(
-                    sms_provider=sms_provider,
-                    smspool_api_key=str(params.get("smspool_api_key") or ""),
-                    smspool_max_price=str(params.get("smspool_max_price") or "0.13"),
-                    smsapi_phone=str(params.get("smsapi_phone") or ""),
-                    smsapi_url=str(params.get("smsapi_url") or ""),
-                    phone_change_limit=phone_change_limit,
-                    log_fn=log_fn,
-                )
-                if not phone_callback:
-                    log_fn(f"  获取rt: 手机 OTP 回调创建失败: {phone_error}，继续仅邮箱流程")
-                else:
-                    log_fn(f"  获取rt: 手机 OTP 已就绪 provider={sms_provider}")
-
-            log_fn(
-                f"获取rt: {account.email}, browser_mode={browser_mode}, "
-                f"sms={sms_provider or '(无)'}, proxy={_proxy_log_value(proxy)}"
-            )
 
             # 创建一个只用于 get_rt 的轻量 register 实例
             reg = ChatGPTBrowserRegister(

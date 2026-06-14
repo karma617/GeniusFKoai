@@ -6,9 +6,15 @@ def test_get_rt_mailbox_otp_callback_uses_attached_mailbox_resource(monkeypatch)
     captured = {}
 
     class FakeMailbox:
+        def __init__(self):
+            self.current_ids_calls = 0
+
         def get_current_ids(self, account):
+            self.current_ids_calls += 1
             captured["baseline_account"] = account
-            return {"old-message"}
+            if self.current_ids_calls == 1:
+                return {"old-message"}
+            return {"old-message", "bad-code-message"}
 
         def wait_for_code(self, account, keyword="", timeout=120, before_ids=None, code_pattern=None):
             captured["wait_account"] = account
@@ -69,6 +75,7 @@ def test_get_rt_mailbox_otp_callback_uses_attached_mailbox_resource(monkeypatch)
 
     assert error == ""
     assert callback is not None
+    assert hasattr(callback, "refresh_before_ids")
     assert captured["provider"] == "local_ms_pool"
     assert captured["proxy"] == "http://proxy.example"
     assert captured["extra"]["provider_resource"] == mailbox_resource
@@ -82,6 +89,10 @@ def test_get_rt_mailbox_otp_callback_uses_attached_mailbox_resource(monkeypatch)
     assert wait_account.extra["provider_account"]["credentials"]["refresh_token"] == "mail-refresh-token"
     assert captured["wait_before_ids"] == {"old-message"}
     assert captured["wait_timeout"] == 600
+
+    assert callback.refresh_before_ids() == {"old-message", "bad-code-message"}
+    assert callback() == "654321"
+    assert captured["wait_before_ids"] == {"old-message", "bad-code-message"}
 
 
 def test_get_rt_mailbox_otp_callback_maps_cloud_mail_to_cfworker(monkeypatch):

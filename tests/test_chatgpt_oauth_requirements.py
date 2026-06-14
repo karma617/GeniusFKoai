@@ -65,6 +65,8 @@ def test_add_phone_retryable_rejection_text_matches_english_and_chinese():
     assert matcher("This phone number is not supported. Please try another phone.")
     assert matcher("We couldn't send a text message to this phone number, so we switched to WhatsApp.")
     assert matcher("You've made too many phone verification requests. Please try again later.")
+    assert matcher("SMSPool 购号失败 (service=671 country=9 max_price=0.13)")
+    assert matcher("get_rt: smspool failed to get phone")
     assert matcher("不支持虚拟手机号，请更换一个号码")
     assert not matcher("Enter the 6-digit security code we sent to your phone.")
 

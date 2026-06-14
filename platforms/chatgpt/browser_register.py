@@ -308,8 +308,8 @@ PHONE_VERIFY_SELECTORS = [
     'button:has-text("次へ")',
 ]
 
-PHONE_CODE_TIMEOUT_SECONDS = 60
-PHONE_CODE_TIMEOUT_SENTINEL = "SMS_CODE_TIMEOUT_60S"
+PHONE_CODE_TIMEOUT_SECONDS = 180
+PHONE_CODE_TIMEOUT_SENTINEL = "SMS_CODE_TIMEOUT_180S"
 PHONE_REJECTED_SENTINEL = "PHONE_REJECTED_RETRYABLE"
 PHONE_ATTEMPTS_PER_COUNTRY = 10
 PHONE_MAX_COUNTRIES = 2
@@ -323,7 +323,10 @@ PHONE_RETRYABLE_REJECTION_RE = re.compile(
     r"can't\s+send\s+a\s+text|unable\s+to\s+send\s+a\s+text|switched\s+to\s+whats\s*app|"
     r"too\s+many\s+phone\s+verification\s+requests|too\s+many\s+verification\s+requests|"
     r"continue\s+to\s+send[\s\S]{0,80}whats\s*app|"
-    r"虚拟|不支持|无法使用|不能使用|换一个|更换|无效手机号|手机号无效|号码无效|无法发送短信|发送短信失败|切换到\s*whatsapp",
+    r"smspool\s+购号失败|purchase\s+failed|failed\s+to\s+get\s+phone|"
+    r"no\s+numbers|no_numbers|no\s+number|"
+    r"虚拟|不支持|无法使用|不能使用|换一个|更换|无效手机号|手机号无效|号码无效|"
+    r"无法发送短信|发送短信失败|购号失败|获取手机号失败|无可用号码|切换到\s*whatsapp",
     re.I,
 )
 
@@ -1351,6 +1354,107 @@ def _extract_auth_error_text(page) -> str:
         if text and "oai_log" not in text and "SSR_HTML" not in text:
             return text
     return ""
+
+
+EMAIL_OTP_INVALID_MARKERS = (
+    "incorrect code",
+    "invalid code",
+    "wrong code",
+    "expired code",
+    "code is incorrect",
+    "invalid otp",
+    "incorrect otp",
+    "invalid verification code",
+    "incorrect verification code",
+    "verification code is incorrect",
+    "code didn't work",
+    "code did not work",
+    "\u9a8c\u8bc1\u7801\u4e0d\u6b63\u786e",
+    "\u9a8c\u8bc1\u7801\u65e0\u6548",
+)
+
+
+def _is_invalid_email_otp_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    return bool(normalized and any(marker in normalized for marker in EMAIL_OTP_INVALID_MARKERS))
+
+
+def _extract_email_otp_error_text(page) -> str:
+    selectors = [
+        "text=Incorrect code",
+        "text=Invalid code",
+        "text=Wrong code",
+        "text=Expired code",
+        "[role='alert']",
+        "[aria-live='assertive']",
+        "[aria-live='polite']",
+        ".react-aria-FieldError",
+        "[slot='errorMessage']",
+        "[id$='-error']",
+        "[class*='error' i]",
+    ]
+    for selector in selectors:
+        try:
+            text = str(page.locator(selector).first.text_content(timeout=350) or "").strip()
+        except Exception:
+            text = ""
+        if text and _is_invalid_email_otp_text(text):
+            return text
+    text = _get_visible_page_text(page)
+    if _is_invalid_email_otp_text(text):
+        return text[:300]
+    return ""
+
+
+def _refresh_otp_callback_baseline(otp_callback, log) -> None:
+    refresh = getattr(otp_callback, "refresh_before_ids", None)
+    if not callable(refresh):
+        return
+    try:
+        before_ids = refresh()
+        try:
+            count = len(before_ids or [])
+        except Exception:
+            count = 0
+        log(f"Email OTP mailbox baseline refreshed before resend: before_ids={count}")
+    except Exception as exc:
+        log(f"Email OTP mailbox baseline refresh failed before resend: {exc}")
+
+
+def _resend_browser_email_otp(page, otp_callback, log) -> bool:
+    _refresh_otp_callback_baseline(otp_callback, log)
+    selectors = [
+        'button:has-text("Resend email")',
+        'button:has-text("Resend code")',
+        'button:has-text("Resend")',
+        'a:has-text("Resend email")',
+        'a:has-text("Resend code")',
+        'a:has-text("Resend")',
+        'button[data-testid="resend-link"]',
+        'button:has-text("\u91cd\u65b0\u53d1\u9001")',
+        'button:has-text("\u518d\u53d1\u9001")',
+        'a:has-text("\u91cd\u65b0\u53d1\u9001")',
+        'a:has-text("\u518d\u53d1\u9001")',
+    ]
+    clicked = _click_first_no_wait(page, selectors, timeout=5)
+    if clicked:
+        log(f"Email OTP resend clicked: {clicked}")
+        time.sleep(1.5)
+        return True
+
+    referer = str(getattr(page, "url", "") or f"{OPENAI_AUTH}/email-verification")
+    try:
+        result = _send_browser_email_otp(page, referer=referer)
+    except Exception as exc:
+        log(f"Email OTP resend fallback request failed: {exc}")
+        return False
+    status = int((result or {}).get("status") or 0)
+    if (result or {}).get("ok") or status in (200, 201, 204, 302):
+        log(f"Email OTP resend fallback request ok: status={status}")
+        time.sleep(1.5)
+        return True
+    log(f"Email OTP resend failed: status={status} text={str((result or {}).get('text') or '')[:160]}")
+    return False
 
 
 def _fill_input_like_user(page, selector: str, value: str) -> bool:
@@ -2495,7 +2599,7 @@ def _submit_browser_user_register(page, email: str, password: str, device_id: st
     )
 
 
-def _send_browser_email_otp(page) -> dict:
+def _send_browser_email_otp(page, *, referer: str = "") -> dict:
     _browser_pause(page)
     return _browser_fetch(
         page,
@@ -2503,7 +2607,7 @@ def _send_browser_email_otp(page) -> dict:
         method="GET",
         headers={
             "accept": "application/json, text/plain, */*",
-            "referer": f"{OPENAI_AUTH}/create-account/password",
+            "referer": referer or f"{OPENAI_AUTH}/create-account/password",
             "sec-fetch-site": "same-origin",
             "sec-fetch-mode": "cors",
             "sec-fetch-dest": "empty",
@@ -2770,6 +2874,30 @@ def _format_callback_exchange_error(exc: Exception) -> str:
     return f"已捕获 OAuth callback code，但 token 交换失败：{message}"
 
 
+def _is_transient_callback_exchange_error(exc: Exception) -> bool:
+    message = str(exc or "").strip().lower()
+    if not message:
+        return False
+    if "unsupported_country_region_territory" in message or "invalid_grant" in message:
+        return False
+    if re.search(r"token exchange failed:\s*(429|5\d\d)\b", message):
+        return True
+    markers = (
+        "network error",
+        "timeout",
+        "timed out",
+        "connection",
+        "proxy",
+        "curl",
+        "tls",
+        "ssl",
+        "reset",
+        "temporarily",
+        "try again",
+    )
+    return any(marker in message for marker in markers)
+
+
 def _submit_callback_result_or_error(callback_url: str, oauth_start, proxy: str | None, log=None) -> dict:
     """callback 是 OAuth 终点；成功返回 token，失败返回错误，不再回退找 workspace。"""
     callback_error = _extract_callback_error_from_url(callback_url)
@@ -2785,15 +2913,23 @@ def _submit_callback_result_or_error(callback_url: str, oauth_start, proxy: str 
             log(f"  OAuth token exchange 请求: endpoint={OAUTH_TOKEN_URL}")
         except Exception:
             pass
-    try:
-        return _submit_callback_result(callback_url, oauth_start, proxy, log=log)
-    except Exception as exc:
-        if callable(log):
-            log(f"  OAuth callback token exchange 失败: {exc}")
-        return {
-            "error": _format_callback_exchange_error(exc),
-            "callback_captured": True,
-        }
+    last_exc: Exception | None = None
+    for attempt in range(1, 7):
+        try:
+            return _submit_callback_result(callback_url, oauth_start, proxy, log=log)
+        except Exception as exc:
+            last_exc = exc
+            if not _is_transient_callback_exchange_error(exc) or attempt >= 6:
+                break
+            if callable(log):
+                log(f"  OAuth callback token exchange 瞬时失败，准备重试 ({attempt + 1}/6): {exc}")
+            time.sleep(min(2 * attempt, 10))
+    if callable(log):
+        log(f"  OAuth callback token exchange 失败: {last_exc}")
+    return {
+        "error": _format_callback_exchange_error(last_exc or RuntimeError("unknown token exchange error")),
+        "callback_captured": True,
+    }
 
 
 def _wait_for_oauth_callback_result(
@@ -2885,12 +3021,176 @@ def _derive_oauth_state_from_page(page) -> dict:
     return _extract_flow_state(None, current_url)
 
 
-def _submit_login_email_via_page(page, email: str, log) -> dict:
+OAUTH_EMAIL_SUBMIT_SUCCESS_PAGE_TYPES = {
+    "login_password",
+    "create_account_password",
+    "email_otp_verification",
+    "about_you",
+    "consent",
+    "workspace_selection",
+    "organization_selection",
+    "add_phone",
+    "external_url",
+    "oauth_callback",
+    "chatgpt_home",
+}
+
+OTP_PAGE_RESUMABLE_PAGE_TYPES = OAUTH_EMAIL_SUBMIT_SUCCESS_PAGE_TYPES | {
+    "login_email",
+    "add_email",
+}
+
+
+def _oauth_login_page_diagnostic(page) -> dict:
+    try:
+        result = page.evaluate(
+            """
+            () => {
+              const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+              const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+              };
+              const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]'))
+                .filter((el) => visible(el))
+                .slice(0, 8)
+                .map((el) => normalize([el.value, el.textContent, el.getAttribute?.('aria-label'), el.getAttribute?.('title')].filter(Boolean).join(' ')))
+                .filter(Boolean);
+              const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'))
+                .filter((el) => visible(el))
+                .slice(0, 8)
+                .map((el) => normalize([el.type, el.name, el.id, el.getAttribute?.('autocomplete'), el.getAttribute?.('placeholder')].filter(Boolean).join(':')))
+                .filter(Boolean);
+              return {
+                url: location.href,
+                text: normalize(document.body?.innerText || '').slice(0, 240),
+                buttons,
+                inputs,
+              };
+            }
+            """
+        )
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {"url": str(page.url or ""), "text": "", "buttons": [], "inputs": []}
+
+
+def _submit_login_email_form_fallback(page, input_selector: str) -> str:
+    try:
+        return str(
+            page.evaluate(
+                """
+                (selector) => {
+                  const input = document.querySelector(selector);
+                  if (!input) return '';
+                  const visible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+                  };
+                  const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+                  const form = input.form || input.closest?.('form');
+                  const root = form || document;
+                  const buttons = Array.from(root.querySelectorAll('button[type="submit"], input[type="submit"], button'));
+                  let target = buttons.find((el) => {
+                    const label = normalize([el.value, el.textContent, el.getAttribute?.('aria-label'), el.getAttribute?.('title')].filter(Boolean).join(' ')).toLowerCase();
+                    return visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true' && /continue|next|submit|log\\s*in|sign\\s*in|继续|下一步|ログイン|続ける|次へ/i.test(label);
+                  });
+                  if (!target) {
+                    target = buttons.find((el) => visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true');
+                  }
+                  if (form && target && typeof form.requestSubmit === 'function') {
+                    form.requestSubmit(target);
+                    return 'requestSubmit(button)';
+                  }
+                  if (target) {
+                    target.click();
+                    return 'click(visible-button)';
+                  }
+                  input.focus?.();
+                  for (const type of ['keydown', 'keypress', 'keyup']) {
+                    input.dispatchEvent(new KeyboardEvent(type, {
+                      key: 'Enter',
+                      code: 'Enter',
+                      bubbles: true,
+                      cancelable: true,
+                    }));
+                  }
+                  if (form && typeof form.requestSubmit === 'function') {
+                    form.requestSubmit();
+                    return 'requestSubmit(form)';
+                  }
+                  if (form && typeof form.submit === 'function') {
+                    form.submit();
+                    return 'submit(form)';
+                  }
+                  return 'keyboard-enter';
+                }
+                """,
+                input_selector,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _wait_for_login_email_transition(page, start_url: str, log, *, timeout: int = 20) -> dict:
+    deadline = time.time() + max(int(timeout or 0), 1)
+    last_url = str(page.url or start_url or "")
+    last_text = ""
+    while time.time() < deadline:
+        current_url = str(page.url or "")
+        last_url = current_url or last_url
+        retry_state = _auth_timeout_retry_page_state(page, path_patterns=[r"/log-in(?:[/?#]|$)", r"/email-verification(?:[/?#]|$)"])
+        if retry_state.get("retryPage"):
+            last_text = str(retry_state.get("text") or "")
+            recovery = _recover_auth_timeout_retry_page(
+                page,
+                log,
+                path_patterns=[r"/log-in(?:[/?#]|$)", r"/email-verification(?:[/?#]|$)"],
+            )
+            if recovery.get("recovered"):
+                time.sleep(0.8)
+                state = _derive_oauth_state_from_page(page)
+                page_type = str(state.get("page_type") or "")
+                if page_type and page_type != "login_email":
+                    return {"ok": True, "status": 200, "url": str(page.url or ""), "data": None, "text": ""}
+                break
+            return {
+                "ok": False,
+                "status": 0,
+                "url": str(recovery.get("url") or current_url),
+                "data": None,
+                "text": str(recovery.get("text") or "OpenAI auth retry page recovery failed"),
+            }
+
+        if _click_passwordless_login_if_available(page, log, context="OAuth email page after submit"):
+            time.sleep(0.5)
+            continue
+        state = _derive_oauth_state_from_page(page)
+        page_type = str(state.get("page_type") or "")
+        if page_type in OAUTH_EMAIL_SUBMIT_SUCCESS_PAGE_TYPES:
+            return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
+        if current_url != start_url and page_type != "login_email":
+            return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
+        error_text = _extract_auth_error_text(page)
+        if error_text:
+            return {"ok": False, "status": 400, "url": current_url, "data": None, "text": error_text}
+        time.sleep(0.5)
+    return {"ok": False, "status": 0, "url": last_url, "data": None, "text": last_text or "OAuth email page submit did not transition"}
+
+
+def _submit_login_email_via_page(page, email: str, log, *, recover_url: str = "") -> dict:
     start_url = str(page.url or "")
     last_url = start_url
     last_text = ""
 
     for submit_attempt in range(1, 4):
+        start_url = str(page.url or start_url or "")
         input_selector = _wait_for_any_selector(page, EMAIL_INPUT_SELECTORS, timeout=15)
         if not input_selector:
             retry_state = _auth_timeout_retry_page_state(page, path_patterns=[r"/log-in(?:[/?#]|$)", r"/email-verification(?:[/?#]|$)"])
@@ -2916,52 +3216,36 @@ def _submit_login_email_via_page(page, email: str, log) -> dict:
         else:
             raise RuntimeError("OAuth 邮箱页未找到 Continue 按钮")
 
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            current_url = str(page.url or "")
-            last_url = current_url or last_url
-            retry_state = _auth_timeout_retry_page_state(page, path_patterns=[r"/log-in(?:[/?#]|$)", r"/email-verification(?:[/?#]|$)"])
-            if retry_state.get("retryPage"):
-                last_text = str(retry_state.get("text") or "")
-                recovery = _recover_auth_timeout_retry_page(
-                    page,
-                    log,
-                    path_patterns=[r"/log-in(?:[/?#]|$)", r"/email-verification(?:[/?#]|$)"],
-                )
-                if recovery.get("recovered"):
-                    time.sleep(0.8)
-                    state = _derive_oauth_state_from_page(page)
-                    page_type = str(state.get("page_type") or "")
-                    if page_type and page_type != "login_email":
-                        return {"ok": True, "status": 200, "url": str(page.url or ""), "data": None, "text": ""}
-                    break
-                return {"ok": False, "status": 0, "url": str(recovery.get("url") or current_url), "data": None, "text": str(recovery.get("text") or "OpenAI auth retry page recovery failed")}
+        transition = _wait_for_login_email_transition(page, start_url, log, timeout=20)
+        last_url = str(transition.get("url") or last_url)
+        last_text = str(transition.get("text") or last_text)
+        if transition.get("ok") or int(transition.get("status") or 0) >= 400:
+            return transition
 
-            if _click_passwordless_login_if_available(page, log, context="OAuth 邮箱页提交后"):
-                time.sleep(0.5)
-                continue
-            state = _derive_oauth_state_from_page(page)
-            page_type = str(state.get("page_type") or "")
-            if page_type in {
-                "login_password",
-                "create_account_password",
-                "email_otp_verification",
-                "about_you",
-                "consent",
-                "workspace_selection",
-                "organization_selection",
-                "add_phone",
-                "external_url",
-                "oauth_callback",
-                "chatgpt_home",
-            }:
-                return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
-            if current_url != start_url and page_type != "login_email":
-                return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
-            error_text = _extract_auth_error_text(page)
-            if error_text:
-                return {"ok": False, "status": 400, "url": current_url, "data": None, "text": error_text}
-            time.sleep(0.5)
+        fallback_method = _submit_login_email_form_fallback(page, input_selector)
+        if fallback_method:
+            log(f"OAuth email page fallback submit after no transition: {fallback_method}")
+            transition = _wait_for_login_email_transition(page, start_url, log, timeout=12)
+            last_url = str(transition.get("url") or last_url)
+            last_text = str(transition.get("text") or last_text)
+            if transition.get("ok") or int(transition.get("status") or 0) >= 400:
+                return transition
+
+        diag = _oauth_login_page_diagnostic(page)
+        diag_text = str(diag.get("text") or "").replace("\n", " ")[:180]
+        log(
+            "OAuth email page still on login page after submit "
+            f"attempt={submit_attempt}/3 url={str(diag.get('url') or last_url)[:160]} "
+            f"buttons={diag.get('buttons') or []} inputs={diag.get('inputs') or []} "
+            f"text={diag_text}"
+        )
+        if recover_url and submit_attempt < 3:
+            try:
+                log("OAuth email page retry: reopening current OAuth authorize URL before next submit")
+                _goto_with_retry(page, recover_url, wait_until="domcontentloaded", timeout=30000, log=log)
+                time.sleep(1)
+            except Exception as exc:
+                log(f"OAuth email page retry: reopen authorize URL failed: {exc}")
         log(f"OAuth 邮箱页提交后未跳转，准备重试提交 ({submit_attempt}/3)")
 
     return {"ok": False, "status": 0, "url": last_url, "data": None, "text": last_text or "OAuth 邮箱页提交后未跳转"}
@@ -3100,7 +3384,7 @@ def _do_codex_oauth(
 
             if state["page_type"] == "login_email":
                 log("  OAuth 页面需要邮箱登录，提交邮箱...")
-                email_resp = _submit_login_email_via_page(page, email, log)
+                email_resp = _submit_login_email_via_page(page, email, log, recover_url=oauth_start.auth_url)
                 log(f"  OAuth 邮箱页提交状态: {email_resp.get('status', 0)}")
                 if not email_resp.get("ok"):
                     raise RuntimeError(f"OAuth 邮箱页提交失败: {(email_resp.get('text') or '')}")
@@ -3108,7 +3392,7 @@ def _do_codex_oauth(
 
             if state["page_type"] == "add_email":
                 log("  OAuth requires binding email; submitting mailbox address...")
-                email_resp = _submit_login_email_via_page(page, email, log)
+                email_resp = _submit_login_email_via_page(page, email, log, recover_url=oauth_start.auth_url)
                 log(f"  OAuth add-email submit status: {email_resp.get('status', 0)}")
                 if not email_resp.get("ok"):
                     raise RuntimeError(f"OAuth add-email submit failed: {(email_resp.get('text') or '')}")
@@ -3128,11 +3412,15 @@ def _do_codex_oauth(
                     log("  ⚠️ OAuth 需要邮箱 OTP 但没有 otp_callback")
                     return None
                 log("  OAuth 等待邮箱验证码...")
-                code = otp_callback()
-                if not code:
-                    log("  ⚠️ OAuth OTP 获取失败")
-                    return None
-                otp_resp = _submit_otp_via_page(page, code, log)
+                otp_resp = _submit_email_otp_with_retry(
+                    page,
+                    otp_callback,
+                    log,
+                    max_invalid_retries=3,
+                    max_transient_retries=6,
+                    label="OAuth email OTP",
+                    recover_url=oauth_start.auth_url,
+                )
                 log(f"  OAuth 验证码页提交状态: {otp_resp.get('status', 0)}")
                 if not otp_resp.get("ok"):
                     raise RuntimeError(f"OAuth 验证码校验失败: {(otp_resp.get('text') or '')}")
@@ -3165,6 +3453,7 @@ def _do_codex_oauth(
             if state["page_type"] == "add_phone":
                 if phone_callback:
                     log("  OAuth 检测到 add_phone，优先执行短信验证...")
+                    phone_verification_completed = False
                     try:
                         phone_state = _handle_add_phone_challenge(
                             page, phone_callback,
@@ -3172,6 +3461,7 @@ def _do_codex_oauth(
                             log=log, resume_url=resume_auth_url or oauth_start.auth_url,
                             max_phone_attempts=add_phone_attempt_limit,
                         )
+                        phone_verification_completed = bool(getattr(phone_callback, "completed", False))
                         for candidate_url in (
                             str(page.url or ""),
                             str((phone_state or {}).get("continue_url") or ""),
@@ -3231,10 +3521,12 @@ def _do_codex_oauth(
                                         return {"error": str(browser_result.get("error") or "OAuth callback error")}
                                     return browser_result
                             if post_phone_state.get("page_type") == "login_email":
-                                log("  ⚠️ 手机验证后 OAuth 仍返回登录页，已停止重复登录")
-                                return {"error": "手机号验证后 OAuth 会话仍返回登录页，未重复登录"}
+                                log("  OAuth returned to login_email after phone verification; continue relogin flow")
                         continue
                     except Exception as exc:
+                        if phone_verification_completed or bool(getattr(phone_callback, "completed", False)):
+                            log(f"  手机验证已成功，后续 OAuth 承接异常，继续状态机重试: {exc}")
+                            continue
                         log(f"  短信验证失败，停止 OAuth 流程: {exc}")
                         return None
 
@@ -3756,7 +4048,11 @@ def _do_add_phone_attempt(
                 state = _derive_registration_state_from_page(page)
             next_url = _normalize_url(resume_url, OPENAI_AUTH) if resume_url else ""
             if next_url:
-                _goto_with_retry(page, next_url, wait_until="domcontentloaded", timeout=30000, log=log)
+                try:
+                    _goto_with_retry(page, next_url, wait_until="domcontentloaded", timeout=30000, log=log)
+                except Exception as exc:
+                    log(f"  手机验证码已提交成功，OAuth 承接跳转失败，继续后续状态机: {exc}")
+                    return _derive_registration_state_from_page(page) or state
                 return _extract_flow_state(None, page.url)
             return state
 
@@ -4314,6 +4610,10 @@ def _submit_otp_via_page(page, code: str, log) -> dict:
         pass
     time.sleep(1)
 
+    transition = _otp_page_transition_result(page)
+    if transition:
+        return transition
+
     filled = False
 
     # 先尝试 6 格 OTP 输入框
@@ -4368,6 +4668,9 @@ def _submit_otp_via_page(page, code: str, log) -> dict:
     if not filled:
         # 再等 3 秒重试一次（页面可能还在渲染）
         time.sleep(3)
+        transition = _otp_page_transition_result(page)
+        if transition:
+            return transition
         otp_retry_selectors = [
             "input[inputmode='numeric']",
             "input[autocomplete='one-time-code']",
@@ -4425,14 +4728,148 @@ def _submit_otp_via_page(page, code: str, log) -> dict:
             return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
         if "consent" in current_url or "sign-in-with-chatgpt" in current_url or "workspace" in current_url or "organization" in current_url:
             return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
-        try:
-            error_text = page.locator("text=Invalid code").first.text_content(timeout=400)
-        except Exception:
-            error_text = ""
+        error_text = _extract_email_otp_error_text(page)
         if error_text:
             return {"ok": False, "status": 400, "url": current_url, "data": None, "text": error_text}
         time.sleep(0.5)
     return {"ok": False, "status": 0, "url": last_url, "data": None, "text": "验证码页提交后未跳转"}
+
+
+def _otp_page_transition_result(page) -> dict | None:
+    current_url = str(getattr(page, "url", "") or "")
+    if _extract_code_from_url(current_url):
+        return {"ok": True, "status": 200, "url": current_url, "data": None, "text": "OTP page already reached callback"}
+    try:
+        state = _derive_oauth_state_from_page(page)
+    except Exception:
+        state = {}
+    page_type = str((state or {}).get("page_type") or "")
+    if page_type and page_type != "email_otp_verification" and page_type in OTP_PAGE_RESUMABLE_PAGE_TYPES:
+        return {
+            "ok": True,
+            "status": 200,
+            "url": current_url,
+            "data": None,
+            "text": f"OTP page moved to {page_type}",
+        }
+    if any(key in current_url for key in ("add-phone", "consent", "sign-in-with-chatgpt", "workspace", "organization", "chatgpt.com")):
+        return {"ok": True, "status": 200, "url": current_url, "data": None, "text": "OTP page already transitioned"}
+    return None
+
+
+def _is_transient_otp_submit_failure(text: str, status: int = 0) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not normalized:
+        return int(status or 0) == 0
+    markers = (
+        "验证码页未找到可填写输入框",
+        "验证码页未找到 continue 按钮",
+        "验证码页提交后未跳转",
+        "email otp not submitted",
+        "not found",
+        "missing",
+        "did not transition",
+        "no input",
+    )
+    return int(status or 0) == 0 or any(marker in normalized for marker in markers)
+
+
+def _recover_otp_submit_page(page, log, *, recover_url: str = "") -> dict | None:
+    transition = _otp_page_transition_result(page)
+    if transition:
+        return transition
+    current_url = str(getattr(page, "url", "") or "")
+    try:
+        state = _derive_oauth_state_from_page(page)
+    except Exception:
+        state = {}
+    page_type = str((state or {}).get("page_type") or "")
+    try:
+        if page_type == "email_otp_verification" or "email-verification" in current_url:
+            log("Email OTP page recovery: reloading current verification page")
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+        elif recover_url:
+            log("Email OTP page recovery: reopening current OAuth authorize URL")
+            _goto_with_retry(page, recover_url, wait_until="domcontentloaded", timeout=30000, log=log)
+        else:
+            log("Email OTP page recovery: reloading current page")
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+    except Exception as exc:
+        log(f"Email OTP page recovery navigation failed: {exc}")
+    time.sleep(1.0)
+    return _otp_page_transition_result(page)
+
+
+def _submit_email_otp_with_retry(
+    page,
+    otp_callback,
+    log,
+    *,
+    max_invalid_retries: int = 3,
+    max_transient_retries: int = 6,
+    label: str = "Email OTP",
+    recover_url: str = "",
+) -> dict:
+    invalid_retries = max(0, int(max_invalid_retries or 0))
+    transient_retries = max(0, int(max_transient_retries or 0))
+    invalid_retry_count = 0
+    transient_retry_count = 0
+    submit_attempt = 0
+    code = ""
+    need_new_code = True
+    last_resp: dict = {"ok": False, "status": 0, "url": str(page.url or ""), "text": "email otp not submitted"}
+    while True:
+        transition = _otp_page_transition_result(page)
+        if transition:
+            return transition
+
+        if need_new_code:
+            if invalid_retry_count > 0:
+                log(f"{label}: previous code was rejected, resending email OTP ({invalid_retry_count}/{invalid_retries})...")
+                if not _resend_browser_email_otp(page, otp_callback, log):
+                    last_resp = {
+                        "ok": False,
+                        "status": 0,
+                        "url": str(page.url or ""),
+                        "data": None,
+                        "text": "email otp resend failed",
+                    }
+                    return last_resp
+            code = str(otp_callback() or "").strip()
+            if not code:
+                raise RuntimeError("verification code not received")
+            need_new_code = False
+
+        submit_attempt += 1
+        otp_resp = _submit_otp_via_page(page, code, log)
+        log(f"{label}: submit status={otp_resp.get('status', 0)} attempt={submit_attempt}")
+        if otp_resp.get("ok"):
+            return otp_resp
+        error_text = str(otp_resp.get("text") or _extract_email_otp_error_text(page) or "")
+        last_resp = dict(otp_resp)
+        last_resp["text"] = error_text or str(last_resp.get("text") or "")
+        if _is_invalid_email_otp_text(error_text):
+            if invalid_retry_count >= invalid_retries:
+                return last_resp
+            invalid_retry_count += 1
+            log(f"{label}: invalid code detected: {error_text[:160]}")
+            need_new_code = True
+            continue
+
+        if _is_transient_otp_submit_failure(error_text, int(otp_resp.get("status") or 0)):
+            if transient_retry_count >= transient_retries:
+                return last_resp
+            transient_retry_count += 1
+            log(
+                f"{label}: transient submit failure, recovery retry "
+                f"{transient_retry_count}/{transient_retries}: {error_text[:160]}"
+            )
+            transition = _recover_otp_submit_page(page, log, recover_url=recover_url)
+            if transition:
+                return transition
+            continue
+
+        return last_resp
 
 
 def _submit_about_you_via_page(page, log) -> dict:
@@ -5195,10 +5632,19 @@ def _browser_registration_flow(
             if not active_otp_callback:
                 raise RuntimeError("ChatGPT 注册需要验证码但未提供 callback")
             log("等待 ChatGPT 验证码")
-            code = active_otp_callback()
-            if not code:
-                raise RuntimeError("未获取到验证码")
-            otp_resp = _submit_otp_via_page(page, code, log)
+            if phone_first_signup:
+                code = active_otp_callback()
+                if not code:
+                    raise RuntimeError("未获取到验证码")
+                otp_resp = _submit_otp_via_page(page, code, log)
+            else:
+                otp_resp = _submit_email_otp_with_retry(
+                    page,
+                    active_otp_callback,
+                    log,
+                    max_invalid_retries=3,
+                    label="Register email OTP",
+                )
             log(f"验证码页提交状态: {otp_resp.get('status', 0)}")
             if not otp_resp.get("ok"):
                 if phone_first_signup and hasattr(phone_callback, "mark_code_failed"):

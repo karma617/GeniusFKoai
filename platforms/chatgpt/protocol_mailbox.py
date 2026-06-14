@@ -351,6 +351,15 @@ class ChatGPTProtocolMailboxWorker:
                 )
 
 
+        def refresh_before_ids():
+            nonlocal before_ids
+            try:
+                before_ids = set(self.mailbox.get_current_ids(self.mailbox_account) or set())
+            except Exception:
+                before_ids = set()
+            return set(before_ids or set())
+
+        otp_callback.refresh_before_ids = refresh_before_ids  # type: ignore[attr-defined]
 
         return otp_callback
 

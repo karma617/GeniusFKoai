@@ -178,6 +178,71 @@ def test_smspool_resend_and_cancel(monkeypatch):
     assert any("/sms/cancel" in c[1] for c in posted)
 
 
+def test_smspool_cancel_failure_enqueues_release_retry(monkeypatch, tmp_path):
+    from platforms.gopay import sms_channel
+
+    queue_path = tmp_path / "release-queue.json"
+    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_RETRY_SECONDS", 1)
+    monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
+
+    routes = {"/sms/cancel": _FakeResp({
+        "success": 0,
+        "message": "Your order cannot be cancelled yet, please try again later.",
+    })}
+    monkeypatch.setattr(sms_channel, "_new_session", lambda: _FakeSession(routes))
+
+    ch = sms_channel.SmsPoolChannel(api_key="KEY")
+    ch.last_phone = "+6283167052029"
+
+    assert ch.cancel("ORDER123") is False
+
+    queued = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert len(queued) == 1
+    assert queued[0]["order_id"] == "ORDER123"
+    assert queued[0]["phone"] == "+6283167052029"
+    assert queued[0]["reason"] == "cancel_failed"
+
+
+def test_smspool_release_queue_retries_and_removes_success(monkeypatch, tmp_path):
+    from platforms.gopay import sms_channel
+
+    queue_path = tmp_path / "release-queue.json"
+    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
+    now = int(sms_channel.time.time())
+    queue_path.write_text(json.dumps([{
+        "order_id": "ORDER123",
+        "api_key": "KEY",
+        "base_url": "https://api.smspool.net",
+        "phone": "+6283167052029",
+        "reason": "cancel_failed",
+        "created_at": now - 60,
+        "updated_at": now - 60,
+        "attempts": 1,
+        "next_attempt_at": now - 1,
+        "last_response": {},
+    }]), encoding="utf-8")
+
+    routes = {"/sms/cancel": _FakeResp({"success": 1})}
+    monkeypatch.setattr(sms_channel, "_new_session", lambda: _FakeSession(routes))
+
+    attempted, released = sms_channel._process_release_queue_once()
+
+    assert attempted == 1
+    assert released == 1
+    assert json.loads(queue_path.read_text(encoding="utf-8")) == []
+
+
+def test_smspool_channel_init_starts_release_worker(monkeypatch):
+    from platforms.gopay import sms_channel
+
+    started = []
+    monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: started.append(True))
+    sms_channel.SmsPoolChannel(api_key="KEY")
+    assert started == [True]
+
+
 def test_patch_smspool_replaces_worker_sms_functions(monkeypatch):
     """patch 后 worker 模块的 sms_get_number 等走 smspool 实现。"""
     from platforms.gopay._opai_loader import ensure_opai_on_path

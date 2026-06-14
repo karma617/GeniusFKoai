@@ -26,6 +26,47 @@ from .constants import OPENAI_AUTH
 # ── state 存储（跨请求传递） ──────────────────────────────────
 _state_store: dict[str, str] = {}
 
+_SMSPOOL_SETTING_CANDIDATES = ("smspool_api", "smspool", "sms_pool_api", "sms_pool")
+
+
+def _load_saved_smspool_settings() -> dict[str, Any]:
+    try:
+        from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+        repo = ProviderSettingsRepository()
+        for provider_key in _SMSPOOL_SETTING_CANDIDATES:
+            item = repo.get_by_key("sms", provider_key)
+            if not item or not bool(getattr(item, "enabled", True)):
+                continue
+            settings = dict(repo.resolve_runtime_settings("sms", provider_key, {}) or {})
+            settings["_provider_key"] = provider_key
+            return settings
+    except Exception:
+        return {}
+    return {}
+
+
+def _first_nonempty_setting(settings: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = str((settings or {}).get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_smspool_text(
+    explicit: Any,
+    settings: dict[str, Any],
+    *keys: str,
+    default: str = "",
+    replace_default: str = "",
+) -> str:
+    value = str(explicit or "").strip()
+    saved = _first_nonempty_setting(settings, *keys)
+    if saved and (not value or (replace_default and value == replace_default)):
+        return saved
+    return value or default
+
 
 def setup_oauth_state_capture(page, log: Callable[[str], None] = lambda _: None) -> None:
     """Register a lightweight OAuth state capture route.
@@ -546,6 +587,12 @@ class GetRtPhoneCallback:
         provider: str = "smspool",
         smspool_api_key: str = "",
         smspool_max_price: str = "0.13",
+        smspool_country: str = "",
+        smspool_service: str = "",
+        smspool_base_url: str = "",
+        smspool_compat_base_url: str = "",
+        smspool_pricing_option: str = "",
+        smspool_poll_interval: str = "",
         smsapi_phone: str = "",
         smsapi_url: str = "",
         log_fn=None,
@@ -553,6 +600,12 @@ class GetRtPhoneCallback:
         self._provider = str(provider or "smspool").strip().lower()
         self._smspool_api_key = str(smspool_api_key or "").strip()
         self._smspool_max_price = str(smspool_max_price or "0.13").strip()
+        self._smspool_country = str(smspool_country or "").strip()
+        self._smspool_service = str(smspool_service or "").strip()
+        self._smspool_base_url = str(smspool_base_url or "").strip()
+        self._smspool_compat_base_url = str(smspool_compat_base_url or "").strip()
+        self._smspool_pricing_option = str(smspool_pricing_option or "").strip()
+        self._smspool_poll_interval = str(smspool_poll_interval or "").strip()
         self._smsapi_phone = str(smsapi_phone or "").strip()
         self._smsapi_url = str(smsapi_url or "").strip()
         self.log = log_fn or (lambda _: None)
@@ -565,6 +618,7 @@ class GetRtPhoneCallback:
         self._resend_callback = None
         self._last_error = ""
         self._code_timeout = 180
+        self._released = False
 
     # ── public lifecycle (mirrors PhoneCallbackController) ─────
 
@@ -604,6 +658,7 @@ class GetRtPhoneCallback:
     def mark_send_failed(self, reason: str = ""):
         self._last_error = str(reason or "")
         self.log(f"  [phone-cb] send failed: {self._last_error[:120]}")
+        self.cleanup()
 
     def mark_send_succeeded(self):
         self.log("  [phone-cb] send succeeded")
@@ -624,12 +679,14 @@ class GetRtPhoneCallback:
                 pass
 
     def cleanup(self):
-        if not self._completed and self._channel and self._aid:
+        if not self._completed and not self._released and self._channel and self._aid:
             try:
-                self._channel.cancel(self._aid)
-                self.log(f"  [phone-cb] cleaned up: {self._aid}")
-            except Exception:
-                pass
+                ok = self._channel.cancel(self._aid)
+                self._released = True
+                self.log(f"  [phone-cb] cleaned up: {self._aid} release={ok}")
+            except Exception as exc:
+                self._released = True
+                self.log(f"  [phone-cb] cleanup failed: {str(exc)[:120]}")
 
     # ── __call__ ──────────────────────────────────────────────
 
@@ -651,6 +708,7 @@ class GetRtPhoneCallback:
         if not self._phone:
             raise RuntimeError(f"获取rt: {self._provider} 获取手机号失败")
         self._phase = "need_code"
+        self._released = False
         self.log(f"  [phone-cb] 手机号已获取: {self._phone} (aid={self._aid})")
         return self._phone
 
@@ -670,20 +728,38 @@ class GetRtPhoneCallback:
         raise RuntimeError(f"获取rt: {self._provider} 等短信验证码超时 ({self._code_timeout}s)")
 
     def _build_smspool(self):
-        from platforms.gopay.sms_channel import SmsPoolChannel, SMSPOOL_DEFAULT_API_KEY
+        from platforms.gopay.sms_channel import (
+            SMSPOOL_DEFAULT_API_KEY,
+            SMSPOOL_DEFAULT_COUNTRY,
+            SmsPoolChannel,
+        )
 
         api_key = self._smspool_api_key or SMSPOOL_DEFAULT_API_KEY
+        country = self._smspool_country or SMSPOOL_DEFAULT_COUNTRY
+        service = self._smspool_service or "671"
         channel = SmsPoolChannel(
             api_key=api_key,
-            country="1",                  # United States
-            service="671",                # OpenAI / ChatGPT
+            country=country,
+            service=service,
             max_price=self._smspool_max_price,
+            base_url=self._smspool_base_url,
+            compat_base_url=self._smspool_compat_base_url,
+            pricing_option=self._smspool_pricing_option,
+            poll_interval=self._smspool_poll_interval,
         )
-        self.log(f"  [phone-cb] SMSPool 购号: country=1 service=671 max_price={self._smspool_max_price}")
+        self.log(f"  [phone-cb] SMSPool 购号: country={country} service={service} max_price={self._smspool_max_price}")
         phone, aid = channel.get_number()
         if not phone or not aid:
+            detail = getattr(channel, "last_response", None)
+            detail_text = ""
+            if detail:
+                try:
+                    detail_text = " detail=" + json.dumps(detail, ensure_ascii=False)[:300]
+                except Exception:
+                    detail_text = f" detail={str(detail)[:300]}"
             raise RuntimeError(
-                f"SMSPool 购号失败 (service=671 country=1 max_price={self._smspool_max_price})"
+                f"SMSPool 购号失败 (service={service} country={country} "
+                f"max_price={self._smspool_max_price}){detail_text}"
             )
         return channel, phone, aid
 
@@ -714,6 +790,12 @@ def build_get_rt_phone_callback(
     sms_provider: str = "",
     smspool_api_key: str = "",
     smspool_max_price: str = "0.13",
+    smspool_country: str = "",
+    smspool_service: str = "",
+    smspool_base_url: str = "",
+    smspool_compat_base_url: str = "",
+    smspool_pricing_option: str = "",
+    smspool_poll_interval: str = "",
     smsapi_phone: str = "",
     smsapi_url: str = "",
     phone_change_limit=None,
@@ -727,13 +809,73 @@ def build_get_rt_phone_callback(
 
     if provider == "smspool":
         from platforms.gopay.sms_channel import SMSPOOL_DEFAULT_API_KEY
-        key = smspool_api_key.strip() or SMSPOOL_DEFAULT_API_KEY
+
+        saved_settings = _load_saved_smspool_settings()
+        key = _resolve_smspool_text(
+            smspool_api_key,
+            saved_settings,
+            "smspool_api_key",
+            "api_key",
+            "smsPoolApiKey",
+            default=SMSPOOL_DEFAULT_API_KEY,
+        )
         if not key:
             return None, "smspool API key 为空"
+        max_price = _resolve_smspool_text(
+            smspool_max_price,
+            saved_settings,
+            "smspool_max_price",
+            default="0.13",
+            replace_default="0.13",
+        )
+        country = _resolve_smspool_text(
+            smspool_country,
+            saved_settings,
+            "smspool_country",
+            "smspool_default_country",
+            "smsPoolCountry",
+        )
+        service = _resolve_smspool_text(
+            smspool_service,
+            saved_settings,
+            "smspool_service",
+            "smspool_default_service",
+            "smsPoolServiceCode",
+        )
+        base_url = _resolve_smspool_text(smspool_base_url, saved_settings, "smspool_base_url")
+        compat_base_url = _resolve_smspool_text(
+            smspool_compat_base_url,
+            saved_settings,
+            "smspool_compat_base_url",
+        )
+        pricing_option = _resolve_smspool_text(
+            smspool_pricing_option,
+            saved_settings,
+            "smspool_pricing_option",
+        )
+        poll_interval = _resolve_smspool_text(
+            smspool_poll_interval,
+            saved_settings,
+            "sms_poll_interval",
+            "poll_interval",
+        )
+        if saved_settings and log_fn:
+            log_fn(
+                "  [phone-cb] SMSPool saved config loaded: "
+                f"provider={saved_settings.get('_provider_key')} "
+                f"country={country or '(default)'} service={service or '(default)'} "
+                f"max_price={max_price or '(default)'}"
+            )
         return GetRtPhoneCallback(
             provider="smspool",
             smspool_api_key=key,
-            smspool_max_price=str(smspool_max_price or "0.13").strip(),
+            smspool_max_price=max_price,
+            smspool_country=country,
+            smspool_service=service,
+            smspool_base_url=base_url,
+            smspool_compat_base_url=compat_base_url,
+            smspool_pricing_option=pricing_option,
+            smspool_poll_interval=poll_interval,
             log_fn=log_fn,
         ), ""
 
@@ -885,15 +1027,22 @@ class _GetRtPhoneLease:
             except Exception:
                 pass
 
-    def close_failure(self) -> None:
+    def close_failure(self) -> str:
         if self.completed_uses > 0:
             self.close_success()
-            return
+            return "kept_after_success"
         if hasattr(self.channel, "cancel"):
             try:
-                self.channel.cancel(self.aid)
-            except Exception:
-                pass
+                ok = self.channel.cancel(self.aid)
+                detail = getattr(self.channel, "last_response", None)
+                if ok is True:
+                    return "cancel_ok"
+                if ok is False:
+                    return f"queued detail={str(detail)[:180]}"
+                return "cancel_sent"
+            except Exception as exc:
+                return f"cancel_error {str(exc)[:180]}"
+        return "no_cancel"
 
 
 class GetRtPhoneReusePool:
@@ -911,6 +1060,12 @@ class GetRtPhoneReusePool:
         reuse_count: int = 3,
         smspool_api_key: str = "",
         smspool_max_price: str = "0.13",
+        smspool_country: str = "",
+        smspool_service: str = "",
+        smspool_base_url: str = "",
+        smspool_compat_base_url: str = "",
+        smspool_pricing_option: str = "",
+        smspool_poll_interval: str = "",
         smsapi_phone: str = "",
         smsapi_url: str = "",
         log_fn=None,
@@ -919,6 +1074,12 @@ class GetRtPhoneReusePool:
         self.reuse_count = max(int(reuse_count or 3), 3)
         self.smspool_api_key = str(smspool_api_key or "").strip()
         self.smspool_max_price = str(smspool_max_price or "0.13").strip()
+        self.smspool_country = str(smspool_country or "").strip()
+        self.smspool_service = str(smspool_service or "").strip()
+        self.smspool_base_url = str(smspool_base_url or "").strip()
+        self.smspool_compat_base_url = str(smspool_compat_base_url or "").strip()
+        self.smspool_pricing_option = str(smspool_pricing_option or "").strip()
+        self.smspool_poll_interval = str(smspool_poll_interval or "").strip()
         self.smsapi_entries = _parse_smsapi_phone_entries(smsapi_phone, smsapi_url)
         self.smsapi_url = str(smsapi_url or "").strip()
         self.log = log_fn or (lambda _: None)
@@ -981,8 +1142,11 @@ class GetRtPhoneReusePool:
                 should_close = True
             lease.in_use = False
         if should_close:
-            lease.close_failure()
-            self.log(f"  [phone-pool] phone retired after failure: {lease.phone}")
+            release_status = lease.close_failure()
+            self.log(
+                f"  [phone-pool] phone retired after failure: {lease.phone} "
+                f"release={release_status}"
+            )
 
     def cleanup(self) -> None:
         leases_to_close: list[_GetRtPhoneLease] = []
@@ -1035,6 +1199,12 @@ class GetRtPhoneReusePool:
                 provider="smspool",
                 smspool_api_key=self.smspool_api_key,
                 smspool_max_price=self.smspool_max_price,
+                smspool_country=self.smspool_country,
+                smspool_service=self.smspool_service,
+                smspool_base_url=self.smspool_base_url,
+                smspool_compat_base_url=self.smspool_compat_base_url,
+                smspool_pricing_option=self.smspool_pricing_option,
+                smspool_poll_interval=self.smspool_poll_interval,
                 log_fn=self.log,
             )
             channel, phone, aid = builder._build_smspool()
@@ -1101,6 +1271,10 @@ class GetRtReusablePhoneCallback:
     def mark_send_failed(self, reason: str = ""):
         self._last_error = str(reason or "")
         self._pool.log(f"  [phone-pool] send failed: {self._last_error[:120]}")
+        if self._lease is not None and not self._completed:
+            self._pool.report_failure(self._lease)
+            self._lease = None
+            self._phase = "need_number"
 
     def mark_send_succeeded(self):
         self._pool.log("  [phone-pool] send succeeded")
@@ -1140,6 +1314,12 @@ def build_get_rt_phone_reuse_pool(
     sms_provider: str = "",
     smspool_api_key: str = "",
     smspool_max_price: str = "0.13",
+    smspool_country: str = "",
+    smspool_service: str = "",
+    smspool_base_url: str = "",
+    smspool_compat_base_url: str = "",
+    smspool_pricing_option: str = "",
+    smspool_poll_interval: str = "",
     smsapi_phone: str = "",
     smsapi_url: str = "",
     reuse_count: int = 3,
@@ -1151,14 +1331,73 @@ def build_get_rt_phone_reuse_pool(
     if provider == "smspool":
         from platforms.gopay.sms_channel import SMSPOOL_DEFAULT_API_KEY
 
-        key = str(smspool_api_key or "").strip() or SMSPOOL_DEFAULT_API_KEY
+        saved_settings = _load_saved_smspool_settings()
+        key = _resolve_smspool_text(
+            smspool_api_key,
+            saved_settings,
+            "smspool_api_key",
+            "api_key",
+            "smsPoolApiKey",
+            default=SMSPOOL_DEFAULT_API_KEY,
+        )
         if not key:
             return None, "smspool API key is empty"
+        max_price = _resolve_smspool_text(
+            smspool_max_price,
+            saved_settings,
+            "smspool_max_price",
+            default="0.13",
+            replace_default="0.13",
+        )
+        country = _resolve_smspool_text(
+            smspool_country,
+            saved_settings,
+            "smspool_country",
+            "smspool_default_country",
+            "smsPoolCountry",
+        )
+        service = _resolve_smspool_text(
+            smspool_service,
+            saved_settings,
+            "smspool_service",
+            "smspool_default_service",
+            "smsPoolServiceCode",
+        )
+        base_url = _resolve_smspool_text(smspool_base_url, saved_settings, "smspool_base_url")
+        compat_base_url = _resolve_smspool_text(
+            smspool_compat_base_url,
+            saved_settings,
+            "smspool_compat_base_url",
+        )
+        pricing_option = _resolve_smspool_text(
+            smspool_pricing_option,
+            saved_settings,
+            "smspool_pricing_option",
+        )
+        poll_interval = _resolve_smspool_text(
+            smspool_poll_interval,
+            saved_settings,
+            "sms_poll_interval",
+            "poll_interval",
+        )
+        if saved_settings and log_fn:
+            log_fn(
+                "  [phone-pool] SMSPool saved config loaded: "
+                f"provider={saved_settings.get('_provider_key')} "
+                f"country={country or '(default)'} service={service or '(default)'} "
+                f"max_price={max_price or '(default)'}"
+            )
         return GetRtPhoneReusePool(
             provider="smspool",
             reuse_count=reuse_count,
             smspool_api_key=key,
-            smspool_max_price=str(smspool_max_price or "0.13").strip(),
+            smspool_max_price=max_price,
+            smspool_country=country,
+            smspool_service=service,
+            smspool_base_url=base_url,
+            smspool_compat_base_url=compat_base_url,
+            smspool_pricing_option=pricing_option,
+            smspool_poll_interval=poll_interval,
             log_fn=log_fn,
         ), ""
     if provider == "smsapi":

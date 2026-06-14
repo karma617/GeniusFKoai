@@ -72,6 +72,9 @@ NON_LEGACY_EXTRA_KEYS = {
     "trial_end_time",
 }
 
+RT_LIFECYCLE_STATUSES = {"rt_pending_upload", "rt_uploaded"}
+LEGACY_RT_LIFECYCLE_STATUSES = {"registered", "authorized"}
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -187,6 +190,8 @@ def _derive_display_status(
     validity_status: str,
     plan_state: str,
 ) -> str:
+    if lifecycle_status in RT_LIFECYCLE_STATUSES:
+        return lifecycle_status
     if validity_status == "invalid":
         return "invalid"
     if plan_state == "expired" or lifecycle_status == "expired":
@@ -620,6 +625,36 @@ def _has_stored_refresh_token(credentials: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _normalize_legacy_rt_status(
+    overview: dict[str, Any],
+    credentials: list[dict[str, Any]],
+) -> dict[str, Any]:
+    has_oauth_summary = isinstance(overview.get("oauth"), dict) or isinstance(overview.get("codex_oauth"), dict)
+    if not has_oauth_summary or not _has_stored_refresh_token(credentials):
+        return overview
+
+    lifecycle_status = _text(overview.get("lifecycle_status") or "registered") or "registered"
+    if lifecycle_status in RT_LIFECYCLE_STATUSES:
+        return overview
+    if lifecycle_status not in LEGACY_RT_LIFECYCLE_STATUSES:
+        return overview
+
+    upload_status = _text(overview.get("rt_upload_status")).lower()
+    uploaded = upload_status == "uploaded" or bool(_text(overview.get("rt_uploaded_at")))
+    normalized_status = "rt_uploaded" if uploaded else "rt_pending_upload"
+    normalized = dict(overview)
+    normalized.update(
+        {
+            "lifecycle_status": normalized_status,
+            "display_status": normalized_status,
+            "validity_status": "valid",
+            "valid": True,
+            "rt_upload_status": "uploaded" if uploaded else "pending_upload",
+        }
+    )
+    return normalized
+
+
 def load_account_graphs(session: Session, account_ids: list[int]) -> dict[int, dict[str, Any]]:
     normalized_ids = [int(account_id) for account_id in account_ids if int(account_id or 0) > 0]
     if not normalized_ids:
@@ -646,22 +681,8 @@ def load_account_graphs(session: Session, account_ids: list[int]) -> dict[int, d
 
     for account_id, payload in graphs.items():
         overview = _safe_dict(payload.get("overview"))
-        has_oauth_summary = isinstance(overview.get("oauth"), dict) or isinstance(overview.get("codex_oauth"), dict)
-        if (
-            has_oauth_summary
-            and _has_stored_refresh_token(payload.get("credentials") or [])
-            and _text(overview.get("lifecycle_status") or "registered") == "registered"
-        ):
-            overview = dict(overview)
-            overview.update(
-                {
-                    "lifecycle_status": "authorized",
-                    "display_status": "authorized",
-                    "validity_status": "valid",
-                    "valid": True,
-                }
-            )
-            payload["overview"] = overview
+        overview = _normalize_legacy_rt_status(overview, payload.get("credentials") or [])
+        payload["overview"] = overview
         payload["lifecycle_status"] = _text(overview.get("lifecycle_status") or "registered") or "registered"
         payload["validity_status"] = _text(overview.get("validity_status") or "unknown") or "unknown"
         payload["plan_state"] = _text(overview.get("plan_state") or "unknown") or "unknown"

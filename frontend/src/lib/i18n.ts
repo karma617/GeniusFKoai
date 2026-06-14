@@ -214,6 +214,9 @@ const ZH_MESSAGES = {
   "taskHistory.terminate": "终止",
   "taskHistory.terminating": "终止中",
   "taskHistory.terminateTitle": "终止任务",
+  "taskHistory.viewLogs": "\u65e5\u5fd7",
+  "taskHistory.viewLogsTitle": "\u67e5\u770b\u4efb\u52a1\u65e5\u5fd7",
+  "taskHistory.taskLogs": "\u4efb\u52a1\u65e5\u5fd7",
 
   "proxies.title": "代理",
   "proxies.metric.count": "代理数",
@@ -473,6 +476,8 @@ const ZH_MESSAGES = {
 
   "accountStatus.registered": "仅注册",
   "accountStatus.authorized": "已授权",
+  "accountStatus.rt_pending_upload": "\u5df2\u83b7\u53d6rt\uff0c\u672a\u4e0a\u4f20",
+  "accountStatus.rt_uploaded": "\u5df2\u83b7\u53d6rt\uff0c\u5df2\u4e0a\u4f20",
   "accountStatus.trial": "试用",
   "accountStatus.subscribed": "订阅",
   "accountStatus.expired": "过期",
@@ -722,6 +727,9 @@ const EN_MESSAGES: Record<TranslationKey, string> = {
   "taskHistory.terminate": "Terminate",
   "taskHistory.terminating": "Terminating",
   "taskHistory.terminateTitle": "Terminate task",
+  "taskHistory.viewLogs": "Logs",
+  "taskHistory.viewLogsTitle": "View task logs",
+  "taskHistory.taskLogs": "Task Logs",
 
   "proxies.title": "Proxies",
   "proxies.metric.count": "Proxies",
@@ -990,6 +998,8 @@ const EN_MESSAGES: Record<TranslationKey, string> = {
 
   "accountStatus.registered": "Registered Only",
   "accountStatus.authorized": "Authorized",
+  "accountStatus.rt_pending_upload": "RT acquired, not uploaded",
+  "accountStatus.rt_uploaded": "RT acquired and uploaded",
   "accountStatus.trial": "Trial",
   "accountStatus.subscribed": "Subscribed",
   "accountStatus.expired": "Expired",
@@ -1041,6 +1051,8 @@ const MESSAGE_MAP: Record<Language, Record<TranslationKey, string>> = {
 const STATUS_KEYS: Record<string, TranslationKey> = {
   registered: "accountStatus.registered",
   authorized: "accountStatus.authorized",
+  rt_pending_upload: "accountStatus.rt_pending_upload",
+  rt_uploaded: "accountStatus.rt_uploaded",
   trial: "accountStatus.trial",
   subscribed: "accountStatus.subscribed",
   expired: "accountStatus.expired",

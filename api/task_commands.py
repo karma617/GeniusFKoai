@@ -148,6 +148,7 @@ class GetRtTaskRequest(BaseModel):
     platform: str = "chatgpt"
     account_id: int = 0
     ids: list[int] = Field(default_factory=list)
+    executor_type: str = "browser"
     browser_mode: str = "camoufox_headed"
     concurrency: int = 1
     record_har: str = ""

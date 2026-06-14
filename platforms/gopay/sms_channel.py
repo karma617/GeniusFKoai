@@ -36,10 +36,13 @@ SMSBower API 文档：https://smsbower.app/cn/api
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 import tls_client
@@ -63,10 +66,182 @@ SMSPOOL_DEFAULT_MAX_PRICE = os.environ.get("OPAI_SMSPOOL_MAX_PRICE", "0.11")
 # 的池（可能更贵）。默认 0。
 SMSPOOL_DEFAULT_PRICING_OPTION = os.environ.get("OPAI_SMSPOOL_PRICING_OPTION", "0")
 SMS_TIMEOUT = 180
+SMSPOOL_RELEASE_QUEUE_PATH = Path(
+    os.environ.get(
+        "OPAI_SMSPOOL_RELEASE_QUEUE_PATH",
+        str(Path(__file__).resolve().parents[2] / "data" / "smspool_release_queue.json"),
+    )
+)
+SMSPOOL_RELEASE_RETRY_SECONDS = int(os.environ.get("OPAI_SMSPOOL_RELEASE_RETRY_SECONDS", "60") or "60")
+
+_release_queue_lock = threading.RLock()
+_release_worker_started = False
+_release_worker_wakeup = threading.Event()
 
 
 def _new_session() -> "tls_client.Session":
     return tls_client.Session(client_identifier="chrome_120")
+
+
+def _utc_ts() -> int:
+    return int(time.time())
+
+
+def _load_release_queue() -> list[dict]:
+    try:
+        if not SMSPOOL_RELEASE_QUEUE_PATH.exists():
+            return []
+        data = json.loads(SMSPOOL_RELEASE_QUEUE_PATH.read_text(encoding="utf-8") or "[]")
+        return [item for item in data if isinstance(item, dict)]
+    except Exception as exc:
+        log.warning("smspool release queue load failed: %s", exc)
+        return []
+
+
+def _save_release_queue(items: list[dict]) -> None:
+    try:
+        SMSPOOL_RELEASE_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SMSPOOL_RELEASE_QUEUE_PATH.write_text(
+            json.dumps(items, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        log.warning("smspool release queue save failed: %s", exc)
+
+
+def _cancel_smspool_order_once(*, api_key: str, base_url: str, order_id: str) -> tuple[bool, dict]:
+    body = {"key": api_key, "orderid": order_id}
+    try:
+        session = _new_session()
+        response = session.post(
+            f"{str(base_url or SMSPOOL_API).strip().rstrip('/')}/sms/cancel",
+            data=body,
+            timeout_seconds=30,
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {"raw": getattr(response, "text", ""), "status_code": response.status_code}
+    except Exception as exc:
+        data = {"error": str(exc)}
+    return isinstance(data, dict) and int(data.get("success") or 0) == 1, data if isinstance(data, dict) else {}
+
+
+def _enqueue_smspool_release(
+    *,
+    api_key: str,
+    base_url: str,
+    order_id: str,
+    phone: str = "",
+    reason: str = "",
+    last_response: dict | None = None,
+) -> None:
+    order_id = str(order_id or "").strip()
+    api_key = str(api_key or "").strip()
+    if not order_id or not api_key:
+        return
+    now = _utc_ts()
+    with _release_queue_lock:
+        items = _load_release_queue()
+        for item in items:
+            if str(item.get("order_id") or "") == order_id:
+                item["api_key"] = api_key
+                item["base_url"] = str(base_url or SMSPOOL_API).strip().rstrip("/")
+                item["phone"] = str(phone or item.get("phone") or "")
+                item["reason"] = str(reason or item.get("reason") or "")
+                item["last_response"] = last_response or item.get("last_response") or {}
+                item["next_attempt_at"] = min(int(item.get("next_attempt_at") or now), now + SMSPOOL_RELEASE_RETRY_SECONDS)
+                _save_release_queue(items)
+                _ensure_release_worker()
+                return
+        items.append({
+            "order_id": order_id,
+            "api_key": api_key,
+            "base_url": str(base_url or SMSPOOL_API).strip().rstrip("/"),
+            "phone": str(phone or ""),
+            "reason": str(reason or ""),
+            "created_at": now,
+            "updated_at": now,
+            "attempts": 0,
+            "next_attempt_at": now + SMSPOOL_RELEASE_RETRY_SECONDS,
+            "last_response": last_response or {},
+        })
+        _save_release_queue(items)
+    _ensure_release_worker()
+
+
+def _process_release_queue_once() -> tuple[int, int]:
+    now = _utc_ts()
+    released = 0
+    attempted = 0
+    with _release_queue_lock:
+        items = _load_release_queue()
+        remaining: list[dict] = []
+        for item in items:
+            try:
+                next_attempt_at = int(item.get("next_attempt_at") or 0)
+            except Exception:
+                next_attempt_at = 0
+            if next_attempt_at > now:
+                remaining.append(item)
+                continue
+            attempted += 1
+            ok, data = _cancel_smspool_order_once(
+                api_key=str(item.get("api_key") or ""),
+                base_url=str(item.get("base_url") or SMSPOOL_API),
+                order_id=str(item.get("order_id") or ""),
+            )
+            if ok:
+                released += 1
+                log.info("smspool release queue cancelled order=%s", item.get("order_id"))
+                continue
+            attempts = int(item.get("attempts") or 0) + 1
+            delay = min(SMSPOOL_RELEASE_RETRY_SECONDS * max(1, attempts), 15 * 60)
+            item["attempts"] = attempts
+            item["updated_at"] = now
+            item["next_attempt_at"] = now + delay
+            item["last_response"] = data
+            remaining.append(item)
+        if attempted:
+            _save_release_queue(remaining)
+    return attempted, released
+
+
+def _remove_smspool_release(order_id: str) -> None:
+    order_id = str(order_id or "").strip()
+    if not order_id:
+        return
+    with _release_queue_lock:
+        items = _load_release_queue()
+        next_items = [item for item in items if str(item.get("order_id") or "") != order_id]
+        if len(next_items) != len(items):
+            _save_release_queue(next_items)
+
+
+def _release_worker_loop() -> None:
+    while True:
+        try:
+            _process_release_queue_once()
+        except Exception as exc:
+            log.warning("smspool release queue worker failed: %s", exc)
+        _release_worker_wakeup.wait(timeout=SMSPOOL_RELEASE_RETRY_SECONDS)
+        _release_worker_wakeup.clear()
+
+
+def _ensure_release_worker() -> None:
+    global _release_worker_started
+    with _release_queue_lock:
+        if _release_worker_started:
+            _release_worker_wakeup.set()
+            return
+        _release_worker_started = True
+        thread = threading.Thread(
+            target=_release_worker_loop,
+            name="smspool-release-queue",
+            daemon=True,
+        )
+        thread.start()
+        _release_worker_wakeup.set()
 
 
 class SmsPoolChannel:
@@ -81,6 +256,9 @@ class SmsPoolChannel:
         pool: str = "",
         max_price: str = "",
         pricing_option: str = "",
+        base_url: str = "",
+        compat_base_url: str = "",
+        poll_interval: str = "",
     ):
         self.api_key = str(api_key or "").strip() or SMSPOOL_DEFAULT_API_KEY
         self.country = str(country or "").strip() or SMSPOOL_DEFAULT_COUNTRY
@@ -91,6 +269,15 @@ class SmsPoolChannel:
         self.max_price = mp if mp != "" else SMSPOOL_DEFAULT_MAX_PRICE
         po = str(pricing_option).strip() if pricing_option is not None else ""
         self.pricing_option = po if po != "" else SMSPOOL_DEFAULT_PRICING_OPTION
+        self.base_url = str(base_url or SMSPOOL_API).strip().rstrip("/")
+        self.compat_base_url = str(compat_base_url or "").strip()
+        try:
+            self.poll_interval = max(1, int(str(poll_interval or "").strip() or "5"))
+        except Exception:
+            self.poll_interval = 5
+        self.last_response = None
+        self.last_phone = ""
+        _ensure_release_worker()
 
     def _post(self, path: str, params: dict, retries: int = 3) -> dict:
         body = {"key": self.api_key, **params}
@@ -98,7 +285,7 @@ class SmsPoolChannel:
         for i in range(1, retries + 1):
             try:
                 s = _new_session()
-                r = s.post(f"{SMSPOOL_API}{path}", data=body, timeout_seconds=30)
+                r = s.post(f"{self.base_url}{path}", data=body, timeout_seconds=30)
                 try:
                     return r.json()
                 except Exception:
@@ -139,6 +326,7 @@ class SmsPoolChannel:
         if self.pricing_option not in ("", None):
             params["pricing_option"] = str(self.pricing_option)
         data = self._post("/purchase/sms", params)
+        self.last_response = data
         if not isinstance(data, dict) or int(data.get("success") or 0) != 1:
             log.warning("smspool purchase failed (max_price=%s): %s", self.max_price, data)
             return None, None
@@ -157,6 +345,8 @@ class SmsPoolChannel:
             self.max_price, self.pricing_option,
         )
         phone = number if number.startswith("+") else f"+{number}"
+        self.last_phone = phone
+        _ensure_release_worker()
         return phone, order_id
 
     def peek_code(self, order_id: str) -> str | None:
@@ -199,14 +389,14 @@ class SmsPoolChannel:
                     code = m.group(1) if m else sms
                     # 还是注册时的旧码 → GoPay 新 OTP 尚未到达，继续等
                     if ignore and code == ignore:
-                        time.sleep(5)
+                        time.sleep(self.poll_interval)
                         continue
                     return code
                 # status 6 = refunded/cancelled
                 if status == 6:
                     log.warning("smspool order %s cancelled/refunded", order_id)
                     return None
-            time.sleep(5)
+            time.sleep(self.poll_interval)
         return None
 
     def request_another(self, order_id: str) -> bool:
@@ -214,11 +404,34 @@ class SmsPoolChannel:
         data = self._post("/sms/resend", {"orderid": order_id})
         return isinstance(data, dict) and int(data.get("success") or 0) == 1
 
-    def cancel(self, order_id: str) -> None:
+    def cancel(self, order_id: str) -> bool:
+        order_id = str(order_id or "").strip()
         try:
-            self._post("/sms/cancel", {"orderid": order_id})
+            data = self._post("/sms/cancel", {"orderid": order_id})
+            self.last_response = data
+            ok = isinstance(data, dict) and int(data.get("success") or 0) == 1
+            if ok:
+                _remove_smspool_release(order_id)
+                return True
+            _enqueue_smspool_release(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                order_id=order_id,
+                phone=self.last_phone,
+                reason="cancel_failed",
+                last_response=data if isinstance(data, dict) else {},
+            )
+            return False
         except Exception:
-            pass
+            _enqueue_smspool_release(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                order_id=order_id,
+                phone=self.last_phone,
+                reason="cancel_exception",
+                last_response={"error": "cancel exception"},
+            )
+            return False
 
 
 def patch_worker_with_smspool(

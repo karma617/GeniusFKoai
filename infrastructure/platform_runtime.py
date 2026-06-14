@@ -45,6 +45,7 @@ PERSISTED_ACTION_DATA_KEYS = {
 
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}
 OAUTH_RESULT_ACTION_IDS = {"get_rt"}
+UPLOAD_RESULT_ACTION_IDS = {"upload_sub2api"}
 CASHIER_URL_ACTION_IDS = {
     "payment_link",
     "payment_link_browser",
@@ -256,10 +257,12 @@ def _build_oauth_result_overview(platform: str, data: dict[str, Any]) -> dict[st
     if str(data.get("refresh_token") or "").strip():
         overview.update(
             {
-                "lifecycle_status": "authorized",
-                "display_status": "authorized",
+                "lifecycle_status": "rt_pending_upload",
+                "display_status": "rt_pending_upload",
                 "valid": True,
                 "authorized_at": _utcnow_iso(),
+                "rt_acquired_at": _utcnow_iso(),
+                "rt_upload_status": "pending_upload",
             }
         )
         if data.get("token_backup_path"):
@@ -270,6 +273,25 @@ def _build_oauth_result_overview(platform: str, data: dict[str, Any]) -> dict[st
     if remote_user:
         overview["remote_user"] = remote_user
     return overview
+
+
+def _build_upload_result_overview(platform: str, action_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    if platform != "chatgpt" or action_id != "upload_sub2api" or not isinstance(data, dict):
+        return None
+    if str(data.get("upload_status") or "").strip() != "uploaded":
+        return None
+    now = _utcnow_iso()
+    return {
+        "platform": platform,
+        "checked_at": now,
+        "lifecycle_status": "rt_uploaded",
+        "display_status": "rt_uploaded",
+        "valid": True,
+        "rt_upload_status": "uploaded",
+        "rt_upload_message": str(data.get("message") or ""),
+        "rt_uploaded_at": now,
+        "rt_upload_checked_at": now,
+    }
 
 
 class PlatformRuntime:
@@ -382,6 +404,11 @@ class PlatformRuntime:
                         needs_save = True
                 if action_ok and command.action_id in OAUTH_RESULT_ACTION_IDS:
                     overview = _build_oauth_result_overview(command.platform, data)
+                    if overview:
+                        summary_updates.update(overview)
+                        needs_save = True
+                if action_ok and command.action_id in UPLOAD_RESULT_ACTION_IDS:
+                    overview = _build_upload_result_overview(command.platform, command.action_id, data)
                     if overview:
                         summary_updates.update(overview)
                         needs_save = True

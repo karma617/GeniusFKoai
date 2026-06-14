@@ -353,6 +353,7 @@ def create_get_rt_task(payload: dict[str, Any]) -> dict[str, Any]:
     )
     payload["ids"] = ids
     payload["account_id"] = 0
+    payload["executor_type"] = str(payload.get("executor_type") or "browser")
     if skipped_ids:
         payload["skipped_non_registered_ids"] = skipped_ids
     total = len(ids) if ids else 1
@@ -716,23 +717,78 @@ def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
 def _auto_upload_sub2api(task_logger: TaskLogger, account) -> None:
     """获取 refresh_token 后自动导入 SUB2API；仅注册号不得上传。"""
     if getattr(account, "platform", "") != "chatgpt":
-        return
+        return None
     try:
         from core.config_store import config_store
 
         sub2api_url = config_store.get("sub2api_url", "")
         if not sub2api_url:
-            return
+            return None
         target = _build_chatgpt_upload_account(account)
         if not str(getattr(target, "refresh_token", "") or "").strip():
             task_logger.log("  [SUB2API] 跳过：账号尚未获取 rt，仅注册状态不上传")
-            return
+            return False
         from platforms.chatgpt.sub2api_upload import upload_to_sub2api
 
-        ok, msg = upload_to_sub2api(target)
-        task_logger.log(f"  [SUB2API] {'✓ ' + msg if ok else '✗ ' + msg}")
+        max_attempts = 6
+        last_msg = ""
+        for attempt in range(1, max_attempts + 1):
+            ok, msg = upload_to_sub2api(target)
+            last_msg = str(msg or "")
+            if ok:
+                if attempt > 1:
+                    task_logger.log(f"  [SUB2API] 第 {attempt}/{max_attempts} 次重试成功")
+                task_logger.log(f"  [SUB2API] ✓ {last_msg}")
+                return True
+            task_logger.log(f"  [SUB2API] ✗ {last_msg}")
+            if "请求异常" not in last_msg and "request" not in last_msg.lower() and "curl:" not in last_msg.lower():
+                return False
+            if attempt < max_attempts:
+                delay = min(5 * attempt, 30)
+                task_logger.log(f"  [SUB2API] 请求异常，{delay}s 后重试 ({attempt + 1}/{max_attempts})")
+                time.sleep(delay)
+        task_logger.log(f"  [SUB2API] 请求异常重试 {max_attempts} 次仍失败，保留为未上传: {last_msg}", level="warning")
+        return False
     except Exception as exc:
         task_logger.log(f"  [SUB2API] 自动上传异常: {exc}", level="warning")
+        return False
+
+
+def _mark_get_rt_upload_status(
+    account_id: int,
+    *,
+    uploaded: bool,
+    upload_message: str = "",
+) -> None:
+    from core.db import AccountModel
+
+    lifecycle_status = "rt_uploaded" if uploaded else "rt_pending_upload"
+    with Session(engine) as session:
+        model = session.get(AccountModel, int(account_id or 0))
+        if not model:
+            return
+        now_text = _utcnow_iso()
+        summary_updates = {
+            "lifecycle_status": lifecycle_status,
+            "display_status": lifecycle_status,
+            "valid": True,
+            "rt_upload_status": "uploaded" if uploaded else "pending_upload",
+            "rt_upload_message": str(upload_message or ""),
+            "rt_upload_checked_at": now_text,
+        }
+        if uploaded:
+            summary_updates["rt_uploaded_at"] = now_text
+        else:
+            summary_updates["rt_acquired_at"] = now_text
+        patch_account_graph(
+            session,
+            model,
+            lifecycle_status=lifecycle_status,
+            summary_updates=summary_updates,
+        )
+        model.updated_at = datetime.now(timezone.utc)
+        session.add(model)
+        session.commit()
 
 
 def _outlook_mailbox_account_from_platform_account(account) -> Any | None:
@@ -954,6 +1010,106 @@ def _normalize_get_rt_sms_provider(value: Any) -> str:
     if provider == "sms_api":
         return "smsapi"
     return provider or "default"
+
+
+def _get_rt_sms_setting_candidates(provider: str) -> list[str]:
+    normalized = _normalize_get_rt_sms_provider(provider)
+    if normalized == "smspool":
+        return ["smspool_api", "smspool", "sms_pool_api", "sms_pool"]
+    if normalized == "smsapi":
+        return ["smsapi", "sms_api"]
+    return [normalized] if normalized else []
+
+
+def _first_nonempty_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _resolve_get_rt_sms_runtime_config(payload: dict[str, Any]) -> dict[str, str]:
+    """Resolve get_rt SMS config from task payload plus saved provider settings."""
+    provider = _normalize_get_rt_sms_provider(payload.get("sms_provider"))
+    settings: dict[str, Any] = {}
+    settings_provider_key = ""
+
+    if provider:
+        try:
+            from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+            settings_repo = ProviderSettingsRepository()
+            if provider in {"default", "default_sms", "__default__"}:
+                settings_provider_key = str(settings_repo.get_default_provider_key("sms") or "").strip()
+                provider = _normalize_get_rt_sms_provider(settings_provider_key)
+            else:
+                for candidate in _get_rt_sms_setting_candidates(provider):
+                    item = settings_repo.get_by_key("sms", candidate)
+                    if item and bool(getattr(item, "enabled", True)):
+                        settings_provider_key = candidate
+                        break
+            if settings_provider_key:
+                settings = settings_repo.resolve_runtime_settings("sms", settings_provider_key, {})
+        except Exception:
+            settings = {}
+
+    smspool_key = _first_nonempty_text(
+        payload.get("smspool_api_key"),
+        settings.get("smspool_api_key"),
+        settings.get("api_key"),
+        settings.get("smsPoolApiKey"),
+    )
+    smspool_max_price = _first_nonempty_text(
+        payload.get("smspool_max_price"),
+        settings.get("smspool_max_price"),
+        "0.13",
+    )
+    smspool_country = _first_nonempty_text(
+        payload.get("smspool_country"),
+        payload.get("smspool_default_country"),
+        settings.get("smspool_country"),
+        settings.get("smspool_default_country"),
+        settings.get("smsPoolCountry"),
+    )
+    smspool_service = _first_nonempty_text(
+        payload.get("smspool_service"),
+        payload.get("smspool_default_service"),
+        settings.get("smspool_service"),
+        settings.get("smspool_default_service"),
+        settings.get("smsPoolServiceCode"),
+    )
+    smspool_base_url = _first_nonempty_text(
+        payload.get("smspool_base_url"),
+        settings.get("smspool_base_url"),
+    )
+    smspool_compat_base_url = _first_nonempty_text(
+        payload.get("smspool_compat_base_url"),
+        settings.get("smspool_compat_base_url"),
+    )
+    smspool_pricing_option = _first_nonempty_text(
+        payload.get("smspool_pricing_option"),
+        settings.get("smspool_pricing_option"),
+    )
+    smspool_poll_interval = _first_nonempty_text(
+        payload.get("smspool_poll_interval"),
+        settings.get("sms_poll_interval"),
+        settings.get("poll_interval"),
+    )
+    return {
+        "sms_provider": provider,
+        "smspool_api_key": smspool_key,
+        "smspool_max_price": smspool_max_price,
+        "smspool_country": smspool_country,
+        "smspool_service": smspool_service,
+        "smspool_base_url": smspool_base_url,
+        "smspool_compat_base_url": smspool_compat_base_url,
+        "smspool_pricing_option": smspool_pricing_option,
+        "smspool_poll_interval": smspool_poll_interval,
+        "smsapi_phone": str(payload.get("smsapi_phone") or "").strip(),
+        "smsapi_url": str(payload.get("smsapi_url") or "").strip(),
+        "settings_provider_key": settings_provider_key,
+    }
 
 
 def _bool_config(value: Any, default: bool) -> bool:
@@ -2081,15 +2237,29 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     total = len(ids)
     concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
     browser_mode = str(payload.get("browser_mode") or "camoufox_headed")
+    executor_type = str(payload.get("executor_type") or "browser").strip().lower() or "browser"
     logger.set_progress(0, total)
-    logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，浏览器模式 {browser_mode}")
+    if executor_type == "protocol":
+        logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，执行方式 protocol")
+    else:
+        logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，执行方式 {executor_type}，浏览器模式 {browser_mode}")
 
     from infrastructure.platform_runtime import PlatformRuntime
     from core.db import engine, AccountModel
     from core.platform_accounts import build_platform_account
     from sqlmodel import Session
 
-    sms_provider = _normalize_get_rt_sms_provider(payload.get("sms_provider"))
+    sms_runtime = _resolve_get_rt_sms_runtime_config(payload)
+    sms_provider = sms_runtime["sms_provider"]
+    if sms_provider == "smspool":
+        logger.log(
+            "获取rt: SMSPool配置解析 "
+            f"source={sms_runtime.get('settings_provider_key') or 'payload/default'} "
+            f"country={sms_runtime.get('smspool_country') or '(default)'} "
+            f"service={sms_runtime.get('smspool_service') or '(default)'} "
+            f"max_price={sms_runtime.get('smspool_max_price') or '(default)'} "
+            f"key={'set' if sms_runtime.get('smspool_api_key') else 'empty'}"
+        )
     try:
         phone_reuse_count = max(int(payload.get("phone_reuse_count") or 3), 3)
     except Exception:
@@ -2105,10 +2275,16 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
             phone_reuse_pool, phone_pool_error = build_get_rt_phone_reuse_pool(
                 sms_provider=sms_provider,
-                smspool_api_key=str(payload.get("smspool_api_key") or ""),
-                smspool_max_price=str(payload.get("smspool_max_price") or "0.13"),
-                smsapi_phone=str(payload.get("smsapi_phone") or ""),
-                smsapi_url=str(payload.get("smsapi_url") or ""),
+                smspool_api_key=sms_runtime["smspool_api_key"],
+                smspool_max_price=sms_runtime["smspool_max_price"],
+                smspool_country=sms_runtime["smspool_country"],
+                smspool_service=sms_runtime["smspool_service"],
+                smspool_base_url=sms_runtime["smspool_base_url"],
+                smspool_compat_base_url=sms_runtime["smspool_compat_base_url"],
+                smspool_pricing_option=sms_runtime["smspool_pricing_option"],
+                smspool_poll_interval=sms_runtime["smspool_poll_interval"],
+                smsapi_phone=sms_runtime["smsapi_phone"],
+                smsapi_url=sms_runtime["smsapi_url"],
                 reuse_count=phone_reuse_count,
                 log_fn=logger.log,
             )
@@ -2138,13 +2314,20 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             logger.log(f"[{index + 1}/{total}] 获取rt: 账号 #{account_id}")
             runtime = PlatformRuntime()
             command_params = {
+                "executor_type": executor_type,
                 "browser_mode": browser_mode,
                 "record_har": str(payload.get("record_har") or "").strip().lower(),
                 "sms_provider": sms_provider,
-                "smspool_api_key": str(payload.get("smspool_api_key") or ""),
-                "smspool_max_price": str(payload.get("smspool_max_price") or "0.13"),
-                "smsapi_phone": str(payload.get("smsapi_phone") or ""),
-                "smsapi_url": str(payload.get("smsapi_url") or ""),
+                "smspool_api_key": sms_runtime["smspool_api_key"],
+                "smspool_max_price": sms_runtime["smspool_max_price"],
+                "smspool_country": sms_runtime["smspool_country"],
+                "smspool_service": sms_runtime["smspool_service"],
+                "smspool_base_url": sms_runtime["smspool_base_url"],
+                "smspool_compat_base_url": sms_runtime["smspool_compat_base_url"],
+                "smspool_pricing_option": sms_runtime["smspool_pricing_option"],
+                "smspool_poll_interval": sms_runtime["smspool_poll_interval"],
+                "smsapi_phone": sms_runtime["smsapi_phone"],
+                "smsapi_url": sms_runtime["smsapi_url"],
                 "phone_reuse_count": str(phone_reuse_count),
                 "phone_change_limit": str(phone_change_limit),
             }
@@ -2164,13 +2347,20 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             )
             if result.ok:
                 logger.log(f"[{index + 1}/{total}] 获取rt成功: 账号 #{account_id}")
+                _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 未上传")
+                upload_ok = None
                 try:
                     with Session(engine) as upload_session:
                         fresh_model = upload_session.get(AccountModel, account_id)
                         if fresh_model:
-                            _auto_upload_sub2api(logger, build_platform_account(upload_session, fresh_model))
+                            upload_ok = _auto_upload_sub2api(logger, build_platform_account(upload_session, fresh_model))
                 except Exception as exc:
                     logger.log(f"  [SUB2API] 获取rt后自动上传异常: {exc}", level="warning")
+                    upload_ok = False
+                if upload_ok is True:
+                    _mark_get_rt_upload_status(account_id, uploaded=True, upload_message="SUB2API 上传成功")
+                elif upload_ok is False:
+                    _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 上传失败")
                 return {"ok": True, "account_id": account_id, "data": result.data}
             else:
                 error = str(result.error or "unknown error")
@@ -2281,13 +2471,20 @@ def _execute_get_rt_bypass_task(payload: dict[str, Any], logger: TaskLogger) -> 
             )
             if result.ok:
                 logger.log(f"[{index + 1}/{total}] 获取rt(绕过)成功: 账号 #{account_id}")
+                _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 未上传")
+                upload_ok = None
                 try:
                     with Session(engine) as upload_session:
                         fresh_model = upload_session.get(AccountModel, account_id)
                         if fresh_model:
-                            _auto_upload_sub2api(logger, build_platform_account(upload_session, fresh_model))
+                            upload_ok = _auto_upload_sub2api(logger, build_platform_account(upload_session, fresh_model))
                 except Exception as exc:
                     logger.log(f"  [SUB2API] 获取rt(绕过)后自动上传异常: {exc}", level="warning")
+                    upload_ok = False
+                if upload_ok is True:
+                    _mark_get_rt_upload_status(account_id, uploaded=True, upload_message="SUB2API 上传成功")
+                elif upload_ok is False:
+                    _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 上传失败")
                 return {"ok": True, "account_id": account_id, "data": result.data}
             else:
                 error = str(result.error or "unknown error")

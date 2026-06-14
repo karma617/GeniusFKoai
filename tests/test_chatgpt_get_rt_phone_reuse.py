@@ -78,6 +78,176 @@ def test_get_rt_phone_reuse_pool_reuses_smspool_number_three_times(monkeypatch):
     assert instances[1].cancel_ids == []
 
 
+def test_get_rt_phone_reuse_pool_releases_smspool_number_on_send_failure(monkeypatch):
+    instances = []
+    events = []
+
+    class FakeSmsPoolChannel:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            self.index = len(instances) + 1
+            self.phone = f"+6280000000{self.index}"
+            self.order_id = f"order-{self.index}"
+            self.cancel_ids = []
+            self.last_response = None
+            instances.append(self)
+
+        def get_number(self):
+            return self.phone, self.order_id
+
+        def cancel(self, order_id):
+            self.cancel_ids.append(order_id)
+            self.last_response = {"success": 1}
+            return True
+
+    monkeypatch.setattr(sms_channel, "SmsPoolChannel", FakeSmsPoolChannel)
+
+    pool, error = browser_get_rt.build_get_rt_phone_reuse_pool(
+        sms_provider="smspool",
+        smspool_api_key="KEY",
+        reuse_count=3,
+        log_fn=events.append,
+    )
+
+    assert error == ""
+    assert pool is not None
+    callback = pool.make_callback(label="1/1")
+    assert callback() == "+62800000001"
+
+    callback.mark_send_failed("We couldn't send a text message to this phone number.")
+
+    assert instances[0].cancel_ids == ["order-1"]
+    assert any("release=cancel_ok" in item for item in events)
+    assert callback() == "+62800000002"
+    assert instances[1].cancel_ids == []
+
+
+def test_get_rt_phone_reuse_pool_passes_configured_smspool_country(monkeypatch):
+    instances = []
+
+    class FakeSmsPoolChannel:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            self.phone = "+6281234567890"
+            self.order_id = "order-id"
+            instances.append(self)
+
+        def get_number(self):
+            return self.phone, self.order_id
+
+    monkeypatch.setattr(sms_channel, "SmsPoolChannel", FakeSmsPoolChannel)
+
+    pool, error = browser_get_rt.build_get_rt_phone_reuse_pool(
+        sms_provider="smspool",
+        smspool_api_key="KEY",
+        smspool_country="9",
+        smspool_service="671",
+        smspool_max_price="0.08",
+        smspool_base_url="https://api.example.test",
+        smspool_compat_base_url="https://compat.example.test",
+        smspool_pricing_option="0",
+        smspool_poll_interval="2",
+        log_fn=lambda _message: None,
+    )
+
+    assert error == ""
+    assert pool is not None
+    callback = pool.make_callback(label="1/1")
+    assert callback() == "+6281234567890"
+    assert instances[0].kwargs["country"] == "9"
+    assert instances[0].kwargs["service"] == "671"
+    assert instances[0].kwargs["max_price"] == "0.08"
+    assert instances[0].kwargs["base_url"] == "https://api.example.test"
+    assert instances[0].kwargs["compat_base_url"] == "https://compat.example.test"
+    assert instances[0].kwargs["pricing_option"] == "0"
+    assert instances[0].kwargs["poll_interval"] == "2"
+
+
+def test_get_rt_phone_reuse_pool_prefers_saved_smspool_max_price(monkeypatch):
+    from infrastructure import provider_settings_repository
+
+    instances = []
+
+    class FakeSetting:
+        enabled = True
+
+    class FakeSettingsRepo:
+        def get_by_key(self, provider_type, provider_key):
+            assert provider_type == "sms"
+            if provider_key == "smspool_api":
+                return FakeSetting()
+            return None
+
+        def resolve_runtime_settings(self, provider_type, provider_key, overrides):
+            assert (provider_type, provider_key, overrides) == ("sms", "smspool_api", {})
+            return {
+                "smspool_api_key": "SAVED_KEY",
+                "smspool_default_country": "9",
+                "smspool_default_service": "671",
+                "smspool_max_price": "0.08",
+            }
+
+    class FakeSmsPoolChannel:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            self.phone = "+6281234567890"
+            self.order_id = "order-id"
+            instances.append(self)
+
+        def get_number(self):
+            return self.phone, self.order_id
+
+    monkeypatch.setattr(
+        provider_settings_repository,
+        "ProviderSettingsRepository",
+        lambda: FakeSettingsRepo(),
+    )
+    monkeypatch.setattr(sms_channel, "SmsPoolChannel", FakeSmsPoolChannel)
+
+    pool, error = browser_get_rt.build_get_rt_phone_reuse_pool(
+        sms_provider="smspool",
+        smspool_max_price="0.13",
+        log_fn=lambda _message: None,
+    )
+
+    assert error == ""
+    assert pool is not None
+    callback = pool.make_callback(label="1/1")
+    assert callback() == "+6281234567890"
+    assert instances[0].kwargs["api_key"] == "SAVED_KEY"
+    assert instances[0].kwargs["country"] == "9"
+    assert instances[0].kwargs["service"] == "671"
+    assert instances[0].kwargs["max_price"] == "0.08"
+
+
+def test_get_rt_phone_callback_defaults_smspool_country_to_channel_default(monkeypatch):
+    instances = []
+
+    class FakeSmsPoolChannel:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            self.phone = "+6281234567890"
+            self.order_id = "order-id"
+            instances.append(self)
+
+        def get_number(self):
+            return self.phone, self.order_id
+
+    monkeypatch.setattr(sms_channel, "SmsPoolChannel", FakeSmsPoolChannel)
+
+    callback, error = browser_get_rt.build_get_rt_phone_callback(
+        sms_provider="smspool",
+        smspool_api_key="KEY",
+        log_fn=lambda _message: None,
+    )
+
+    assert error == ""
+    assert callback() == "+6281234567890"
+    assert instances[0].kwargs["country"] == sms_channel.SMSPOOL_DEFAULT_COUNTRY
+    assert instances[0].kwargs["country"] != "1"
+    assert instances[0].kwargs["service"] == "671"
+
+
 def test_get_rt_phone_reuse_pool_uses_smsapi_lines_once(monkeypatch):
     instances = []
 

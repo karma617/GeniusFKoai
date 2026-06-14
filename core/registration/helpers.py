@@ -69,6 +69,18 @@ def build_otp_callback(
             ctx.log(f"{success_label}: {code}")
         return code
 
+    def refresh_before_ids():
+        try:
+            before_ids = set(mailbox.get_current_ids(mail_acct) or set())
+        except Exception:
+            before_ids = set()
+        try:
+            setattr(ctx.identity, "before_ids", before_ids)
+        except Exception:
+            pass
+        return before_ids
+
+    otp_cb.refresh_before_ids = refresh_before_ids  # type: ignore[attr-defined]
     return otp_cb
 
 
