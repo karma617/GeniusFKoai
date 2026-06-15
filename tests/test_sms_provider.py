@@ -46,6 +46,19 @@ class TestSmsActivateCountryMapping:
         assert "default" in SMS_ACTIVATE_COUNTRIES
 
 
+def test_sms_error_redaction_masks_query_api_key():
+    text = (
+        "HTTPSConnectionPool(host='smsbower.page', port=443): Max retries exceeded with url: "
+        "/stubs/handler_api.php?action=getBalance&api_key=SECRET123 "
+        "(Caused by SSLError('boom'))"
+    )
+
+    redacted = sms_module._redact_sms_error_text(text)
+
+    assert "SECRET123" not in redacted
+    assert "api_key=***" in redacted
+
+
 class TestCreateSmsProvider:
     def test_sms_activate(self):
         provider = create_sms_provider("sms_activate", {"sms_activate_api_key": "test123"})

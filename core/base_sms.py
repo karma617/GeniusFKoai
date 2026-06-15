@@ -239,6 +239,15 @@ def _hash_secret(value: str) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
 
 
+def _redact_sms_error_text(value: Any) -> str:
+    text = str(value or "")
+    return re.sub(
+        r"(?i)([?&](?:api_key|apikey|token|access_token|key)=)[^&\s)]+",
+        r"\1***",
+        text,
+    )
+
+
 def _safe_int(value, default: int) -> int:
     try:
         return int(value)
@@ -806,7 +815,7 @@ class HeroSmsProvider(BaseSmsProvider):
                 return data
             v2_error = resp.text.strip()[:200]
         except Exception as exc:
-            v2_error = str(exc)
+            v2_error = _redact_sms_error_text(exc)
 
         # 如果 NO_NUMBERS 且 maxPrice 低于用户配置的上限，提高 maxPrice 重试
         if "NO_NUMBERS" in v2_error and self.max_price > 0 and effective_max_price < self.max_price:
@@ -823,7 +832,7 @@ class HeroSmsProvider(BaseSmsProvider):
                     return data
                 v2_error = resp.text.strip()[:200]
             except Exception as exc:
-                v2_error = str(exc)
+                v2_error = _redact_sms_error_text(exc)
 
         try:
             text = self._request({"action": "getNumber", **common}).text.strip()
@@ -840,7 +849,7 @@ class HeroSmsProvider(BaseSmsProvider):
                     }
             raise RuntimeError(text[:200])
         except Exception as exc:
-            raise RuntimeError(f"HeroSMS 获取号码失败: V2={v2_error}; V1={exc}") from exc
+            raise RuntimeError(f"HeroSMS 获取号码失败: V2={_redact_sms_error_text(v2_error)}; V1={_redact_sms_error_text(exc)}") from exc
 
     @staticmethod
     def _format_phone(number_info: dict) -> str:
@@ -2810,7 +2819,7 @@ class PhoneCallbackController:
         try:
             raw_rows = provider.get_top_countries(service=self.service)  # type: ignore[attr-defined]
         except Exception as exc:
-            self.log(f"接码国家价格列表获取失败({exc})，仅使用当前国家")
+            self.log(f"接码国家价格列表获取失败({_redact_sms_error_text(exc)})，仅使用当前国家")
             raw_rows = []
 
         rows: list[dict[str, Any]] = []
@@ -2877,7 +2886,7 @@ class PhoneCallbackController:
         try:
             return self._amount_label(getter(), currency=currency)
         except Exception as exc:
-            return f"查询失败({exc})"
+            return f"查询失败({_redact_sms_error_text(exc)})"
 
     def _price_info_for_log(self, provider: BaseSmsProvider, *, country: str) -> dict:
         getter = getattr(provider, "get_current_price_info", None)
@@ -2964,7 +2973,7 @@ class PhoneCallbackController:
                     else:
                         self.log("未找到满足条件的国家，使用默认配置")
                 except Exception as exc:
-                    self.log(f"智能国家选择失败({exc})，使用默认配置")
+                    self.log(f"智能国家选择失败({_redact_sms_error_text(exc)})，使用默认配置")
 
             country_label = effective_country or self.config.get("sms_country") or self.config.get("sms_activate_country") or "default"
             self.log(f"已进入 add_phone，准备租用手机号: provider={self.provider_key} service={self.service} country={country_label}")

@@ -2,6 +2,7 @@
 Token 刷新模块
 支持 Session Token 和 OAuth Refresh Token 两种刷新方式
 """
+from __future__ import annotations
 
 import logging
 import json

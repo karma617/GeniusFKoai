@@ -93,6 +93,7 @@ export function TaskLogPanel({
         eventSourceRef.current = null;
         const nextStatus = payload.status || "succeeded";
         setDoneStatus(nextStatus);
+        syncTask().catch(() => {});
         onDoneRef.current(nextStatus);
       }
     };

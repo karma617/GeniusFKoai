@@ -148,13 +148,14 @@ class GetRtTaskRequest(BaseModel):
     platform: str = "chatgpt"
     account_id: int = 0
     ids: list[int] = Field(default_factory=list)
+    task_mode: str = "single"
     executor_type: str = "browser"
     browser_mode: str = "camoufox_headed"
     concurrency: int = 1
     record_har: str = ""
     sms_provider: str = ""
     smspool_api_key: str = ""
-    smspool_max_price: str = "0.13"
+    smspool_max_price: str = ""
     smsapi_phone: str = ""
     smsapi_url: str = ""
     phone_reuse_count: int = 3

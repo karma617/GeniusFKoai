@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.parse
 import uuid
 from typing import Any, Callable
 
@@ -47,16 +48,176 @@ def _post_json(session, url: str, *, headers: dict[str, str], body: dict[str, An
 
 
 def _extract_continue_url(resp) -> str:
-    location = str(getattr(resp, "headers", {}).get("Location") or "").strip()
+    headers = getattr(resp, "headers", {}) or {}
+    location = str(headers.get("Location") or headers.get("location") or "").strip()
     if location:
         return location
+    return _extract_continue_url_from_payload(_response_json(resp))
+
+
+def _response_json(resp) -> dict[str, Any]:
     try:
         data = resp.json() or {}
     except Exception:
-        data = {}
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_continue_url_from_payload(data: Any) -> str:
     if not isinstance(data, dict):
         return ""
     return str(data.get("continue_url") or data.get("redirect_url") or "").strip()
+
+
+def _extract_page_type(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    page = data.get("page") or {}
+    return str((page if isinstance(page, dict) else {}).get("type") or "").strip()
+
+
+def _short_url(url: str, *, limit: int = 220) -> str:
+    value = str(url or "").strip()
+    return value if len(value) <= limit else value[:limit] + "..."
+
+
+def _normalize_auth_url(url: str, *, base_url: str = OPENAI_AUTH) -> str:
+    value = str(url or "").strip()
+    if not value:
+        return ""
+    return urllib.parse.urljoin(base_url, value)
+
+
+def _is_codex_consent_url(url: str) -> bool:
+    path = urllib.parse.urlsplit(str(url or "")).path.rstrip("/")
+    return path == "/sign-in-with-chatgpt/codex/consent"
+
+
+def _codex_consent_data_url(consent_url: str) -> str:
+    parsed = urllib.parse.urlsplit(consent_url)
+    return urllib.parse.urlunsplit(
+        (
+            parsed.scheme or "https",
+            parsed.netloc or urllib.parse.urlsplit(OPENAI_AUTH).netloc,
+            "/sign-in-with-chatgpt/codex/consent.data",
+            "_routes=SIGN_IN_WITH_CHATGPT_CODEX_CONSENT",
+            "",
+        )
+    )
+
+
+def _extract_workspace_id_from_payload(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    auth_session = data.get("oai-client-auth-session") or data.get("auth_session") or data
+    if not isinstance(auth_session, dict):
+        return ""
+    workspaces = auth_session.get("workspaces") or []
+    if not isinstance(workspaces, list) or not workspaces:
+        return ""
+    first = workspaces[0] if isinstance(workspaces[0], dict) else {}
+    return str(first.get("id") or "").strip()
+
+
+def _extract_org_selection_body(data: Any) -> dict[str, str]:
+    if not isinstance(data, dict):
+        return {}
+    orgs = list((((data.get("data") or {}).get("orgs")) or []))
+    if not orgs or not isinstance(orgs[0], dict) or not orgs[0].get("id"):
+        return {}
+    body = {"org_id": str(orgs[0].get("id") or "").strip()}
+    projects = list(orgs[0].get("projects") or [])
+    if projects and isinstance(projects[0], dict) and projects[0].get("id"):
+        body["project_id"] = str(projects[0].get("id") or "").strip()
+    return body
+
+
+def _resolve_callback_from_continue_url(
+    *,
+    session,
+    engine: RegistrationEngine,
+    device_id: str,
+    continue_url: str,
+    auth_payload: dict[str, Any],
+    referer: str,
+    log_fn: Callable[[str], None],
+) -> str:
+    current_url = _normalize_auth_url(continue_url)
+    if not current_url:
+        return ""
+    if _extract_oauth_callback_params_from_url(current_url):
+        return current_url
+
+    page_type = _extract_page_type(auth_payload)
+    log_fn(f"  get_rt(protocol): OAuth continue_url={_short_url(current_url)} page={page_type or '-'}")
+
+    if _is_codex_consent_url(current_url):
+        consent_data_url = _codex_consent_data_url(current_url)
+        try:
+            consent_resp = session.get(
+                consent_data_url,
+                headers={"accept": "*/*", "referer": referer or current_url},
+                allow_redirects=True,
+                timeout=30,
+            )
+            log_fn(f"  get_rt(protocol): consent.data -> {getattr(consent_resp, 'status_code', 0)}")
+            _log_response_debug(log_fn, "consent.data", consent_resp)
+        except Exception as exc:
+            log_fn(f"  get_rt(protocol): consent.data failed: {exc}")
+
+        workspace_id = _extract_workspace_id_from_payload(auth_payload)
+        if not workspace_id:
+            try:
+                workspace_id = _extract_workspace_id_from_payload(engine._decode_client_auth_session_cookie(session))
+            except Exception:
+                workspace_id = ""
+        if workspace_id:
+            log_fn(f"  get_rt(protocol): workspace/select request workspace_id={workspace_id[:8]}...")
+            ws_resp = _post_json(
+                session,
+                OPENAI_API_ENDPOINTS["select_workspace"],
+                headers=_json_headers(engine, device_id=device_id, referer=current_url),
+                body={"workspace_id": workspace_id},
+                allow_redirects=False,
+                timeout=30,
+            )
+            log_fn(f"  get_rt(protocol): workspace/select -> {getattr(ws_resp, 'status_code', 0)}")
+            _log_response_debug(log_fn, "workspace/select", ws_resp)
+            ws_data = _response_json(ws_resp)
+            next_url = _normalize_auth_url(_extract_continue_url(ws_resp), base_url=current_url)
+            if next_url:
+                if _extract_oauth_callback_params_from_url(next_url):
+                    return next_url
+                callback_url = engine._follow_platform_redirects_for_callback(session, next_url)
+                if callback_url:
+                    return callback_url
+
+            org_body = _extract_org_selection_body(ws_data)
+            if org_body:
+                org_resp = _post_json(
+                    session,
+                    f"{OPENAI_AUTH}/api/accounts/organization/select",
+                    headers=_json_headers(engine, device_id=device_id, referer=current_url),
+                    body=org_body,
+                    allow_redirects=False,
+                    timeout=30,
+                )
+                log_fn(f"  get_rt(protocol): organization/select -> {getattr(org_resp, 'status_code', 0)}")
+                _log_response_debug(log_fn, "organization/select", org_resp)
+                org_next_url = _normalize_auth_url(_extract_continue_url(org_resp), base_url=current_url)
+                if org_next_url:
+                    if _extract_oauth_callback_params_from_url(org_next_url):
+                        return org_next_url
+                    callback_url = engine._follow_platform_redirects_for_callback(session, org_next_url)
+                    if callback_url:
+                        return callback_url
+        else:
+            log_fn("  get_rt(protocol): workspace/select skipped: no workspace_id")
+
+    callback_url = engine._follow_platform_redirects_for_callback(session, current_url)
+    if callback_url:
+        return callback_url
+    return ""
 
 
 def _safe_json_or_text(resp, *, limit: int = 600) -> str:
@@ -258,6 +419,10 @@ def run_protocol_get_rt(
     else:
         otp_data = continue_data
 
+    oauth_payload = otp_data if isinstance(otp_data, dict) else {}
+    oauth_continue_url = _extract_continue_url_from_payload(oauth_payload) or _extract_continue_url_from_payload(continue_data)
+    oauth_referer = f"{OPENAI_AUTH}/email-verification" if page_type == "email_otp_verification" else f"{OPENAI_AUTH}/log-in"
+
     next_page = str(((otp_data.get("page") or {}).get("type")) or page_type or "")
     phone_callback_obj = phone_callback
     if next_page == "add_phone":
@@ -319,6 +484,18 @@ def run_protocol_get_rt(
                     except Exception:
                         pass
                     raise RuntimeError(f"获取rt协议模式手机验证码校验失败: HTTP {validate_resp.status_code}")
+                phone_validate_data = _response_json(validate_resp)
+                phone_continue_url = _extract_continue_url_from_payload(phone_validate_data)
+                phone_page = _extract_page_type(phone_validate_data)
+                if phone_validate_data:
+                    oauth_payload = phone_validate_data
+                if phone_continue_url:
+                    oauth_continue_url = phone_continue_url
+                oauth_referer = f"{OPENAI_AUTH}/phone-verification"
+                log_fn(
+                    "  get_rt(protocol): phone OTP validate next="
+                    f"{_short_url(phone_continue_url or '-')} page={phone_page or '-'}"
+                )
                 try:
                     if hasattr(phone_callback_obj, "report_success"):
                         phone_callback_obj.report_success()
@@ -340,23 +517,29 @@ def run_protocol_get_rt(
         else:
             raise RuntimeError(f"获取rt协议模式手机号提交失败，已达换号上限: {last_send_error or 'unknown'}")
 
-    final_authorize = session.get(oauth_start.auth_url, timeout=30, allow_redirects=True)
     callback_url = ""
-    callback_location = _extract_continue_url(final_authorize)
-    if callback_location:
-        callback_url = callback_location
-    maybe_url = str(getattr(final_authorize, "url", "") or "")
-    if not callback_url and _extract_oauth_callback_params_from_url(maybe_url):
-        callback_url = maybe_url
-    if callback_url and callback_url.startswith("/"):
-        from urllib.parse import urljoin
-        callback_url = urljoin(OPENAI_AUTH, callback_url)
+    if oauth_continue_url:
+        callback_url = _resolve_callback_from_continue_url(
+            session=session,
+            engine=engine,
+            device_id=device_id,
+            continue_url=oauth_continue_url,
+            auth_payload=oauth_payload,
+            referer=oauth_referer,
+            log_fn=log_fn,
+        )
+
+    if not callback_url:
+        final_authorize = session.get(oauth_start.auth_url, timeout=30, allow_redirects=True)
+        callback_location = _extract_continue_url(final_authorize)
+        if callback_location:
+            callback_url = _normalize_auth_url(callback_location, base_url=oauth_start.auth_url)
+        maybe_url = str(getattr(final_authorize, "url", "") or "")
+        if not callback_url and _extract_oauth_callback_params_from_url(maybe_url):
+            callback_url = maybe_url
     if not callback_url:
         callback_url = engine._follow_platform_redirects_for_callback(session, oauth_start.auth_url)
     if not callback_url:
-        auth_cookie = engine._complete_platform_oauth(client, device_id, oauth_start, "")
-        if auth_cookie:
-            return auth_cookie
         raise RuntimeError("获取rt协议模式未获取到 OAuth callback")
 
     token_json = submit_callback_url(

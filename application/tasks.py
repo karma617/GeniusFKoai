@@ -108,6 +108,45 @@ def _filter_registered_get_rt_ids(
             skipped.append(account_id)
     return allowed, skipped
 
+
+def _filter_get_rt_target_ids(
+    ids: list[int],
+    *,
+    platform: str = "chatgpt",
+) -> tuple[list[int], list[int]]:
+    """Keep accounts that target mode can finish: registered or RT pending upload."""
+    normalized_ids = _normalize_task_ids(ids)
+    if not normalized_ids:
+        return [], []
+    with Session(engine) as session:
+        statement = select(AccountModel).where(AccountModel.id.in_(normalized_ids))
+        if platform:
+            statement = statement.where(AccountModel.platform == platform)
+        models = session.exec(statement).all()
+        model_map = {int(model.id or 0): model for model in models if model.id}
+        graphs = load_account_graphs(session, list(model_map.keys()))
+    allowed: list[int] = []
+    skipped: list[int] = []
+    allowed_statuses = {AccountStatus.REGISTERED.value, "rt_pending_upload"}
+    for account_id in normalized_ids:
+        model = model_map.get(account_id)
+        if not model:
+            skipped.append(account_id)
+            continue
+        graph = graphs.get(account_id, {}) or {}
+        status = str(
+            graph.get("display_status")
+            or graph.get("lifecycle_status")
+            or getattr(model, "display_status", "")
+            or getattr(model, "lifecycle_status", "")
+            or AccountStatus.REGISTERED.value
+        ).strip().lower()
+        if status in allowed_statuses:
+            allowed.append(account_id)
+        else:
+            skipped.append(account_id)
+    return allowed, skipped
+
 _task_locks: dict[str, threading.Lock] = {}
 _task_locks_guard = threading.Lock()
 
@@ -342,15 +381,25 @@ def create_get_rt_task(payload: dict[str, Any]) -> dict[str, Any]:
     payload 包含 ids（账号 ID 列表）、browser_mode、concurrency。
     """
     payload = dict(payload or {})
+    task_mode = str(payload.get("task_mode") or "single").strip().lower()
+    if task_mode not in {"single", "target"}:
+        task_mode = "single"
+    payload["task_mode"] = task_mode
     ids = _normalize_task_ids(payload.get("ids"))
     if not ids:
         account_id = int(payload.get("account_id") or 0)
         if account_id > 0:
             ids = [account_id]
-    ids, skipped_ids = _filter_registered_get_rt_ids(
-        ids,
-        platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
-    )
+    if task_mode == "target":
+        ids, skipped_ids = _filter_get_rt_target_ids(
+            ids,
+            platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+        )
+    else:
+        ids, skipped_ids = _filter_registered_get_rt_ids(
+            ids,
+            platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+        )
     payload["ids"] = ids
     payload["account_id"] = 0
     payload["executor_type"] = str(payload.get("executor_type") or "browser")
@@ -1019,6 +1068,241 @@ def _get_rt_sms_setting_candidates(provider: str) -> list[str]:
     if normalized == "smsapi":
         return ["smsapi", "sms_api"]
     return [normalized] if normalized else []
+
+
+def _is_get_rt_balance_error(message: Any) -> bool:
+    try:
+        from platforms.gopay.sms_channel import is_smspool_insufficient_balance_response
+
+        if is_smspool_insufficient_balance_response(message):
+            return True
+    except Exception:
+        pass
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    balance_markers = (
+        "余额不足",
+        "no_balance",
+        "no balance",
+        "insufficient balance",
+        "insufficient funds",
+        "not enough balance",
+        "not enough funds",
+        "low balance",
+        "balance too low",
+        "not enough credit",
+        "not enough credits",
+        "credit too low",
+        "no funds",
+        "not have enough",
+        "balance error",
+    )
+    return any(marker in text for marker in balance_markers)
+
+
+def _is_get_rt_sms_provider_switch_error(message: Any) -> bool:
+    if _is_get_rt_balance_error(message):
+        return True
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    switch_markers = (
+        "too many failed purchases",
+        "improve your success rate",
+        "try again in 6 hours",
+        "increased ratelimit",
+        "increased rate limit",
+        "purchase rate limit",
+        "purchase ratelimit",
+        "rate limit",
+        "ratelimit",
+    )
+    if any(marker in text for marker in switch_markers):
+        return True
+    provider_markers = (
+        "smsbower",
+        "smsbower.page",
+        "hero-sms",
+        "herosms",
+        "sms-activate",
+        "smspool",
+        "5sim",
+        "nexsms",
+        "grizzlysms",
+        "sms-verification-number",
+        "handler_api.php",
+        "stubs/handler_api",
+        "action=getbalance",
+        "action=getnumber",
+        "action=getnumberv2",
+    )
+    network_markers = (
+        "httpsconnectionpool",
+        "httpconnectionpool",
+        "max retries exceeded",
+        "ssleoferror",
+        "unexpected_eof",
+        "eof occurred in violation of protocol",
+        "ssl:",
+        "connection aborted",
+        "connection reset",
+        "remote end closed connection",
+        "failed to establish a new connection",
+        "name resolution",
+        "temporary failure",
+        "tls",
+    )
+    return any(marker in text for marker in provider_markers) and any(marker in text for marker in network_markers)
+
+
+def _is_get_rt_hard_retry_error(message: Any) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "请求超时",
+        "网络请求超时",
+        "proxy connect aborted",
+        "request timeout",
+        "request timed out",
+        "read timeout",
+        "read timed out",
+        "connect timeout",
+        "connect timed out",
+        "connection timeout",
+        "net::err_timed_out",
+        "network error",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _is_get_rt_upload_success(upload_ok: Any) -> bool:
+    return upload_ok is True
+
+
+def _is_sub2api_configured() -> bool:
+    try:
+        from core.config_store import config_store
+
+        return bool(str(config_store.get("sub2api_url", "") or "").strip())
+    except Exception:
+        return False
+
+
+def _list_get_rt_sms_provider_candidates(payload: dict[str, Any], sms_runtime: dict[str, str]) -> list[dict[str, Any]]:
+    from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+    raw_requested = str(payload.get("sms_provider") or "").strip().lower()
+    if raw_requested in {"none", "off", "disabled", "disable", "false", "0", "\u4e0d\u542f\u7528"}:
+        return []
+
+    settings_repo = ProviderSettingsRepository()
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(provider_key: str, *, source: str) -> None:
+        normalized = _normalize_get_rt_sms_provider(provider_key)
+        if not normalized or normalized in seen:
+            return
+        settings_key = ""
+        runtime_settings: dict[str, Any] = {}
+        if normalized == "smspool":
+            settings_key = "smspool_api"
+            item = settings_repo.get_by_key("sms", settings_key)
+            if (not item or not bool(getattr(item, "enabled", True))) and not _first_nonempty_text(payload.get("smspool_api_key")):
+                return
+            runtime_settings = settings_repo.resolve_runtime_settings("sms", settings_key, {})
+        elif normalized == "smsapi":
+            settings_key = "smsapi"
+            item = settings_repo.get_by_key("sms", settings_key)
+            if (
+                not item
+                or not bool(getattr(item, "enabled", True))
+            ) and not _first_nonempty_text(payload.get("smsapi_phone"), payload.get("smsapi_url")):
+                return
+            runtime_settings = settings_repo.resolve_runtime_settings("sms", settings_key, {})
+        else:
+            runtime_setting = settings_repo.get_by_key("sms", provider_key)
+            if not runtime_setting or not bool(getattr(runtime_setting, "enabled", True)):
+                return
+            settings_key = str(runtime_setting.provider_key or "").strip()
+            runtime_settings = settings_repo.resolve_runtime_settings("sms", settings_key, {})
+        seen.add(normalized)
+        candidates.append(
+            {
+                "provider": normalized,
+                "settings_provider_key": settings_key,
+                "source": source,
+                "sms_runtime": {
+                    "sms_provider": normalized,
+                    "smspool_api_key": _first_nonempty_text(
+                        payload.get("smspool_api_key"),
+                        runtime_settings.get("smspool_api_key"),
+                        runtime_settings.get("api_key"),
+                        runtime_settings.get("smsPoolApiKey"),
+                    ),
+                    "smspool_max_price": _first_nonempty_text(
+                        payload.get("smspool_max_price"),
+                        runtime_settings.get("smspool_max_price"),
+                        "0.13",
+                    ),
+                    "smspool_country": _first_nonempty_text(
+                        payload.get("smspool_country"),
+                        payload.get("smspool_default_country"),
+                        runtime_settings.get("smspool_country"),
+                        runtime_settings.get("smspool_default_country"),
+                        runtime_settings.get("smsPoolCountry"),
+                    ),
+                    "smspool_service": _first_nonempty_text(
+                        payload.get("smspool_service"),
+                        payload.get("smspool_default_service"),
+                        runtime_settings.get("smspool_service"),
+                        runtime_settings.get("smspool_default_service"),
+                        runtime_settings.get("smsPoolServiceCode"),
+                    ),
+                    "smspool_base_url": _first_nonempty_text(
+                        payload.get("smspool_base_url"),
+                        runtime_settings.get("smspool_base_url"),
+                    ),
+                    "smspool_compat_base_url": _first_nonempty_text(
+                        payload.get("smspool_compat_base_url"),
+                        runtime_settings.get("smspool_compat_base_url"),
+                    ),
+                    "smspool_pricing_option": _first_nonempty_text(
+                        payload.get("smspool_pricing_option"),
+                        runtime_settings.get("smspool_pricing_option"),
+                    ),
+                    "smspool_poll_interval": _first_nonempty_text(
+                        payload.get("smspool_poll_interval"),
+                        runtime_settings.get("sms_poll_interval"),
+                        runtime_settings.get("poll_interval"),
+                    ),
+                    "smsapi_phone": _first_nonempty_text(
+                        payload.get("smsapi_phone"),
+                        runtime_settings.get("smsapi_phone"),
+                    ),
+                    "smsapi_url": _first_nonempty_text(
+                        payload.get("smsapi_url"),
+                        runtime_settings.get("smsapi_url"),
+                    ),
+                    "settings_provider_key": settings_key,
+                },
+            }
+        )
+
+    requested = _normalize_get_rt_sms_provider(payload.get("sms_provider"))
+    if requested and requested not in {"default", "default_sms", "__default__"}:
+        add(requested, source="payload")
+
+    default_provider = _normalize_get_rt_sms_provider(sms_runtime.get("settings_provider_key") or "")
+    if default_provider:
+        add(default_provider, source="saved-default")
+
+    for item in settings_repo.list_enabled("sms"):
+        add(str(item.provider_key or ""), source="enabled")
+
+    return candidates
 
 
 def _first_nonempty_text(*values: Any) -> str:
@@ -2218,12 +2502,16 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     if logger.is_cancel_requested():
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
         return
+    task_mode = str(payload.get("task_mode") or "single").strip().lower()
+    if task_mode not in {"single", "target"}:
+        task_mode = "single"
     ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
     if not ids:
         account_id = int(payload.get("account_id") or 0)
         if account_id > 0:
             ids = [account_id]
-    ids, skipped_now = _filter_registered_get_rt_ids(
+    filter_fn = _filter_get_rt_target_ids if task_mode == "target" else _filter_registered_get_rt_ids
+    ids, skipped_now = filter_fn(
         ids,
         platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
     )
@@ -2232,17 +2520,23 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     if skipped_ids:
         logger.log(f"获取rt: 已过滤非仅注册账号 {len(skipped_ids)} 个: {skipped_ids}")
     if not ids:
-        logger.finish(TASK_STATUS_FAILED, error="\u83b7\u53d6rt\u53ea\u80fd\u5bf9\u4ec5\u6ce8\u518c\u72b6\u6001\u8d26\u53f7\u8d77\u4efb\u52a1")
+        error = (
+            "\u76ee\u6807\u6a21\u5f0f\u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u6216\u201c\u5df2\u83b7\u53d6rt\uff0c\u672a\u4e0a\u4f20\u201d\u72b6\u6001\u8d26\u53f7\u8d77\u4efb\u52a1"
+            if task_mode == "target"
+            else "\u83b7\u53d6rt\u53ea\u80fd\u5bf9\u4ec5\u6ce8\u518c\u72b6\u6001\u8d26\u53f7\u8d77\u4efb\u52a1"
+        )
+        logger.finish(TASK_STATUS_FAILED, error=error)
         return
     total = len(ids)
     concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
     browser_mode = str(payload.get("browser_mode") or "camoufox_headed")
     executor_type = str(payload.get("executor_type") or "browser").strip().lower() or "browser"
     logger.set_progress(0, total)
+    mode_label = "\u76ee\u6807\u6a21\u5f0f" if task_mode == "target" else "\u5355\u8f6e\u6a21\u5f0f"
     if executor_type == "protocol":
-        logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，执行方式 protocol")
+        logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，任务模式 {mode_label}，执行方式 protocol")
     else:
-        logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，执行方式 {executor_type}，浏览器模式 {browser_mode}")
+        logger.log(f"开始获取rt：账号 {total} 个，并发 {concurrency}，任务模式 {mode_label}，执行方式 {executor_type}，浏览器模式 {browser_mode}")
 
     from infrastructure.platform_runtime import PlatformRuntime
     from core.db import engine, AccountModel
@@ -2268,49 +2562,130 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         phone_change_limit = max(int(payload.get("phone_change_limit") or 10), 1)
     except Exception:
         phone_change_limit = 10
-    phone_reuse_pool = None
-    if sms_provider in {"smspool", "smsapi"}:
+
+    sms_candidates = _list_get_rt_sms_provider_candidates(payload, sms_runtime) if task_mode == "target" else []
+    active_sms_index = 0
+    exhausted_sms_providers: set[str] = set()
+    if task_mode == "target" and sms_candidates:
+        order = " -> ".join(str(item.get("provider") or "") for item in sms_candidates)
+        logger.log(f"获取rt: 目标模式接码平台轮换顺序: {order}")
+
+    def create_phone_reuse_pool(runtime_config: dict[str, str]):
+        provider = runtime_config.get("sms_provider") or ""
+        if provider not in {"smspool", "smsapi"}:
+            return None, ""
         try:
             from platforms.chatgpt.browser_get_rt import build_get_rt_phone_reuse_pool
 
-            phone_reuse_pool, phone_pool_error = build_get_rt_phone_reuse_pool(
-                sms_provider=sms_provider,
-                smspool_api_key=sms_runtime["smspool_api_key"],
-                smspool_max_price=sms_runtime["smspool_max_price"],
-                smspool_country=sms_runtime["smspool_country"],
-                smspool_service=sms_runtime["smspool_service"],
-                smspool_base_url=sms_runtime["smspool_base_url"],
-                smspool_compat_base_url=sms_runtime["smspool_compat_base_url"],
-                smspool_pricing_option=sms_runtime["smspool_pricing_option"],
-                smspool_poll_interval=sms_runtime["smspool_poll_interval"],
-                smsapi_phone=sms_runtime["smsapi_phone"],
-                smsapi_url=sms_runtime["smsapi_url"],
+            pool, pool_error = build_get_rt_phone_reuse_pool(
+                sms_provider=provider,
+                smspool_api_key=runtime_config["smspool_api_key"],
+                smspool_max_price=runtime_config["smspool_max_price"],
+                smspool_country=runtime_config["smspool_country"],
+                smspool_service=runtime_config["smspool_service"],
+                smspool_base_url=runtime_config["smspool_base_url"],
+                smspool_compat_base_url=runtime_config["smspool_compat_base_url"],
+                smspool_pricing_option=runtime_config["smspool_pricing_option"],
+                smspool_poll_interval=runtime_config["smspool_poll_interval"],
+                smsapi_phone=runtime_config["smsapi_phone"],
+                smsapi_url=runtime_config["smsapi_url"],
                 reuse_count=phone_reuse_count,
                 log_fn=logger.log,
             )
-            if phone_reuse_pool:
+            if pool:
                 logger.log(
-                    f"获取rt: 启用任务级手机号复用 provider={sms_provider}, "
+                    f"获取rt: 启用任务级手机号复用 provider={provider}, "
                     f"每号成功 {phone_reuse_count} 次后换号"
                 )
             else:
-                logger.log(f"获取rt: 手机号复用池创建失败: {phone_pool_error}", level="error")
+                logger.log(f"获取rt: 手机号复用池创建失败: {pool_error}", level="error")
+            return pool, pool_error
         except Exception as exc:
             logger.log(f"获取rt: 手机号复用池初始化异常: {exc}", level="error")
-            phone_reuse_pool = None
+            return None, str(exc)
+
+    phone_reuse_pool = None
+    phone_pool_error = ""
+    if sms_provider in {"smspool", "smsapi"}:
+        phone_reuse_pool, phone_pool_error = create_phone_reuse_pool(sms_runtime)
     elif sms_provider:
-        # 新版设置页 SMS provider（如 codex_sms_pool / herosms_api）由每个账号
-        # 的 get_rt action 内部构建 callback；这里不建任务级复用池。
         logger.log(f"获取rt: 使用通用手机号 provider={sms_provider}，每个账号单独创建接码 callback")
 
+    def close_phone_pool(pool) -> None:
+        if pool:
+            try:
+                pool.cleanup()
+            except Exception as exc:
+                logger.log(f"获取rt: 手机号复用池清理异常: {exc}", level="error")
+
     results: list[dict[str, Any] | None] = [None] * total
-    completed = 0
+    target_success_ids: set[int] = set()
+
+    def account_has_refresh_token(account_id: int) -> bool:
+        try:
+            with Session(engine) as session:
+                model = session.get(AccountModel, account_id)
+                if not model:
+                    return False
+                account = build_platform_account(session, model)
+                extra = getattr(account, "extra", {}) or {}
+                return bool(str(extra.get("refresh_token") or "").strip())
+        except Exception:
+            return False
+
+    def upload_existing_rt(index: int, account_id: int) -> dict[str, Any] | None:
+        if not account_has_refresh_token(account_id):
+            return None
+        logger.log(f"[{index + 1}/{total}] 目标模式: 账号 #{account_id} 已有 refresh_token，优先重试上传")
+        if not _is_sub2api_configured():
+            _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 未配置")
+            return {
+                "ok": True,
+                "final_ok": False,
+                "uploaded": False,
+                "account_id": account_id,
+                "error": "SUB2API 未配置，无法完成上传",
+                "hard_error": True,
+                "sms_provider": sms_provider,
+            }
+        upload_ok = False
+        try:
+            with Session(engine) as upload_session:
+                fresh_model = upload_session.get(AccountModel, account_id)
+                if fresh_model:
+                    upload_ok = _auto_upload_sub2api(logger, build_platform_account(upload_session, fresh_model))
+        except Exception as exc:
+            logger.log(f"  [SUB2API] 目标模式重试上传异常: {exc}", level="warning")
+            upload_ok = False
+        if upload_ok is True:
+            _mark_get_rt_upload_status(account_id, uploaded=True, upload_message="SUB2API 上传成功")
+            return {
+                "ok": True,
+                "final_ok": True,
+                "uploaded": True,
+                "account_id": account_id,
+                "data": {"upload_only": True},
+                "sms_provider": sms_provider,
+            }
+        _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 上传失败")
+        return {
+            "ok": True,
+            "final_ok": False,
+            "uploaded": False,
+            "account_id": account_id,
+            "error": "SUB2API 上传失败",
+            "sms_provider": sms_provider,
+        }
 
     def run_one(index: int, account_id: int) -> dict[str, Any]:
         logger.set_subtask(f"get_rt_{index + 1}", f"账号 {account_id}")
         try:
             if logger.is_cancel_requested():
                 return {"ok": False, "account_id": account_id, "error": "任务已取消"}
+            if task_mode == "target":
+                upload_result = upload_existing_rt(index, account_id)
+                if upload_result is not None:
+                    return upload_result
             logger.log(f"[{index + 1}/{total}] 获取rt: 账号 #{account_id}")
             runtime = PlatformRuntime()
             command_params = {
@@ -2361,27 +2736,57 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     _mark_get_rt_upload_status(account_id, uploaded=True, upload_message="SUB2API 上传成功")
                 elif upload_ok is False:
                     _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 上传失败")
-                return {"ok": True, "account_id": account_id, "data": result.data}
+                elif task_mode == "target" and not _is_sub2api_configured():
+                    _mark_get_rt_upload_status(account_id, uploaded=False, upload_message="SUB2API 未配置")
+                return {
+                    "ok": True,
+                    "final_ok": _is_get_rt_upload_success(upload_ok) if task_mode == "target" else True,
+                    "uploaded": upload_ok is True,
+                    "account_id": account_id,
+                    "data": result.data,
+                    "sms_provider": sms_provider,
+                    "error": "SUB2API 未配置，无法完成上传" if task_mode == "target" and upload_ok is None else "",
+                    "hard_error": bool(task_mode == "target" and upload_ok is None and not _is_sub2api_configured()),
+                }
             else:
                 error = str(result.error or "unknown error")
                 logger.log(f"[{index + 1}/{total}] 获取rt失败 #{account_id}: {error}", level="error")
-                return {"ok": False, "account_id": account_id, "error": error}
+                return {
+                    "ok": False,
+                    "final_ok": False,
+                    "account_id": account_id,
+                    "error": error,
+                    "sms_provider": sms_provider,
+                    "sms_balance_error": _is_get_rt_balance_error(error),
+                    "sms_provider_switch_error": _is_get_rt_sms_provider_switch_error(error),
+                    "hard_error": _is_get_rt_hard_retry_error(error),
+                }
         except Exception as exc:
             error = str(exc)
             logger.log(f"[{index + 1}/{total}] 获取rt异常 #{account_id}: {error}", level="error")
-            return {"ok": False, "account_id": account_id, "error": error}
+            return {
+                "ok": False,
+                "final_ok": False,
+                "account_id": account_id,
+                "error": error,
+                "sms_provider": sms_provider,
+                "sms_balance_error": _is_get_rt_balance_error(error),
+                "sms_provider_switch_error": _is_get_rt_sms_provider_switch_error(error),
+                "hard_error": _is_get_rt_hard_retry_error(error),
+            }
         finally:
             logger.clear_subtask()
 
-    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-
-    try:
+    def run_single_pass(pending_indices: list[int], *, progress_on_finished: bool) -> tuple[list[dict[str, Any]], bool]:
+        completed_in_pass = 0
+        pass_results: list[dict[str, Any]] = []
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             future_map = {}
             next_index = 0
-            while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
-                future = pool.submit(run_one, next_index, ids[next_index])
-                future_map[future] = next_index
+            while next_index < len(pending_indices) and len(future_map) < concurrency and not logger.is_cancel_requested():
+                account_index = pending_indices[next_index]
+                future = pool.submit(run_one, account_index, ids[account_index])
+                future_map[future] = account_index
                 next_index += 1
 
             while future_map:
@@ -2393,38 +2798,133 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     except Exception as exc:
                         item = {"ok": False, "account_id": ids[index], "error": str(exc)}
                     results[index] = item
-                    if item.get("ok"):
+                    if item.get("ok") and (task_mode != "target" or item.get("final_ok")):
                         logger.record_success()
                     else:
                         logger.record_error(str(item.get("error") or "unknown error"))
-                    completed += 1
-                    logger.set_progress(completed, total)
+                    pass_results.append(item)
+                    if task_mode == "target":
+                        if item.get("final_ok"):
+                            target_success_ids.add(int(item.get("account_id") or 0))
+                        logger.set_progress(len(target_success_ids), total)
+                    elif progress_on_finished:
+                        completed_in_pass += 1
+                        done_count = sum(1 for result_item in results if result_item is not None)
+                        logger.set_progress(done_count, total)
 
-                while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
-                    future = pool.submit(run_one, next_index, ids[next_index])
-                    future_map[future] = next_index
+                while next_index < len(pending_indices) and len(future_map) < concurrency and not logger.is_cancel_requested():
+                    account_index = pending_indices[next_index]
+                    future = pool.submit(run_one, account_index, ids[account_index])
+                    future_map[future] = account_index
                     next_index += 1
+        return pass_results, logger.is_cancel_requested()
+
+    def switch_to_next_sms_provider(current_provider: str) -> bool:
+        nonlocal sms_provider, sms_runtime, phone_reuse_pool, phone_pool_error, active_sms_index
+        if not sms_candidates:
+            return False
+        exhausted_sms_providers.add(current_provider)
+        while active_sms_index < len(sms_candidates) and str(sms_candidates[active_sms_index].get("provider") or "") in exhausted_sms_providers:
+            active_sms_index += 1
+        if active_sms_index >= len(sms_candidates):
+            return False
+        candidate = sms_candidates[active_sms_index]
+        next_runtime = dict(candidate.get("sms_runtime") or {})
+        next_provider = str(next_runtime.get("sms_provider") or candidate.get("provider") or "").strip()
+        if not next_provider:
+            return False
+        close_phone_pool(phone_reuse_pool)
+        phone_reuse_pool = None
+        sms_runtime = next_runtime
+        sms_provider = next_provider
+        phone_pool_error = ""
+        logger.log(
+            f"获取rt: 接码平台当前不可用，切换到下一个已启用平台 provider={sms_provider} "
+            f"({active_sms_index + 1}/{len(sms_candidates)})"
+        )
+        if sms_provider in {"smspool", "smsapi"}:
+            phone_reuse_pool, phone_pool_error = create_phone_reuse_pool(sms_runtime)
+        elif sms_provider:
+            logger.log(f"获取rt: 使用通用手机号 provider={sms_provider}，每个账号单独创建接码 callback")
+        return True
+
+    try:
+        if task_mode != "target":
+            run_single_pass(list(range(total)), progress_on_finished=True)
+        else:
+            attempt_round = 1
+            pending_indices = list(range(total))
+            while pending_indices and not logger.is_cancel_requested():
+                logger.log(
+                    f"获取rt: 目标模式第 {attempt_round} 轮，待完成 {len(pending_indices)}/{total}，"
+                    f"当前接码 provider={sms_provider or '(无)'}"
+                )
+                pass_results, _cancelled = run_single_pass(pending_indices, progress_on_finished=False)
+                pending_indices = [
+                    index
+                    for index, account_id in enumerate(ids)
+                    if account_id not in target_success_ids
+                ]
+                if not pending_indices:
+                    break
+                balance_errors = [
+                    item for item in pass_results
+                    if item.get("sms_provider_switch_error") or _is_get_rt_sms_provider_switch_error(item.get("error"))
+                ]
+                if balance_errors:
+                    current_provider = str(balance_errors[-1].get("sms_provider") or sms_provider or "").strip()
+                    if not switch_to_next_sms_provider(current_provider):
+                        logger.log("获取rt: 所有已启用接码平台均不可用，目标模式停止", level="error")
+                        break
+                    attempt_round += 1
+                    continue
+                hard_errors = [
+                    item for item in pass_results
+                    if item.get("hard_error") or _is_get_rt_hard_retry_error(item.get("error"))
+                ]
+                if hard_errors:
+                    logger.log(
+                        f"获取rt: 目标模式遇到硬性失败，停止重试: {hard_errors[-1].get('error')}",
+                        level="error",
+                    )
+                    break
+                logger.log(f"获取rt: 目标模式还有 {len(pending_indices)} 个账号未达成上传成功，10s 后重试")
+                for _ in range(10):
+                    if logger.is_cancel_requested():
+                        break
+                    time.sleep(1)
+                attempt_round += 1
     finally:
-        if phone_reuse_pool:
-            try:
-                phone_reuse_pool.cleanup()
-            except Exception as exc:
-                logger.log(f"获取rt: 手机号复用池清理异常: {exc}", level="error")
+        close_phone_pool(phone_reuse_pool)
 
     final_results = [item for item in results if item is not None]
-    success_count = sum(1 for item in final_results if item.get("ok"))
+    success_count = sum(
+        1
+        for item in final_results
+        if item.get("ok") and (task_mode != "target" or item.get("final_ok"))
+    )
     failure_count = len(final_results) - success_count
     result_data = {
         "total": total,
         "success_count": success_count,
         "failure_count": failure_count,
         "results": final_results,
+        "task_mode": task_mode,
     }
     logger.set_result_data(result_data)
-    if logger.is_cancel_requested() and len(final_results) < total:
+    if logger.is_cancel_requested():
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
         return
-    final_status = TASK_STATUS_SUCCEEDED if failure_count == 0 else TASK_STATUS_FAILED
+    if task_mode == "target":
+        final_status = TASK_STATUS_SUCCEEDED if len(target_success_ids) == total else TASK_STATUS_FAILED
+    else:
+        final_status = TASK_STATUS_SUCCEEDED if failure_count == 0 else TASK_STATUS_FAILED
+    if final_status == TASK_STATUS_SUCCEEDED:
+        logger.set_progress(total, total)
+    elif task_mode == "target":
+        logger.set_progress(len(target_success_ids), total)
+    else:
+        logger.set_progress(len(final_results), total)
     logger.finish(final_status)
 
 

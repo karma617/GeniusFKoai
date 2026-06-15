@@ -76,6 +76,15 @@ function isRegisteredOnlyAccount(acc: any) {
   return String(getDisplayStatus(acc) || '').trim().toLowerCase() === 'registered'
 }
 
+function isRtPendingUploadAccount(acc: any) {
+  const status = String(getDisplayStatus(acc) || getLifecycleStatus(acc) || '').trim().toLowerCase()
+  return status === 'rt_pending_upload'
+}
+
+function isGetRtTargetModeAccount(acc: any) {
+  return isRegisteredOnlyAccount(acc) || isRtPendingUploadAccount(acc)
+}
+
 function normalizeGetRtSmsProviderKey(value: any) {
   const key = String(value || '').trim().toLowerCase()
   if (['smspool', 'smspool_api', 'sms_pool', 'sms_pool_api'].includes(key)) return 'smspool'
@@ -1751,6 +1760,7 @@ export default function Accounts() {
   const [getRtRecordHar, setGetRtRecordHar] = useState(false)
   const [getRtPhoneReuseCount, setGetRtPhoneReuseCount] = useState(3)
   const [getRtPhoneChangeLimit, setGetRtPhoneChangeLimit] = useState(10)
+  const [getRtTaskMode, setGetRtTaskMode] = useState<'single' | 'target'>('single')
   const [getRtExecutorType, setGetRtExecutorType] = useState('browser')
   const [configOptions, setConfigOptions] = useState<ConfigOptionsResponse>({
     mailbox_providers: [],
@@ -1841,7 +1851,11 @@ export default function Accounts() {
   const selectedCount = selectedIds.size
   const selectedAccounts = accounts.filter(acc => selectedIds.has(acc.id))
   const getRtEligibleIds = selectedAccounts
-    .filter(isRegisteredOnlyAccount)
+    .filter(acc => getRtTaskMode === 'target' ? isGetRtTargetModeAccount(acc) : isRegisteredOnlyAccount(acc))
+    .map(acc => Number(acc.id))
+    .filter(id => Number.isFinite(id) && id > 0)
+  const getRtAnyModeEligibleIds = selectedAccounts
+    .filter(isGetRtTargetModeAccount)
     .map(acc => Number(acc.id))
     .filter(id => Number.isFinite(id) && id > 0)
   const enabledSmsSettings = (configOptions.sms_settings || []).filter((item: any) => item?.enabled)
@@ -1940,7 +1954,11 @@ export default function Accounts() {
     setError('')
     const ids = getRtEligibleIds
     if (ids.length === 0) {
-      setError('\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5df2\u6388\u6743\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002')
+      setError(
+        getRtTaskMode === 'target'
+          ? '\u76ee\u6807\u6a21\u5f0f\u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u6216\u201c\u5df2\u83b7\u53d6rt\uff0c\u672a\u4e0a\u4f20\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\u3002'
+          : '\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5df2\u6388\u6743\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002',
+      )
       return
     }
     setGetRtBusy(true)
@@ -1950,6 +1968,7 @@ export default function Accounts() {
         body: JSON.stringify({
           platform: 'chatgpt',
           ids,
+          task_mode: getRtTaskMode,
           executor_type: getRtExecutorType,
           browser_mode: getRtExecutorType === 'protocol' ? '' : browserMode,
           concurrency: Math.max(Number(actionConcurrency || 1), 1),
@@ -1982,8 +2001,8 @@ export default function Accounts() {
       setError(t('accounts.selectAtLeastOne'))
       return
     }
-    if (getRtEligibleIds.length === 0) {
-      setError('\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5df2\u6388\u6743\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002')
+    if (getRtAnyModeEligibleIds.length === 0) {
+      setError('\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u6216\u201c\u5df2\u83b7\u53d6rt\uff0c\u672a\u4e0a\u4f20\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5176\u4ed6\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002')
       return
     }
     setGetRtConfirmOpen(true)
@@ -2185,6 +2204,58 @@ export default function Accounts() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
+                <div>
+                  <label className="mb-2 block text-xs text-[var(--text-muted)]">
+                    {'\u4efb\u52a1\u6a21\u5f0f'}
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {[
+                      {
+                        value: 'single',
+                        title: '\u5355\u8f6e\u6a21\u5f0f',
+                        desc: '\u6bcf\u4e2a\u8d26\u53f7\u53ea\u6267\u884c\u4e00\u6b21\uff0c\u4e0d\u7ba1\u6210\u529f\u6216\u5931\u8d25\uff0c\u672c\u8f6e\u5b8c\u6210\u540e\u7ed3\u675f\u4efb\u52a1\u3002',
+                      },
+                      {
+                        value: 'target',
+                        title: '\u76ee\u6807\u6a21\u5f0f',
+                        desc: '\u4ee5\u201c\u5df2\u83b7\u53d6rt\uff0c\u5df2\u4e0a\u4f20\u201d\u4e3a\u7ec8\u6781\u76ee\u6807\uff0c\u5931\u8d25\u540e 10s \u81ea\u52a8\u91cd\u8bd5\uff0c\u4f59\u989d\u4e0d\u8db3\u65f6\u5207\u6362\u4e0b\u4e00\u4e2a\u5df2\u542f\u7528\u63a5\u7801\u5e73\u53f0\u3002',
+                      },
+                    ].map(option => {
+                      const active = getRtTaskMode === option.value
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setGetRtTaskMode(option.value as 'single' | 'target')}
+                          className={cn(
+                            'rounded-xl border px-4 py-3 text-left transition hover:border-[var(--accent)]/70',
+                            active
+                              ? 'border-[var(--accent)] bg-[var(--bg-elevated)] shadow-[0_0_0_1px_var(--accent)]'
+                              : 'border-[var(--border)] bg-[var(--bg-hover)]',
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-semibold text-[var(--text-primary)]">{option.title}</span>
+                            <span
+                              className={cn(
+                                'h-2.5 w-2.5 rounded-full border',
+                                active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--text-muted)]',
+                              )}
+                            />
+                          </div>
+                          <div className="mt-1.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                            {option.desc}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {getRtTaskMode === 'target' ? (
+                    <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+                      {'\u76ee\u6807\u6a21\u5f0f\u4f1a\u6301\u7eed\u6d88\u8017\u53ef\u7528\u63a5\u7801\u8d44\u6e90\uff0c\u76f4\u5230\u5168\u90e8\u8d26\u53f7\u8fbe\u5230\u201c\u5df2\u83b7\u53d6rt\uff0c\u5df2\u4e0a\u4f20\u201d\uff0c\u6216\u6240\u6709\u5df2\u914d\u7f6e\u63a5\u7801\u5e73\u53f0\u5747\u4f59\u989d\u4e0d\u8db3 / \u9047\u5230\u786c\u6027\u5931\u8d25\u3002'}
+                    </div>
+                  ) : null}
+                </div>
                 <div>
                   <label className="mb-1 block text-xs text-[var(--text-muted)]">
                     {'\u6267\u884c\u65b9\u5f0f'}
