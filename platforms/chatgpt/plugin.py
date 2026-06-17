@@ -119,6 +119,85 @@ def _save_get_rt_token_backup(account: Account, result: dict, *, action_label: s
     return str(backup_path)
 
 
+def _is_chatgpt_deleted_or_deactivated_error(message: str) -> bool:
+    text = str(message or "").lower()
+    if not text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "deleted or deactivated",
+            "account has been deleted",
+            "account was deleted",
+            "account is disabled",
+            "account disabled",
+            "account suspended",
+            "suspended",
+            "banned",
+        )
+    )
+
+
+def _is_chatgpt_session_stale_error(message: str) -> bool:
+    text = str(message or "").lower()
+    if not text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "invalid_state",
+            "sign-in session is no longer valid",
+            "session is no longer valid",
+            "session expired",
+            "session token is invalid",
+            "refresh token is invalid",
+            "unauthorized",
+            "invalid or expired token",
+        )
+    )
+
+
+def _refresh_chatgpt_session_after_get_rt(account: Account, *, proxy: str | None = None) -> dict:
+    class _A:
+        pass
+
+    extra = account.extra or {}
+    target = _A()
+    target.email = account.email
+    target.access_token = extra.get("access_token") or account.token
+    target.refresh_token = extra.get("refresh_token", "")
+    target.session_token = extra.get("session_token", "")
+    target.cookies = extra.get("cookies", "")
+    from .constants import OAUTH_CLIENT_ID
+
+    target.client_id = extra.get("client_id") or extra.get("clientId") or OAUTH_CLIENT_ID
+
+    from platforms.chatgpt.token_refresh import TokenRefreshManager
+
+    manager = TokenRefreshManager(proxy_url=proxy)
+    result = manager.refresh_account(target)
+    if not result.success:
+        return {"ok": False, "error": result.error_message, "error_type": "session_refresh_failed"}
+    data = {
+        "access_token": result.access_token,
+        "refresh_token": result.refresh_token,
+        "session_token": target.session_token,
+        "account_state": None,
+    }
+    try:
+        from platforms.chatgpt.switch import fetch_chatgpt_account_state
+
+        data["account_state"] = fetch_chatgpt_account_state(
+            access_token=result.access_token,
+            session_token=target.session_token,
+            cookies=target.cookies,
+            proxy=proxy,
+        )
+    except Exception:
+        pass
+    return {"ok": True, "data": data}
+
+
 def _resolve_action_proxy(
     configured_proxy: str | None,
     *,
@@ -241,7 +320,7 @@ def _generate_chatgpt_registration_password(length: int = 16) -> str:
     旧协议流已经验证过：至少带小写、数字、符号时，成功率明显更稳。
     这里再补一个大写字符，避免浏览器流随机生成出“看起来够长但组合不够强”的密码。
     """
-    specials = ",._!@#"
+    specials = "!"
     minimum_length = 12
     size = max(int(length or minimum_length), minimum_length)
     required = [
@@ -250,7 +329,7 @@ def _generate_chatgpt_registration_password(length: int = 16) -> str:
         secrets.choice("0123456789"),
         secrets.choice(specials),
     ]
-    pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" + specials
+    pool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     required.extend(secrets.choice(pool) for _ in range(size - len(required)))
     secrets.SystemRandom().shuffle(required)
     return "".join(required)
@@ -382,6 +461,7 @@ class ChatGPTPlatform(BasePlatform):
                 "expires_at": result.get("expires_at", ""),
                 # 短链物理复用：浏览器内 PayPal checkout 结果透传给上层任务判定。
                 "_shortlink_checkout": result.get("_shortlink_checkout", None),
+                "record_har_path": result.get("record_har_path", ""),
             },
         )
 
@@ -422,6 +502,8 @@ class ChatGPTPlatform(BasePlatform):
                 bind_email_after_phone_signup=bool(
                     (ctx.extra or {}).get("phone_signup_relogin_after_bind_email", True)
                 ),
+                record_har=_bool_param(ctx.extra, "record_har", False),
+                phone_change_limit=max(_int_param(ctx.extra or {}, "phone_change_limit", 10), 1),
             ),
             browser_register_runner=lambda worker, ctx, artifacts: worker.run(
                 email=ctx.identity.email or "",
@@ -588,12 +670,46 @@ class ChatGPTPlatform(BasePlatform):
         if action_id == "payment_link":
             return self._handle_generate_link(account, params)
         if action_id == "get_rt":
-            return self._handle_get_rt(account, params)
+            result = self._handle_get_rt(account, params)
+            if not bool(result.get("ok")):
+                return self._postprocess_get_rt_failure(account, result)
+            return result
         if action_id == "get_rt_bypass":
-            return self._handle_get_rt_bypass(account, params)
+            result = self._handle_get_rt_bypass(account, params)
+            if not bool(result.get("ok")):
+                return self._postprocess_get_rt_failure(account, result)
+            return result
         if action_id in {"upload_cpa", "upload_sub2api", "upload_tm"}:
             return self._execute_platform_action(action_id, account, params)
         return super().execute_action(action_id, account, params)
+
+    def _postprocess_get_rt_failure(self, account: Account, result: dict) -> dict:
+        error_text = str((result or {}).get("error") or "")
+        if _is_chatgpt_deleted_or_deactivated_error(error_text):
+            next_result = dict(result or {})
+            next_result.setdefault("lifecycle_status", "banned")
+            next_result.setdefault("summary_updates", {})
+            next_result["summary_updates"].setdefault("deactivated_reason", error_text)
+            next_result.setdefault("error_type", "account_banned")
+            return next_result
+        if not _is_chatgpt_session_stale_error(error_text):
+            return result
+        proxy = self.config.proxy if self.config else None
+        refreshed = _refresh_chatgpt_session_after_get_rt(account, proxy=proxy)
+        if not refreshed.get("ok"):
+            return result
+        refreshed_data = dict(refreshed.get("data") or {})
+        next_result = dict(result or {})
+        next_result["error_type"] = "session_stale_refreshed"
+        next_result["data"] = {
+            "access_token": str(refreshed_data.get("access_token") or ""),
+            "refresh_token": str(refreshed_data.get("refresh_token") or ""),
+            "id_token": str(refreshed_data.get("access_token") or ""),
+            "session_token": str(refreshed_data.get("session_token") or ""),
+            "account_state": refreshed_data.get("account_state") or {},
+            "session_refresh_status": "refreshed",
+        }
+        return next_result
 
     def _execute_platform_action(self, action_id: str, account: Account, params: dict) -> dict:
         """Handle ChatGPT-specific actions."""
@@ -993,6 +1109,7 @@ class ChatGPTPlatform(BasePlatform):
 
         acquired_profile_id = ""
         bit_profile_id = ""
+        phone_callback = None
 
         try:
             from platforms.chatgpt.browser_get_rt import (
@@ -1165,6 +1282,35 @@ class ChatGPTPlatform(BasePlatform):
                         error_detail = "OAuth 未返回 token"
                         if isinstance(result, dict):
                             error_detail = str(result.get("error") or result.get("detail") or error_detail)
+                        if _is_chatgpt_deleted_or_deactivated_error(error_detail):
+                            return {
+                                "ok": False,
+                                "error": f"get_rt failed: {error_detail}",
+                                "lifecycle_status": "banned",
+                                "summary_updates": {"deactivated_reason": error_detail},
+                                "error_type": "account_banned",
+                            }
+                        if _is_chatgpt_session_stale_error(error_detail):
+                            refreshed = _refresh_chatgpt_session_after_get_rt(account, proxy=proxy)
+                            if refreshed.get("ok"):
+                                refreshed_data = dict(refreshed.get("data") or {})
+                                return {
+                                    "ok": False,
+                                    "error": f"get_rt failed: {error_detail}",
+                                    "error_type": "session_stale_refreshed",
+                                    "data": {
+                                        "access_token": str(refreshed_data.get("access_token") or ""),
+                                        "refresh_token": str(refreshed_data.get("refresh_token") or ""),
+                                        "id_token": str(refreshed_data.get("access_token") or ""),
+                                        "session_token": str(refreshed_data.get("session_token") or ""),
+                                        "account_id": str(account.user_id or extra.get("account_id") or extra.get("chatgpt_account_id") or ""),
+                                        "email": account.email,
+                                        "record_har_path": record_har_path or "",
+                                        "token_backup_path": "",
+                                        "session_refresh_status": "refreshed",
+                                        "account_state": refreshed_data.get("account_state") or {},
+                                    },
+                                }
                         return {"ok": False, "error": f"获取rt失败: {error_detail}"}
 
                     refresh_token = str(result.get("refresh_token") or "")
@@ -1203,6 +1349,11 @@ class ChatGPTPlatform(BasePlatform):
             log_fn(f"  获取rt异常: {exc}")
             return {"ok": False, "error": f"获取rt异常: {exc}"}
         finally:
+            if phone_callback is not None and hasattr(phone_callback, "cleanup"):
+                try:
+                    phone_callback.cleanup()
+                except Exception as exc:
+                    log_fn(f"  get_rt phone callback cleanup failed: {exc}")
             if acquired_profile_id:
                 try:
                     from application.bitbrowser_profiles import release_acquired_profile

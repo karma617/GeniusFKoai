@@ -2122,6 +2122,8 @@ class NexSmsProvider(BaseSmsProvider):
 CODEX_SMS_POOL_SEPARATOR = "----"
 CODEX_SMS_POOL_POLL_INTERVAL = 5
 CODEX_SMS_POOL_REQUEST_TIMEOUT = 20
+CODEX_SMS_POOL_BLOCKED_PREFIX = "CODEX_SMS_POOL_BLOCKED"
+CODEX_SMS_POOL_EXHAUSTED = "CODEX_SMS_POOL_EXHAUSTED"
 _CODEX_SMS_POOL_STATE_LOCK = threading.Lock()
 _CODEX_SMS_CODE_CONTEXT_PATTERN = re.compile(
     r"(?:verification\s*code|one[-\s]?time\s*(?:passcode|code)|passcode|otp|code|验证码|安全码)"
@@ -2371,6 +2373,7 @@ class CodexSmsPoolProvider(BaseSmsProvider):
         error: str = "",
         increment_use_count: bool = False,
         increment_failure_count: bool = False,
+        blocked: bool | None = None,
     ) -> None:
         with _CODEX_SMS_POOL_STATE_LOCK:
             state = self._load_state()
@@ -2383,6 +2386,7 @@ class CodexSmsPoolProvider(BaseSmsProvider):
                 "last_attempt_at": now,
                 "last_error": "" if success else str(error or "").strip(),
                 "failure_count": 0 if success else max(0, int(previous.get("failure_count") or 0)) + (1 if increment_failure_count else 0),
+                "blocked": bool(previous.get("blocked")) if blocked is None else bool(blocked),
             }
             usage[entry.key] = next_item
             state["usage"] = usage
@@ -2394,8 +2398,15 @@ class CodexSmsPoolProvider(BaseSmsProvider):
         with _CODEX_SMS_POOL_STATE_LOCK:
             state = self._load_state()
             usage = state.get("usage") if isinstance(state.get("usage"), dict) else {}
+            available_entries = [
+                entry
+                for entry in entries
+                if not bool((usage.get(entry.key) or {}).get("blocked"))
+            ]
+            if not available_entries:
+                raise RuntimeError(f"{CODEX_SMS_POOL_EXHAUSTED}: all local phone entries are blocked")
             ranked = sorted(
-                entries,
+                available_entries,
                 key=lambda entry: (
                     max(0, int((usage.get(entry.key) or {}).get("failure_count") or 0)),
                     max(0, int((usage.get(entry.key) or {}).get("use_count") or 0)),
@@ -2412,6 +2423,7 @@ class CodexSmsPoolProvider(BaseSmsProvider):
                 "last_attempt_at": now,
                 "last_error": "",
                 "failure_count": max(0, int(previous.get("failure_count") or 0)),
+                "blocked": False,
             }
             state["usage"] = usage
             state["current_activation"] = {
@@ -2497,12 +2509,48 @@ class CodexSmsPoolProvider(BaseSmsProvider):
         last_code = self._last_codes.get(entry.key)
         if last_code:
             self._attempted_codes.setdefault(entry.key, set()).add(last_code)
-        self._update_usage(entry, success=False, error=reason or "验证码被拒绝")
+        should_penalize = self._is_blocking_phone_failure(reason)
+        self._update_usage(
+            entry,
+            success=False,
+            error=reason or "验证码被拒绝",
+            increment_failure_count=should_penalize,
+            blocked=should_penalize,
+        )
+
+    @staticmethod
+    def _is_blocking_phone_failure(reason: str = "") -> bool:
+        reason_text = str(reason or "").lower()
+        return any(
+            marker in reason_text
+            for marker in (
+                "http 429",
+                "rate_limit",
+                "rate limit",
+                "rate-limit",
+                "too many phone verification",
+                "too many",
+                "fraud",
+                "suspicious behavior",
+                "maximum",
+                "exceeded",
+            )
+        )
 
     def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
         entry = self._resolve_entry(activation_id)
         if entry:
-            self._update_usage(entry, success=False, error=reason or "手机号被拒绝", increment_failure_count=True)
+            should_block = self._is_blocking_phone_failure(reason)
+            error = reason or "手机号被拒绝"
+            if should_block and not str(error).startswith(CODEX_SMS_POOL_BLOCKED_PREFIX):
+                error = f"{CODEX_SMS_POOL_BLOCKED_PREFIX}: {error}"
+            self._update_usage(
+                entry,
+                success=False,
+                error=error,
+                increment_failure_count=True,
+                blocked=should_block,
+            )
 
 
 def is_herosms_phone_cache_alive(config: dict | None = None) -> tuple[bool, dict]:
@@ -2674,6 +2722,7 @@ class PhoneCallbackController:
         # get_rt add_phone 页等待短信只给 60 秒，普通注册仍可沿用默认值。
         self.code_timeout = max(1, _safe_int(self.config.get("sms_code_timeout") or self.config.get("phone_code_timeout"), 180))
         self._send_failure_count = 0
+        self._account_create_failure_count = 0
         self._auto_country_candidates: list[dict[str, Any]] = []
         self._last_country_index = -1
         self._phone_failures_per_country = max(
@@ -2986,9 +3035,11 @@ class PhoneCallbackController:
             try:
                 self.activation = provider.get_number(service=self.service, country=effective_country)
             except Exception as first_exc:
-                # 如果是自动选择的国家失败了，回退到默认国家重试
+                # Only fall back to the configured country on the first country
+                # selection failure. After OpenAI has rejected phones, falling
+                # back to an already-failed country just burns balance.
                 fallback_country = self.country or self.config.get("sms_country") or self.config.get("herosms_country") or ""
-                if auto_select and effective_country != fallback_country and fallback_country:
+                if auto_select and effective_country != fallback_country and fallback_country and self._send_failure_count <= 0:
                     self.log(f"自动选择的国家({effective_country})获取号码失败，回退到默认国家({fallback_country})...")
                     try:
                         self.activation = provider.get_number(service=self.service, country=fallback_country)
@@ -2996,12 +3047,12 @@ class PhoneCallbackController:
                         if self._verify_lock_acquired:
                             _HERO_SMS_VERIFY_LOCK.release()
                             self._verify_lock_acquired = False
-                        raise
+                        raise first_exc
                 else:
                     if self._verify_lock_acquired:
                         _HERO_SMS_VERIFY_LOCK.release()
                         self._verify_lock_acquired = False
-                    raise
+                    raise first_exc
             self.phase = "need_code"
             reused = bool((self.activation.metadata or {}).get("reused"))
             reuse_label = "复用号码" if reused else "新号码"
@@ -3047,6 +3098,27 @@ class PhoneCallbackController:
 
     def mark_send_failed(self, reason: str = "") -> None:
         self._send_failure_count += 1
+        reason_text = str(reason or "").lower()
+        strong_rejection = any(
+            marker in reason_text
+            for marker in (
+                "voip_phone_disallowed",
+                "virtual phone",
+                "voip",
+                "invalid phone number",
+                "invalid_phone",
+                "account_creation_failed",
+                "failed to create account",
+                "error creating your account",
+                "unable to create account",
+            )
+        )
+        if strong_rejection:
+            self._account_create_failure_count += 1
+            if self._account_create_failure_count >= 2 or "voip" in reason_text or "invalid phone" in reason_text:
+                self._send_failure_count = max(self._send_failure_count, self._phone_failures_per_country)
+        else:
+            self._account_create_failure_count = 0
         if self.activation and self.provider:
             hook = getattr(self.provider, "mark_send_failed", None)
             if callable(hook):
@@ -3069,6 +3141,7 @@ class PhoneCallbackController:
             self.phase = "done"
             self.awaiting_external_success = False
             self._send_failure_count = 0
+            self._account_create_failure_count = 0
             self.log(f"短信验证成功，已标记号码完成使用: activation_id={self.activation.activation_id}")
         if self._verify_lock_acquired:
             _HERO_SMS_VERIFY_LOCK.release()

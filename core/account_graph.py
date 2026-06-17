@@ -152,7 +152,7 @@ def _derive_plan_name(overview: dict[str, Any]) -> str:
 
 
 def _derive_validity_status(lifecycle_status: str, overview: dict[str, Any]) -> str:
-    if lifecycle_status == "invalid":
+    if lifecycle_status in {"invalid", "banned"}:
         return "invalid"
     if "valid" in overview:
         return "valid" if bool(overview.get("valid")) else "invalid"
@@ -192,6 +192,8 @@ def _derive_display_status(
 ) -> str:
     if lifecycle_status in RT_LIFECYCLE_STATUSES:
         return lifecycle_status
+    if lifecycle_status == "banned":
+        return "banned"
     if validity_status == "invalid":
         return "invalid"
     if plan_state == "expired" or lifecycle_status == "expired":

@@ -120,6 +120,25 @@ def _smspool_text(value) -> str:
         return str(value or "").strip()
 
 
+def _smspool_release_response_preview(value, *, limit: int = 500) -> str:
+    text = _smspool_text(value)
+    text = re.sub(r"(?i)(key|api_key)=([^&\s,}]+)", r"\1=***", text)
+    text = re.sub(r'(?i)("?(?:key|api_key)"?\s*:\s*)"[^"]+"', r"\1\"***\"", text)
+    text = text.replace("\r", " ").replace("\n", " ").strip()
+    if len(text) > limit:
+        return text[:limit] + "...(truncated)"
+    return text
+
+
+def _emit_release_log(log_fn, message: str, *, level: str = "info") -> None:
+    if not callable(log_fn):
+        return
+    try:
+        log_fn(message, level=level)
+    except TypeError:
+        log_fn(message)
+
+
 def is_smspool_insufficient_balance_response(value) -> bool:
     text = _smspool_text(value)
     lower = text.lower()
@@ -175,15 +194,22 @@ def wait_for_smspool_release_queue_drain(
         pending = get_smspool_release_queue_size(api_key=api_key, base_url=base_url)
         if pending <= 0:
             return True
-        if callable(log_fn):
-            log_fn(f"smspool release queue pending={pending}; trying to release before purchase retry")
-        _process_release_queue_once()
+        _emit_release_log(log_fn, f"SMSPool release queue pending={pending}; attempting release")
+        attempted, released = _process_release_queue_once(log_fn=log_fn, force=True)
         pending = get_smspool_release_queue_size(api_key=api_key, base_url=base_url)
+        _emit_release_log(
+            log_fn,
+            f"SMSPool release queue round finished: attempted={attempted}, "
+            f"released={released}, pending={pending}",
+        )
         if pending <= 0:
             return True
         if max_wait > 0 and time.monotonic() - started >= max_wait:
-            if callable(log_fn):
-                log_fn(f"smspool release queue still pending={pending}; max wait reached")
+            _emit_release_log(
+                log_fn,
+                f"SMSPool release queue still pending={pending}; max wait reached",
+                level="warning",
+            )
             return False
         time.sleep(poll)
 
@@ -229,7 +255,7 @@ def _enqueue_smspool_release(
                 item["phone"] = str(phone or item.get("phone") or "")
                 item["reason"] = str(reason or item.get("reason") or "")
                 item["last_response"] = last_response or item.get("last_response") or {}
-                item["next_attempt_at"] = min(int(item.get("next_attempt_at") or now), now + SMSPOOL_RELEASE_RETRY_SECONDS)
+                item["next_attempt_at"] = min(int(item.get("next_attempt_at") or now), now)
                 _save_release_queue(items)
                 _ensure_release_worker()
                 return
@@ -242,7 +268,7 @@ def _enqueue_smspool_release(
             "created_at": now,
             "updated_at": now,
             "attempts": 0,
-            "next_attempt_at": now + SMSPOOL_RELEASE_RETRY_SECONDS,
+            "next_attempt_at": now,
             "last_response": last_response or {},
         })
         _save_release_queue(items)
@@ -268,7 +294,7 @@ def enqueue_smspool_release_retry(
     )
 
 
-def _process_release_queue_once() -> tuple[int, int]:
+def _process_release_queue_once(*, log_fn=None, force: bool = False) -> tuple[int, int]:
     now = _utc_ts()
     released = 0
     attempted = 0
@@ -280,18 +306,35 @@ def _process_release_queue_once() -> tuple[int, int]:
                 next_attempt_at = int(item.get("next_attempt_at") or 0)
             except Exception:
                 next_attempt_at = 0
-            if next_attempt_at > now:
+            if next_attempt_at > now and not force:
                 remaining.append(item)
                 continue
             attempted += 1
+            pending_before = max(0, len(items) - attempted + 1)
+            _emit_release_log(
+                log_fn,
+                "SMSPool release attempt: "
+                f"order={item.get('order_id') or ''} "
+                f"phone={item.get('phone') or ''} "
+                f"attempt={int(item.get('attempts') or 0) + 1} "
+                f"pending_before={pending_before}"
+            )
             ok, data = _cancel_smspool_order_once(
                 api_key=str(item.get("api_key") or ""),
                 base_url=str(item.get("base_url") or SMSPOOL_API),
                 order_id=str(item.get("order_id") or ""),
             )
+            response_preview = _smspool_release_response_preview(data)
             if ok:
                 released += 1
                 log.info("smspool release queue cancelled order=%s", item.get("order_id"))
+                _emit_release_log(
+                    log_fn,
+                    "SMSPool release success: "
+                    f"order={item.get('order_id') or ''} "
+                    f"phone={item.get('phone') or ''} "
+                    f"response={response_preview}"
+                )
                 continue
             attempts = int(item.get("attempts") or 0) + 1
             delay = min(SMSPOOL_RELEASE_RETRY_SECONDS * max(1, attempts), 15 * 60)
@@ -300,6 +343,16 @@ def _process_release_queue_once() -> tuple[int, int]:
             item["next_attempt_at"] = now + delay
             item["last_response"] = data
             remaining.append(item)
+            _emit_release_log(
+                log_fn,
+                "SMSPool release failed: "
+                f"order={item.get('order_id') or ''} "
+                f"phone={item.get('phone') or ''} "
+                f"attempt={attempts} "
+                f"next_retry_in={delay}s "
+                f"response={response_preview}",
+                level="warning",
+            )
         if attempted:
             _save_release_queue(remaining)
     return attempted, released

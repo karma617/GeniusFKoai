@@ -46,6 +46,40 @@ class _FakeLogger:
         self.finished = (status, error)
 
 
+def test_task_logger_finish_waits_for_smspool_release_queue(monkeypatch):
+    from platforms.gopay import sms_channel
+
+    task = tasks_module.create_task(
+        task_type=tasks_module.TASK_TYPE_GET_RT,
+        platform="chatgpt",
+        payload={"ids": [1]},
+        progress_total=1,
+    )
+    drain_calls = []
+
+    monkeypatch.setattr(sms_channel, "get_smspool_release_queue_size", lambda **_kwargs: 1)
+
+    def fake_wait_for_smspool_release_queue_drain(**kwargs):
+        drain_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        sms_channel,
+        "wait_for_smspool_release_queue_drain",
+        fake_wait_for_smspool_release_queue_drain,
+    )
+
+    logger = tasks_module.TaskLogger(task["id"])
+    logger.finish(tasks_module.TASK_STATUS_FAILED, error="boom")
+
+    assert drain_calls
+    assert drain_calls[0]["max_wait_seconds"] == 0
+    with Session(engine) as session:
+        model = session.get(tasks_module.TaskModel, task["id"])
+        assert model.status == tasks_module.TASK_STATUS_FAILED
+        assert model.error == "boom"
+
+
 def test_platform_action_task_passes_task_logger_to_runtime(monkeypatch):
     seen = {}
 
@@ -128,6 +162,68 @@ def test_chatgpt_register_task_succeeds_after_successful_registration(monkeypatc
         "cannot access local variable 'extra'" in str(event)
         for event in logger.events
     )
+
+
+def test_chatgpt_sms_oauth_register_falls_back_to_next_sms_provider(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        def register(self, email=None, password=None):
+            attempts.append(self.provider)
+            if self.provider == "smsbower_api":
+                raise RuntimeError("voip_phone_disallowed: Invalid phone number")
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token"},
+            )
+
+    def fake_build_platform_instance(platform_name, payload, logger, resolved_proxy=None, shared_mailbox=None):
+        provider = str((payload.get("extra") or {}).get("sms_provider") or "")
+        return FakePlatform(provider)
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_list_register_sms_provider_candidates",
+        lambda payload: [{"provider": "smsbower_api"}, {"provider": "herosms_api"}],
+    )
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", fake_build_platform_instance)
+    monkeypatch.setattr(tasks_module, "save_account", lambda account: account)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr("core.base_mailbox.create_mailbox", lambda **kwargs: object())
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "sms_oauth",
+                "mail_provider": "outlook_email_api",
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == ["smsbower_api", "herosms_api"]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
 
 
 def test_phone_bind_task_passes_logger_and_browser_mode(monkeypatch):
@@ -1299,6 +1395,178 @@ def test_get_rt_target_mode_switches_sms_provider_after_smsbower_network_error(m
     assert logger.result_data["success_count"] == 1
 
 
+def test_get_rt_target_mode_switches_sms_provider_after_phone_verification_rate_limit(monkeypatch):
+    from infrastructure import provider_settings_repository
+
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="target-phone-limit@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    runtime_sms_providers = []
+
+    class FakeSetting:
+        def __init__(self, provider_key, *, enabled=True, is_default=False, setting_id=1):
+            self.provider_key = provider_key
+            self.enabled = enabled
+            self.is_default = is_default
+            self.id = setting_id
+
+    class FakeSettingsRepo:
+        def get_default_provider_key(self, provider_type):
+            assert provider_type == "sms"
+            return "codex_sms_pool"
+
+        def get_by_key(self, provider_type, provider_key):
+            assert provider_type == "sms"
+            if provider_key == "codex_sms_pool":
+                return FakeSetting("codex_sms_pool", is_default=True, setting_id=1)
+            if provider_key == "smsbower_api":
+                return FakeSetting("smsbower_api", setting_id=2)
+            return None
+
+        def resolve_runtime_settings(self, provider_type, provider_key, overrides=None):
+            assert provider_type == "sms"
+            if provider_key == "codex_sms_pool":
+                return {"codex_sms_pool_text": "+15550000001|https://sms.example.test/one"}
+            if provider_key == "smsbower_api":
+                return {"smsbower_api_key": "SMSBOWER_KEY", "smsbower_default_country": "6", "smsbower_default_service": "chatgpt"}
+            return {}
+
+        def list_enabled(self, provider_type):
+            assert provider_type == "sms"
+            return [
+                FakeSetting("codex_sms_pool", is_default=True, setting_id=1),
+                FakeSetting("smsbower_api", setting_id=2),
+            ]
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            provider = command.params["sms_provider"]
+            runtime_sms_providers.append(provider)
+            if provider == "codex_sms_pool":
+                return ActionExecutionResult(
+                    ok=False,
+                    error=(
+                        "get_rt protocol add_phone failed: You've made too many phone verification requests. "
+                        "rate_limit_exceeded"
+                    ),
+                )
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(provider_settings_repository, "ProviderSettingsRepository", FakeSettingsRepo)
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [account_id],
+            "task_mode": "target",
+            "sms_provider": "default",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert runtime_sms_providers == ["codex_sms_pool", "smsbower_api"]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert logger.result_data["success_count"] == 1
+
+
+def test_get_rt_target_mode_retries_after_phone_otp_429(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="target-429@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            if len(calls) == 1:
+                return ActionExecutionResult(
+                    ok=False,
+                    error="获取rt协议模式手机验证码校验失败: HTTP 429 rate_limit_exceeded",
+                )
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [account_id],
+            "task_mode": "target",
+            "sms_provider": "none",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert calls == [account_id, account_id]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert logger.result_data["success_count"] == 1
+    assert any("可恢复失败" in str(event[1]) for event in logger.events)
+
+
+def test_get_rt_target_mode_retries_after_token_exchange_timeout(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="target-timeout@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            if len(calls) == 1:
+                return ActionExecutionResult(
+                    ok=False,
+                    error=(
+                        "token exchange failed: network error: Failed to perform, curl: (28) "
+                        "Operation timed out after 30012 milliseconds with 0 bytes received."
+                    ),
+                )
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [account_id],
+            "task_mode": "target",
+            "sms_provider": "none",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert calls == [account_id, account_id]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert logger.result_data["success_count"] == 1
+
+
 def test_chatgpt_auto_plus_followup_returns_error_when_payment_link_fails(monkeypatch):
     class FakeLogger(_FakeLogger):
         def add_cashier_url(self, url):
@@ -1633,6 +1901,120 @@ def test_platform_runtime_marks_sub2api_manual_upload_success(monkeypatch):
     assert patched["lifecycle_status"] == "rt_uploaded"
     assert patched["summary_updates"]["display_status"] == "rt_uploaded"
     assert patched["summary_updates"]["rt_upload_status"] == "uploaded"
+
+
+def test_platform_runtime_persists_failed_get_rt_banned_status(monkeypatch):
+    patched = {}
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.added = []
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model_cls, account_id):
+            return type("Model", (), {"id": account_id, "platform": "chatgpt", "updated_at": None})()
+
+        def add(self, model):
+            self.added.append(model)
+
+        def commit(self):
+            self.committed = True
+
+    class FakePlatform:
+        def __init__(self, config=None):
+            pass
+
+        def execute_action(self, action_id, account, params):
+            return {
+                "ok": False,
+                "error": "account has been deleted or deactivated",
+                "error_type": "account_banned",
+                "lifecycle_status": "banned",
+                "summary_updates": {"deactivated_reason": "deleted"},
+                "data": {},
+            }
+
+    def fake_patch_account_graph(session, model, **kwargs):
+        patched.update(kwargs)
+
+    monkeypatch.setattr(runtime_module, "Session", FakeSession)
+    monkeypatch.setattr(runtime_module, "load_all", lambda: None)
+    monkeypatch.setattr(runtime_module, "get", lambda platform: FakePlatform)
+    monkeypatch.setattr(runtime_module, "build_platform_account", lambda session, model: object())
+    monkeypatch.setattr(runtime_module, "patch_account_graph", fake_patch_account_graph)
+
+    result = runtime_module.PlatformRuntime().execute_action(
+        ActionExecutionCommand(platform="chatgpt", account_id=123, action_id="get_rt", params={})
+    )
+
+    assert result.ok is False
+    assert patched["lifecycle_status"] == "banned"
+    assert patched["summary_updates"]["display_status"] == "banned"
+    assert patched["summary_updates"]["validity_status"] == "invalid"
+
+
+def test_platform_runtime_persists_session_refresh_after_failed_get_rt(monkeypatch):
+    patched = {}
+
+    class FakeSession:
+        def __init__(self, engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model_cls, account_id):
+            return type("Model", (), {"id": account_id, "platform": "chatgpt", "updated_at": None})()
+
+        def add(self, model):
+            pass
+
+        def commit(self):
+            pass
+
+    class FakePlatform:
+        def __init__(self, config=None):
+            pass
+
+        def execute_action(self, action_id, account, params):
+            return {
+                "ok": False,
+                "error": "invalid_state: Your sign-in session is no longer valid.",
+                "error_type": "session_stale_refreshed",
+                "data": {
+                    "access_token": "new-access",
+                    "refresh_token": "new-refresh",
+                    "session_token": "new-session",
+                },
+            }
+
+    def fake_patch_account_graph(session, model, **kwargs):
+        patched.update(kwargs)
+
+    monkeypatch.setattr(runtime_module, "Session", FakeSession)
+    monkeypatch.setattr(runtime_module, "load_all", lambda: None)
+    monkeypatch.setattr(runtime_module, "get", lambda platform: FakePlatform)
+    monkeypatch.setattr(runtime_module, "build_platform_account", lambda session, model: object())
+    monkeypatch.setattr(runtime_module, "patch_account_graph", fake_patch_account_graph)
+
+    result = runtime_module.PlatformRuntime().execute_action(
+        ActionExecutionCommand(platform="chatgpt", account_id=123, action_id="get_rt", params={})
+    )
+
+    assert result.ok is False
+    assert patched["credential_updates"]["access_token"] == "new-access"
+    assert patched["credential_updates"]["refresh_token"] == "new-refresh"
+    assert patched["credential_updates"]["session_token"] == "new-session"
+    assert patched["summary_updates"]["session_refresh_status"] == "refreshed"
 
 
 def test_load_account_graphs_normalizes_legacy_authorized_rt_status():

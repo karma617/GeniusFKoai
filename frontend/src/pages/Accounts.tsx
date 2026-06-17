@@ -17,7 +17,7 @@ import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2,
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', trial: 'success', subscribed: 'success',
-  expired: 'warning', invalid: 'danger',
+  expired: 'warning', invalid: 'danger', banned: 'danger',
   free: 'secondary', eligible: 'secondary', valid: 'success', unknown: 'secondary',
 }
 
@@ -41,6 +41,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'eligible',
   'expired',
   'invalid',
+  'banned',
 ]
 
 function getAccountOverview(acc: any) {
@@ -256,6 +257,8 @@ function RegisterModal({
   // chatgpt 平台特定：注册成功后是否自动获取支付链接（保存到账号 cashier_url 字段，
   // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
+  const [recordHar, setRecordHar] = useState(false)
+  const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   // GoPay 专属：PIN（6 位数字）、Hero-SMS API key、注册代理。仅当
   // platform === 'gopay' 时显示，未填时后端走环境变量回退。
   const [gopayPin, setGopayPin] = useState('147258')
@@ -383,6 +386,12 @@ function RegisterModal({
     }
   }, [selection.identityProvider, selection.oauthProvider, selection.executorType, supportedExecutors, reusableBrowser])
 
+  useEffect(() => {
+    if (selection.executorType === 'protocol' && recordHar) {
+      setRecordHar(false)
+    }
+  }, [selection.executorType, recordHar])
+
   const defaultMailboxProvider = (configOptions.mailbox_settings || []).find(item => item.is_default) || configOptions.mailbox_settings?.[0] || null
 
   const start = async () => {
@@ -395,6 +404,10 @@ function RegisterModal({
         oauth_email_hint: cfg.oauth_email_hint,
         chrome_user_data_dir: cfg.chrome_user_data_dir,
         chrome_cdp_url: cfg.chrome_cdp_url,
+      }
+      if (platform === 'chatgpt' && selection.executorType !== 'protocol') {
+        extra.record_har = recordHar ? 'true' : ''
+        extra.phone_change_limit = Math.max(Number(registerPhoneChangeLimit || 10), 1)
       }
       if (selection.identityProvider === 'mailbox') {
         if (!defaultMailboxProvider?.provider_key) {
@@ -530,6 +543,55 @@ function RegisterModal({
                       )
                     })}
                   </div>
+                  {platform === 'chatgpt' && (
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <label
+                        className={`flex items-start gap-2 rounded-xl border px-4 py-3 ${
+                          selection.executorType === 'protocol'
+                            ? 'cursor-not-allowed border-[var(--border)] bg-[var(--bg-pane)]/45 opacity-60'
+                            : 'cursor-pointer border-[var(--border)] bg-[var(--bg-hover)] hover:border-[var(--accent)]/60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={recordHar}
+                          onChange={event => setRecordHar(event.target.checked)}
+                          disabled={selection.executorType === 'protocol'}
+                          className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                        />
+                        <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                          <div className="text-sm font-medium text-[var(--text-primary)]">
+                            {t('accounts.captureCamoufoxHar')}
+                          </div>
+                          <div className="mt-0.5">
+                            {t('accounts.captureCamoufoxHarDesc')}
+                          </div>
+                          {selection.executorType === 'protocol' ? (
+                            <div className="mt-2 text-[11px] text-amber-500">
+                              {'\u9700\u8981\u5148\u5207\u6362\u5230 Camoufox / BitBrowser \u6d4f\u89c8\u5668\u6a21\u5f0f\uff0c\u534f\u8bae\u6a21\u5f0f\u4e0d\u652f\u6301 HAR \u5f55\u5236\u3002'}
+                            </div>
+                          ) : null}
+                        </div>
+                      </label>
+                      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3">
+                        <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
+                          {t('accounts.phoneChangeLimit')}
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={registerPhoneChangeLimit}
+                          onChange={event =>
+                            setRegisterPhoneChangeLimit(Math.max(Number(event.target.value || 10), 1))
+                          }
+                          className="control-surface control-surface-compact w-full text-center"
+                        />
+                        <div className="mt-1 help-text-xs">
+                          {t('accounts.phoneChangeLimitHint')}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -723,7 +785,7 @@ function ResultStat({ label, value }: { label: string; value: any }) {
 
 function metricToneClass(tone?: string) {
   if (tone === 'good') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-  if (tone === 'warning') return 'border-amber-500/25 bg-amber-500/10 text-amber-200'
+  if (tone === 'warning') return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200'
   if (tone === 'danger') return 'border-red-500/25 bg-red-500/10 text-red-200'
   return 'border-[var(--border)] bg-[var(--bg-hover)] text-[var(--text-primary)]'
 }
@@ -910,7 +972,7 @@ function ActionResultHighlights({ payload }: { payload: any }) {
       )}
 
       {payload.quota_note && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">
+        <div className="notice-panel notice-panel-warning px-4 py-3 text-xs">
           {payload.quota_note}
         </div>
       )}
@@ -1568,7 +1630,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
             <label className="text-xs text-[var(--text-muted)] block mb-1">生命周期状态</label>
             <select value={form.lifecycle_status} onChange={e => setForm(f => ({ ...f, lifecycle_status: e.target.value }))}
               className="control-surface appearance-none">
-              {['registered','trial','subscribed','expired','invalid'].map(s => <option key={s} value={s}>{s}</option>)}
+              {['registered','trial','subscribed','expired','invalid','banned'].map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
           <div>
@@ -2045,7 +2107,7 @@ export default function Accounts() {
   const visibleTrial = accounts.filter(acc => getPlanState(acc) === 'trial').length
   const visibleFree = accounts.filter(acc => getPlanState(acc) === 'free').length
   const visibleSubscribed = accounts.filter(acc => getPlanState(acc) === 'subscribed').length
-  const visibleInvalid = accounts.filter(acc => getValidityStatus(acc) === 'invalid' || getLifecycleStatus(acc) === 'invalid').length
+  const visibleInvalid = accounts.filter(acc => getValidityStatus(acc) === 'invalid' || getLifecycleStatus(acc) === 'invalid' || getLifecycleStatus(acc) === 'banned').length
   const linkedCashier = accounts.filter(acc => Boolean(getCashierUrl(acc))).length
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const entryStart = total === 0 ? 0 : (page - 1) * pageSize + 1
@@ -2101,7 +2163,7 @@ export default function Accounts() {
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">
                     Codex OAuth
                   </h2>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                  <div className="mt-1 text-xs help-text">
                     {t('accounts.selected', { count: selectedIds.size })}
                   </div>
                 </div>
@@ -2115,7 +2177,7 @@ export default function Accounts() {
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 {getRtExecutorType !== 'protocol' && (
                   <div>
-                    <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                       {t('accounts.browserMode')}
                     </label>
                     <select
@@ -2132,7 +2194,7 @@ export default function Accounts() {
                   </div>
                 )}
                 <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                  <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     {t('accounts.concurrency')}
                   </label>
                   <input
@@ -2192,7 +2254,7 @@ export default function Accounts() {
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">
                     获取rt（refresh_token）
                   </h2>
-                  <div className="mt-1 text-xs text-[var(--text-muted)]">
+                  <div className="mt-1 text-xs help-text">
                     已选 {selectedIds.size} 个账户。使用浏览器 OAuth + 手机验证跳过获取 refresh_token。
                   </div>
                 </div>
@@ -2205,7 +2267,7 @@ export default function Accounts() {
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <div>
-                  <label className="mb-2 block text-xs text-[var(--text-muted)]">
+                  <label className="mb-2 block text-xs font-medium text-[var(--text-secondary)]">
                     {'\u4efb\u52a1\u6a21\u5f0f'}
                   </label>
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -2243,7 +2305,7 @@ export default function Accounts() {
                               )}
                             />
                           </div>
-                          <div className="mt-1.5 text-[11px] leading-relaxed text-[var(--text-muted)]">
+                          <div className="mt-1.5 help-text-xs">
                             {option.desc}
                           </div>
                         </button>
@@ -2251,13 +2313,13 @@ export default function Accounts() {
                     })}
                   </div>
                   {getRtTaskMode === 'target' ? (
-                    <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200">
+                    <div className="notice-panel notice-panel-warning mt-2 px-3 py-2 text-[11px]">
                       {'\u76ee\u6807\u6a21\u5f0f\u4f1a\u6301\u7eed\u6d88\u8017\u53ef\u7528\u63a5\u7801\u8d44\u6e90\uff0c\u76f4\u5230\u5168\u90e8\u8d26\u53f7\u8fbe\u5230\u201c\u5df2\u83b7\u53d6rt\uff0c\u5df2\u4e0a\u4f20\u201d\uff0c\u6216\u6240\u6709\u5df2\u914d\u7f6e\u63a5\u7801\u5e73\u53f0\u5747\u4f59\u989d\u4e0d\u8db3 / \u9047\u5230\u786c\u6027\u5931\u8d25\u3002'}
                     </div>
                   ) : null}
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                  <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     {'\u6267\u884c\u65b9\u5f0f'}
                   </label>
                   <select
@@ -2268,13 +2330,13 @@ export default function Accounts() {
                     <option value="browser">{'\u6d4f\u89c8\u5668\u6a21\u5f0f'}</option>
                     <option value="protocol">{'\u534f\u8bae\u6a21\u5f0f'}</option>
                   </select>
-                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  <div className="mt-1 help-text-xs">
                     {'\u534f\u8bae\u6a21\u5f0f\u6309 HAR \u590d\u523b OAuth \u94fe\u8def\uff1b\u6d4f\u89c8\u5668\u6a21\u5f0f\u4fdd\u7559\u73b0\u6709\u9875\u9762\u81ea\u52a8\u5316\u6d41\u7a0b\u3002'}
                   </div>
                 </div>
                 {getRtExecutorType !== 'protocol' && (
                   <div>
-                    <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                    <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                       {t('accounts.browserMode')}
                     </label>
                     <select
@@ -2291,7 +2353,7 @@ export default function Accounts() {
                   </div>
                 )}
                 <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                  <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     {t('accounts.concurrency')}
                   </label>
                   <input
@@ -2305,7 +2367,7 @@ export default function Accounts() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                  <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     {t('accounts.phoneReuseCount')}
                   </label>
                   <input
@@ -2317,12 +2379,12 @@ export default function Accounts() {
                     }
                     className="control-surface control-surface-compact w-full text-center"
                   />
-                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  <div className="mt-1 help-text-xs">
                     {t('accounts.phoneReuseHint')}
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                  <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     {t('accounts.phoneChangeLimit')}
                   </label>
                   <input
@@ -2334,7 +2396,7 @@ export default function Accounts() {
                     }
                     className="control-surface control-surface-compact w-full text-center"
                   />
-                  <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  <div className="mt-1 help-text-xs">
                     {t('accounts.phoneChangeLimitHint')}
                   </div>
                 </div>
@@ -2354,7 +2416,7 @@ export default function Accounts() {
                         {t('accounts.captureCamoufoxHarDesc')}
                       </div>
                       {getRtRecordHar && !browserMode.startsWith('camoufox_') ? (
-                        <div className="mt-2 text-[11px] text-amber-400">
+                        <div className="notice-panel notice-panel-warning mt-2 px-3 py-1.5 text-[11px]">
                           {t('accounts.captureHarUnsupported')}
                         </div>
                       ) : null}
@@ -2365,7 +2427,7 @@ export default function Accounts() {
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">手机号接码（可选，跳过则遇到 add_phone 会失败）</div>
                   <div>
-                    <label className="mb-1 block text-xs text-[var(--text-muted)]">{t('accounts.smsChannel')}</label>
+                    <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">{t('accounts.smsChannel')}</label>
                     <select
                       value={getRtSmsProvider}
                       onChange={e => setGetRtSmsProvider(e.target.value)}
@@ -2379,19 +2441,19 @@ export default function Accounts() {
                     </select>
                   </div>
                   {getRtSmsProvider && getRtSmsProvider !== 'none' && !['smspool', 'smsapi'].includes(getRtSmsProvider) && (
-                    <div className="rounded-lg border border-[var(--border-soft)] bg-black/10 px-3 py-2 text-[11px] text-[var(--text-muted)]">
+                    <div className="notice-panel notice-panel-info px-3 py-2 text-[11px]">
                       {t('accounts.smsSavedConfigHint')}
                     </div>
                   )}
                   {getRtSmsProvider === 'smspool' && (
-                    <div className="rounded-lg border border-[var(--border-soft)] bg-black/10 px-3 py-2 text-[11px] text-[var(--text-muted)]">
+                    <div className="notice-panel notice-panel-info px-3 py-2 text-[11px]">
                       {'SMSPool API Key\u3001\u56fd\u5bb6\u3001\u670d\u52a1\u3001\u4ef7\u683c\u4e0a\u9650\u7b49\u53c2\u6570\u5c06\u76f4\u63a5\u4f7f\u7528\u201c\u8bbe\u7f6e -> \u63a5\u7801\u670d\u52a1\u201d\u91cc\u7684 SMSPool \u914d\u7f6e\u3002'}
                     </div>
                   )}
                   {getRtSmsProvider === 'smsapi' && (
                     <>
                       <div>
-                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                        <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                           手机号 + 查询 URL（支持 +1XXXXXXXX----URL 格式）
                         </label>
                         <textarea
@@ -2403,7 +2465,7 @@ export default function Accounts() {
                         />
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                        <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                           查询 URL（与手机号分开填写时用；上面的手机号字段已含 ----URL 则无需填写）
                         </label>
                         <input
@@ -2416,7 +2478,7 @@ export default function Accounts() {
                       </div>
                     </>
                   )}
-                  <div className="text-[11px] text-[var(--text-muted)]">
+                  <div className="help-text-xs">
                     浏览器填表时自动去除 +1 区号，使用本地号码格式。
                   </div>
                 </div>

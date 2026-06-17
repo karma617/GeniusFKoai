@@ -478,6 +478,7 @@ def run_protocol_get_rt(
                 )
                 log_fn(f"  获取rt(协议): phone OTP validate -> {validate_resp.status_code}")
                 if validate_resp.status_code != 200:
+                    _log_response_debug(log_fn, "phone OTP validate", validate_resp)
                     try:
                         if hasattr(phone_callback_obj, "mark_code_failed"):
                             phone_callback_obj.mark_code_failed(f"HTTP {validate_resp.status_code}")

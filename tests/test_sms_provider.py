@@ -59,6 +59,56 @@ def test_sms_error_redaction_masks_query_api_key():
     assert "api_key=***" in redacted
 
 
+def test_codex_sms_pool_penalizes_phone_after_otp_429(tmp_path):
+    pool_text = "\n".join(
+        [
+            "+11111111111|https://sms.example.test/one",
+            "+12222222222|https://sms.example.test/two",
+        ]
+    )
+    provider = sms_module.CodexSmsPoolProvider(pool_text, state_file=tmp_path / "codex-sms-state.json")
+
+    first = provider.get_number(service="chatgpt")
+    provider.mark_code_failed(first.activation_id, "HTTP 429 rate_limit_exceeded")
+    second = provider.get_number(service="chatgpt")
+
+    assert first.phone_number == "+11111111111"
+    assert second.phone_number == "+12222222222"
+
+
+def test_codex_sms_pool_blocks_phone_after_send_rate_limit(tmp_path):
+    pool_text = "\n".join(
+        [
+            "+11111111111|https://sms.example.test/one",
+            "+12222222222|https://sms.example.test/two",
+        ]
+    )
+    provider = sms_module.CodexSmsPoolProvider(pool_text, state_file=tmp_path / "codex-sms-state.json")
+
+    first = provider.get_number(service="chatgpt")
+    provider.mark_send_failed(
+        first.activation_id,
+        "You've made too many phone verification requests. rate_limit_exceeded",
+    )
+    second = provider.get_number(service="chatgpt")
+
+    assert first.phone_number == "+11111111111"
+    assert second.phone_number == "+12222222222"
+
+
+def test_codex_sms_pool_exhausts_after_single_send_rate_limit(tmp_path):
+    provider = sms_module.CodexSmsPoolProvider(
+        "+11111111111|https://sms.example.test/one",
+        state_file=tmp_path / "codex-sms-state.json",
+    )
+
+    first = provider.get_number(service="chatgpt")
+    provider.mark_send_failed(first.activation_id, "fraud rate_limit_exceeded")
+
+    with pytest.raises(RuntimeError, match="CODEX_SMS_POOL_EXHAUSTED"):
+        provider.get_number(service="chatgpt")
+
+
 class TestCreateSmsProvider:
     def test_sms_activate(self):
         provider = create_sms_provider("sms_activate", {"sms_activate_api_key": "test123"})
@@ -497,6 +547,56 @@ class TestCreatePhoneCallbacks:
         assert countries[10] == "52"
         assert any("接码国家尝试计划" in item for item in logs)
         assert any("切换下一国家" in item for item in logs)
+
+
+    def test_phone_callback_switches_country_immediately_after_voip_rejection(self, monkeypatch):
+        events = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "12", "name": "United States", "price": 0.004, "count": 100},
+                    {"country": "6", "name": "Indonesia", "price": 0.008, "count": 100},
+                ]
+
+            def get_number(self, *, service: str, country: str = ""):
+                events.append(("get_number", service, country))
+                return SmsActivation(activation_id=f"act_{len(events)}", phone_number="+15551234567", country=country)
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+            def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+                events.append(("mark_send_failed", activation_id, reason))
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 2,
+                "sms_phone_retry_limit": 10,
+            },
+            service="chatgpt",
+        )
+
+        callback()
+        callback.mark_send_failed("voip_phone_disallowed: Invalid phone number. Please try again.")
+        cleanup()
+        callback.phase = "need_number"
+        callback.activation = None
+        callback.completed = False
+        callback()
+
+        countries = [item[2] for item in events if item[0] == "get_number"]
+        assert countries == ["12", "6"]
 
 
 class TestSmsActivateProviderCountryResolution:

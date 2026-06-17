@@ -22,7 +22,7 @@
   /* Text */
   --text-primary: #1a1b1f;
   --text-secondary: #414755;
-  --text-muted: #717786;
+  --text-muted: #596174;
   --text-accent: #0058bc;
 
   /* Accent — blue */
@@ -60,7 +60,7 @@
 
   --text-primary: #1a1b1f;
   --text-secondary: #414755;
-  --text-muted: #717786;
+  --text-muted: #596174;
   --text-accent: #0058bc;
 
   --accent: #0058bc;
@@ -252,6 +252,50 @@ textarea:focus {
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.14);
   outline: none;
+}
+
+/* ================================================================
+   Readability helpers
+   ================================================================ */
+
+.help-text {
+  color: var(--text-secondary);
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.help-text-xs {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.notice-panel {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elevated) 72%, var(--accent) 8%);
+  color: var(--text-secondary);
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.notice-panel-info {
+  border-color: rgba(var(--accent-rgb), 0.32);
+  background: rgba(var(--accent-rgb), 0.10);
+  color: var(--text-accent);
+}
+
+.notice-panel-warning {
+  border-color: rgba(180, 83, 9, 0.42);
+  background: rgba(251, 191, 36, 0.18);
+  color: #854d0e;
+}
+
+.dark .notice-panel-warning {
+  border-color: rgba(251, 191, 36, 0.36);
+  background: rgba(251, 191, 36, 0.13);
+  color: #fde68a;
 }
 
 /* ================================================================

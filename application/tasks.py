@@ -181,6 +181,66 @@ def _is_current_sms_phone_exhausted_error(error: object) -> bool:
     return "SMS_PHONE_EXHAUSTED" in str(error or "")
 
 
+_SMSPOOL_RELEASE_DRAIN_TASK_TYPES = {
+    TASK_TYPE_REGISTER,
+    TASK_TYPE_GET_RT,
+    TASK_TYPE_GOPAY_PAY_CHATGPT,
+    TASK_TYPE_GOPAY_REGISTER_ACCOUNT,
+    TASK_TYPE_PHONE_BIND,
+}
+
+
+def _task_should_drain_smspool_release_queue(task: TaskModel | None) -> bool:
+    if not task:
+        return False
+    task_type = str(getattr(task, "type", "") or "")
+    if task_type in _SMSPOOL_RELEASE_DRAIN_TASK_TYPES:
+        return True
+    if task_type == TASK_TYPE_PLATFORM_ACTION:
+        payload = task.get_payload()
+        action_id = str(payload.get("action_id") or "").strip().lower()
+        if action_id == "get_rt":
+            return True
+        params = dict(payload.get("params") or {})
+        provider = str(params.get("sms_provider") or params.get("phone_provider") or "").strip().lower()
+        return provider in {"smspool", "smspool_api", "sms_pool", "sms_pool_api"}
+    return False
+
+
+def _drain_smspool_release_queue_before_task_finish(task_id: str, log_fn: Callable[..., None] | None = None) -> None:
+    try:
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            should_drain = _task_should_drain_smspool_release_queue(task)
+        if not should_drain:
+            return
+
+        from platforms.gopay.sms_channel import (
+            get_smspool_release_queue_size,
+            wait_for_smspool_release_queue_drain,
+        )
+
+        pending = get_smspool_release_queue_size()
+        if pending <= 0:
+            return
+
+        if callable(log_fn):
+            log_fn(
+                "SMSPool\u91ca\u653e\u961f\u5217\u4ecd\u6709"
+                f" {pending} "
+                "\u4e2a\u5f85\u91ca\u653e\u53f7\u7801\uff0c\u4efb\u52a1\u7ed3\u675f\u524d\u7ee7\u7eed\u91ca\u653e..."
+            )
+        wait_for_smspool_release_queue_drain(
+            log_fn=log_fn,
+            max_wait_seconds=0,
+        )
+        if callable(log_fn):
+            log_fn("SMSPool\u91ca\u653e\u961f\u5217\u5df2\u6e05\u7a7a\uff0c\u5141\u8bb8\u4efb\u52a1\u7ed3\u675f")
+    except Exception as exc:
+        if callable(log_fn):
+            log_fn(f"SMSPool\u91ca\u653e\u961f\u5217\u6536\u5c3e\u68c0\u67e5\u5931\u8d25: {exc}", level="warning")
+
+
 def _task_lock(task_id: str) -> threading.Lock:
     with _task_locks_guard:
         lock = _task_locks.get(task_id)
@@ -697,6 +757,9 @@ class TaskLogger:
         _mutate_task(self.task_id, _update)
 
     def finish(self, status: str, *, error: str = "") -> None:
+        if status in TERMINAL_TASK_STATUSES:
+            _drain_smspool_release_queue_before_task_finish(self.task_id, self.log)
+
         def _update(task: TaskModel) -> None:
             task.status = status
             task.finished_at = _utcnow()
@@ -1045,6 +1108,67 @@ def _resolve_sms_provider_for_task(extra: dict[str, Any]) -> tuple[str, dict[str
     return provider_key, settings
 
 
+def _is_register_sms_provider_fallback_enabled(payload: dict[str, Any]) -> bool:
+    if str(payload.get("platform") or "").strip().lower() != "chatgpt":
+        return False
+    extra = dict(payload.get("extra") or {})
+    identity_provider = str(extra.get("identity_provider") or "").strip().lower()
+    if identity_provider != "sms_oauth":
+        return False
+    if str(extra.get("sms_provider") or extra.get("phone_provider") or "").strip():
+        return False
+    return True
+
+
+def _list_register_sms_provider_candidates(payload: dict[str, Any]) -> list[dict[str, str]]:
+    if not _is_register_sms_provider_fallback_enabled(payload):
+        return []
+    try:
+        from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+        settings_repo = ProviderSettingsRepository()
+        candidates: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in settings_repo.list_enabled("sms"):
+            provider_key = str(getattr(item, "provider_key", "") or "").strip()
+            if not provider_key or provider_key in seen:
+                continue
+            seen.add(provider_key)
+            candidates.append({"provider": provider_key})
+        return candidates
+    except Exception:
+        return []
+
+
+def _is_register_sms_provider_switch_error(message: Any) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "voip_phone_disallowed",
+        "virtual phone",
+        "voip",
+        "invalid phone number",
+        "invalid_phone",
+        "account_creation_failed",
+        "failed to create account",
+        "error creating your account",
+        "unable to create account",
+        "could not create account",
+        "no_numbers",
+        "no numbers",
+        "no_balance",
+        "no balance",
+        "insufficient balance",
+        "not enough balance",
+        "too many failed purchases",
+        "try again in 6 hours",
+        "purchase rate limit",
+        "improve your success rate",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _normalize_get_rt_sms_provider(value: Any) -> str:
     """规范化 get_rt 的手机接码参数。
 
@@ -1107,6 +1231,32 @@ def _is_get_rt_sms_provider_switch_error(message: Any) -> bool:
     text = str(message or "").strip().lower()
     if not text:
         return False
+    if "codex_sms_pool_exhausted" in text or "codex_sms_pool_blocked" in text:
+        return True
+    if "too many phone verification requests" in text:
+        return True
+    if "fraud" in text or "suspicious behavior" in text:
+        return True
+    phone_submit_markers = (
+        "add_phone",
+        "add-phone",
+        "\u624b\u673a\u53f7\u63d0\u4ea4",
+        "\u624b\u673a\u53f7\u7801\u63d0\u4ea4",
+    )
+    phone_rate_markers = (
+        "http 429",
+        "status=429",
+        "status 429",
+        "-> 429",
+        "rate_limit_exceeded",
+        "rate limit",
+        "rate-limit",
+        "too many",
+        "maximum",
+        "exceeded",
+    )
+    if any(marker in text for marker in phone_submit_markers) and any(marker in text for marker in phone_rate_markers):
+        return True
     switch_markers = (
         "too many failed purchases",
         "improve your success rate",
@@ -1115,8 +1265,6 @@ def _is_get_rt_sms_provider_switch_error(message: Any) -> bool:
         "increased rate limit",
         "purchase rate limit",
         "purchase ratelimit",
-        "rate limit",
-        "ratelimit",
     )
     if any(marker in text for marker in switch_markers):
         return True
@@ -1164,6 +1312,38 @@ def _is_get_rt_hard_retry_error(message: Any) -> bool:
         "请求超时",
         "网络请求超时",
         "proxy connect aborted",
+        "request timeout",
+        "request timed out",
+        "read timeout",
+        "read timed out",
+        "connect timeout",
+        "connect timed out",
+        "connection timeout",
+        "net::err_timed_out",
+        "network error",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _is_get_rt_target_recoverable_error(message: Any) -> bool:
+    if _is_get_rt_sms_provider_switch_error(message):
+        return False
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "http 429",
+        "status=429",
+        "status 429",
+        "-> 429",
+        "rate_limit_exceeded",
+        "too many phone verification requests",
+        "invalid_state",
+        "sign-in session is no longer valid",
+        "session is no longer valid",
+        "token exchange failed: network error",
+        "curl: (28)",
+        "operation timed out",
         "request timeout",
         "request timed out",
         "read timeout",
@@ -1522,6 +1702,14 @@ def _resolve_chatgpt_reachable_proxy(
             proxy_getter=proxy_getter,
         )
 
+    if resolved:
+        logger.log(
+            "ChatGPT \u4ee3\u7406\u9884\u68c0\u672a\u80fd\u786e\u8ba4\u53ef\u8bbf\u95ee\uff0c"
+            f"\u5c06\u4f7f\u7528\u6d4f\u89c8\u5668\u771f\u5b9e\u6d41\u7a0b\u7ee7\u7eed: {_mask_proxy_for_log(resolved)}"
+            + (f" ({last_detail})" if last_detail else ""),
+            level="warning",
+        )
+        return resolved
     raise RuntimeError(
         "\u6ca1\u6709\u627e\u5230\u53ef\u8bbf\u95ee ChatGPT \u7684\u4ee3\u7406"
         + (f": {last_detail}" if last_detail else "")
@@ -1894,6 +2082,12 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     for slot_index in range(len(sms_pool_slots)):
         sms_slot_queue.put(slot_index)
     sms_provider_key, sms_settings = _resolve_sms_provider_for_task(extra)
+    register_sms_candidates = _list_register_sms_provider_candidates(payload)
+    if register_sms_candidates:
+        logger.log(
+            "ChatGPT register SMS provider fallback enabled: "
+            + " -> ".join(str(item.get("provider") or "") for item in register_sms_candidates)
+        )
     herosms_enabled = sms_provider_key == "herosms" and bool(str(sms_settings.get("herosms_api_key") or "").strip())
     hero_extra_max = max(_int_config(sms_settings.get("register_phone_extra_max"), 3), 0) if herosms_enabled else 0
     hero_reuse_to_max = _bool_config(sms_settings.get("register_reuse_phone_to_max"), True) if herosms_enabled else False
@@ -2068,6 +2262,20 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 f"短链物理复用：注册+打开短链+PayPal 付款将在同一浏览器"
                 f"（注册执行器={_reuse_executor}, 浏览器={_ckmode}）里完成"
             )
+        if register_sms_candidates:
+            candidate_index = min(index // max(count, 1), len(register_sms_candidates) - 1)
+            candidate = register_sms_candidates[candidate_index]
+            candidate_provider = str(candidate.get("provider") or "").strip()
+            if candidate_provider:
+                candidate_payload = dict(_build_payload)
+                candidate_extra = dict(candidate_payload.get("extra") or {})
+                candidate_extra["sms_provider"] = candidate_provider
+                candidate_payload["extra"] = candidate_extra
+                _build_payload = candidate_payload
+                logger.log(
+                    f"ChatGPT register: using SMS provider={candidate_provider} "
+                    f"({candidate_index + 1}/{len(register_sms_candidates)})"
+                )
         try:
             platform = _build_platform_instance(platform_name, _build_payload, logger, resolved_proxy=resolved_proxy, shared_mailbox=shared_mailbox)
             # 失败不计进度的模式（chatgpt_plus_must_succeed）下 index 可能 > count，
@@ -2210,6 +2418,8 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         )
         if chatgpt_plus_must_succeed:
             max_attempts = max(count * 5, count, 1)
+        elif register_sms_candidates:
+            max_attempts = max(count * len(register_sms_candidates), count, 1)
         else:
             max_attempts = max(
                 count if not herosms_enabled else max_success * 3, 1
@@ -2252,6 +2462,12 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 # 必须达到 count 个 success；失败不计 progress，继续投。
                 # 已成功 + 在跑的 ≥ count 时不再投（避免超额）。
                 return success + len(futures) < count
+            if register_sms_candidates:
+                if success + len(futures) >= count:
+                    return False
+                if errors and not _is_register_sms_provider_switch_error(errors[-1]):
+                    return False
+                return submitted < max_attempts
             if not herosms_enabled:
                 return submitted < count
             if success + len(futures) >= max_success:
@@ -2759,6 +2975,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     "sms_provider": sms_provider,
                     "sms_balance_error": _is_get_rt_balance_error(error),
                     "sms_provider_switch_error": _is_get_rt_sms_provider_switch_error(error),
+                    "recoverable_error": _is_get_rt_target_recoverable_error(error),
                     "hard_error": _is_get_rt_hard_retry_error(error),
                 }
         except Exception as exc:
@@ -2772,6 +2989,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 "sms_provider": sms_provider,
                 "sms_balance_error": _is_get_rt_balance_error(error),
                 "sms_provider_switch_error": _is_get_rt_sms_provider_switch_error(error),
+                "recoverable_error": _is_get_rt_target_recoverable_error(error),
                 "hard_error": _is_get_rt_hard_retry_error(error),
             }
         finally:
@@ -2880,7 +3098,11 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     continue
                 hard_errors = [
                     item for item in pass_results
-                    if item.get("hard_error") or _is_get_rt_hard_retry_error(item.get("error"))
+                    if (
+                        item.get("hard_error")
+                        or _is_get_rt_hard_retry_error(item.get("error"))
+                    )
+                    and not _is_get_rt_target_recoverable_error(item.get("error"))
                 ]
                 if hard_errors:
                     logger.log(
@@ -2888,6 +3110,15 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                         level="error",
                     )
                     break
+                recoverable_errors = [
+                    item for item in pass_results
+                    if item.get("recoverable_error") or _is_get_rt_target_recoverable_error(item.get("error"))
+                ]
+                if recoverable_errors:
+                    logger.log(
+                        f"获取rt: 目标模式遇到可恢复失败，将重新执行完整授权流程: {recoverable_errors[-1].get('error')}",
+                        level="warning",
+                    )
                 logger.log(f"获取rt: 目标模式还有 {len(pending_indices)} 个账号未达成上传成功，10s 后重试")
                 for _ in range(10):
                     if logger.is_cancel_requested():

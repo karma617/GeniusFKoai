@@ -48,13 +48,15 @@ def test_chatgpt_proxy_preflight_does_not_replace_explicit_proxy(monkeypatch):
     monkeypatch.setattr(tasks, "_chatgpt_proxy_preflight", lambda proxy, *, timeout=12: (False, "connect reset"))
     logger = _Logger()
 
-    with pytest.raises(RuntimeError, match="ChatGPT"):
-        tasks._resolve_chatgpt_reachable_proxy(
-            platform_name="chatgpt",
-            explicit_proxy="http://bad.proxy:3128",
-            proxy_getter=lambda: "http://other.proxy:3128",
-            logger=logger,
-        )
+    resolved = tasks._resolve_chatgpt_reachable_proxy(
+        platform_name="chatgpt",
+        explicit_proxy="http://bad.proxy:3128",
+        proxy_getter=lambda: "http://other.proxy:3128",
+        logger=logger,
+    )
+
+    assert resolved == "http://bad.proxy:3128"
+    assert any(level == "warning" and "ChatGPT" in message for level, message in logger.messages)
 
 
 def test_proxy_preflight_skips_non_chatgpt_platform(monkeypatch):

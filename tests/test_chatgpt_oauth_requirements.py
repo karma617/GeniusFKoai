@@ -86,6 +86,43 @@ def test_add_phone_attempt_limit_uses_codex_pool_size():
     assert browser_register_module._resolve_add_phone_attempt_limit(FakeCallback(), 40) == 2
 
 
+def test_parse_phone_country_and_local_strips_non_digits():
+    assert browser_register_module._parse_phone_country_and_local("+81 831 908 43766") == (
+        "81",
+        "83190843766",
+        "Japan",
+    )
+    assert browser_register_module._parse_phone_country_and_local("+856-64-890-950") == (
+        "856",
+        "64890950",
+        "Laos",
+    )
+
+
+def test_phone_input_matches_expected_requires_exact_local_or_country_plus_local(monkeypatch):
+    class FakeLocator:
+        def __init__(self, value):
+            self._value = value
+
+        def input_value(self):
+            return self._value
+
+        @property
+        def first(self):
+            return self
+
+    class FakePage:
+        def __init__(self, value):
+            self._value = value
+
+        def locator(self, selector):
+            return FakeLocator(self._value)
+
+    assert browser_register_module._phone_input_matches_expected(FakePage("64890950"), "input", "856", "64890950") is True
+    assert browser_register_module._phone_input_matches_expected(FakePage("85664890950"), "input", "856", "64890950") is True
+    assert browser_register_module._phone_input_matches_expected(FakePage("85685664890950"), "input", "856", "64890950") is False
+
+
 def test_add_phone_default_attempt_limit_is_two_countries_times_ten():
     class FakeCallback:
         provider_key = "smsbower_api"
@@ -370,6 +407,180 @@ def test_browser_registration_flow_starts_from_chatgpt_nextauth(monkeypatch):
     assert calls["authorize"][1] == calls["seed"]
     assert "page" not in calls
     assert state["page_type"] == "oauth_callback"
+
+
+def test_phone_first_entry_uses_chatgpt_homepage_flow(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def goto(self, url, **kwargs):
+            self.url = url
+
+    calls = {"goto": [], "clicks": [], "submitted": []}
+
+    def fake_goto(page, url, **kwargs):
+        calls["goto"].append(url)
+        page.url = url
+
+    monkeypatch.setattr(browser_register_module, "_goto_with_retry", fake_goto)
+    monkeypatch.setattr(browser_register_module, "_wait_for_page_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_click_visible_text_control", lambda _page, _needles, label, _log: calls["clicks"].append(label) or True)
+    monkeypatch.setattr(browser_register_module, "_find_phone_identity_input_selector", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(browser_register_module, "_is_session_ended_page", lambda _page: False)
+    monkeypatch.setattr(
+        browser_register_module,
+        "_submit_phone_identity_via_page",
+        lambda page, phone, log: calls["submitted"].append(phone) or {"page_type": "create_account_password"},
+    )
+
+    state, phone = browser_register_module._start_phone_first_signup_from_forced_entry(
+        FakePage(),
+        lambda: "+15550000001",
+        lambda message: None,
+    )
+
+    assert calls["goto"][-1] == browser_register_module.CHATGPT_APP + "/"
+    assert all("log-in-or-create-account" not in url for url in calls["goto"])
+    assert calls["clicks"] == ["login/signup", "phone-number continue"]
+    assert calls["submitted"] == ["+15550000001"]
+    assert phone == "+15550000001"
+    assert state["page_type"] == "create_account_password"
+
+
+def test_phone_first_password_failure_restarts_full_round_when_edit_has_no_input(monkeypatch):
+    class FakePage:
+        url = "https://auth.openai.com/create-account/password"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    logs = []
+    calls = {"homepage": 0, "old_authorize": 0}
+
+    def fake_submit_password(*_args, **_kwargs):
+        return {"ok": False, "status": 400, "text": "account_creation_failed"}
+
+    def fake_homepage_entry(_page, _phone_callback, _log):
+        calls["homepage"] += 1
+        if calls["homepage"] == 1:
+            _page.url = "https://auth.openai.com/create-account/password"
+            return {"page_type": "create_account_password", "current_url": _page.url}, "+15550000001"
+        _page.url = "https://chatgpt.com/"
+        return {"page_type": "oauth_callback", "current_url": "https://chatgpt.com/"}, "+15550000002"
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        browser_register_module,
+        "_start_browser_phone_signup_via_authorize",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("old authorize helper should not run")),
+    )
+    monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
+    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_homepage_entry)
+    monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    state = browser_register_module._browser_registration_flow(
+        FakePage(),
+        "user@example.com",
+        "Secret123!",
+        otp_callback=None,
+        phone_callback=lambda: "+15550000001",
+        log=logs.append,
+        signup_method="phone",
+        phone_change_limit=2,
+    )
+
+    assert calls["homepage"] == 2
+    assert calls["old_authorize"] == 0
+    assert state["page_type"] == "chatgpt_home"
+    assert any("restarting from chatgpt.com homepage" in message for message in logs)
+
+
+def test_phone_first_initial_flow_uses_homepage_entry(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    calls = {"homepage": 0}
+
+    def fake_homepage_entry(_page, _phone_callback, _log):
+        calls["homepage"] += 1
+        _page.url = "https://chatgpt.com/"
+        return {"page_type": "oauth_callback", "current_url": _page.url}, "+15550000001"
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        browser_register_module,
+        "_start_browser_phone_signup_via_authorize",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("old authorize helper should not run")),
+    )
+    monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_homepage_entry)
+    monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    state = browser_register_module._browser_registration_flow(
+        FakePage(),
+        "user@example.com",
+        "Secret123!",
+        otp_callback=None,
+        phone_callback=lambda: "+15550000001",
+        log=lambda message: None,
+        signup_method="phone",
+    )
+
+    assert calls["homepage"] == 1
+    assert state["page_type"] == "chatgpt_home"
+
+
+def test_phone_first_submit_disables_passwordless_login_click(monkeypatch):
+    class FakeInput:
+        def __init__(self):
+            self._value = ""
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def input_value(self):
+            return self._value
+
+        def click(self, **_kwargs):
+            return None
+
+        def fill(self, value):
+            self._value = value
+
+        def type(self, value, delay=0):
+            self._value = value
+
+    class FakePage:
+        url = "https://auth.openai.com/add-phone"
+
+        def __init__(self):
+            self._input = FakeInput()
+
+        def locator(self, selector):
+            return self._input
+
+    calls = {"passwordless": 0, "fill": []}
+
+    monkeypatch.setattr(browser_register_module, "_click_signup_link_if_on_login", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_find_phone_identity_input_selector", lambda *_args, **_kwargs: "input[type='tel']")
+    monkeypatch.setattr(browser_register_module, "_select_phone_country_ui", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(browser_register_module, "_get_phone_country_select_state", lambda *_args, **_kwargs: {"hasTrigger": True, "matchesDial": True, "matchesCountry": True, "matchesIso": True})
+    monkeypatch.setattr(browser_register_module, "_sync_generic_phone_hidden_value", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_click_first", lambda *args, **kwargs: "button[type='submit']")
+    monkeypatch.setattr(browser_register_module, "_wait_for_signup_entry_transition", lambda *args, **kwargs: {"page_type": "create_account_password"})
+    monkeypatch.setattr(browser_register_module, "_click_passwordless_login_if_available", lambda *_args, **_kwargs: calls.__setitem__("passwordless", calls["passwordless"] + 1) or True)
+
+    result = browser_register_module._submit_phone_identity_via_page(FakePage(), "+85664890950", lambda message: None)
+
+    assert result["page_type"] == "create_account_password"
+    assert calls["passwordless"] == 0
 
 
 def test_browser_register_run_returns_after_registration_without_codex_oauth(monkeypatch):

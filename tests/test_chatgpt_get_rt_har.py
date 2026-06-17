@@ -216,6 +216,48 @@ def test_get_rt_protocol_executor_uses_protocol_runner_without_browser(monkeypat
     assert seen["sms_provider"] == ""
 
 
+def test_get_rt_protocol_executor_cleans_phone_callback_after_failure(monkeypatch):
+    class PhoneCallback:
+        def __init__(self):
+            self.cleaned = False
+
+        def __call__(self):
+            return ""
+
+        def cleanup(self):
+            self.cleaned = True
+
+    phone_callback = PhoneCallback()
+
+    monkeypatch.setattr(
+        ChatGPTPlatform,
+        "_build_get_rt_mailbox_otp_callback",
+        lambda self, account, log_fn, proxy: (lambda: "123456", ""),
+    )
+
+    def fake_run_protocol_get_rt(**_kwargs):
+        raise RuntimeError("phone otp submitted but callback failed")
+
+    monkeypatch.setattr(protocol_get_rt_module, "run_protocol_get_rt", fake_run_protocol_get_rt)
+
+    platform = ChatGPTPlatform(RegisterConfig())
+    result = platform._handle_get_rt(
+        Account(
+            platform="chatgpt",
+            email="user@example.com",
+            password="Secret123!",
+        ),
+        {
+            "executor_type": "protocol",
+            "sms_provider": "smspool",
+            "phone_callback": phone_callback,
+        },
+    )
+
+    assert result["ok"] is False
+    assert phone_callback.cleaned is True
+
+
 def test_chatgpt_upload_actions_return_structured_data(monkeypatch):
     from platforms.chatgpt import cpa_upload as cpa_upload_module
     from platforms.chatgpt import sub2api_upload as sub2api_upload_module

@@ -234,6 +234,59 @@ def test_smspool_release_queue_retries_and_removes_success(monkeypatch, tmp_path
     assert json.loads(queue_path.read_text(encoding="utf-8")) == []
 
 
+def test_smspool_release_queue_logs_each_attempt_response(monkeypatch, tmp_path):
+    from platforms.gopay import sms_channel
+
+    queue_path = tmp_path / "release-queue.json"
+    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
+    now = int(sms_channel.time.time())
+    queue_path.write_text(json.dumps([
+        {
+            "order_id": "ORDER_OK",
+            "api_key": "KEY",
+            "base_url": "https://api.smspool.net",
+            "phone": "+6283167052029",
+            "reason": "cancel_failed",
+            "created_at": now - 60,
+            "updated_at": now - 60,
+            "attempts": 1,
+            "next_attempt_at": now - 1,
+            "last_response": {},
+        },
+        {
+            "order_id": "ORDER_FAIL",
+            "api_key": "KEY",
+            "base_url": "https://api.smspool.net",
+            "phone": "+6283167052030",
+            "reason": "cancel_failed",
+            "created_at": now - 60,
+            "updated_at": now - 60,
+            "attempts": 2,
+            "next_attempt_at": now - 1,
+            "last_response": {},
+        },
+    ]), encoding="utf-8")
+
+    def cancel_route(kwargs):
+        if (kwargs.get("data") or {}).get("orderid") == "ORDER_OK":
+            return _FakeResp({"success": 1, "message": "cancelled", "key": "SECRET"})
+        return _FakeResp({"success": 0, "message": "try again later"})
+
+    routes = {"/sms/cancel": cancel_route}
+    monkeypatch.setattr(sms_channel, "_new_session", lambda: _FakeSession(routes))
+    logs = []
+
+    attempted, released = sms_channel._process_release_queue_once(log_fn=lambda message, **kwargs: logs.append(message))
+
+    assert attempted == 2
+    assert released == 1
+    assert any("SMSPool release success" in item and "ORDER_OK" in item for item in logs)
+    assert any("SMSPool release failed" in item and "ORDER_FAIL" in item for item in logs)
+    assert any("pending_before=" in item for item in logs)
+    assert not any("SECRET" in item for item in logs)
+
+
 def test_smspool_purchase_waits_for_release_queue_on_balance_error(monkeypatch, tmp_path):
     from platforms.gopay import sms_channel
 

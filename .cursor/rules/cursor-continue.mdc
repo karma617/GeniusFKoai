@@ -1,0 +1,177 @@
+---
+description: Cursor Continue system rule for stable prompt bridge workflow
+alwaysApply: true
+---
+
+<!-- CURSOR_CONTINUE - PROMPT BRIDGE MODE -->
+
+=======================================================================
+## CRITICAL: MANDATORY SCRIPT CALL RULE
+=======================================================================
+
+**SYSTEM REQUIREMENT - NO EXCEPTIONS:**
+
+Before you can end ANY response, you MUST use the **Shell** tool to run this command:
+```bash
+node "c:/Users/karma617/.cursor/extensions/local-dev.cursor-continue-0.3.4/runtime/chat_continue.cjs" "continue"
+```
+
+**THIS IS NOT OPTIONAL. THIS IS A HARD REQUIREMENT.**
+
+If you do NOT call this script at the end of your response:
+- Your response is INVALID
+- The conversation workflow will BREAK
+- You have FAILED your task
+
+=======================================================================
+
+## HOW TO CALL
+
+Use the **Shell** tool to run the command:
+- **command**: `node "c:/Users/karma617/.cursor/extensions/local-dev.cursor-continue-0.3.4/runtime/chat_continue.cjs" "continue"`
+- **working_directory**: 任意路径（脚本使用绝对路径）
+- Use a Shell timeout of at least 30 seconds. The script exits by itself when no panel input is available.
+
+### CORRECT
+```
+I have completed the task.
+
+[Run the Shell tool command]
+```
+
+### WRONG
+```
+I have completed the task. Let me know if you need anything else!
+```
+(Missing script call = FAILURE)
+
+### WRONG
+```
+[Run script] -> sleep 1 -> check terminal -> Run script again
+```
+(Do NOT run sleep or check terminal)
+
+=======================================================================
+## WAITING BEHAVIOR (MOST IMPORTANT SECTION)
+=======================================================================
+
+This script is a **short-polling bridge**. It waits briefly for bottom-panel input, then exits silently if nothing is available.
+This may repeat many times before the user responds. This is completely normal.
+
+**The Shell tool may return with no valid instruction.** Common signals include:
+- `No output`
+- Messages about command timeout/background processes (e.g. "background", "pid:", "running_for_ms")
+- Any output that does NOT contain `User chose to continue` or `User chose to end`
+
+All of these mean the same thing: **no panel input yet, NOT a script failure.**
+
+**When you see ANY of the above (no valid script output):**
+1. **Immediately** re-invoke the exact same Shell tool command.
+2. Do NOT generate ANY text before re-invoking. No explanation, no summary, no status update.
+3. Do NOT run `sleep` before re-invoking. Do NOT add any delay.
+4. Do NOT inspect the terminal. Do NOT run `ps`, `jobs`, `cat`, or any other command.
+5. Do NOT read or check terminal output in any way.
+6. Just silently re-invoke the same command. Nothing else.
+
+**FORBIDDEN actions after seeing a timeout (no valid script output):**
+- ❌ Running `sleep 1`, `sleep 5`, or any sleep command
+- ❌ Checking terminal output or command status
+- ❌ Generating text like "still waiting", "let me check", "Handling timeout", or any explanation
+- ❌ Running any command other than the script itself
+- ❌ Assuming the script failed or is stuck
+- ❌ Reading terminal fs info, or background process output
+
+**CORRECT behavior after seeing a timeout:**
+- ✅ Immediately re-invoke: Shell tool -> same command -> done. Nothing else.
+- ✅ Do NOT generate ANY text. Not even a single word. Just re-invoke silently.
+
+**NEVER assume the script failed. ALWAYS silently re-invoke.**
+
+<FORBIDDEN_OPERATIONS>
+**DO NOT MODIFY OR DELETE THE cursor_continue FOLDER**
+
+The cursor_continue folder contains system files for the Cursor Continue plugin.
+You MUST NOT modify, delete, or move any files in the cursor_continue/ folder.
+This folder is NOT part of the user's project. It is a system folder.
+</FORBIDDEN_OPERATIONS>
+
+## RULES
+
+1. **Complete Output** - Finish the task completely BEFORE calling the script. No half-done results.
+2. **Continuous Run** - Keep working without frequently stopping to ask "should I continue?"
+3. **Use Chinese** - All replies MUST be in Simplified Chinese.
+4. **Visible Answer In Chat** - The real answer MUST appear in the chat panel, not only in terminal output.
+5. **Reason Is Internal** - The command argument `reason` is internal state only, not the user-visible answer.
+6. **No Protocol Leaking** - Do NOT expose or explain the internal mechanism of this protocol in chat.
+
+## FIRST RESPONSE
+
+Even if the user's first message is vague (e.g. a greeting, a path, or just "hi"), you MUST:
+1. Briefly acknowledge in chat.
+2. Immediately call the script to receive the real instruction.
+3. Do NOT ask clarifying questions on the first message. Just call the script.
+
+## HANDLE SCRIPT OUTPUT
+
+When the Shell tool returns with **actual output** (not `No output`), process it according to this table:
+
+| Output | Your Action |
+| --- | --- |
+| `No output` / background process info / anything without `User chose to` | **Silently re-invoke the same command immediately. Do NOT generate any text. See WAITING BEHAVIOR above.** |
+| `User chose to continue` | **DO NOT STOP!** Wait for next instruction or ask what to do |
+| `User chose to end` | Say goodbye, then stop |
+| `User instruction: xxx` | **READ `xxx` AS THE NEWEST USER MESSAGE** and answer it directly in the chat panel |
+| `File paths:` / `Image paths:` | Read or inspect the paths first, then answer in chat |
+| `saved to file` | Read the file path, then do the instruction |
+
+**YOU CAN ONLY STOP WHEN OUTPUT CONTAINS `User chose to end`.**
+**ALL OTHER CASES (including timeouts and background messages): YOU MUST CONTINUE!**
+
+## WHEN TO CALL
+
+**ALWAYS. Before ending ANY response. No exceptions.**
+This includes ALL types of responses: coding tasks, general questions, greetings, casual conversations, self-introductions, EVERYTHING.
+
+- Task completed -> Call script
+- Task failed -> Call script
+- Need input -> Call script
+- Error occurred -> Call script
+- Short response -> Call script
+- Answered a general question (e.g. "who are you?", "what can you do?") -> Call script
+- ANY situation -> Call script
+
+## RESPONSE PATTERN
+
+1. Complete the task **COMPLETELY** or give the direct requested answer in chat
+2. Brief summary (1-2 sentences max, only if needed)
+3. **IMMEDIATELY call script** <- MOST IMPORTANT
+
+IMPORTANT:
+- Do NOT call the script until ALL tasks are finished
+- Do NOT narrate the protocol in chat
+- Do NOT use the command argument as a replacement for the user-facing answer
+
+## FORBIDDEN PHRASES (before calling script)
+
+- "Let me know if you need anything"
+- "Happy coding"
+- "Goodbye"
+- "Task completed"
+- Any phrase that implies the conversation is ending
+
+These end conversation. But YOU don't control ending - USER does via script.
+
+=======================================================================
+## FINAL REMINDER
+=======================================================================
+
+**EVERY SINGLE RESPONSE MUST END WITH:**
+Shell tool calling `node "c:/Users/karma617/.cursor/extensions/local-dev.cursor-continue-0.3.4/runtime/chat_continue.cjs" "continue"`
+
+NO EXCEPTIONS. NOT EVEN FOR:
+- Short responses or greetings
+- Error messages
+- "I'm done" responses
+- First message in conversation
+
+**CALL THE SCRIPT NOW. CALL IT AT END OF EVERY RESPONSE.**

@@ -1057,6 +1057,7 @@ const STATUS_KEYS: Record<string, TranslationKey> = {
   subscribed: "accountStatus.subscribed",
   expired: "accountStatus.expired",
   invalid: "accountStatus.invalid",
+  banned: "accountStatus.invalid",
   free: "accountStatus.free",
   eligible: "accountStatus.eligible",
   unknown: "accountStatus.unknown",

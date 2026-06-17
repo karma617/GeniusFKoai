@@ -46,6 +46,7 @@ PERSISTED_ACTION_DATA_KEYS = {
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}
 OAUTH_RESULT_ACTION_IDS = {"get_rt"}
 UPLOAD_RESULT_ACTION_IDS = {"upload_sub2api"}
+FAILED_ACTION_PERSISTED_ERROR_TYPES = {"account_banned", "session_stale_refreshed"}
 CASHIER_URL_ACTION_IDS = {
     "payment_link",
     "payment_link_browser",
@@ -389,14 +390,32 @@ class PlatformRuntime:
                 data = result["data"]
                 needs_save = False
                 action_ok = bool(result.get("ok"))
+                error_type = str(result.get("error_type") or "").strip()
+                can_persist_failure = (not action_ok) and error_type in FAILED_ACTION_PERSISTED_ERROR_TYPES
                 credential_updates = {}
-                if action_ok:
+                if action_ok or can_persist_failure:
                     credential_updates = {
                         key: value
                         for key, value in data.items()
                         if key in PERSISTED_ACTION_DATA_KEYS and value not in (None, "")
                     }
                 summary_updates: dict[str, Any] = {}
+                if can_persist_failure:
+                    raw_summary = result.get("summary_updates")
+                    if isinstance(raw_summary, dict):
+                        summary_updates.update(raw_summary)
+                    lifecycle_status = str(result.get("lifecycle_status") or "").strip()
+                    if lifecycle_status:
+                        summary_updates["lifecycle_status"] = lifecycle_status
+                        summary_updates.setdefault("display_status", lifecycle_status)
+                    if error_type == "account_banned":
+                        summary_updates.setdefault("valid", False)
+                        summary_updates.setdefault("validity_status", "invalid")
+                    if error_type == "session_stale_refreshed":
+                        summary_updates.setdefault("session_refresh_status", "refreshed")
+                        summary_updates.setdefault("last_session_refresh_at", _utcnow_iso())
+                    if summary_updates:
+                        needs_save = True
                 if action_ok and command.action_id in STATEFUL_ACTION_IDS:
                     overview = _build_account_overview(command.platform, data)
                     if overview:
