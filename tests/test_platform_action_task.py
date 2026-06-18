@@ -226,6 +226,127 @@ def test_chatgpt_sms_oauth_register_falls_back_to_next_sms_provider(monkeypatch)
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
 
 
+def test_chatgpt_sms_oauth_register_keeps_trying_next_provider_after_non_switch_error(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        def register(self, email=None, password=None):
+            attempts.append(self.provider)
+            if self.provider == "smsbower_api":
+                raise RuntimeError("cloudflare blocked during registration")
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token"},
+            )
+
+    def fake_build_platform_instance(platform_name, payload, logger, resolved_proxy=None, shared_mailbox=None):
+        provider = str((payload.get("extra") or {}).get("sms_provider") or "")
+        return FakePlatform(provider)
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_list_register_sms_provider_candidates",
+        lambda payload: [{"provider": "smsbower_api"}, {"provider": "herosms_api"}],
+    )
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", fake_build_platform_instance)
+    monkeypatch.setattr(tasks_module, "save_account", lambda account: account)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr("core.base_mailbox.create_mailbox", lambda **kwargs: object())
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "sms_oauth",
+                "mail_provider": "outlook_email_api",
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == ["smsbower_api", "herosms_api"]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+
+
+def test_chatgpt_sms_oauth_register_fails_only_after_all_sms_providers_are_exhausted(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        def register(self, email=None, password=None):
+            attempts.append(self.provider)
+            if self.provider == "smsbower_api":
+                raise RuntimeError("voip_phone_disallowed: Invalid phone number")
+            raise RuntimeError("no_balance: insufficient balance")
+
+    def fake_build_platform_instance(platform_name, payload, logger, resolved_proxy=None, shared_mailbox=None):
+        provider = str((payload.get("extra") or {}).get("sms_provider") or "")
+        return FakePlatform(provider)
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_list_register_sms_provider_candidates",
+        lambda payload: [{"provider": "smsbower_api"}, {"provider": "herosms_api"}],
+    )
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", fake_build_platform_instance)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr("core.base_mailbox.create_mailbox", lambda **kwargs: object())
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "sms_oauth",
+                "mail_provider": "outlook_email_api",
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == ["smsbower_api", "herosms_api"]
+    assert logger.finished[0] == tasks_module.TASK_STATUS_FAILED
+    assert "All enabled SMS providers failed during ChatGPT sms_oauth registration" in logger.finished[1]
+    assert "smsbower_api, herosms_api" in logger.finished[1]
+    assert "voip_phone_disallowed: Invalid phone number" in logger.finished[1]
+    assert "no_balance: insufficient balance" in logger.finished[1]
+
+
 def test_phone_bind_task_passes_logger_and_browser_mode(monkeypatch):
     seen = {}
 
@@ -2083,3 +2204,107 @@ def test_load_account_graphs_preserves_uploaded_rt_status():
     assert graph["lifecycle_status"] == "rt_uploaded"
     assert graph["display_status"] == "rt_uploaded"
     assert graph["overview"]["rt_upload_status"] == "uploaded"
+
+
+def test_sync_platform_account_graph_clears_stale_refresh_token_for_registered_chatgpt():
+    from core.account_graph import load_account_graphs, patch_account_graph, sync_platform_account_graph
+    from core.base_platform import Account, AccountStatus
+
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="registered-clear@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        patch_account_graph(
+            session,
+            model,
+            lifecycle_status="rt_pending_upload",
+            summary_updates={
+                "oauth": {"type": "codex"},
+                "codex_oauth": {"type": "codex"},
+                "rt_upload_status": "pending_upload",
+            },
+            credential_updates={
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+            },
+        )
+        session.commit()
+
+        account = Account(
+            platform="chatgpt",
+            email=model.email,
+            password=model.password,
+            user_id="acct-registered",
+            token="new-access",
+            status=AccountStatus.REGISTERED,
+            extra={
+                "account_id": "acct-registered",
+                "access_token": "new-access",
+                "refresh_token": "",
+                "registration_refresh_token": "registration-only-refresh",
+                "registration_refresh_token_usable": False,
+                "refresh_token_source": "",
+            },
+        )
+        sync_platform_account_graph(session, model, account)
+        session.commit()
+        account_id = int(model.id or 0)
+
+    with Session(engine) as session:
+        graph = load_account_graphs(session, [account_id])[account_id]
+
+    credentials = {
+        item["key"]: item["value"]
+        for item in graph["credentials"]
+        if item.get("scope") == "platform"
+    }
+    assert credentials["access_token"] == "new-access"
+    assert "refresh_token" not in credentials
+    assert "registration_refresh_token" not in credentials
+    assert graph["lifecycle_status"] == "registered"
+    assert graph["display_status"] == "registered"
+    assert "rt_upload_status" not in graph["overview"]
+    assert "rt_uploaded_at" not in graph["overview"]
+    assert "rt_acquired_at" not in graph["overview"]
+    assert "registration_refresh_token" not in graph["overview"]
+    assert "registration_refresh_token_usable" not in graph["overview"]
+
+
+def test_sync_platform_account_graph_strips_registration_refresh_token_from_legacy_extra():
+    from core.account_graph import load_account_graphs, sync_platform_account_graph
+    from core.base_platform import Account, AccountStatus
+
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="registered-extra@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+
+        account = Account(
+            platform="chatgpt",
+            email=model.email,
+            password=model.password,
+            user_id="acct-extra",
+            token="access-token",
+            status=AccountStatus.REGISTERED,
+            extra={
+                "account_id": "acct-extra",
+                "access_token": "access-token",
+                "registration_refresh_token": "registration-only-refresh",
+                "registration_refresh_token_usable": False,
+                "refresh_token_source": "",
+                "debug_note": "keep-me",
+            },
+        )
+        sync_platform_account_graph(session, model, account)
+        session.commit()
+        account_id = int(model.id or 0)
+
+    with Session(engine) as session:
+        graph = load_account_graphs(session, [account_id])[account_id]
+
+    legacy_extra = dict((graph["overview"] or {}).get("legacy_extra") or {})
+    assert legacy_extra.get("debug_note") == "keep-me"
+    assert "registration_refresh_token" not in legacy_extra
+    assert "registration_refresh_token_usable" not in legacy_extra

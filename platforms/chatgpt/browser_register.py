@@ -1522,7 +1522,8 @@ def _resend_browser_email_otp(page, otp_callback, log) -> bool:
 
 def _fill_input_like_user(page, selector: str, value: str) -> bool:
     try:
-        locator = page.locator(selector).first
+        locator = page.locator(selector)
+        locator = getattr(locator, "first", locator)
         locator.wait_for(state="visible", timeout=2000)
         current = str(locator.input_value() or "").strip()
         if current == str(value).strip():
@@ -1579,7 +1580,8 @@ def _fill_input_like_user(page, selector: str, value: str) -> bool:
 
 def _phone_input_matches_expected(page, selector: str, dial_code: str, local_number: str) -> bool:
     try:
-        locator = page.locator(selector).first
+        locator = page.locator(selector)
+        locator = getattr(locator, "first", locator)
         actual = str(locator.input_value() or "").strip()
     except Exception:
         return False
@@ -6802,7 +6804,10 @@ class ChatGPTBrowserRegister:
                 "password": password,
                 "account_id": session_info.get("account_id", ""),
                 "access_token": session_info.get("access_token", ""),
-                "refresh_token": session_info.get("refresh_token", ""),
+                "refresh_token": "",
+                "registration_refresh_token": session_info.get("refresh_token", ""),
+                "registration_refresh_token_usable": False,
+                "refresh_token_source": "",
                 "id_token": session_info.get("id_token", ""),
                 "session_token": session_info.get("session_token", ""),
                 "workspace_id": session_info.get("workspace_id", ""),
@@ -6825,13 +6830,20 @@ class ChatGPTBrowserRegister:
                     self.proxy,
                     self.log,
                 )
-                if not isinstance(oauth_result, dict) or not oauth_result.get("access_token"):
-                    raise RuntimeError("Phone-first signup OAuth callback did not return access_token")
+                if not isinstance(oauth_result, dict) or not (
+                    oauth_result.get("access_token") and oauth_result.get("refresh_token")
+                ):
+                    oauth_result = self._retry_oauth_fresh_browser(email, password) or {}
+                if not isinstance(oauth_result, dict) or not (
+                    oauth_result.get("access_token") and oauth_result.get("refresh_token")
+                ):
+                    raise RuntimeError("Phone-first signup OAuth callback did not return usable refresh_token")
                 result.update(
                     {
                         "account_id": oauth_result.get("account_id") or result.get("account_id", ""),
                         "access_token": oauth_result.get("access_token", ""),
                         "refresh_token": oauth_result.get("refresh_token", ""),
+                        "refresh_token_source": "phone_first_oauth",
                         "id_token": oauth_result.get("id_token", ""),
                         "oauth": oauth_result,
                     }

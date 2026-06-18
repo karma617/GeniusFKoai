@@ -3783,7 +3783,7 @@ class RegistrationEngine:
 
         result.access_token = access_token
 
-        result.refresh_token = refresh_token
+        result.refresh_token = ""
 
         result.id_token = id_token
 
@@ -3802,6 +3802,12 @@ class RegistrationEngine:
             "auth_source": "platform_reference_register",
 
             "openai_register_reference": r"E:\AI\chatgpt2api\services\register\openai_register.py",
+
+            "registration_refresh_token": refresh_token,
+
+            "registration_refresh_token_usable": False,
+
+            "refresh_token_source": "",
 
         }
 

@@ -70,10 +70,28 @@ NON_LEGACY_EXTRA_KEYS = {
     "cashier_url",
     "region",
     "trial_end_time",
+    "registration_refresh_token",
+    "registrationRefreshToken",
+    "registration_refresh_token_usable",
 }
 
 RT_LIFECYCLE_STATUSES = {"rt_pending_upload", "rt_uploaded"}
 LEGACY_RT_LIFECYCLE_STATUSES = {"registered", "authorized"}
+REGISTRATION_ONLY_CREDENTIAL_KEYS = {"refresh_token", "refreshToken"}
+REGISTRATION_ONLY_EXTRA_KEYS = {
+    "registration_refresh_token",
+    "registrationRefreshToken",
+    "registration_refresh_token_usable",
+}
+RT_RUNTIME_SUMMARY_KEYS = {
+    "authorized_at",
+    "rt_acquired_at",
+    "rt_upload_status",
+    "rt_upload_message",
+    "rt_upload_checked_at",
+    "rt_uploaded_at",
+    "token_backup_path",
+}
 
 
 def _utcnow() -> datetime:
@@ -280,6 +298,17 @@ def _normalize_overview_summary(
     payload["chips"] = _dedupe_chips(payload.get("chips") or [])
     if bool(payload.get("local_matches_target")) and "当前" not in payload["chips"]:
         payload["chips"].append("当前")
+    legacy_extra = _safe_dict(payload.get("legacy_extra"))
+    if legacy_extra:
+        cleaned_legacy_extra = {
+            key: value
+            for key, value in legacy_extra.items()
+            if key not in REGISTRATION_ONLY_EXTRA_KEYS and value not in (None, "", [], {})
+        }
+        if cleaned_legacy_extra:
+            payload["legacy_extra"] = cleaned_legacy_extra
+        else:
+            payload.pop("legacy_extra", None)
 
     payload.update(
         {
@@ -310,6 +339,18 @@ def _legacy_extra_payload(extra: dict[str, Any]) -> dict[str, Any]:
     return legacy_extra
 
 
+def _has_registration_only_marker(payload: dict[str, Any]) -> bool:
+    return any(key in payload for key in REGISTRATION_ONLY_EXTRA_KEYS)
+
+
+def _strip_refresh_token_credentials(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in items
+        if _text(item.get("key")) not in REGISTRATION_ONLY_CREDENTIAL_KEYS
+    ]
+
+
 def _platform_credentials_from_extra(extra: dict[str, Any], *, legacy_token: str = "") -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -335,6 +376,8 @@ def _platform_credentials_from_extra(extra: dict[str, Any], *, legacy_token: str
     if legacy_token:
         push("legacy_token", legacy_token, source="accounts.token")
     for key in PLATFORM_CREDENTIAL_TYPES:
+        if key in {"registration_refresh_token", "registrationRefreshToken"}:
+            continue
         if key in extra:
             push(key, extra.get(key), source="accounts.extra")
 
@@ -835,14 +878,30 @@ def sync_legacy_account_graph(
     summary = dict(legacy_summary)
     summary.update(existing_summary)
     if summary.get("legacy_extra") or legacy_summary.get("legacy_extra"):
-        summary["legacy_extra"] = {
+        merged_legacy_extra = {
             **_safe_dict(legacy_summary.get("legacy_extra")),
             **_safe_dict(existing_summary.get("legacy_extra")),
         }
+        merged_legacy_extra = {
+            key: value
+            for key, value in merged_legacy_extra.items()
+            if key not in REGISTRATION_ONLY_EXTRA_KEYS and value not in (None, "", [], {})
+        }
+        if merged_legacy_extra:
+            summary["legacy_extra"] = merged_legacy_extra
+        else:
+            summary.pop("legacy_extra", None)
     summary["chips"] = _dedupe_chips(legacy_summary.get("chips") or [], existing_summary.get("chips") or [])
     summary["lifecycle_status"] = _text(current.get("lifecycle_status")) or _text(legacy_summary.get("lifecycle_status")) or "registered"
 
     existing_credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
+    if platform == "chatgpt" and _text(lifecycle_status) == "registered" and _has_registration_only_marker(payload_extra):
+        existing_credentials = _strip_refresh_token_credentials(existing_credentials)
+        summary = {
+            key: value
+            for key, value in summary.items()
+            if key not in RT_RUNTIME_SUMMARY_KEYS
+        }
     incoming_credentials = _platform_credentials_from_extra({**payload_extra, "platform": platform}, legacy_token=_text(legacy_token))
     credentials = _merge_platform_credentials(platform, existing_credentials, incoming_credentials, prefer_existing=True)
 
@@ -920,15 +979,31 @@ def sync_platform_account_graph(session: Session, model: AccountModel, account: 
     summary = dict(existing_summary)
     summary.update(incoming_summary)
     if summary.get("legacy_extra") or existing_summary.get("legacy_extra"):
-        summary["legacy_extra"] = {
+        merged_legacy_extra = {
             **_safe_dict(existing_summary.get("legacy_extra")),
             **_safe_dict(incoming_summary.get("legacy_extra")),
         }
+        merged_legacy_extra = {
+            key: value
+            for key, value in merged_legacy_extra.items()
+            if key not in REGISTRATION_ONLY_EXTRA_KEYS and value not in (None, "", [], {})
+        }
+        if merged_legacy_extra:
+            summary["legacy_extra"] = merged_legacy_extra
+        else:
+            summary.pop("legacy_extra", None)
     summary["chips"] = _dedupe_chips(existing_summary.get("chips") or [], incoming_summary.get("chips") or [])
     summary["lifecycle_status"] = lifecycle_status
 
     platform = model.platform
     existing_credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
+    if platform == "chatgpt" and lifecycle_status == "registered" and _has_registration_only_marker(extra):
+        existing_credentials = _strip_refresh_token_credentials(existing_credentials)
+        summary = {
+            key: value
+            for key, value in summary.items()
+            if key not in RT_RUNTIME_SUMMARY_KEYS
+        }
     incoming_credentials = _platform_credentials_from_extra({**extra, "platform": platform}, legacy_token=_text(getattr(account, "token", "")))
     credentials = _merge_platform_credentials(platform, existing_credentials, incoming_credentials, prefer_existing=False)
 
@@ -988,6 +1063,22 @@ def patch_account_graph(
     summary["lifecycle_status"] = effective_lifecycle
 
     existing_credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
+    summary_marker = _safe_dict(summary_updates or {})
+    credential_marker = _safe_dict(credential_updates or {})
+    registration_marker = _has_registration_only_marker(summary_marker) or _has_registration_only_marker(credential_marker)
+    if registration_marker and effective_lifecycle == "registered":
+        existing_credentials = _strip_refresh_token_credentials(existing_credentials)
+    if registration_marker:
+        summary = {
+            key: value
+            for key, value in summary.items()
+            if key not in REGISTRATION_ONLY_EXTRA_KEYS and key not in RT_RUNTIME_SUMMARY_KEYS
+        }
+        credential_updates = {
+            key: value
+            for key, value in (credential_updates or {}).items()
+            if key not in REGISTRATION_ONLY_EXTRA_KEYS
+        }
     incoming_credentials: list[dict[str, Any]] = []
     if credential_updates:
         for key, value in credential_updates.items():

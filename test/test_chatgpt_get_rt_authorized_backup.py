@@ -11,7 +11,7 @@ from platforms.chatgpt import plugin as chatgpt_plugin
 from sqlmodel import SQLModel, Session, create_engine
 
 
-def test_oauth_result_overview_marks_authorized_when_token_exists():
+def test_oauth_result_overview_marks_rt_pending_upload_when_token_exists():
     overview = _build_oauth_result_overview(
         "chatgpt",
         {
@@ -23,8 +23,8 @@ def test_oauth_result_overview_marks_authorized_when_token_exists():
     )
 
     assert overview is not None
-    assert overview["lifecycle_status"] == "authorized"
-    assert overview["display_status"] == "authorized"
+    assert overview["lifecycle_status"] == "rt_pending_upload"
+    assert overview["display_status"] == "rt_pending_upload"
     assert overview["valid"] is True
     assert overview["remote_email"] == "user@example.com"
     assert overview["token_backup_path"].endswith("backup.json")
@@ -77,7 +77,7 @@ def test_save_get_rt_token_backup_writes_raw_token_json(monkeypatch, tmp_path: P
     assert data["result"]["id_token"] == "id-token"
 
 
-def test_existing_oauth_token_graph_displays_authorized():
+def test_existing_oauth_token_graph_displays_rt_pending_upload():
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
@@ -107,8 +107,8 @@ def test_existing_oauth_token_graph_displays_authorized():
 
         graph = load_account_graphs(session, [int(account.id or 0)])[int(account.id or 0)]
 
-    assert graph["lifecycle_status"] == "authorized"
-    assert graph["display_status"] == "authorized"
+    assert graph["lifecycle_status"] == "rt_pending_upload"
+    assert graph["display_status"] == "rt_pending_upload"
     assert graph["validity_status"] == "valid"
     assert graph["overview"]["valid"] is True
 

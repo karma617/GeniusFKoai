@@ -443,6 +443,14 @@ class ChatGPTPlatform(BasePlatform):
     ) -> RegistrationResult:
         if require_oauth:
             _assert_complete_oauth_callback(result)
+        refresh_token_source = str(result.get("refresh_token_source") or "")
+        oauth_refresh_token = str(result.get("refresh_token") or "")
+        raw_refresh_token = str(
+            oauth_refresh_token
+            or result.get("registration_refresh_token")
+            or ""
+        )
+        refresh_token = oauth_refresh_token if require_oauth else ""
         return RegistrationResult(
             email=result.get("email", ""),
             password=password or result.get("password", ""),
@@ -452,7 +460,10 @@ class ChatGPTPlatform(BasePlatform):
             extra={
                 "account_id": result.get("account_id", ""),
                 "access_token": result.get("access_token", ""),
-                "refresh_token": result.get("refresh_token", ""),
+                "refresh_token": refresh_token,
+                "registration_refresh_token": raw_refresh_token,
+                "refresh_token_source": refresh_token_source if require_oauth and refresh_token else "",
+                "registration_refresh_token_usable": False,
                 "id_token": result.get("id_token", ""),
                 "session_token": result.get("session_token", ""),
                 "workspace_id": result.get("workspace_id", ""),
@@ -548,6 +559,11 @@ class ChatGPTPlatform(BasePlatform):
             refresh_token = result.refresh_token or ""
             session_token = result.session_token or ""
             metadata = getattr(result, "metadata", None) or {}
+            registration_refresh_token = str(
+                refresh_token
+                or metadata.get("registration_refresh_token")
+                or ""
+            )
 
             return RegistrationResult(
                 email=result.email,
@@ -557,7 +573,10 @@ class ChatGPTPlatform(BasePlatform):
                 status=AccountStatus.REGISTERED,
                 extra={
                     "access_token": access_token,
-                    "refresh_token": refresh_token,
+                    "refresh_token": "",
+                    "registration_refresh_token": registration_refresh_token,
+                    "refresh_token_source": "",
+                    "registration_refresh_token_usable": False,
                     "id_token": result.id_token,
                     "session_token": session_token,
                     "workspace_id": result.workspace_id,

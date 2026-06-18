@@ -1169,6 +1169,31 @@ def _is_register_sms_provider_switch_error(message: Any) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _summarize_register_sms_provider_exhausted_error(
+    errors: list[str],
+    candidates: list[dict[str, str]],
+) -> str:
+    if not errors:
+        return "All enabled SMS providers failed during ChatGPT sms_oauth registration"
+    providers = [
+        str(item.get("provider") or "").strip()
+        for item in candidates
+        if str(item.get("provider") or "").strip()
+    ]
+    provider_text = ", ".join(providers) if providers else "enabled providers"
+    first_error = str(errors[0] or "").strip()
+    last_error = errors[-1]
+    if first_error and first_error != last_error:
+        return (
+            "All enabled SMS providers failed during ChatGPT sms_oauth registration "
+            f"({provider_text}); first error: {first_error}; last error: {last_error}"
+        )
+    return (
+        "All enabled SMS providers failed during ChatGPT sms_oauth registration "
+        f"({provider_text}); last error: {last_error}"
+    )
+
+
 def _normalize_get_rt_sms_provider(value: Any) -> str:
     """规范化 get_rt 的手机接码参数。
 
@@ -2465,8 +2490,6 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if register_sms_candidates:
                 if success + len(futures) >= count:
                     return False
-                if errors and not _is_register_sms_provider_switch_error(errors[-1]):
-                    return False
                 return submitted < max_attempts
             if not herosms_enabled:
                 return submitted < count
@@ -2527,7 +2550,15 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
         return
     final_status = TASK_STATUS_FAILED if errors and success == 0 else TASK_STATUS_SUCCEEDED
-    final_error = "" if final_status == TASK_STATUS_SUCCEEDED else errors[0]
+    if final_status == TASK_STATUS_SUCCEEDED:
+        final_error = ""
+    elif register_sms_candidates:
+        final_error = _summarize_register_sms_provider_exhausted_error(
+            errors,
+            register_sms_candidates,
+        )
+    else:
+        final_error = errors[0]
     logger.finish(final_status, error=final_error)
 
 

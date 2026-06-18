@@ -123,6 +123,37 @@ def test_phone_input_matches_expected_requires_exact_local_or_country_plus_local
     assert browser_register_module._phone_input_matches_expected(FakePage("85685664890950"), "input", "856", "64890950") is False
 
 
+def test_phone_input_helpers_accept_locators_without_first():
+    class FakeLocator:
+        def __init__(self, value):
+            self._value = value
+
+        def wait_for(self, **_kwargs):
+            return None
+
+        def input_value(self):
+            return self._value
+
+        def click(self, **_kwargs):
+            return None
+
+        def fill(self, value):
+            self._value = value
+
+        def type(self, value, delay=0):
+            self._value = value
+
+    class FakePage:
+        def __init__(self, value):
+            self._value = value
+
+        def locator(self, selector):
+            return FakeLocator(self._value)
+
+    assert browser_register_module._fill_input_like_user(FakePage("64890950"), "input", "64890950") is True
+    assert browser_register_module._phone_input_matches_expected(FakePage("64890950"), "input", "856", "64890950") is True
+
+
 def test_add_phone_default_attempt_limit_is_two_countries_times_ten():
     class FakeCallback:
         provider_key = "smsbower_api"
@@ -189,6 +220,35 @@ def test_protocol_mailbox_mapper_rejects_partial_oauth_result():
         adapter.result_mapper(ctx, result)
 
 
+def test_protocol_mailbox_mapper_preserves_registration_refresh_token_without_formal_rt():
+    platform = object.__new__(ChatGPTPlatform)
+    platform.mailbox = None
+    platform.config = RegisterConfig()
+    adapter = ChatGPTPlatform.build_protocol_mailbox_adapter(platform)
+    ctx = SimpleNamespace(password="Secret123!", proxy=None, log=lambda message: None)
+    result = SimpleNamespace(
+        email="user@example.com",
+        password="Secret123!",
+        account_id="acct_123",
+        access_token="access-token",
+        refresh_token="",
+        id_token="id-token",
+        session_token="sess_123",
+        workspace_id="ws_123",
+        metadata={
+            "registration_refresh_token": "registration-only-refresh",
+            "cookies": "session=abc",
+        },
+    )
+
+    mapped = adapter.result_mapper(ctx, result)
+
+    assert mapped.extra["refresh_token"] == ""
+    assert mapped.extra["registration_refresh_token"] == "registration-only-refresh"
+    assert mapped.extra["registration_refresh_token_usable"] is False
+    assert mapped.extra["refresh_token_source"] == ""
+
+
 def test_browser_registration_mapper_accepts_completed_registration_without_codex_tokens():
     platform = object.__new__(ChatGPTPlatform)
 
@@ -211,6 +271,28 @@ def test_browser_registration_mapper_accepts_completed_registration_without_code
     assert mapped.token == ""
     assert mapped.extra["access_token"] == ""
     assert mapped.extra["cookies"] == "{\"login_session\":\"yes\"}"
+
+
+def test_browser_registration_mapper_prefers_formal_refresh_token_for_phone_first_oauth():
+    platform = object.__new__(ChatGPTPlatform)
+
+    mapped = platform._map_chatgpt_result(
+        {
+            "email": "user@example.com",
+            "password": "Secret123!",
+            "account_id": "acct_123",
+            "access_token": "access-token",
+            "refresh_token": "formal-refresh-token",
+            "registration_refresh_token": "registration-only-refresh-token",
+            "refresh_token_source": "phone_first_oauth",
+            "id_token": "id-token",
+        },
+        require_oauth=True,
+    )
+
+    assert mapped.extra["refresh_token"] == "formal-refresh-token"
+    assert mapped.extra["registration_refresh_token"] == "formal-refresh-token"
+    assert mapped.extra["refresh_token_source"] == "phone_first_oauth"
 
 
 def test_browser_oauth_adapter_still_requires_complete_oauth_result():
@@ -652,3 +734,99 @@ def test_browser_register_run_returns_after_registration_without_codex_oauth(mon
     assert result["account_id"] == "acct_123"
     assert result["session_token"] == "sess_123"
     assert result["cookies"] == "__Secure-next-auth.session-token=sess_123; login_session=yes"
+
+
+def test_phone_first_oauth_falls_back_to_fresh_browser_retry(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "about:blank"
+            self.context = SimpleNamespace(cookies=lambda: [])
+
+    class FakeBrowser:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def new_page(self):
+            return FakePage()
+
+    calls = {"oauth": 0, "retry": 0}
+
+    def fake_do_codex_oauth(*_args, **_kwargs):
+        calls["oauth"] += 1
+        return {"error": "blocked"}
+
+    def fake_retry(self, email, password):
+        calls["retry"] += 1
+        return {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "account_id": "acct-123",
+            "id_token": "id-token",
+        }
+
+    monkeypatch.setattr(browser_register_module, "Camoufox", lambda **kwargs: FakeBrowser())
+    monkeypatch.setattr(browser_register_module, "_browser_registration_flow", lambda *args, **kwargs: {"page_type": "oauth_callback"})
+    monkeypatch.setattr(browser_register_module, "_click_first", lambda page, selectors, timeout=3: selectors[0])
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda page: {})
+    monkeypatch.setattr(browser_register_module, "_fetch_chatgpt_session_from_page", lambda *args, **kwargs: {"access_token": "at_123", "refresh_token": "", "session_token": "sess_123", "account_id": "acct_123", "cookies": ""})
+    monkeypatch.setattr(browser_register_module, "_do_codex_oauth", fake_do_codex_oauth)
+    monkeypatch.setattr(browser_register_module.ChatGPTBrowserRegister, "_retry_oauth_fresh_browser", fake_retry)
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    worker = browser_register_module.ChatGPTBrowserRegister(
+        headless=True,
+        proxy=None,
+        otp_callback=None,
+        phone_callback=None,
+        log_fn=lambda message: None,
+        phone_first_oauth=True,
+        bind_email_after_phone_signup=True,
+    )
+
+    result = worker.run(email="user@example.com", password="Secret123!")
+
+    assert calls == {"oauth": 1, "retry": 1}
+    assert result["refresh_token"] == "refresh-token"
+    assert result["refresh_token_source"] == "phone_first_oauth"
+
+
+def test_phone_first_oauth_requires_usable_refresh_token(monkeypatch):
+    class FakePage:
+        def __init__(self):
+            self.url = "about:blank"
+            self.context = SimpleNamespace(cookies=lambda: [])
+
+    class FakeBrowser:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def new_page(self):
+            return FakePage()
+
+    monkeypatch.setattr(browser_register_module, "Camoufox", lambda **kwargs: FakeBrowser())
+    monkeypatch.setattr(browser_register_module, "_browser_registration_flow", lambda *args, **kwargs: {"page_type": "oauth_callback"})
+    monkeypatch.setattr(browser_register_module, "_click_first", lambda page, selectors, timeout=3: selectors[0])
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda page: {})
+    monkeypatch.setattr(browser_register_module, "_fetch_chatgpt_session_from_page", lambda *args, **kwargs: {"access_token": "at_123", "refresh_token": "", "session_token": "sess_123", "account_id": "acct_123", "cookies": ""})
+    monkeypatch.setattr(browser_register_module, "_do_codex_oauth", lambda *args, **kwargs: {"access_token": "access-only"})
+    monkeypatch.setattr(browser_register_module.ChatGPTBrowserRegister, "_retry_oauth_fresh_browser", lambda self, email, password: {"access_token": "still-access-only"})
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    worker = browser_register_module.ChatGPTBrowserRegister(
+        headless=True,
+        proxy=None,
+        otp_callback=None,
+        phone_callback=None,
+        log_fn=lambda message: None,
+        phone_first_oauth=True,
+        bind_email_after_phone_signup=True,
+    )
+
+    with pytest.raises(RuntimeError, match="usable refresh_token"):
+        worker.run(email="user@example.com", password="Secret123!")
