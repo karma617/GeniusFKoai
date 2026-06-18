@@ -5,6 +5,11 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from camoufox.sync_api import Camoufox
 
+from .._register_browser_window import (
+    apply_camoufox_register_window_size,
+    set_register_page_viewport,
+)
+
 AUTH_BASE = "https://auth.openblocklabs.com"
 DASHBOARD = "https://dashboard.openblocklabs.com"
 CLIENT_ID = "client_01K8YDZSSKDMK8GYTEHBAW4N4S"
@@ -492,12 +497,14 @@ class OpenBlockLabsBrowserRegister:
         launch_opts = {"headless": self.headless}
         if proxy:
             launch_opts["proxy"] = proxy
+        apply_camoufox_register_window_size(launch_opts)
 
         first_name = ''.join(random.choices(string.ascii_lowercase, k=5)).capitalize()
         last_name = ''.join(random.choices(string.ascii_lowercase, k=5)).capitalize()
 
         with Camoufox(**launch_opts) as browser:
             page = browser.new_page()
+            set_register_page_viewport(page)
             page.add_init_script("""
 (function() {
     var screenX = Math.floor(Math.random() * (1200 - 800 + 1)) + 800;

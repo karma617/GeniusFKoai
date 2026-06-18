@@ -13,6 +13,11 @@ from urllib.parse import unquote, urlparse
 
 from camoufox.sync_api import Camoufox
 
+from .._register_browser_window import (
+    apply_camoufox_register_window_size,
+    set_register_page_viewport,
+)
+
 AUTH = "https://authenticator.cursor.sh"
 CURSOR = "https://cursor.com"
 TURNSTILE_SITEKEY = "0x4AAAAAAAMNIvC45A4Wjjln"
@@ -464,9 +469,11 @@ class CursorBrowserRegister:
         launch_opts = {"headless": self.headless}
         if proxy:
             launch_opts["proxy"] = proxy
+        apply_camoufox_register_window_size(launch_opts)
 
         with Camoufox(**launch_opts) as browser:
             page = browser.new_page()
+            set_register_page_viewport(page)
 
             # 注入 MouseEvent screenX/screenY patcher
             # CF Turnstile 会检测 CDP 触发的 MouseEvent.screenX == clientX（Chrome bug）

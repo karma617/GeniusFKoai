@@ -5,6 +5,11 @@ from urllib.parse import urlparse
 
 from camoufox.sync_api import Camoufox
 
+from .._register_browser_window import (
+    apply_camoufox_register_window_size,
+    set_register_page_viewport,
+)
+
 ACCOUNTS_URL = "https://accounts.x.ai"
 GROK_APP_URL = "https://grok.com"
 
@@ -56,9 +61,11 @@ class GrokBrowserRegister:
         launch_opts = {"headless": self.headless}
         if proxy:
             launch_opts["proxy"] = proxy
+        apply_camoufox_register_window_size(launch_opts)
 
         with Camoufox(**launch_opts) as browser:
             page = browser.new_page()
+            set_register_page_viewport(page)
             self.log("打开 Grok 注册页")
             page.goto(f"{ACCOUNTS_URL}/sign-up", wait_until="networkidle", timeout=30000)
             time.sleep(2)

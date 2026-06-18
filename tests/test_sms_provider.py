@@ -580,6 +580,60 @@ class TestCreatePhoneCallbacks:
         assert any("切换下一国家" in item for item in logs)
 
 
+    def test_phone_callback_keeps_create_account_failures_in_current_country_until_limit(self, monkeypatch):
+        events = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "6", "name": "Indonesia", "price": 0.008, "count": 100},
+                    {"country": "12", "name": "United States", "price": 0.004, "count": 100},
+                ]
+
+            def get_number(self, *, service: str, country: str = ""):
+                events.append(("get_number", service, country))
+                return SmsActivation(activation_id=f"act_{len(events)}", phone_number="+15551234567", country=country)
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+            def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+                events.append(("mark_send_failed", activation_id, reason))
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "smsbower_default_country": "6",
+                "sms_country_retry_limit": 2,
+                "sms_phone_retry_limit": 30,
+            },
+            service="chatgpt",
+        )
+
+        for _ in range(30):
+            callback()
+            callback.mark_send_failed("Failed to create account. Please try again")
+            cleanup()
+            callback.phase = "need_number"
+            callback.activation = None
+            callback.completed = False
+
+        callback()
+
+        countries = [item[2] for item in events if item[0] == "get_number"]
+        assert countries[:30] == ["6"] * 30
+        assert countries[30] == "12"
+
+
     def test_phone_callback_switches_country_immediately_after_voip_rejection(self, monkeypatch):
         events = []
 
@@ -628,6 +682,168 @@ class TestCreatePhoneCallbacks:
 
         countries = [item[2] for item in events if item[0] == "get_number"]
         assert countries == ["12", "6"]
+
+    def test_phone_callback_voip_rejection_skips_current_country(self, monkeypatch):
+        events = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "12", "name": "United States", "price": 0.004, "count": 100},
+                    {"country": "6", "name": "Indonesia", "price": 0.008, "count": 100},
+                    {"country": "52", "name": "Thailand", "price": 0.012, "count": 100},
+                ]
+
+            def get_number(self, *, service: str, country: str = ""):
+                events.append(("get_number", service, country))
+                return SmsActivation(activation_id=f"act_{len(events)}", phone_number="+15551234567", country=country)
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+            def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+                events.append(("mark_send_failed", activation_id, reason))
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 3,
+                "sms_phone_retry_limit": 10,
+            },
+            service="chatgpt",
+        )
+
+        callback()
+        callback.mark_send_failed("We couldn't send a text message to this phone number.")
+        cleanup()
+        callback.phase = "need_number"
+        callback.activation = None
+        callback.completed = False
+        callback()
+        callback.mark_send_failed(
+            "It looks like this is a virtual phone number (also known as VoIP). "
+            "Please provide a valid, non-virtual phone number to continue."
+        )
+        cleanup()
+        callback.phase = "need_number"
+        callback.activation = None
+        callback.completed = False
+        callback()
+
+        countries = [item[2] for item in events if item[0] == "get_number"]
+        assert countries == ["12", "12", "6"]
+
+    def test_phone_callback_stops_when_voip_rejection_exhausts_countries(self, monkeypatch):
+        events = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "12", "name": "United States", "price": 0.004, "count": 100},
+                    {"country": "6", "name": "Indonesia", "price": 0.008, "count": 100},
+                ]
+
+            def get_number(self, *, service: str, country: str = ""):
+                events.append(("get_number", service, country))
+                return SmsActivation(activation_id=f"act_{len(events)}", phone_number="+15551234567", country=country)
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+            def mark_send_failed(self, activation_id: str, reason: str = "") -> None:
+                events.append(("mark_send_failed", activation_id, reason))
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 2,
+                "sms_phone_retry_limit": 10,
+            },
+            service="chatgpt",
+        )
+
+        for _ in range(2):
+            callback()
+            callback.mark_send_failed("It looks like this is a virtual phone number (also known as VoIP).")
+            cleanup()
+            callback.phase = "need_number"
+            callback.activation = None
+            callback.completed = False
+
+        with pytest.raises(RuntimeError, match="SMS country plan exhausted"):
+            callback()
+
+        countries = [item[2] for item in events if item[0] == "get_number"]
+        assert countries == ["12", "6"]
+
+    def test_phone_callback_uses_country_plan_price_for_pre_rental_log(self, monkeypatch):
+        logs = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_balance(self) -> float:
+                return 1.0
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "12", "name": "United States", "price": 0.004, "count": 541739},
+                ]
+
+            def get_current_price_info(self, *, service: str, country: str = ""):
+                return {"price": 0.054, "count": 562508, "currency": "USD"}
+
+            def get_number(self, *, service: str, country: str = ""):
+                return SmsActivation(
+                    activation_id="act_price",
+                    phone_number="+15551234567",
+                    country=country,
+                    metadata={"activation_cost": "0.004", "max_price": 0.008},
+                )
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 1,
+            },
+            service="chatgpt",
+            log_fn=logs.append,
+        )
+
+        assert callback() == "+15551234567"
+        cleanup()
+
+        joined = "\n".join(logs)
+        assert "0.004 USD" in joined
+        assert "0.054 USD" not in joined
 
 
 class TestSmsActivateProviderCountryResolution:

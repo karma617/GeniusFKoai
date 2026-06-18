@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from core.base_platform import RegisterConfig
 from core.registration import BrowserRegistrationAdapter, BrowserRegistrationFlow, RegistrationContext, RegistrationResult
+import core.registration.helpers as helpers_module
 import core.registration.flows as flows_module
 
 
@@ -51,3 +52,67 @@ def test_browser_flow_wires_phone_callback_and_runs_cleanup(monkeypatch):
     assert ("build", "chatgpt") in events
     assert ("callback", "18885551234") in events
     assert ("cleanup", "chatgpt") in events
+
+
+def test_build_phone_callbacks_passes_phone_change_limit_to_sms_controller(monkeypatch):
+    captured = {}
+
+    class FakeDefinitionsRepository:
+        def get_by_key(self, _category, _provider_key):
+            return SimpleNamespace(get_fields=lambda: [{"key": "smsbower_api_key", "category": "auth"}])
+
+    class FakeSettingsRepository:
+        def get_default_provider_key(self, _category):
+            return ""
+
+        def resolve_runtime_settings(self, _category, provider_key, extra):
+            settings = dict(extra)
+            settings["resolved_provider"] = provider_key
+            return settings
+
+    def fake_create_phone_callbacks(provider_key, config, *, service, country="", log_fn=None):
+        captured.update({
+            "provider_key": provider_key,
+            "config": dict(config),
+            "service": service,
+            "country": country,
+        })
+        return (lambda: "+15551234567", lambda: None)
+
+    monkeypatch.setattr(
+        "infrastructure.provider_definitions_repository.ProviderDefinitionsRepository",
+        lambda: FakeDefinitionsRepository(),
+    )
+    monkeypatch.setattr(
+        "infrastructure.provider_settings_repository.ProviderSettingsRepository",
+        lambda: FakeSettingsRepository(),
+    )
+    monkeypatch.setattr(helpers_module, "create_phone_callbacks", fake_create_phone_callbacks)
+
+    ctx = RegistrationContext(
+        platform_name="chatgpt",
+        platform_display_name="ChatGPT",
+        platform=SimpleNamespace(mailbox=None),
+        identity=SimpleNamespace(identity_provider="sms_oauth"),
+        config=RegisterConfig(
+            executor_type="headless",
+            extra={
+                "sms_provider": "smsbower_api",
+                "smsbower_api_key": "KEY",
+                "phone_change_limit": "30",
+            },
+        ),
+        email="user@example.com",
+        password="Secret123!",
+        log_fn=lambda message: None,
+    )
+
+    callback, cleanup = helpers_module.build_phone_callbacks(ctx, service="dr")
+
+    assert callable(callback)
+    assert callable(cleanup)
+    assert captured["provider_key"] == "smsbower_api"
+    assert captured["service"] == "dr"
+    assert captured["config"]["phone_change_limit"] == 30
+    assert captured["config"]["sms_phone_retry_limit"] == 30
+    assert captured["config"]["sms_phone_failures_per_country"] == 30

@@ -213,6 +213,7 @@ def open_browser_backend(
             api_url=config.bit_api_url,
             api_token=config.bit_api_token,
             window_mode=config.window_mode,
+            extra_args=list(launch_opts.get("args") or []),
             log=log,
         )
 

@@ -19,6 +19,11 @@ from urllib.parse import urlparse
 
 from camoufox.sync_api import Camoufox
 
+from .._register_browser_window import (
+    apply_camoufox_register_window_size,
+    set_register_page_viewport,
+)
+
 KIRO_URL = "https://app.kiro.dev"
 AWS_SIGNIN_DOMAIN = "signin.aws"
 AWS_PROFILE_DOMAIN = "profile.aws.amazon.com"
@@ -429,9 +434,11 @@ class KiroBrowserRegister:
         launch_opts = {"headless": self.headless}
         if proxy:
             launch_opts["proxy"] = proxy
+        apply_camoufox_register_window_size(launch_opts)
 
         with Camoufox(**launch_opts) as browser:
             page = browser.new_page()
+            set_register_page_viewport(page)
 
             # 1. 打开 Kiro 登录页
             self.log("打开 Kiro 登录页")

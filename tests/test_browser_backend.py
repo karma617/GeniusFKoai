@@ -322,6 +322,29 @@ def test_open_browser_backend_bitbrowser_path_returns_bitbrowser_context(monkeyp
     assert captured["profile_id"] == "abc"
     assert captured["window_mode"] == "hidden"
     assert captured["api_url"] == bb.DEFAULT_BIT_API_URL
+    assert captured["extra_args"] == []
+
+
+def test_open_browser_backend_bitbrowser_path_forwards_extra_args(monkeypatch):
+    cfg = bbe.BrowserBackendConfig.bitbrowser(profile_id="abc", window_mode="headed")
+
+    captured = {}
+
+    class _StubBitBrowserContext:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(bbe, "BitBrowserContext", _StubBitBrowserContext)
+
+    ctx = bbe.open_browser_backend(
+        launch_opts={"headless": False, "args": ["--window-size=1800,900"]},
+        config=cfg,
+        camoufox_class=_FakeCamoufoxClass,
+        log=lambda _msg: None,
+    )
+
+    assert isinstance(ctx, _StubBitBrowserContext)
+    assert captured["extra_args"] == ["--window-size=1800,900"]
 
 
 # ---------------------------------------------------------------------------

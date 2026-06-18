@@ -19,6 +19,11 @@ from urllib.parse import urlparse
 
 from camoufox.sync_api import Camoufox
 
+from .._register_browser_window import (
+    apply_camoufox_register_window_size,
+    set_register_page_viewport,
+)
+
 TRAE_URL = "https://www.trae.ai"
 TRAE_PASSPORT_DOMAIN = "ug-normal.trae.ai"
 
@@ -194,9 +199,11 @@ class TraeBrowserRegister:
         launch_opts = {"headless": self.headless}
         if proxy:
             launch_opts["proxy"] = proxy
+        apply_camoufox_register_window_size(launch_opts)
 
         with Camoufox(**launch_opts) as browser:
             page = browser.new_page()
+            set_register_page_viewport(page)
 
             # 1. 打开注册页
             self.log("打开 Trae 注册页")

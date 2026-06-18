@@ -18,6 +18,19 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+def _is_virtual_or_voip_phone_rejection(reason: str) -> bool:
+    text = str(reason or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "voip_phone_disallowed",
+            "virtual phone",
+            "voip",
+            "non-virtual phone",
+        )
+    )
+
+
 @dataclass
 class SmsActivation:
     """Represents an active phone number rental."""
@@ -2967,6 +2980,17 @@ class PhoneCallbackController:
         except Exception:
             return {}
 
+    @staticmethod
+    def _merge_country_plan_price_info(info: dict, candidate: dict[str, Any] | None) -> dict:
+        if not candidate:
+            return dict(info or {})
+        merged = dict(info or {})
+        if candidate.get("price") not in (None, ""):
+            merged["price"] = candidate.get("price")
+        if candidate.get("count") not in (None, "") and merged.get("count") in (None, ""):
+            merged["count"] = candidate.get("count")
+        return merged
+
     def _price_label(self, info: dict, activation: SmsActivation | None = None) -> str:
         metadata = activation.metadata if activation and isinstance(activation.metadata, dict) else {}
         number_info = metadata.get("number_info") if isinstance(metadata.get("number_info"), dict) else {}
@@ -3023,30 +3047,47 @@ class PhoneCallbackController:
                 self._verify_lock_acquired = True
 
             effective_country = self.country
+            selected_candidate: dict[str, Any] | None = None
+            country_plan_exhausted = False
             auto_select = self._country_plan_enabled(provider)
             if auto_select:
                 try:
                     plan = self._ensure_country_attempt_plan(provider)
                     if plan:
                         # 仅注册帐号同款：同一国家先换 10 个号；仍失败则按价格切下一个国家。
-                        country_index = min(self._send_failure_count // self._phone_failures_per_country, len(plan) - 1)
-                        candidate = plan[country_index]
-                        effective_country = str(candidate.get("country") or "").strip()
-                        if country_index != self._last_country_index:
-                            action = "自动选择国家" if self._send_failure_count <= 0 else f"当前国家已失败 {self._phone_failures_per_country} 次，切换下一国家"
-                            self.log(
-                                f"{action}: {self._country_candidate_label(candidate)} "
-                                f"({country_index + 1}/{len(plan)})"
-                            )
-                            self._last_country_index = country_index
+                        country_index = self._send_failure_count // self._phone_failures_per_country
+                        if country_index >= len(plan):
+                            country_plan_exhausted = True
+                        else:
+                            candidate = plan[country_index]
+                            selected_candidate = candidate
+                            effective_country = str(candidate.get("country") or "").strip()
+                            if country_index != self._last_country_index:
+                                action = "自动选择国家" if self._send_failure_count <= 0 else f"当前国家已失败 {self._phone_failures_per_country} 次，切换下一国家"
+                                self.log(
+                                    f"{action}: {self._country_candidate_label(candidate)} "
+                                    f"({country_index + 1}/{len(plan)})"
+                                )
+                                self._last_country_index = country_index
                     else:
                         self.log("未找到满足条件的国家，使用默认配置")
                 except Exception as exc:
                     self.log(f"智能国家选择失败({_redact_sms_error_text(exc)})，使用默认配置")
 
+            if auto_select:
+                plan_len = len(self._auto_country_candidates or [])
+                if country_plan_exhausted or (
+                    plan_len and self._send_failure_count // self._phone_failures_per_country >= plan_len
+                ):
+                    raise RuntimeError(
+                        f"SMS country plan exhausted provider={self.provider_key} "
+                        f"service={self.service} countries={plan_len}"
+                    )
+
             country_label = effective_country or self.config.get("sms_country") or self.config.get("sms_activate_country") or "default"
             self.log(f"已进入 add_phone，准备租用手机号: provider={self.provider_key} service={self.service} country={country_label}")
             price_info = self._price_info_for_log(provider, country=effective_country)
+            price_info = self._merge_country_plan_price_info(price_info, selected_candidate)
             balance_label = self._balance_label(provider, currency=str(price_info.get("currency") or "USD"))
             self.log(
                 f"正在从 {self.provider_key} 获取手机号... "
@@ -3133,9 +3174,16 @@ class PhoneCallbackController:
                 "unable to create account",
             )
         )
+        is_virtual_phone_rejection = _is_virtual_or_voip_phone_rejection(reason_text)
         if strong_rejection:
             self._account_create_failure_count += 1
-            if self._account_create_failure_count >= 2 or "voip" in reason_text or "invalid phone" in reason_text:
+            if is_virtual_phone_rejection:
+                next_country_failure_count = (
+                    (self._send_failure_count // self._phone_failures_per_country) + 1
+                ) * self._phone_failures_per_country
+                self._send_failure_count = max(self._send_failure_count, next_country_failure_count)
+                self.log("Phone country rejected as virtual/VoIP; switching to next country")
+            elif "invalid phone" in reason_text:
                 self._send_failure_count = max(self._send_failure_count, self._phone_failures_per_country)
         else:
             self._account_create_failure_count = 0

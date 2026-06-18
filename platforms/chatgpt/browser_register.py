@@ -13,6 +13,11 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from camoufox.sync_api import Camoufox
 
 from .._browser_backend import BrowserBackendConfig, open_browser_backend
+from .._register_browser_window import (
+    REGISTER_BROWSER_WINDOW_ARG,
+    apply_camoufox_register_window_size,
+    set_register_page_viewport,
+)
 from .constants import (
     OPENAI_AUTH,
     CHATGPT_APP,
@@ -410,6 +415,39 @@ def _parse_phone_country_and_local(phone_number: str) -> tuple[str, str, str]:
 def _is_retryable_phone_rejection_text(text: str) -> bool:
     """识别 add-phone 页可通过换号恢复的拒号提示。"""
     return bool(PHONE_RETRYABLE_REJECTION_RE.search(str(text or "")))
+
+
+def _is_retryable_initial_phone_fetch_error(text: str) -> bool:
+    value = str(text or "").lower()
+    if _is_retryable_phone_rejection_text(value):
+        return True
+    markers = (
+        "smsbower",
+        "herosms",
+        "grizzlysms",
+        "sms-verification-number",
+        "sms verification number",
+        "sms-activate",
+        "get number",
+        "get_number",
+        "\u83b7\u53d6\u53f7\u7801",
+        "\u83b7\u53d6\u624b\u673a\u53f7",
+        "no_numbers",
+        "no numbers",
+        "connectionreseterror",
+        "connection reset",
+        "connection aborted",
+        "remote disconnected",
+        "read timed out",
+        "read timeout",
+        "connect timeout",
+        "connection timeout",
+        "request timeout",
+        "timed out",
+        "10054",
+        "sms country plan exhausted",
+    )
+    return any(marker in value for marker in markers)
 
 
 def _get_phone_country_select_state(page, dial_code: str, country_name: str) -> dict:
@@ -815,6 +853,117 @@ def _find_first_selector(page, selectors: list[str]) -> str | None:
         if node:
             return sel
     return None
+
+
+def _is_visible_password_registration_page(page) -> bool:
+    try:
+        result = page.evaluate(
+            """
+                () => {
+                  const norm = (value) => String(value || '')
+                    .replace(/\\s+/g, ' ')
+                    .trim()
+                    .toLowerCase();
+                  const text = norm(document.body?.innerText || '');
+                  const visible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style
+                      && style.display !== 'none'
+                      && style.visibility !== 'hidden'
+                      && rect.width > 0
+                      && rect.height > 0
+                      && !el.disabled
+                      && el.getAttribute('aria-disabled') !== 'true';
+                  };
+                  const inputs = Array.from(document.querySelectorAll('input, textarea'));
+                  const hasPasswordInput = inputs.some((el) => {
+                    if (!visible(el)) return false;
+                    const hint = norm([
+                      el.type,
+                      el.name,
+                      el.id,
+                      el.placeholder,
+                      el.getAttribute('aria-label'),
+                      el.getAttribute('autocomplete'),
+                    ].filter(Boolean).join(' '));
+                    return hint.includes('password');
+                  });
+                  if (hasPasswordInput) return true;
+                  return text.includes('create a password')
+                    || text.includes('you\\u2019ll use this password')
+                    || text.includes("you'll use this password");
+                }
+            """
+        )
+        return result is True
+    except Exception:
+        return False
+
+
+def _is_visible_phone_first_sms_otp_page(page) -> bool:
+    try:
+        result = page.evaluate(
+            """
+                () => {
+                  const norm = (value) => String(value || '')
+                    .replace(/\\s+/g, ' ')
+                    .trim()
+                    .toLowerCase();
+                  const text = norm(document.body?.innerText || '');
+                  const visible = (el) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style
+                      && style.display !== 'none'
+                      && style.visibility !== 'hidden'
+                      && rect.width > 0
+                      && rect.height > 0
+                      && !el.disabled
+                      && el.getAttribute('aria-disabled') !== 'true';
+                  };
+                  const hasOtpText = [
+                    'verification code',
+                    'enter code',
+                    'one-time code',
+                    'security code',
+                    'we sent',
+                    'text message',
+                    'sms',
+                    'whatsapp',
+                    'code'
+                  ].some((token) => text.includes(token));
+                  const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea'));
+                  return inputs.some((el) => {
+                    if (!visible(el)) return false;
+                    const hint = norm([
+                      el.type,
+                      el.name,
+                      el.id,
+                      el.placeholder,
+                      el.getAttribute('aria-label'),
+                      el.getAttribute('autocomplete'),
+                      el.getAttribute('inputmode'),
+                    ].filter(Boolean).join(' '));
+                    if (hint.includes('phone') || hint.includes('tel')) {
+                      return false;
+                    }
+                    if (hint.includes('one-time-code') || hint.includes('otp')) {
+                      return true;
+                    }
+                    if (hint.includes('code') || hint.includes('verification')) {
+                      return true;
+                    }
+                    const maxLength = Number(el.getAttribute('maxlength') || 0);
+                    const numeric = hint.includes('numeric') || hint.includes('number');
+                    return hasOtpText && numeric && (!maxLength || maxLength <= 8);
+                  });
+                }
+            """
+        )
+        return result is True
+    except Exception:
+        return False
 
 
 def _wait_for_any_selector(page, selectors: list[str], timeout: int = 30):
@@ -1785,13 +1934,13 @@ def _pick_best_about_you_input(entries: list[dict], field: str, exclude_visible_
 
 def _derive_registration_state_from_page(page) -> dict:
     current_url = str(page.url or "")
+    if _find_first_selector(page, PASSWORD_INPUT_SELECTORS) or _is_visible_password_registration_page(page):
+        page_type = "login_password" if _is_login_password_url(current_url) else "create_account_password"
+        return _build_manual_flow_state(page_type, current_url)
+
     state = _extract_flow_state(None, current_url)
     if state.get("page_type"):
         return state
-
-    if _find_first_selector(page, PASSWORD_INPUT_SELECTORS):
-        page_type = "login_password" if _is_login_password_url(current_url) else "create_account_password"
-        return _build_manual_flow_state(page_type, current_url)
 
     otp_selector = _find_first_selector(page, OTP_INPUT_SELECTORS)
     if otp_selector and "password" not in otp_selector:
@@ -1823,6 +1972,53 @@ def _derive_registration_state_from_page(page) -> dict:
         return _build_manual_flow_state("about_you", current_url)
 
     return state
+
+
+def _refresh_registration_state_from_page_if_password_visible(page, state: dict, log=None) -> dict:
+    current = state if isinstance(state, dict) else {}
+    try:
+        page_state = _derive_registration_state_from_page(page)
+    except Exception:
+        return current
+    if _is_password_registration(page_state) or str(page_state.get("page_type") or "") == "login_password":
+        if str(current.get("page_type") or "") != str(page_state.get("page_type") or "") and callable(log):
+            log(
+                "Phone-first signup: visible password page overrides stale "
+                f"{current.get('page_type') or '-'} state"
+            )
+        return page_state
+    return current
+
+
+def _wait_for_phone_first_otp_or_password_state(page, state: dict, log=None, timeout: float = 12.0) -> dict:
+    current = state if isinstance(state, dict) else {}
+    deadline = time.time() + max(float(timeout or 0), 0.0)
+    while True:
+        try:
+            page_state = _derive_registration_state_from_page(page)
+        except Exception:
+            page_state = {}
+        if _is_password_registration(page_state) or str(page_state.get("page_type") or "") == "login_password":
+            if callable(log):
+                log(
+                    "Phone-first signup: password page appeared before SMS wait; "
+                    f"overriding {current.get('page_type') or '-'} state"
+                )
+            return page_state
+        if str(page_state.get("page_type") or "") == "phone_otp_verification" and _is_visible_phone_first_sms_otp_page(page):
+            return page_state
+        if _is_email_otp(page_state) and _is_visible_phone_first_sms_otp_page(page):
+            return page_state
+        if not _is_email_otp(page_state) and page_state.get("page_type"):
+            return page_state
+        if time.time() >= deadline:
+            if callable(log):
+                log(
+                    "Phone-first signup: SMS OTP page not confirmed yet; "
+                    "waiting for page transition"
+                )
+            return _build_manual_flow_state("pending_transition", str(getattr(page, "url", "") or ""))
+        time.sleep(0.5)
 
 
 def _recover_signup_password_page(page, log) -> bool:
@@ -6405,7 +6601,7 @@ def _browser_registration_flow_once(
                     if not (
                         phone_callback
                         and phone_change_used < phone_attempt_limit
-                        and _is_retryable_phone_rejection_text(error_text)
+                        and _is_retryable_initial_phone_fetch_error(error_text)
                     ):
                         raise
                     log(
@@ -6449,6 +6645,11 @@ def _browser_registration_flow_once(
             f"注册状态推进: step={step+1} page={state.get('page_type') or '-'} "
             f"next={str(state.get('continue_url') or '')} seen={seen_states[signature]}"
         )
+        if str(state.get("page_type") or "") == "pending_transition":
+            time.sleep(1)
+            state = _wait_for_phone_first_otp_or_password_state(page, state, log, timeout=1.0)
+            seen_states.clear()
+            continue
         if seen_states[signature] > 2:
             raise RuntimeError(f"注册状态卡住: page={state.get('page_type') or '-'}")
 
@@ -6491,6 +6692,7 @@ def _browser_registration_flow_once(
                     log(f"Phone-first signup using replacement phone: {_mask_phone_number(new_phone)}")
                     signup_username = new_phone
                     state = _submit_phone_identity_via_page(page, new_phone, log)
+                    state = _refresh_registration_state_from_page_if_password_visible(page, state, log)
                     register_submitted = False
                     seen_states.clear()
                     continue
@@ -6532,6 +6734,7 @@ def _browser_registration_flow_once(
                 raise RuntimeError("Phone-first signup did not receive a phone number for phone_entry")
             signup_username = new_phone
             state = _submit_phone_identity_via_page(page, new_phone, log)
+            state = _refresh_registration_state_from_page_if_password_visible(page, state, log)
             register_submitted = False
             seen_states.clear()
             continue
@@ -6539,6 +6742,10 @@ def _browser_registration_flow_once(
         if str(state.get("page_type") or "") == "phone_otp_verification":
             if not phone_first_signup or not phone_callback:
                 raise RuntimeError("Phone OTP page requires phone-first signup callback")
+            if not _is_visible_phone_first_sms_otp_page(page):
+                log("Phone-first signup: phone OTP state not confirmed by visible code input; waiting for page transition")
+                state = _build_manual_flow_state("pending_transition", str(getattr(page, "url", "") or ""))
+                continue
             sms_code = str(phone_callback() or "").strip()
             if not sms_code:
                 raise RuntimeError("Phone-first signup did not receive an SMS code")
@@ -6566,7 +6773,28 @@ def _browser_registration_flow_once(
                 state = _derive_registration_state_from_page(page)
             continue
 
+        if str(state.get("page_type") or "") == "pending_transition":
+            time.sleep(1)
+            state = _wait_for_phone_first_otp_or_password_state(page, state, log, timeout=1.0)
+            continue
+
         if _is_email_otp(state):
+            if phone_first_signup:
+                state = _wait_for_phone_first_otp_or_password_state(page, state, log)
+            else:
+                state = _refresh_registration_state_from_page_if_password_visible(page, state, log)
+            if _is_password_registration(state) or str(state.get("page_type") or "") == "login_password":
+                log(
+                    "Phone-first signup: visible password page overrides stale OTP state; "
+                    "continuing password step"
+                )
+                continue
+            if phone_first_signup and not _is_email_otp(state):
+                continue
+            if phone_first_signup and _is_email_otp(state) and not _is_visible_phone_first_sms_otp_page(page):
+                log("Phone-first signup: email OTP state not confirmed by visible SMS code input; waiting for page transition")
+                state = _build_manual_flow_state("pending_transition", str(getattr(page, "url", "") or ""))
+                continue
             active_otp_callback = phone_callback if phone_first_signup else otp_callback
             if not active_otp_callback:
                 raise RuntimeError("ChatGPT 注册需要验证码但未提供 callback")
@@ -6775,7 +7003,10 @@ class ChatGPTBrowserRegister:
     def run(self, email: str, password: str) -> dict:
         if self.backend_config.is_bitbrowser:
             # BitBrowser 路径：profile 已配代理/指纹，launch_opts 不传这些。
-            launch_opts = {"headless": self.backend_config.is_headless}
+            launch_opts = {
+                "headless": self.backend_config.is_headless,
+                "args": [REGISTER_BROWSER_WINDOW_ARG],
+            }
         else:
             proxy = _build_proxy_config(self.proxy)
             launch_opts = {"headless": self.headless}
@@ -6783,9 +7014,11 @@ class ChatGPTBrowserRegister:
                 launch_opts["proxy"] = proxy
                 if not _is_local_proxy(self.proxy):
                     launch_opts["geoip"] = True
+            apply_camoufox_register_window_size(launch_opts)
 
         with self._open_browser(launch_opts) as browser:
             page = browser.new_page()
+            set_register_page_viewport(page)
             self.log("启动浏览器上下文注册状态机")
             final_state = _browser_registration_flow(
                 page,
@@ -6867,15 +7100,20 @@ class ChatGPTBrowserRegister:
     def _retry_oauth_fresh_browser(self, email, password):
         """在全新浏览器 context 里做 Codex OAuth（绕过 add_phone session）。"""
         if self.backend_config.is_bitbrowser:
-            launch_opts = {"headless": self.backend_config.is_headless}
+            launch_opts = {
+                "headless": self.backend_config.is_headless,
+                "args": [REGISTER_BROWSER_WINDOW_ARG],
+            }
         else:
             proxy = _build_proxy_config(self.proxy)
             launch_opts = {"headless": self.headless}
             if proxy:
                 launch_opts["proxy"] = proxy
+            apply_camoufox_register_window_size(launch_opts)
         try:
             with self._open_browser(launch_opts) as browser:
                 page = browser.new_page()
+                set_register_page_viewport(page)
                 self.log("  全新浏览器 OAuth 开始...")
                 result = _do_codex_oauth(
                     page, {}, email, password,

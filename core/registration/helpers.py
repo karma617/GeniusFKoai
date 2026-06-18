@@ -126,6 +126,14 @@ def build_phone_callbacks(ctx: RegistrationContext, *, service: str | None = Non
 
     if ctx.proxy and not str(merged.get("sms_proxy") or merged.get("proxy") or "").strip():
         merged["sms_proxy"] = ctx.proxy
+    try:
+        phone_change_limit = int((ctx.extra or {}).get("phone_change_limit") or 0)
+    except Exception:
+        phone_change_limit = 0
+    if phone_change_limit > 0:
+        merged["phone_change_limit"] = phone_change_limit
+        merged.setdefault("sms_phone_retry_limit", phone_change_limit)
+        merged.setdefault("sms_phone_failures_per_country", phone_change_limit)
 
     country = str(
         merged.get("sms_country")
@@ -170,6 +178,13 @@ def build_phone_callbacks(ctx: RegistrationContext, *, service: str | None = Non
         or ctx.platform_name
     ).strip() or ctx.platform_name
     ctx.log(f"[SMS] phone_callback 已就绪: provider={provider_key} 来源={source} service={sms_service} country={country or 'default'}")
+    if phone_change_limit > 0:
+        ctx.log(
+            "[SMS] phone limits "
+            f"phone_change_limit={phone_change_limit} "
+            f"sms_phone_retry_limit={merged.get('sms_phone_retry_limit')} "
+            f"sms_phone_failures_per_country={merged.get('sms_phone_failures_per_country')}"
+        )
     return create_phone_callbacks(
         provider_key,
         merged,

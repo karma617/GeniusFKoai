@@ -7,6 +7,10 @@ from urllib.parse import urlparse
 import requests
 from camoufox.sync_api import Camoufox
 
+from .._register_browser_window import (
+    apply_camoufox_register_window_size,
+    set_register_page_viewport,
+)
 
 TURNSTILE_SITEKEY = "0x4AAAAAAAQFNSW6xordsuIq"
 ORG_ONLY_SIGNUP_MARKERS = (
@@ -479,9 +483,11 @@ class TavilyBrowserRegister:
         proxy = _build_proxy_config(self.proxy)
         if proxy:
             launch_options["proxy"] = proxy
+        apply_camoufox_register_window_size(launch_options)
 
         with Camoufox(**launch_options) as browser:
             page = browser.new_page()
+            set_register_page_viewport(page)
 
             page.goto("https://app.tavily.com/sign-in", wait_until="networkidle", timeout=30000)
             time.sleep(2)

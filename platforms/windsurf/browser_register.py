@@ -15,6 +15,12 @@ try:
 except Exception:  # pragma: no cover
     Camoufox = None
 
+from .._register_browser_window import (
+    apply_camoufox_register_window_size,
+    apply_chromium_register_window_size,
+    register_browser_viewport,
+    set_register_page_viewport,
+)
 from platforms.windsurf.core import (
     SEAT_SERVICE,
     UA,
@@ -619,8 +625,10 @@ class WindsurfBrowserRegister:
                 proxy = _proxy_config(self.proxy)
                 if proxy:
                     launch_opts["proxy"] = proxy
+                apply_camoufox_register_window_size(launch_opts)
                 with Camoufox(**launch_opts) as browser:
                     page = browser.new_page()
+                    set_register_page_viewport(page)
                     page.set_default_timeout(90000)
                     WindsurfCamoufoxCheckoutFlow._add_mouse_event_patch(page)
                     return self._run_with_page(page, email=email, password=password, name=name)
@@ -634,8 +642,9 @@ class WindsurfBrowserRegister:
             proxy = _proxy_config(self.proxy)
             if proxy:
                 launch_opts["proxy"] = proxy
+            apply_chromium_register_window_size(launch_opts)
             browser = _launch_chromium(pw, launch_opts)
-            context = browser.new_context(viewport={"width": 1280, "height": 820}, user_agent=UA)
+            context = browser.new_context(viewport=register_browser_viewport(), user_agent=UA)
             context.set_default_timeout(90000)
             page = context.new_page()
             try:
