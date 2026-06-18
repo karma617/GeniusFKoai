@@ -151,11 +151,11 @@ function Sidebar({
         {!collapsed && (
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(var(--accent-rgb),0.24)]">
-              A
+              摘星
             </div>
             <div className="min-w-0">
               <span className="block truncate text-[15px] font-bold text-[var(--text-primary)]">
-                aBaiAutoplus
+                Pickstar GPT Manager
               </span>
               <span className="block truncate text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--text-muted)]">
                 Enterprise
@@ -524,7 +524,7 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
             A
           </div>
           <h1 className="text-base font-semibold text-[var(--text-primary)]">
-            aBaiAutoplus
+          Pickstar GPT Manager
           </h1>
         </div>
         <p className="text-sm text-[var(--text-muted)]">{t("login.prompt")}</p>

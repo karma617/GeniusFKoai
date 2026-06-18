@@ -116,7 +116,7 @@ class Any2ApiClient:
     def push_kiro(self, access_token: str, *, name: str = "", machine_id: str = "") -> bool:
         result = self._post("/admin/api/providers/kiro/accounts/create", {
             "id": str(uuid.uuid4()),
-            "name": name or "aBaiAutoplus",
+            "name": name or "Pickstar",
             "accessToken": access_token,
             "machineId": machine_id or str(uuid.uuid4()),
             "active": True,
@@ -126,7 +126,7 @@ class Any2ApiClient:
     def push_grok(self, cookie_token: str, *, name: str = "") -> bool:
         result = self._post("/admin/api/providers/grok/tokens/create", {
             "id": str(uuid.uuid4()),
-            "name": name or "aBaiAutoplus",
+            "name": name or "Pickstar",
             "cookieToken": cookie_token,
             "active": True,
         })

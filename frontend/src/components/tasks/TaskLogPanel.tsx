@@ -98,10 +98,26 @@ export function TaskLogPanel({
       }
     };
 
+    const fetchMissingEvents = async () => {
+      let guard = 0;
+      while (guard < 20) {
+        guard += 1;
+        const data = await apiFetch(
+          `/tasks/${taskId}/events?since=${cursorRef.current}&limit=500`,
+        );
+        const items = data.items || [];
+        for (const item of items) {
+          pushEvent(item);
+        }
+        if (items.length < 500) break;
+      }
+    };
+
     const syncTask = async () => {
       const latest = await apiFetch(`/tasks/${taskId}`);
       setTask(latest);
       if (isTerminalTaskStatus(latest.status) && !doneRef.current) {
+        await fetchMissingEvents();
         pushEvent({ done: true, status: latest.status });
       }
     };
@@ -139,12 +155,7 @@ export function TaskLogPanel({
     const fallbackPoll = window.setInterval(async () => {
       if (doneRef.current || sseHealthyRef.current) return;
       try {
-        const data = await apiFetch(
-          `/tasks/${taskId}/events?since=${cursorRef.current}`,
-        );
-        for (const item of data.items || []) {
-          pushEvent(item);
-        }
+        await fetchMissingEvents();
       } catch {
         // passive
       }

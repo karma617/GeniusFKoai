@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 from application.account_exports import AccountExportsService
 from application.phone_binding import PhoneBindingService, SmsApiPhoneCallback, parse_phone_bind_lines
+from core.base_platform import Account, AccountStatus
+from core.db import save_account
 from domain.accounts import AccountCreateCommand, AccountExportSelection
 from infrastructure.accounts_repository import AccountsRepository
 
@@ -530,6 +532,133 @@ def test_phone_bind_api_returns_batch_result(client, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["success_count"] == 1
+
+
+def test_batch_status_update_marks_chatgpt_rt_states(client):
+    first = _create_account(client, email="batch-rt-1@test.com").json()
+    second = _create_account(client, email="batch-rt-2@test.com").json()
+    ids = [first["id"], second["id"]]
+
+    pending_resp = client.post(
+        "/api/accounts/batch-status",
+        json={
+            "platform": "chatgpt",
+            "ids": ids,
+            "lifecycle_status": "rt_pending_upload",
+        },
+    )
+
+    assert pending_resp.status_code == 200
+    assert pending_resp.json()["updated_ids"] == ids
+    for account_id in ids:
+        detail = client.get(f"/api/accounts/{account_id}").json()
+        assert detail["lifecycle_status"] == "rt_pending_upload"
+        assert detail["display_status"] == "rt_pending_upload"
+        assert detail["overview"]["rt_upload_status"] == "pending_upload"
+        assert detail["overview"]["rt_acquired_at"]
+
+    uploaded_resp = client.post(
+        "/api/accounts/batch-status",
+        json={
+            "platform": "chatgpt",
+            "ids": ids,
+            "lifecycle_status": "rt_uploaded",
+        },
+    )
+
+    assert uploaded_resp.status_code == 200
+    for account_id in ids:
+        detail = client.get(f"/api/accounts/{account_id}").json()
+        assert detail["lifecycle_status"] == "rt_uploaded"
+        assert detail["display_status"] == "rt_uploaded"
+        assert detail["overview"]["rt_upload_status"] == "uploaded"
+        assert detail["overview"]["rt_uploaded_at"]
+
+
+def test_batch_status_update_can_reset_to_registered_without_dropping_credentials(client):
+    created = _create_account(
+        client,
+        email="batch-registered@test.com",
+        credentials={"refresh_token": "rt_keep"},
+    ).json()
+    account_id = created["id"]
+
+    client.post(
+        "/api/accounts/batch-status",
+        json={
+            "platform": "chatgpt",
+            "ids": [account_id],
+            "lifecycle_status": "rt_uploaded",
+        },
+    )
+    resp = client.post(
+        "/api/accounts/batch-status",
+        json={
+            "platform": "chatgpt",
+            "ids": [account_id],
+            "lifecycle_status": "registered",
+        },
+    )
+
+    assert resp.status_code == 200
+    detail = client.get(f"/api/accounts/{account_id}").json()
+    assert detail["lifecycle_status"] == "registered"
+    assert detail["display_status"] == "registered"
+    assert "rt_upload_status" not in detail["overview"]
+    credentials = {item["key"]: item["value"] for item in detail["credentials"]}
+    assert credentials["refresh_token"] == "rt_keep"
+
+
+def test_chatgpt_registered_account_persists_full_session_for_copy(client):
+    session_payload = {
+        "user": {"email": "session-copy@test.com"},
+        "accessToken": "access-token-from-session",
+        "expires": "2026-06-19T00:00:00.000Z",
+    }
+    save_account(
+        Account(
+            platform="chatgpt",
+            email="session-copy@test.com",
+            password="TestPass123!",
+            user_id="acct-session-copy",
+            token="access-token-from-session",
+            status=AccountStatus.REGISTERED,
+            extra={
+                "account_id": "acct-session-copy",
+                "access_token": "access-token-from-session",
+                "session": session_payload,
+            },
+        )
+    )
+
+    resp = client.get("/api/accounts", params={"platform": "chatgpt"})
+
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert item["overview"]["session"] == session_payload
+    assert "session" not in dict(item["overview"].get("legacy_extra") or {})
+
+
+def test_batch_status_update_rejects_invalid_request(client):
+    account = _create_account(client, email="batch-invalid@test.com").json()
+
+    empty_resp = client.post(
+        "/api/accounts/batch-status",
+        json={"platform": "chatgpt", "ids": [], "lifecycle_status": "registered"},
+    )
+    assert empty_resp.status_code == 400
+
+    platform_resp = client.post(
+        "/api/accounts/batch-status",
+        json={"platform": "cursor", "ids": [account["id"]], "lifecycle_status": "registered"},
+    )
+    assert platform_resp.status_code == 400
+
+    status_resp = client.post(
+        "/api/accounts/batch-status",
+        json={"platform": "chatgpt", "ids": [account["id"]], "lifecycle_status": "not_a_status"},
+    )
+    assert status_resp.status_code == 400
 
 
 def test_ctf_gpt_plus_export_status_marks_accounts(client):

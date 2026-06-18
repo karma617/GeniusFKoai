@@ -1044,7 +1044,26 @@ class _GetRtPhoneLease:
                 if ok is True:
                     return "cancel_ok"
                 if ok is False:
-                    return f"queued detail={str(detail)[:180]}"
+                    # SMSPool 服务端处于冷却窗口时会返回 "cannot be cancelled yet"，
+                    # 已入队后台重试，文案详见 data/smspool_release_queue.json。
+                    detail_text = ""
+                    if isinstance(detail, dict):
+                        for key in ("message", "error", "reason"):
+                            value = detail.get(key)
+                            if value:
+                                detail_text = str(value)
+                                break
+                        if not detail_text:
+                            try:
+                                import json as _json
+                                detail_text = _json.dumps(detail, ensure_ascii=False)
+                            except Exception:
+                                detail_text = str(detail)
+                    else:
+                        detail_text = str(detail or "")
+                    if "cannot be cancelled yet" in detail_text.lower():
+                        return "queued reason=cooldown"
+                    return f"queued detail={detail_text[:180]}"
                 return "cancel_sent"
             except Exception as exc:
                 return f"cancel_error {str(exc)[:180]}"
@@ -1153,6 +1172,11 @@ class GetRtPhoneReusePool:
                 f"  [phone-pool] phone retired after failure: {lease.phone} "
                 f"release={release_status}"
             )
+            if release_status.startswith("queued"):
+                self.log(
+                    f"  [phone-pool] phone={lease.phone} 已入队后台释放"
+                    "：data/smspool_release_queue.json (worker 会重试到冷却窗外)"
+                )
 
     def cleanup(self) -> None:
         leases_to_close: list[_GetRtPhoneLease] = []

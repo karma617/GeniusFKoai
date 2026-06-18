@@ -4352,6 +4352,9 @@ def _do_codex_oauth(
                             log(f"  手机验证已成功，后续 OAuth 承接异常，继续状态机重试: {exc}")
                             continue
                         log(f"  短信验证失败，停止 OAuth 流程: {exc}")
+                        error_msg = str(exc)
+                        if PHONE_REJECTED_SENTINEL in error_msg or _is_retryable_phone_rejection_text(error_msg):
+                            return {"error": error_msg, "error_type": "phone_rejected_retryable"}
                         return None
 
                 if not allow_add_phone_retry:

@@ -86,6 +86,54 @@ def test_add_phone_attempt_limit_uses_codex_pool_size():
     assert browser_register_module._resolve_add_phone_attempt_limit(FakeCallback(), 40) == 2
 
 
+def test_codex_oauth_returns_retryable_error_after_phone_rejection(monkeypatch):
+    logs = []
+
+    class FakePage:
+        url = "https://auth.openai.com/add-phone"
+
+        def evaluate(self, _script):
+            return "Mozilla/5.0"
+
+    class FakePhoneCallback:
+        completed = False
+
+    monkeypatch.setattr(browser_register_module, "_goto_with_retry", lambda page, url, **_kwargs: setattr(page, "url", url))
+    states = [
+        {"page_type": "add_phone", "continue_url": "", "current_url": "https://auth.openai.com/add-phone"},
+    ]
+    monkeypatch.setattr(browser_register_module, "_derive_oauth_state_from_page", lambda _page: states[0])
+
+    def fake_handle_add_phone(*_args, **_kwargs):
+        raise RuntimeError(
+            "PHONE_REJECTED_RETRYABLE: We couldn't send a text message to this phone number, "
+            "so we switched to WhatsApp. Continue to send a verification code on WhatsApp."
+        )
+
+    monkeypatch.setattr(browser_register_module, "_handle_add_phone_challenge", fake_handle_add_phone)
+
+    result = browser_register_module._do_codex_oauth(
+        FakePage(),
+        {},
+        "user@example.com",
+        "Secret123!",
+        otp_callback=lambda: "123456",
+        phone_callback=FakePhoneCallback(),
+        proxy=None,
+        log=logs.append,
+        max_phone_attempts=1,
+        oauth_start=SimpleNamespace(
+            auth_url="https://auth.openai.com/oauth/authorize?state=state_1",
+            state="state_1",
+            code_verifier="verifier_1",
+        ),
+    )
+
+    assert result["error_type"] == "phone_rejected_retryable"
+    assert "switched to WhatsApp" in result["error"]
+    assert any("短信验证失败" in message for message in logs)
+
+
 def test_parse_phone_country_and_local_strips_non_digits():
     assert browser_register_module._parse_phone_country_and_local("+81 831 908 43766") == (
         "81",

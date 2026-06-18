@@ -292,6 +292,88 @@ def test_outlook_email_plus_uses_admin_accounts_when_password_is_configured(monk
     assert "tag_ids=1%2C2%2C3" in session.calls[3]["url"]
 
 
+def test_outlook_email_external_accounts_502_falls_back_to_admin_accounts(monkeypatch):
+    sessions: list[FakeSession] = []
+    responses = [
+        [
+            FakeResponse({"error": {"message": "Bad Gateway"}}, status_code=502),
+        ],
+        [
+            FakeResponse({"success": True, "message": "ok"}),
+            FakeResponse({"csrf_token": "csrf-token"}),
+            FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {"id": 2, "email": "fresh@outlook.com", "status": "active"},
+                    ],
+                }
+            ),
+        ],
+    ]
+
+    def make_session():
+        session = FakeSession(responses[len(sessions)])
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr("requests.Session", make_session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        admin_password="fake-admin-password",
+        group_id="4",
+    )
+
+    account = mailbox.get_email()
+
+    assert account.email == "fresh@outlook.com"
+    assert mailbox._api_variant == "plus_admin"
+    assert sessions[0].calls[0]["url"] == "https://mail.example.test/api/external/accounts"
+    assert sessions[1].calls[0]["url"] == "https://mail.example.test/login"
+    assert sessions[1].calls[2]["url"].startswith("https://mail.example.test/api/accounts?")
+
+
+def test_outlook_email_external_accounts_feature_disabled_falls_back_to_admin_accounts(monkeypatch):
+    sessions: list[FakeSession] = []
+    responses = [
+        [
+            FakeResponse({"error": {"code": "FEATURE_DISABLED", "message": "Feature disabled"}}, status_code=403),
+        ],
+        [
+            FakeResponse({"success": True, "message": "ok"}),
+            FakeResponse({"csrf_token": "csrf-token"}),
+            FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {"id": 3, "email": "admin@outlook.com", "status": "active"},
+                    ],
+                }
+            ),
+        ],
+    ]
+
+    def make_session():
+        session = FakeSession(responses[len(sessions)])
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr("requests.Session", make_session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        admin_password="fake-admin-password",
+    )
+
+    account = mailbox.get_email()
+
+    assert account.email == "admin@outlook.com"
+    assert mailbox._api_variant == "plus_admin"
+
+
 def test_outlook_email_skips_accounts_with_custom_tag(monkeypatch):
     session = FakeSession(
         [
@@ -571,6 +653,56 @@ def test_outlook_email_plus_reads_messages_with_claim_token_when_legacy_emails_m
     assert session.calls[1]["kwargs"]["params"]["folder"] == "inbox"
     assert session.calls[1]["kwargs"]["params"]["claim_token"] == "claim-token"
     assert session.calls[2]["kwargs"]["params"]["folder"] == "junkemail"
+
+
+def test_outlook_email_plus_temporary_502_keeps_polling_for_code(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
+            FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
+            FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
+            FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
+            FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
+            FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
+            FakeResponse({"success": True, "data": {"emails": []}}),
+            FakeResponse({"success": True, "data": {"emails": []}}),
+            FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "emails": [
+                            {
+                                "id": "new",
+                                "subject": "OpenAI verification code",
+                                "content_preview": "Your code is 112233",
+                                "folder": "junkemail",
+                            }
+                        ]
+                    },
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+    monkeypatch.setattr(outlook_module.time, "sleep", lambda _seconds: None)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        email_folder="all",
+        email_top="10",
+        poll_interval=1,
+    )
+    account = mailbox._build_account(
+        email="pool@outlook.com",
+        account_id="12",
+        source="outlook_email_plus_pool",
+        raw={"account_id": 12, "email": "pool@outlook.com", "claim_token": "claim-token"},
+    )
+
+    assert mailbox.get_current_ids(account) == set()
+    assert mailbox.wait_for_code(account, keyword="OpenAI", timeout=1) == "112233"
+    assert len(session.calls) == 9
 
 
 def test_outlook_email_adds_registration_success_tag_via_admin_api(monkeypatch):

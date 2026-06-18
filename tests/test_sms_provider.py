@@ -178,6 +178,37 @@ class TestCreateSmsProvider:
         assert isinstance(nexsms_default, NexSmsProvider)
         assert nexsms_default.country_order == [7]
 
+    def test_smsbower_number_error_mentions_smsbower_not_herosms(self, monkeypatch):
+        class FakeResponse:
+            status_code = 200
+            text = "NO_NUMBERS"
+
+            def json(self):
+                return {}
+
+            def raise_for_status(self):
+                return None
+
+        def fake_get(url, params, timeout=30, proxies=None):
+            return FakeResponse()
+
+        monkeypatch.setattr("core.base_sms.requests.get", fake_get)
+        provider = create_sms_provider(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "smsbower_default_country": "76",
+                "smsbower_default_service": "chatgpt",
+            },
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            provider.get_number(service="chatgpt", country="76")
+
+        message = str(excinfo.value)
+        assert "SMSBower" in message
+        assert "HeroSMS" not in message
+
     def test_unknown_provider(self):
         with pytest.raises(RuntimeError, match="未知"):
             create_sms_provider("unknown", {})

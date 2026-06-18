@@ -385,7 +385,7 @@ export default function PlusManager() {
             onClick={() => !binding && setShowBind(false)}
           >
             <div
-              className="dialog-panel flex max-h-[80vh] flex-col"
+              className="dialog-panel dialog-panel-md flex max-h-[80vh] flex-col"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
@@ -488,7 +488,7 @@ export default function PlusManager() {
         createPortal(
           <div className="dialog-backdrop" onClick={() => setBindResult(null)}>
             <div
-              className="dialog-panel"
+              className="dialog-panel dialog-panel-md"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
@@ -548,7 +548,7 @@ export default function PlusManager() {
         createPortal(
           <div className="dialog-backdrop" onClick={() => setOauthTaskId("")}>
             <div
-              className="dialog-panel flex max-h-[82vh] flex-col"
+              className="dialog-panel dialog-panel-md flex max-h-[82vh] flex-col"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
@@ -590,7 +590,7 @@ export default function PlusManager() {
             onClick={() => !oauthBusy && setOauthModal(null)}
           >
             <div
-              className="dialog-panel flex max-h-[82vh] flex-col"
+              className="dialog-panel dialog-panel-md flex max-h-[82vh] flex-col"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
@@ -664,7 +664,7 @@ export default function PlusManager() {
             onClick={() => !oauthBusy && setOauthConfirmOpen(false)}
           >
             <div
-              className="dialog-panel flex max-h-[82vh] flex-col"
+              className="dialog-panel dialog-panel-md flex max-h-[82vh] flex-col"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">

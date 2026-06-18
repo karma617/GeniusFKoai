@@ -73,6 +73,13 @@ class AccountUpdateCommand:
 
 
 @dataclass(slots=True)
+class AccountBatchStatusUpdateCommand:
+    platform: str = "chatgpt"
+    ids: list[int] = field(default_factory=list)
+    lifecycle_status: str = ""
+
+
+@dataclass(slots=True)
 class AccountImportLine:
     email: str
     password: str

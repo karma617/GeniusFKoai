@@ -256,6 +256,7 @@ def _create_testmail(extra: dict, proxy: str | None) -> 'BaseMailbox':
 def _create_outlook_email(extra: dict, proxy: str | None) -> 'BaseMailbox':
     from core.outlook_email_mailbox import OutlookEmailMailbox
 
+    mailbox_proxy = str(extra.get("mailbox_proxy") or "").strip()
     return OutlookEmailMailbox(
         api_url=extra.get("outlook_email_api_url", ""),
         api_key=extra.get("outlook_email_api_key", ""),
@@ -278,7 +279,7 @@ def _create_outlook_email(extra: dict, proxy: str | None) -> 'BaseMailbox':
         register_success_tag_names=extra.get("outlook_email_register_success_tag_names", ""),
         plus_success_tag_names=extra.get("outlook_email_plus_success_tag_names", ""),
         invalid_email_tag_names=extra.get("outlook_email_invalid_email_tag_names", ""),
-        proxy=proxy,
+        proxy=mailbox_proxy or None,
     )
 
 

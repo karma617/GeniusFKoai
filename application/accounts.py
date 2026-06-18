@@ -7,6 +7,7 @@ import re
 
 from core.datetime_utils import serialize_datetime
 from domain.accounts import (
+    AccountBatchStatusUpdateCommand,
     AccountCreateCommand,
     AccountImportLine,
     AccountQuery,
@@ -61,6 +62,9 @@ class AccountsService:
     def update_account(self, account_id: int, command: AccountUpdateCommand) -> dict | None:
         item = self.repository.update(account_id, command)
         return self._serialize(item) if item else None
+
+    def batch_update_status(self, command: AccountBatchStatusUpdateCommand) -> dict:
+        return self.repository.batch_update_status(command)
 
     def delete_account(self, account_id: int) -> dict:
         return {"ok": self.repository.delete(account_id)}

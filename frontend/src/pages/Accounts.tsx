@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
-import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search } from 'lucide-react'
+import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search, ListChecks } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', trial: 'success', subscribed: 'success',
@@ -39,6 +39,16 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'rt_uploaded',
   'subscribed',
   'eligible',
+  'expired',
+  'invalid',
+  'banned',
+]
+const CHATGPT_BATCH_STATUS_OPTIONS = [
+  'registered',
+  'rt_pending_upload',
+  'rt_uploaded',
+  'trial',
+  'subscribed',
   'expired',
   'invalid',
   'banned',
@@ -176,6 +186,53 @@ function getPrimaryToken(acc: any) {
   if (acc?.primary_token) return acc.primary_token
   const credential = getCredentials(acc).find((item: any) => item?.scope === 'platform' && item?.credential_type === 'token' && item?.value)
   return credential?.value || ''
+}
+
+function isEmptyPayload(value: any) {
+  return value == null || value === '' || (Array.isArray(value) && value.length === 0) || (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)
+}
+
+function getChatgptSessionPayload(acc: any) {
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const candidates = [
+    overview?.session,
+    overview?.chatgpt_session,
+    legacyExtra?.session,
+    legacyExtra?.chatgpt_session,
+  ]
+  return candidates.find(item => !isEmptyPayload(item)) || null
+}
+
+function stringifyChatgptSessionPayload(payload: any) {
+  if (isEmptyPayload(payload)) return ''
+  if (typeof payload === 'string') {
+    const text = payload.trim()
+    if (!text) return ''
+    try {
+      return JSON.stringify(JSON.parse(text), null, 2)
+    } catch {
+      return text
+    }
+  }
+  return JSON.stringify(payload, null, 2)
+}
+
+function getChatgptSessionText(acc: any) {
+  return stringifyChatgptSessionPayload(getChatgptSessionPayload(acc))
+}
+
+async function writeClipboardText(text: string) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const el = document.createElement('textarea')
+  el.value = text
+  document.body.appendChild(el)
+  el.select()
+  document.execCommand('copy')
+  document.body.removeChild(el)
 }
 
 function escapeCsvField(value: unknown) {
@@ -1049,6 +1106,103 @@ function ActionTaskModal({
   )
 }
 
+function BatchStatusModal({
+  count,
+  value,
+  submitting,
+  language,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  count: number
+  value: string
+  submitting: boolean
+  language: any
+  onChange: (value: string) => void
+  onClose: () => void
+  onSubmit: () => void
+}) {
+  const { t } = useI18n()
+  const statusLabel = translateAccountStatus(value, language)
+
+  return (
+    <div className="dialog-backdrop" onClick={() => !submitting && onClose()}>
+      <div
+        className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+        onClick={event => event.stopPropagation()}
+        style={{ width: 'min(520px, calc(100vw - 32px))', maxHeight: 'min(560px, calc(100dvh - 48px))' }}
+      >
+        <div className="shrink-0 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">
+              {'\u6279\u91cf\u4fee\u6539\u8d26\u53f7\u72b6\u6001'}
+            </h2>
+            <div className="mt-1 text-xs help-text">
+              {t('accounts.selected', { count })}
+            </div>
+          </div>
+          <button
+            onClick={() => !submitting && onClose()}
+            className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
+              {'\u76ee\u6807\u72b6\u6001'}
+            </label>
+            <select
+              value={value}
+              onChange={event => onChange(event.target.value)}
+              className="control-surface control-surface-compact w-full"
+              disabled={submitting}
+            >
+              {CHATGPT_BATCH_STATUS_OPTIONS.map(status => (
+                <option key={status} value={status}>
+                  {translateAccountStatus(status, language)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="notice-panel notice-panel-info px-4 py-3 text-xs">
+            {'\u5c06\u9009\u4e2d\u8d26\u53f7\u624b\u52a8\u8c03\u6574\u4e3a\u201c'}{statusLabel}{'\u201d\u3002\u8be5\u64cd\u4f5c\u53ea\u4fee\u6539\u5217\u8868\u72b6\u6001\u548c\u8fd0\u884c\u6458\u8981\uff0c\u4e0d\u5220\u9664\u5df2\u4fdd\u5b58\u7684 token / rt\u3002'}
+          </div>
+          {value === 'registered' ? (
+            <div className="notice-panel notice-panel-warning px-4 py-3 text-xs">
+              {'\u6539\u56de\u201c'}{statusLabel}{'\u201d\u65f6\u4f1a\u6e05\u7406 rt \u4e0a\u4f20\u72b6\u6001\u3001rt \u83b7\u53d6\u65f6\u95f4\u7b49\u8fd0\u884c\u6458\u8981\uff0c\u4f46\u4e0d\u4f1a\u5220\u9664\u8d26\u53f7\u51ed\u636e\u3002'}
+            </div>
+          ) : null}
+        </div>
+        <div className="shrink-0 flex justify-end gap-2 border-t border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            {t('common.cancel')}
+          </Button>
+          <Button
+            size="sm"
+            onClick={onSubmit}
+            disabled={submitting || count === 0 || !value}
+          >
+            {submitting ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <ListChecks className="mr-2 h-4 w-4" />
+            )}
+            {'\u786e\u8ba4\u4fee\u6539'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TaskLogDialog({
   title,
   taskId,
@@ -1068,7 +1222,7 @@ function TaskLogDialog({
   return (
     <div className="dialog-backdrop" onClick={onClose}>
       <div
-        className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+        className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
         onClick={e => e.stopPropagation()}
         style={{ width: 'min(860px, calc(100vw - 32px))', height: 'min(760px, calc(100dvh - 48px))' }}
       >
@@ -1205,12 +1359,14 @@ function ActionMenu({
   onDelete,
   onResult,
   onChanged,
+  onTriggerGetRt,
 }: {
   acc: any
   onDetail: () => void
   onDelete: () => void
   onResult: (title: string, payload: any) => void
   onChanged: () => void
+  onTriggerGetRt?: (acc: any, kind: 'get_rt' | 'get_rt_bypass') => void
 }) {
   const { t, language } = useI18n()
   const [open, setOpen] = useState(false)
@@ -1223,6 +1379,8 @@ function ActionMenu({
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, maxHeight: 320 })
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const canCopySession = String(acc?.platform || '').trim().toLowerCase() === 'chatgpt'
+  const hasMenuItems = actions.length > 0 || canCopySession
 
   const runAction = (action: any, params: Record<string, any>) => {
     setRunning(action.id)
@@ -1266,7 +1424,7 @@ function ActionMenu({
     const rect = trigger.getBoundingClientRect()
     const viewportPadding = 12
     const menuWidth = 220
-    const estimatedHeight = Math.min(320, actions.length * 40 + 56)
+    const estimatedHeight = Math.min(320, (actions.length + (canCopySession ? 1 : 0)) * 40 + 56)
 
     let left = rect.right - menuWidth
     if (left < viewportPadding) left = viewportPadding
@@ -1284,7 +1442,7 @@ function ActionMenu({
       left: Math.round(left),
       maxHeight: Math.max(160, window.innerHeight - viewportPadding * 2),
     })
-  }, [actions.length])
+  }, [actions.length, canCopySession])
 
   useEffect(() => {
     let active = true
@@ -1413,7 +1571,7 @@ function ActionMenu({
         />
       )}
       <button onClick={onDetail} className="table-action-btn">{t('accounts.details')}</button>
-      {actions.length > 0 && (
+      {hasMenuItems && (
         <div className="relative">
           <button ref={triggerRef} onClick={() => setOpen(o => !o)}
             className="table-action-btn">{t('common.more')} v</button>
@@ -1427,6 +1585,13 @@ function ActionMenu({
                 <button key={a.id}
                   onClick={() => {
                     setOpen(false)
+                    if (
+                      onTriggerGetRt &&
+                      (a.id === 'get_rt' || a.id === 'get_rt_bypass')
+                    ) {
+                      onTriggerGetRt(acc, a.id)
+                      return
+                    }
                     if (Array.isArray(a.params) && a.params.length > 0) {
                       setPendingAction({
                         action: a,
@@ -1441,6 +1606,30 @@ function ActionMenu({
                   {running === a.id ? t('taskStatus.running') : a.label}
                 </button>
               ))}
+              {canCopySession && (
+                <>
+                  {actions.length > 0 && <div className="my-1 border-t border-[var(--border)]/70" />}
+                  <button
+                    onClick={async () => {
+                      setOpen(false)
+                      const sessionText = getChatgptSessionText(acc)
+                      if (!sessionText) {
+                        setToast({ type: 'error', text: '\u672a\u4fdd\u5b58session' })
+                        return
+                      }
+                      try {
+                        await writeClipboardText(sessionText)
+                        setToast({ type: 'success', text: '\u5df2\u590d\u5236session' })
+                      } catch (error: any) {
+                        setToast({ type: 'error', text: error?.message || t('login.requestFailed') })
+                      }
+                    }}
+                    className="w-full px-3 py-2 text-left text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                  >
+                    {'\u590d\u5236session'}
+                  </button>
+                </>
+              )}
               <div className="my-1 border-t border-[var(--border)]/70" />
               <button
                 onClick={() => {
@@ -1458,7 +1647,7 @@ function ActionMenu({
           )}
         </div>
       )}
-      {actions.length === 0 && (
+      {!hasMenuItems && (
         <button
           onClick={() => { if (confirm(t('accounts.deleteConfirm', { email: acc.email }))) apiFetch(`/accounts/${acc.id}`, { method: 'DELETE' }).then(onDelete) }}
           className="table-action-btn table-action-btn-danger"
@@ -1803,6 +1992,9 @@ export default function Accounts() {
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [batchRefreshing, setBatchRefreshing] = useState(false)
+  const [batchStatusOpen, setBatchStatusOpen] = useState(false)
+  const [batchStatusUpdating, setBatchStatusUpdating] = useState(false)
+  const [batchStatusValue, setBatchStatusValue] = useState('registered')
   const [batchTask, setBatchTask] = useState<{ taskId: string; title: string } | null>(null)
   const [batchTaskStatus, setBatchTaskStatus] = useState<string | null>(null)
   const [browserMode, setBrowserMode] = useState('camoufox_headed')
@@ -2056,6 +2248,22 @@ export default function Accounts() {
     await load()
   }, [load])
 
+  // 复用顶部弹窗：在“更多”菜单点击 获取rt / 获取rt(绕过) 时，先选中当前账号并弹出顶部弹窗
+  const triggerGetRtForAccount = useCallback(
+    (acc: any, kind: 'get_rt' | 'get_rt_bypass') => {
+      const accountId = Number(acc?.id)
+      if (!Number.isFinite(accountId)) return
+      setError('')
+      setSelectedIds(new Set([accountId]))
+      if (kind === 'get_rt_bypass') {
+        setGetRtBypassConfirmOpen(true)
+      } else {
+        setGetRtConfirmOpen(true)
+      }
+    },
+    [],
+  )
+
   // ── 获取rt(绕过手机号) ──
   const openGetRtConfirm = () => {
     setError('')
@@ -2102,6 +2310,42 @@ export default function Accounts() {
     await load()
   }, [load])
 
+  const openBatchStatusModal = () => {
+    setError('')
+    if (selectedCount === 0) {
+      setError(t('accounts.selectAtLeastOne'))
+      return
+    }
+    setBatchStatusOpen(true)
+  }
+
+  const submitBatchStatus = async () => {
+    setError('')
+    const ids = [...selectedIds].map(Number)
+    if (ids.length === 0) {
+      setError(t('accounts.selectAtLeastOne'))
+      return
+    }
+    setBatchStatusUpdating(true)
+    try {
+      await apiFetch('/accounts/batch-status', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids,
+          lifecycle_status: batchStatusValue,
+        }),
+      })
+      setBatchStatusOpen(false)
+      setSelectedIds(new Set())
+      await load()
+    } catch (exc: any) {
+      setError(exc?.message || t('accounts.operationFailed'))
+    } finally {
+      setBatchStatusUpdating(false)
+    }
+  }
+
   const currentPlatformMeta = platformsMap[tab]
   const platformLabel = currentPlatformMeta?.display_name || (tab === 'chatgpt' ? 'ChatGPT' : tab)
   const visibleTrial = accounts.filter(acc => getPlanState(acc) === 'trial').length
@@ -2120,6 +2364,17 @@ export default function Accounts() {
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
+      {batchStatusOpen && (
+        <BatchStatusModal
+          count={selectedCount}
+          value={batchStatusValue}
+          submitting={batchStatusUpdating}
+          language={language}
+          onChange={setBatchStatusValue}
+          onClose={() => setBatchStatusOpen(false)}
+          onSubmit={submitBatchStatus}
+        />
+      )}
       {batchTask && (
         <ActionTaskModal
           title={batchTask.title}
@@ -2154,7 +2409,7 @@ export default function Accounts() {
             onClick={() => !oauthBusy && setOauthConfirmOpen(false)}
           >
             <div
-              className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+              className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
               onClick={event => event.stopPropagation()}
               style={{ width: 'min(560px, calc(100vw - 32px))', maxHeight: 'min(620px, calc(100dvh - 48px))' }}
             >
@@ -2245,7 +2500,7 @@ export default function Accounts() {
             onClick={() => !getRtBusy && setGetRtConfirmOpen(false)}
           >
             <div
-              className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+              className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
               onClick={event => event.stopPropagation()}
               style={{ width: 'min(720px, calc(100vw - 32px))', maxHeight: 'min(760px, calc(100dvh - 48px))' }}
             >
@@ -2527,7 +2782,7 @@ export default function Accounts() {
         createPortal(
           <div className="dialog-backdrop" onClick={() => !getRtBypassBusy && setGetRtBypassConfirmOpen(false)}>
             <div
-              className="dialog-panel flex max-w-none flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+              className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
               onClick={event => event.stopPropagation()}
               style={{ width: 'min(640px, calc(100vw - 32px))', maxHeight: 'min(620px, calc(100dvh - 48px))' }}
             >
@@ -2705,6 +2960,22 @@ export default function Accounts() {
                 {t('accounts.getRt')}
               </Button>
             ) : null}
+            {tab === 'chatgpt' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={batchStatusUpdating || selectedCount === 0}
+                onClick={openBatchStatusModal}
+                className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
+              >
+                {batchStatusUpdating ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <ListChecks className="mr-2 h-4 w-4" />
+                )}
+                {'\u4fee\u6539\u72b6\u6001'}
+              </Button>
+            ) : null}
             <div className="ml-auto flex flex-wrap items-center gap-4">
               <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-4 py-2">
                 <span className="mr-2 text-[10px] font-semibold uppercase tracking-normal text-[var(--text-muted)]">
@@ -2774,6 +3045,22 @@ export default function Accounts() {
                   <Zap className={cn("mr-1.5 h-3.5 w-3.5", batchRefreshing && "animate-pulse")} />
                   {batchRefreshing ? t('accounts.refreshingCredits') : t('accounts.refreshCredits')}
                 </Button>
+                {tab === 'chatgpt' && selectedCount > 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={batchStatusUpdating}
+                    className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
+                    onClick={openBatchStatusModal}
+                  >
+                    {batchStatusUpdating ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <ListChecks className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {'\u4fee\u6539\u72b6\u6001'}
+                  </Button>
+                )}
                 {selectedCount > 0 && (
                   <Button
                     size="sm"
@@ -2994,6 +3281,7 @@ export default function Accounts() {
                                 onDelete={() => load()}
                                 onResult={(title, payload) => setActionResult({ title, payload })}
                                 onChanged={() => load()}
+                                onTriggerGetRt={triggerGetRtForAccount}
                               />
                             </div>
                           </td>
@@ -3139,6 +3427,22 @@ export default function Accounts() {
                 获取rt(绕过)
               </Button>
             )}
+            {tab === 'chatgpt' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={openBatchStatusModal}
+                disabled={batchStatusUpdating || selectedCount === 0}
+                className={ACCOUNT_TOOL_BUTTON_CLASS}
+              >
+                {batchStatusUpdating ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                ) : (
+                  <ListChecks className="mr-1.5 h-3.5 w-3.5 shrink-0" />
+                )}
+                {'\u4fee\u6539\u72b6\u6001'}
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className={ACCOUNT_TOOL_BUTTON_CLASS}>
               <Plus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {t('accounts.manualAdd')}
@@ -3203,6 +3507,22 @@ export default function Accounts() {
             <Button variant="ghost" size="sm" onClick={() => load()} disabled={loading} className="h-7 w-7 p-0 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             </Button>
+            {tab === 'chatgpt' && selectedCount > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={batchStatusUpdating}
+                className="h-7 px-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                onClick={openBatchStatusModal}
+              >
+                {batchStatusUpdating ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ListChecks className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                {'\u4fee\u6539\u72b6\u6001'}
+              </Button>
+            )}
             {selectedCount > 0 && (
               <Button
                 size="sm"
@@ -3393,6 +3713,7 @@ export default function Accounts() {
                       onDelete={() => load()}
                       onResult={(title, payload) => setActionResult({ title, payload })}
                       onChanged={() => load()}
+                      onTriggerGetRt={triggerGetRtForAccount}
                     />
                   </div>
                 </td>

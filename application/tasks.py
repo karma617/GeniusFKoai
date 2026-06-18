@@ -1350,8 +1350,23 @@ def _is_get_rt_hard_retry_error(message: Any) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _is_get_rt_email_login_cooldown_error(message: Any) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "get_rt_email_login_cooldown",
+        "too many tries",
+        "please wait a few minutes",
+        "too many attempts",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _is_get_rt_target_recoverable_error(message: Any) -> bool:
     if _is_get_rt_sms_provider_switch_error(message):
+        return False
+    if _is_get_rt_email_login_cooldown_error(message):
         return False
     text = str(message or "").strip().lower()
     if not text:
@@ -1366,6 +1381,22 @@ def _is_get_rt_target_recoverable_error(message: Any) -> bool:
         "invalid_state",
         "sign-in session is no longer valid",
         "session is no longer valid",
+        "phone_rejected_retryable",
+        "phone_rejected_retryable:",
+        "\u5df2\u8fbe\u6362\u53f7\u4e0a\u9650",
+        "phone_change_limit",
+        "phone change limit",
+        "\u83b7\u53d6\u624b\u673a\u53f7\u5931\u8d25",
+        "phone otp \u83b7\u53d6\u5931\u8d25",
+        "we couldn't send a text message",
+        "we could not send a text message",
+        "couldn't send a text",
+        "could not send a text",
+        "can't send a text",
+        "cannot send a text",
+        "unable to send a text",
+        "switched to whatsapp",
+        "continue to send a verification code on whatsapp",
         "token exchange failed: network error",
         "curl: (28)",
         "operation timed out",
@@ -1415,16 +1446,13 @@ def _list_get_rt_sms_provider_candidates(payload: dict[str, Any], sms_runtime: d
         if normalized == "smspool":
             settings_key = "smspool_api"
             item = settings_repo.get_by_key("sms", settings_key)
-            if (not item or not bool(getattr(item, "enabled", True))) and not _first_nonempty_text(payload.get("smspool_api_key")):
+            if not item or not bool(getattr(item, "enabled", True)):
                 return
             runtime_settings = settings_repo.resolve_runtime_settings("sms", settings_key, {})
         elif normalized == "smsapi":
             settings_key = "smsapi"
             item = settings_repo.get_by_key("sms", settings_key)
-            if (
-                not item
-                or not bool(getattr(item, "enabled", True))
-            ) and not _first_nonempty_text(payload.get("smsapi_phone"), payload.get("smsapi_url")):
+            if not item or not bool(getattr(item, "enabled", True)):
                 return
             runtime_settings = settings_repo.resolve_runtime_settings("sms", settings_key, {})
         else:
@@ -1538,6 +1566,8 @@ def _resolve_get_rt_sms_runtime_config(payload: dict[str, Any]) -> dict[str, str
                     if item and bool(getattr(item, "enabled", True)):
                         settings_provider_key = candidate
                         break
+                if not settings_provider_key:
+                    provider = ""
             if settings_provider_key:
                 settings = settings_repo.resolve_runtime_settings("sms", settings_provider_key, {})
         except Exception:
@@ -2864,6 +2894,22 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 pool.cleanup()
             except Exception as exc:
                 logger.log(f"获取rt: 手机号复用池清理异常: {exc}", level="error")
+        # 清理完后，驱动一次 SMSPool 释放重试队列，让冷却窗口外的号能尽快被取消；
+        # 仍未到期的号会保留在 data/smspool_release_queue.json 里由后台 worker 重试。
+        try:
+            from platforms.gopay.sms_channel import (
+                _process_release_queue_once,
+                get_smspool_release_queue_size,
+            )
+            attempted, released = _process_release_queue_once(force=False, log_fn=logger.log)
+            pending = get_smspool_release_queue_size()
+            if attempted or pending:
+                logger.log(
+                    f"获取rt: SMSPool 释放队列进度 attempted={attempted} "
+                    f"released={released} pending={pending}"
+                )
+        except Exception as exc:
+            logger.log(f"获取rt: SMSPool 释放队列驱动异常: {exc}", level="warning")
 
     results: list[dict[str, Any] | None] = [None] * total
     target_success_ids: set[int] = set()
@@ -3138,6 +3184,17 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 if hard_errors:
                     logger.log(
                         f"获取rt: 目标模式遇到硬性失败，停止重试: {hard_errors[-1].get('error')}",
+                        level="error",
+                    )
+                    break
+                email_cooldown_errors = [
+                    item for item in pass_results
+                    if _is_get_rt_email_login_cooldown_error(item.get("error"))
+                ]
+                if email_cooldown_errors:
+                    logger.log(
+                        "\u83b7\u53d6rt: \u76ee\u6807\u6a21\u5f0f\u9047\u5230\u90ae\u7bb1\u767b\u5f55\u9650\u6d41\uff0c"
+                        f"\u505c\u6b62\u672c\u8f6e\u4efb\u52a1\u4ee5\u907f\u514d\u7ee7\u7eed\u89e6\u53d1 Too many tries: {email_cooldown_errors[-1].get('error')}",
                         level="error",
                     )
                     break

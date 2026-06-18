@@ -91,12 +91,19 @@ class MailboxIdentityProvider(BaseIdentityProvider):
             raise ValueError(f"{provider_name} 未返回可用邮箱，请检查 mailbox provider 配置或服务状态")
         if requested_email and email and requested_email != email:
             raise ValueError(f"传入邮箱 {requested_email} 与当前邮箱 provider 返回的 {email} 不一致")
-        before_ids = self.mailbox.get_current_ids(mail_acct) if mail_acct else set()
+        try:
+            before_ids = self.mailbox.get_current_ids(mail_acct) if mail_acct else set()
+        except Exception as exc:
+            before_ids = set()
+            metadata = {"mailbox_baseline_error": str(exc)}
+        else:
+            metadata = {}
         return IdentityMaterial(
             identity_provider=self.identity_provider,
             email=requested_email or email,
             mailbox_account=mail_acct,
             before_ids=before_ids,
+            metadata=metadata,
         )
 
 

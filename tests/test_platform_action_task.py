@@ -950,6 +950,62 @@ def test_get_rt_sms_provider_aliases_are_normalized():
     assert tasks_module._normalize_get_rt_sms_provider("sms_api") == "smsapi"
 
 
+def test_get_rt_target_sms_candidates_ignore_disabled_providers_even_with_payload_keys(monkeypatch):
+    from infrastructure import provider_settings_repository
+
+    class FakeSetting:
+        def __init__(self, provider_key, *, enabled=True, is_default=False):
+            self.provider_key = provider_key
+            self.enabled = enabled
+            self.is_default = is_default
+
+    class FakeSettingsRepo:
+        def get_by_key(self, provider_type, provider_key):
+            assert provider_type == "sms"
+            if provider_key == "smsbower_api":
+                return FakeSetting("smsbower_api", enabled=True, is_default=True)
+            if provider_key == "herosms_api":
+                return FakeSetting("herosms_api", enabled=False)
+            if provider_key == "smspool_api":
+                return FakeSetting("smspool_api", enabled=False)
+            return None
+
+        def resolve_runtime_settings(self, provider_type, provider_key, overrides=None):
+            assert provider_type == "sms"
+            if provider_key == "smsbower_api":
+                return {
+                    "smsbower_api_key": "SMSBOWER_KEY",
+                    "smsbower_default_country": "76",
+                    "smsbower_default_service": "chatgpt",
+                }
+            if provider_key == "herosms_api":
+                return {"herosms_api_key": "HEROSMS_KEY"}
+            if provider_key == "smspool_api":
+                return {"smspool_api_key": "SMSPOOL_KEY"}
+            return {}
+
+        def list_enabled(self, provider_type):
+            assert provider_type == "sms"
+            return [FakeSetting("smsbower_api", enabled=True, is_default=True)]
+
+    monkeypatch.setattr(provider_settings_repository, "ProviderSettingsRepository", FakeSettingsRepo)
+
+    sms_runtime = {
+        "sms_provider": "smsbower_api",
+        "settings_provider_key": "smsbower_api",
+    }
+    candidates = tasks_module._list_get_rt_sms_provider_candidates(
+        {
+            "sms_provider": "smsbower_api",
+            "herosms_api_key": "HEROSMS_KEY_FROM_PAYLOAD",
+            "smspool_api_key": "SMSPOOL_KEY_FROM_PAYLOAD",
+        },
+        sms_runtime,
+    )
+
+    assert [item["provider"] for item in candidates] == ["smsbower_api"]
+
+
 def test_create_get_rt_task_filters_non_registered_ids(monkeypatch):
     captured = {}
 
@@ -1031,10 +1087,32 @@ def test_get_rt_task_allows_explicit_sms_disable(monkeypatch):
 
 
 def test_get_rt_task_uses_shared_phone_reuse_pool(monkeypatch):
+    from infrastructure import provider_settings_repository
     from platforms.chatgpt import browser_get_rt as browser_get_rt_module
 
     built = []
     callbacks = []
+
+    class FakeSetting:
+        provider_key = "smspool_api"
+        enabled = True
+        is_default = True
+
+    class FakeSettingsRepo:
+        def get_by_key(self, provider_type, provider_key):
+            assert provider_type == "sms"
+            if provider_key == "smspool_api":
+                return FakeSetting()
+            return None
+
+        def resolve_runtime_settings(self, provider_type, provider_key, overrides=None):
+            assert provider_type == "sms"
+            assert provider_key == "smspool_api"
+            return {"smspool_api_key": "KEY"}
+
+        def list_enabled(self, provider_type):
+            assert provider_type == "sms"
+            return [FakeSetting()]
 
     class FakePhonePool:
         def __init__(self):
@@ -1061,6 +1139,7 @@ def test_get_rt_task_uses_shared_phone_reuse_pool(monkeypatch):
             return ActionExecutionResult(ok=True, data={"phone": command.params["phone_callback"]()})
 
     monkeypatch.setattr(tasks_module, "_filter_registered_get_rt_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(provider_settings_repository, "ProviderSettingsRepository", FakeSettingsRepo)
     monkeypatch.setattr(browser_get_rt_module, "build_get_rt_phone_reuse_pool", fake_build_pool)
     monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
     logger = _FakeLogger()
@@ -1641,6 +1720,139 @@ def test_get_rt_target_mode_retries_after_phone_otp_429(monkeypatch):
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
     assert logger.result_data["success_count"] == 1
     assert any("可恢复失败" in str(event[1]) for event in logger.events)
+
+
+def test_get_rt_target_mode_retries_after_browser_whatsapp_phone_rejection(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="target-whatsapp@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            if len(calls) == 1:
+                return ActionExecutionResult(
+                    ok=False,
+                    error=(
+                        "获取rt失败: PHONE_REJECTED_RETRYABLE: We couldn't send a text message to this phone number, "
+                        "so we switched to WhatsApp. Continue to send a verification code on WhatsApp."
+                    ),
+                )
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [account_id],
+            "task_mode": "target",
+            "sms_provider": "none",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert calls == [account_id, account_id]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert logger.result_data["success_count"] == 1
+    assert any("可恢复失败" in str(event[1]) for event in logger.events)
+
+
+def test_get_rt_target_mode_retries_after_protocol_phone_change_limit(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="target-phone-limit-retry@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            if len(calls) == 1:
+                return ActionExecutionResult(
+                    ok=False,
+                    error="\u83b7\u53d6rt\u534f\u8bae\u6a21\u5f0f\u624b\u673a\u53f7\u63d0\u4ea4\u5931\u8d25\uff0c\u5df2\u8fbe\u6362\u53f7\u4e0a\u9650: NO_NUMBERS",
+                )
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [account_id],
+            "task_mode": "target",
+            "sms_provider": "none",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert calls == [account_id, account_id]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert logger.result_data["success_count"] == 1
+    assert any("\u53ef\u6062\u590d\u5931\u8d25" in str(event[1]) for event in logger.events)
+
+
+def test_get_rt_target_mode_stops_after_email_login_cooldown(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="target-email-cooldown@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            return ActionExecutionResult(
+                ok=False,
+                error=(
+                    "GET_RT_EMAIL_LOGIN_COOLDOWN: passwordless/send-otp: "
+                    "Too many tries. Please wait a few minutes before trying again."
+                ),
+            )
+
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [account_id],
+            "task_mode": "target",
+            "sms_provider": "none",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert calls == [account_id]
+    assert logger.finished[0] == tasks_module.TASK_STATUS_FAILED
+    assert logger.result_data["success_count"] == 0
+    assert any("Too many tries" in str(event[1]) for event in logger.events)
 
 
 def test_get_rt_target_mode_retries_after_token_exchange_timeout(monkeypatch):

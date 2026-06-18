@@ -359,19 +359,19 @@ function AboutTab() {
 
       <SettingGroup title={t('settings.projectInfo')}>
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] divide-y divide-[var(--border)]/50">
-          <InfoRow label={t('settings.projectName')} value="aBaiAutoplus" />
+          <InfoRow label={t('settings.projectName')} value="Pickstar GPT Manager" />
           <InfoRow label={t('settings.techStack')} value="FastAPI + React + Electron" />
           <InfoRow label={t('settings.license')} value="AGPL-3.0" />
           <InfoRow
             label="GitHub"
             value={
               <a
-                href="https://github.com/asz798838958/aBaiAutoplus"
+                href="https://github.com/karma617"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline"
               >
-                github.com/asz798838958/aBaiAutoplus
+                github.com/karma617/Pickstar GPT Manager
                 <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 3.5h6.5V10M12 4L4 12" strokeLinecap="round" strokeLinejoin="round"/></svg>
               </a>
             }

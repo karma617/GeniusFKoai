@@ -10,6 +10,7 @@ from core.datetime_utils import serialize_datetime
 from core.account_display import build_account_display_summary
 from core.db import AccountModel, engine
 from core.account_graph import (
+    RT_RUNTIME_SUMMARY_KEYS,
     compute_account_stats,
     load_account_graphs,
     matches_status_filter,
@@ -19,6 +20,7 @@ from core.account_graph import (
 )
 from core.platform_accounts import resolve_primary_token
 from domain.accounts import (
+    AccountBatchStatusUpdateCommand,
     AccountCreateCommand,
     AccountExportSelection,
     AccountImportLine,
@@ -27,6 +29,26 @@ from domain.accounts import (
     AccountStats,
     AccountUpdateCommand,
 )
+
+CHATGPT_BATCH_STATUS_UPDATE_STATUSES = {
+    "registered",
+    "rt_pending_upload",
+    "rt_uploaded",
+    "trial",
+    "subscribed",
+    "expired",
+    "invalid",
+    "banned",
+}
+
+PLAN_DERIVED_SUMMARY_KEYS = {
+    "membership_type",
+    "individual_membership_type",
+    "plan",
+    "plan_name",
+    "plan_state",
+    "trial_eligible",
+}
 
 
 def _build_summary_updates(
@@ -50,6 +72,43 @@ def _build_credential_updates(
     credentials: dict | None,
 ) -> dict | None:
     return dict(credentials or {}) or None
+
+
+def _build_batch_status_patch(lifecycle_status: str) -> tuple[dict, set[str]]:
+    now_text = serialize_datetime(datetime.now(timezone.utc)) or ""
+    summary_updates: dict = {
+        "manual_status_updated_at": now_text,
+        "manual_status_source": "accounts.batch_status",
+    }
+    remove_keys = set(RT_RUNTIME_SUMMARY_KEYS)
+
+    if lifecycle_status == "registered":
+        summary_updates["valid"] = True
+        remove_keys.update(PLAN_DERIVED_SUMMARY_KEYS)
+    elif lifecycle_status == "rt_pending_upload":
+        summary_updates.update({
+            "valid": True,
+            "rt_upload_status": "pending_upload",
+            "rt_upload_checked_at": now_text,
+            "rt_acquired_at": now_text,
+        })
+    elif lifecycle_status == "rt_uploaded":
+        summary_updates.update({
+            "valid": True,
+            "rt_upload_status": "uploaded",
+            "rt_upload_checked_at": now_text,
+            "rt_acquired_at": now_text,
+            "rt_uploaded_at": now_text,
+        })
+    elif lifecycle_status in {"trial", "subscribed", "expired"}:
+        summary_updates.update({
+            "valid": True,
+            "plan_state": lifecycle_status,
+        })
+    elif lifecycle_status in {"invalid", "banned"}:
+        summary_updates["valid"] = False
+
+    return summary_updates, remove_keys
 
 
 def _to_record(model: AccountModel, graph: dict | None = None) -> AccountRecord:
@@ -230,6 +289,52 @@ class AccountsRepository:
             )
             session.commit()
             return self._load_records(session, [model])[0]
+
+    def batch_update_status(self, command: AccountBatchStatusUpdateCommand) -> dict:
+        platform = str(command.platform or "chatgpt").strip()
+        lifecycle_status = str(command.lifecycle_status or "").strip()
+        ids = list(dict.fromkeys(int(item) for item in command.ids if int(item or 0) > 0))
+        if platform != "chatgpt":
+            raise ValueError("batch status update only supports chatgpt accounts")
+        if not ids:
+            raise ValueError("select at least one account")
+        if lifecycle_status not in CHATGPT_BATCH_STATUS_UPDATE_STATUSES:
+            raise ValueError("unsupported account status")
+
+        summary_updates, remove_keys = _build_batch_status_patch(lifecycle_status)
+        with Session(engine) as session:
+            models = session.exec(
+                select(AccountModel)
+                .where(AccountModel.platform == platform)
+                .where(AccountModel.id.in_(ids))
+            ).all()
+            by_id = {int(model.id or 0): model for model in models}
+            updated_ids: list[int] = []
+            for account_id in ids:
+                model = by_id.get(account_id)
+                if not model:
+                    continue
+                patch_account_graph(
+                    session,
+                    model,
+                    lifecycle_status=lifecycle_status,
+                    summary_updates=summary_updates,
+                    summary_remove_keys=remove_keys,
+                )
+                model.updated_at = datetime.now(timezone.utc)
+                session.add(model)
+                updated_ids.append(account_id)
+            if not updated_ids:
+                raise ValueError("no accounts matched selected ids")
+            session.commit()
+
+        return {
+            "updated": len(updated_ids),
+            "updated_ids": updated_ids,
+            "missing_ids": [account_id for account_id in ids if account_id not in set(updated_ids)],
+            "platform": platform,
+            "lifecycle_status": lifecycle_status,
+        }
 
     def delete(self, account_id: int) -> bool:
         with Session(engine) as session:

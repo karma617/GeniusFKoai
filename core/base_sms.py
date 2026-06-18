@@ -454,6 +454,7 @@ class HeroSmsProvider(BaseSmsProvider):
     """HeroSMS provider with resend, SMS event dedupe, and short-lived phone reuse."""
 
     BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
+    DISPLAY_NAME = "HeroSMS"
     auto_report_success_on_code = False
 
     def __init__(
@@ -487,11 +488,15 @@ class HeroSmsProvider(BaseSmsProvider):
         resp.raise_for_status()
         return resp
 
+    @property
+    def display_name(self) -> str:
+        return str(getattr(self, "DISPLAY_NAME", "") or self.__class__.__name__)
+
     def get_balance(self) -> float:
         text = self._request({"action": "getBalance"}).text.strip()
         if text.startswith("ACCESS_BALANCE:"):
             return float(text.split(":", 1)[1])
-        raise RuntimeError(f"HeroSMS getBalance failed: {text}")
+        raise RuntimeError(f"{self.display_name} getBalance failed: {text}")
 
     def get_services(self, country: str | int | None = None, lang: str = "cn") -> list:
         params = {"action": "getServicesList", "lang": lang}
@@ -516,7 +521,7 @@ class HeroSmsProvider(BaseSmsProvider):
                     result.append({"code": key, "name": value})
             if result:
                 return result
-        raise RuntimeError("HeroSMS getServicesList returned unexpected response")
+        raise RuntimeError(f"{self.display_name} getServicesList returned unexpected response")
 
     def get_countries(self) -> list:
         data = self._request({"action": "getCountries"}, needs_key=False).json()
@@ -550,7 +555,7 @@ class HeroSmsProvider(BaseSmsProvider):
         data = self._request(params).json()
         if isinstance(data, dict):
             return data
-        raise RuntimeError("HeroSMS getPrices returned unexpected response")
+        raise RuntimeError(f"{self.display_name} getPrices returned unexpected response")
 
     def get_current_price_info(self, *, service: str, country: str = "") -> dict:
         service_code = str(service or self.default_service or HERO_SMS_DEFAULT_SERVICE).strip()
@@ -849,7 +854,10 @@ class HeroSmsProvider(BaseSmsProvider):
                     }
             raise RuntimeError(text[:200])
         except Exception as exc:
-            raise RuntimeError(f"HeroSMS 获取号码失败: V2={_redact_sms_error_text(v2_error)}; V1={_redact_sms_error_text(exc)}") from exc
+            raise RuntimeError(
+                f"{self.display_name} \u83b7\u53d6\u53f7\u7801\u5931\u8d25: "
+                f"V2={_redact_sms_error_text(v2_error)}; V1={_redact_sms_error_text(exc)}"
+            ) from exc
 
     @staticmethod
     def _format_phone(number_info: dict) -> str:
@@ -889,7 +897,7 @@ class HeroSmsProvider(BaseSmsProvider):
                 activation_id = str(number_info.get("activationId") or "")
                 phone = self._format_phone(number_info)
                 if not activation_id or not phone.strip("+"):
-                    raise RuntimeError("HeroSMS 返回的号码信息不完整")
+                    raise RuntimeError(f"{self.display_name} \u8fd4\u56de\u7684\u53f7\u7801\u4fe1\u606f\u4e0d\u5b8c\u6574")
                 cache = {
                     **self._cache_identity(service_code, country_id),
                     "activation_id": activation_id,
@@ -1174,6 +1182,15 @@ class HeroSmsProvider(BaseSmsProvider):
             self._stop_reuse("phone limit reached")
         else:
             self._stop_reuse(reason or "phone rejected")
+        # 一旦手机号被 OpenAI 拒接（反欺诈 / 限额 / VOIP 等），这个 activation 在服务端还占着费用；
+        # SMS-Activate 风格的 set_status=8 是同步取消，不会冷却，此处直接 cancel，避免号泄漏。
+        try:
+            self.cancel(activation_id)
+        except Exception as exc:
+            try:
+                logger.warning("%s mark_send_failed cancel failed: %s", self.__class__.__name__, exc)
+            except Exception:
+                pass
 
     def set_resend_callback(self, callback: Callable[[], None] | None) -> None:
         self.openai_resend_callback = callback
@@ -1198,6 +1215,7 @@ class SmsBowerProvider(HeroSmsProvider):
     """SMSBower provider — API 兼容 HeroSMS，仅 base URL 不同。"""
 
     BASE_URL = "https://smsbower.page/stubs/handler_api.php"
+    DISPLAY_NAME = "SMSBower"
 
     def _request(self, params: dict, *, needs_key: bool = True, timeout: int = 30) -> requests.Response:
         # SMSBower 所有接口都需要 api_key（包括 getServicesList、getCountries）
@@ -1213,12 +1231,14 @@ class GrizzlySmsProvider(SmsBowerProvider):
     """GrizzlySMS provider using the SMS-Activate compatible API."""
 
     BASE_URL = "https://api.grizzlysms.com/stubs/handler_api.php"
+    DISPLAY_NAME = "GrizzlySMS"
 
 
 class SmsVerificationNumberProvider(SmsBowerProvider):
     """SMS Verification Number provider using the SMS-Activate compatible API."""
 
     BASE_URL = "https://sms-verification-number.com/stubs/handler_api"
+    DISPLAY_NAME = "SMSVerificationNumber"
     DEFAULT_LANG = "en"
 
     def _request(self, params: dict, *, needs_key: bool = True, timeout: int = 30) -> requests.Response:
@@ -3121,8 +3141,36 @@ class PhoneCallbackController:
             self._account_create_failure_count = 0
         if self.activation and self.provider:
             hook = getattr(self.provider, "mark_send_failed", None)
+            activation_id_for_log = str(getattr(self.activation, "activation_id", "") or "")
+            phone_for_log = str(getattr(self.activation, "phone_number", "") or "")
             if callable(hook):
-                hook(self.activation.activation_id, reason=reason)
+                try:
+                    hook(self.activation.activation_id, reason=reason)
+                except Exception as exc:
+                    self.log(
+                        f"号码释放/标记失败 provider={self.provider_key} "
+                        f"activation={activation_id_for_log} phone={phone_for_log}: {exc}"
+                    )
+            # 明确告诉使用者该号已交付供应商释放。反欺诈/冷却类拒绝下，
+            # 供应商 provider 内部已负责同步 cancel 或入队后台释放 (data/smspool_release_queue.json)。
+            release_hint = ""
+            reason_lower = str(reason or "").lower()
+            if any(
+                keyword in reason_lower
+                for keyword in (
+                    "suspicious behavior",
+                    "fraud_detected",
+                    "\"fraud\"",
+                    "voip_phone_disallowed",
+                    "voip",
+                    "invalid phone",
+                )
+            ):
+                release_hint = " reason=fraud_or_cooldown"
+            self.log(
+                f"已提交释放手机号请求 provider={self.provider_key} "
+                f"activation={activation_id_for_log} phone={phone_for_log}{release_hint}"
+            )
             self.awaiting_external_success = False
             self.activation = None
             self.phase = "need_number"

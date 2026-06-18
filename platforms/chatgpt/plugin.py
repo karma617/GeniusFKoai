@@ -470,6 +470,7 @@ class ChatGPTPlatform(BasePlatform):
                 "cookies": result.get("cookies", ""),
                 "profile": result.get("profile", {}),
                 "expires_at": result.get("expires_at", ""),
+                "session": result.get("session", {}),
                 # 短链物理复用：浏览器内 PayPal checkout 结果透传给上层任务判定。
                 "_shortlink_checkout": result.get("_shortlink_checkout", None),
                 "record_har_path": result.get("record_har_path", ""),

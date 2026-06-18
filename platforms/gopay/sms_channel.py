@@ -591,8 +591,15 @@ class SmsPoolChannel:
                 reason="cancel_failed",
                 last_response=data if isinstance(data, dict) else {},
             )
+            log.info(
+                "smspool cancel rejected, queued for retry: order=%s phone=%s detail=%s; "
+                "queue=data/smspool_release_queue.json",
+                order_id,
+                self.last_phone,
+                _smspool_release_response_preview(data) if isinstance(data, dict) else data,
+            )
             return False
-        except Exception:
+        except Exception as exc:
             _enqueue_smspool_release(
                 api_key=self.api_key,
                 base_url=self.base_url,
@@ -600,6 +607,12 @@ class SmsPoolChannel:
                 phone=self.last_phone,
                 reason="cancel_exception",
                 last_response={"error": "cancel exception"},
+            )
+            log.warning(
+                "smspool cancel exception, queued for retry: order=%s phone=%s err=%s",
+                order_id,
+                self.last_phone,
+                exc,
             )
             return False
 

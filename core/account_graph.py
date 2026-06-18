@@ -70,6 +70,8 @@ NON_LEGACY_EXTRA_KEYS = {
     "cashier_url",
     "region",
     "trial_end_time",
+    "session",
+    "chatgpt_session",
     "registration_refresh_token",
     "registrationRefreshToken",
     "registration_refresh_token_usable",
@@ -337,6 +339,19 @@ def _legacy_extra_payload(extra: dict[str, Any]) -> dict[str, Any]:
         and value not in (None, "", [], {})
     }
     return legacy_extra
+
+
+def _chatgpt_session_payload(extra: dict[str, Any]) -> Any:
+    for key in ("session", "chatgpt_session"):
+        value = extra.get(key)
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str) and value.strip():
+            try:
+                return json.loads(value)
+            except Exception:
+                return value
+    return None
 
 
 def _has_registration_only_marker(payload: dict[str, Any]) -> bool:
@@ -968,6 +983,11 @@ def sync_platform_account_graph(session: Session, model: AccountModel, account: 
             "region": _text(getattr(account, "region", "")),
         }
     )
+    platform = model.platform
+    if platform == "chatgpt":
+        chatgpt_session = _chatgpt_session_payload(extra)
+        if chatgpt_session not in (None, "", [], {}):
+            incoming_summary["session"] = chatgpt_session
     legacy_extra = _legacy_extra_payload(extra)
     if legacy_extra:
         incoming_summary["legacy_extra"] = {
@@ -995,7 +1015,6 @@ def sync_platform_account_graph(session: Session, model: AccountModel, account: 
     summary["chips"] = _dedupe_chips(existing_summary.get("chips") or [], incoming_summary.get("chips") or [])
     summary["lifecycle_status"] = lifecycle_status
 
-    platform = model.platform
     existing_credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
     if platform == "chatgpt" and lifecycle_status == "registered" and _has_registration_only_marker(extra):
         existing_credentials = _strip_refresh_token_credentials(existing_credentials)
@@ -1040,6 +1059,7 @@ def patch_account_graph(
     trial_end_time: int | None = None,
     summary_updates: dict[str, Any] | None = None,
     credential_updates: dict[str, Any] | None = None,
+    summary_remove_keys: list[str] | set[str] | tuple[str, ...] | None = None,
     provider_accounts: list[dict[str, Any]] | None = None,
     provider_resources: list[dict[str, Any]] | None = None,
     replace_provider_accounts: bool = False,
@@ -1051,6 +1071,8 @@ def patch_account_graph(
 
     current = _graph_for_account(session, account_id)
     summary = _safe_dict(current.get("overview"))
+    for key in summary_remove_keys or []:
+        summary.pop(_text(key), None)
     if summary_updates:
         summary.update(summary_updates)
     if cashier_url is not None:

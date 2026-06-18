@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 import uuid
 from typing import Any, Callable
@@ -42,6 +43,16 @@ def _post_json(session, url: str, *, headers: dict[str, str], body: dict[str, An
         url,
         headers=headers,
         data=json.dumps(body, ensure_ascii=False, separators=(",", ":")),
+        allow_redirects=allow_redirects,
+        timeout=timeout,
+    )
+
+
+def _post_empty_json(session, url: str, *, headers: dict[str, str], allow_redirects: bool = True, timeout: int = 30):
+    return session.post(
+        url,
+        headers=headers,
+        data="",
         allow_redirects=allow_redirects,
         timeout=timeout,
     )
@@ -288,6 +299,109 @@ def _is_retryable_email_otp_status(status: int) -> bool:
     return int(status or 0) in {400, 401, 409}
 
 
+def _is_login_cooldown_error_text(text: str) -> bool:
+    value = str(text or "").lower()
+    if not value:
+        return False
+    return any(
+        marker in value
+        for marker in (
+            "too many tries",
+            "please wait a few minutes",
+            "too many attempts",
+            "too many requests",
+            "try again later",
+        )
+    )
+
+
+def _login_cooldown_error(stage: str, detail: str = "") -> RuntimeError:
+    suffix = f": {detail}" if detail else ""
+    return RuntimeError(f"GET_RT_EMAIL_LOGIN_COOLDOWN: {stage}{suffix}")
+
+
+def _send_platform_login_otp_checked(
+    *,
+    client: OpenAIHTTPClient,
+    engine: RegistrationEngine,
+    log_fn: Callable[[str], None],
+) -> bool:
+    if not hasattr(engine, "_platform_nav_headers"):
+        return bool(engine._send_platform_login_otp(client))
+    resp = client.session.get(
+        OPENAI_API_ENDPOINTS["send_otp"],
+        headers=engine._platform_nav_headers(referer=f"{OPENAI_AUTH}/email-verification"),
+        allow_redirects=True,
+        timeout=15,
+    )
+    status = int(getattr(resp, "status_code", 0) or 0)
+    log_fn(f"  get_rt(protocol): email-otp/send -> {status}")
+    _log_response_debug(log_fn, "email-otp/send", resp)
+    if status in (200, 302):
+        try:
+            engine._otp_sent_at = time.time()
+        except Exception:
+            pass
+        return True
+    detail = _continue_error_message(resp)
+    if _is_login_cooldown_error_text(detail):
+        raise _login_cooldown_error("email-otp/send", detail)
+    return False
+
+
+def _is_retryable_phone_send_failure_text(text: str) -> bool:
+    value = str(text or "").lower()
+    if not value:
+        return False
+    return any(
+        marker in value
+        for marker in (
+            "we couldn't send a text message",
+            "we could not send a text message",
+            "couldn't send a text",
+            "could not send a text",
+            "can't send a text",
+            "cannot send a text",
+            "unable to send a text",
+            "switched to whatsapp",
+            "continue to send a verification code on whatsapp",
+        )
+    )
+
+
+def _send_passwordless_login_otp(
+    *,
+    session,
+    engine: RegistrationEngine,
+    device_id: str,
+    log_fn: Callable[[str], None],
+) -> dict[str, Any]:
+    headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/log-in/password")
+    resp = _post_empty_json(
+        session,
+        f"{OPENAI_AUTH}/api/accounts/passwordless/send-otp",
+        headers=headers,
+        allow_redirects=False,
+        timeout=30,
+    )
+    log_fn(f"  \u83b7\u53d6rt(\u534f\u8bae): passwordless/send-otp -> {getattr(resp, 'status_code', 0)}")
+    _log_response_debug(log_fn, "passwordless/send-otp", resp)
+    if resp.status_code != 200:
+        detail = _continue_error_message(resp)
+        if _is_login_cooldown_error_text(detail):
+            raise _login_cooldown_error("passwordless/send-otp", detail)
+        raise RuntimeError(
+            f"\u83b7\u53d6rt\u534f\u8bae\u6a21\u5f0f passwordless/send-otp \u5931\u8d25: HTTP {resp.status_code}"
+            f"{(': ' + detail) if detail else ''}"
+        )
+    data = _response_json(resp)
+    log_fn(
+        "  \u83b7\u53d6rt(\u534f\u8bae): passwordless/send-otp -> "
+        f"page={_extract_page_type(data) or '(unknown)'}"
+    )
+    return data
+
+
 def run_protocol_get_rt(
     *,
     email: str,
@@ -375,6 +489,8 @@ def run_protocol_get_rt(
         _log_response_debug(log_fn, "authorize/continue retry", continue_resp)
     if continue_resp.status_code != 200:
         detail = _continue_error_message(continue_resp)
+        if _is_login_cooldown_error_text(detail):
+            raise _login_cooldown_error("authorize/continue", detail)
         raise RuntimeError(
             f"获取rt协议模式 authorize/continue 失败: HTTP {continue_resp.status_code}"
             f"{(': ' + detail) if detail else ''}"
@@ -382,6 +498,23 @@ def run_protocol_get_rt(
     continue_data = continue_resp.json() or {}
     page_type = str(((continue_data.get("page") or {}).get("type")) or "")
     log_fn(f"  获取rt(协议): authorize/continue -> page={page_type or '(unknown)'}")
+
+    if page_type == "login_password":
+        passwordless_data = _send_passwordless_login_otp(
+            session=session,
+            engine=engine,
+            device_id=device_id,
+            log_fn=log_fn,
+        )
+        if passwordless_data:
+            continue_data = passwordless_data
+            page_type = _extract_page_type(continue_data)
+
+    if page_type == "email_otp_send":
+        log_fn("  \u83b7\u53d6rt(\u534f\u8bae): email_otp_send \u9875\u9762\uff0c\u663e\u5f0f\u89e6\u53d1\u90ae\u7bb1\u9a8c\u8bc1\u7801")
+        if not _send_platform_login_otp_checked(client=client, engine=engine, log_fn=log_fn):
+            raise RuntimeError("\u83b7\u53d6rt\u534f\u8bae\u6a21\u5f0f\u53d1\u9001\u90ae\u7bb1\u9a8c\u8bc1\u7801\u5931\u8d25")
+        page_type = "email_otp_verification"
 
     if page_type == "email_otp_verification":
         otp_data = None
@@ -394,7 +527,7 @@ def run_protocol_get_rt(
                     f"resending a fresh code ({validate_attempt - 1}/{max_invalid_retries})"
                 )
                 _refresh_otp_callback_baseline(otp_callback, log_fn)
-                send_ok = engine._send_platform_login_otp(client)
+                send_ok = _send_platform_login_otp_checked(client=client, engine=engine, log_fn=log_fn)
                 if not send_ok:
                     raise RuntimeError("获取rt协议模式发送邮箱验证码失败")
 
@@ -411,9 +544,12 @@ def run_protocol_get_rt(
             if last_status == 200:
                 otp_data = otp_resp.json() or {}
                 break
+            otp_detail = _continue_error_message(otp_resp)
+            if _is_login_cooldown_error_text(otp_detail):
+                raise _login_cooldown_error("email-otp/validate", otp_detail)
             if _is_retryable_email_otp_status(last_status) and validate_attempt <= max_invalid_retries:
                 continue
-            raise RuntimeError(f"获取rt协议模式邮箱验证码校验失败: HTTP {last_status}")
+            raise RuntimeError(f"获取rt协议模式邮箱验证码校验失败: HTTP {last_status}: {otp_detail}")
         if otp_data is None:
             raise RuntimeError(f"获取rt协议模式邮箱验证码校验失败: HTTP {last_status}")
     else:
@@ -449,7 +585,25 @@ def run_protocol_get_rt(
 
         last_send_error = ""
         for attempt in range(1, max(int(phone_change_limit or 1), 1) + 1):
-            phone_number = phone_callback_obj()
+            try:
+                phone_number = phone_callback_obj()
+            except Exception as exc:
+                last_send_error = str(exc)[:240]
+                try:
+                    if hasattr(phone_callback_obj, "mark_send_failed"):
+                        phone_callback_obj.mark_send_failed(last_send_error)
+                except Exception:
+                    pass
+                log_fn(
+                    "  \u83b7\u53d6rt(\u534f\u8bae): add_phone \u83b7\u53d6\u624b\u673a\u53f7\u5931\u8d25\uff0c"
+                    f"\u4fdd\u6301\u5f53\u524d session \u7ee7\u7eed\u6362\u53f7 attempt={attempt} detail={last_send_error}"
+                )
+                if attempt >= 3 and attempt % 3 == 0:
+                    log_fn(
+                        f"  \u83b7\u53d6rt(\u534f\u8bae): add_phone \u8fde\u7eed {attempt} \u6b21\u83b7\u53d6\u624b\u673a\u53f7\u5931\u8d25\uff0c"
+                        "\u4ecd\u5728\u5f53\u524d\u5df2\u767b\u5f55 session \u5185\u6362\u53f7"
+                    )
+                continue
             log_fn(f"  获取rt(协议): add_phone 第 {attempt} 次提交手机号 {phone_number}")
             add_phone_headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/add-phone")
             send_resp = _post_json(
@@ -460,13 +614,76 @@ def run_protocol_get_rt(
                 allow_redirects=True,
                 timeout=30,
             )
+            send_data = _response_json(send_resp)
+            send_detail_text = ""
+            if send_data:
+                try:
+                    send_detail_text = json.dumps(send_data, ensure_ascii=False, separators=(",", ":"))[:480]
+                except Exception:
+                    send_detail_text = str(send_data)[:480]
+            else:
+                send_detail_text = str(getattr(send_resp, "text", "") or "")[:480]
+
+            if _is_retryable_phone_send_failure_text(send_detail_text):
+                last_send_error = send_detail_text[:240]
+                try:
+                    if hasattr(phone_callback_obj, "mark_send_failed"):
+                        phone_callback_obj.mark_send_failed(last_send_error)
+                except Exception:
+                    pass
+                log_fn(
+                    "  \u83b7\u53d6rt(\u534f\u8bae): add_phone \u5f53\u524d\u624b\u673a\u53f7\u4e0d\u53ef\u7528\uff0c"
+                    f"\u51c6\u5907\u6362\u53f7 attempt={attempt} detail={last_send_error}"
+                )
+                if attempt >= 3 and attempt % 3 == 0:
+                    log_fn(
+                        f"  \u83b7\u53d6rt(\u534f\u8bae): add_phone \u8fde\u7eed {attempt} \u6b21\u9047\u5230\u4e0d\u53ef\u7528\u624b\u673a\u53f7\uff0c"
+                        "\u5efa\u8bae\u66f4\u6362 country/service \u6216\u51b7\u5374\u540e\u91cd\u8bd5"
+                    )
+                continue
+
             if send_resp.status_code == 200:
                 try:
                     if hasattr(phone_callback_obj, "mark_send_succeeded"):
                         phone_callback_obj.mark_send_succeeded()
                 except Exception:
                     pass
-                code = phone_callback_obj()
+                try:
+                    code = phone_callback_obj()
+                except Exception as exc:
+                    last_send_error = str(exc)[:240]
+                    try:
+                        if hasattr(phone_callback_obj, "mark_code_failed"):
+                            phone_callback_obj.mark_code_failed(last_send_error)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(phone_callback_obj, "mark_send_failed"):
+                            phone_callback_obj.mark_send_failed(last_send_error)
+                    except Exception:
+                        pass
+                    log_fn(
+                        "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u83b7\u53d6\u5931\u8d25\uff0c"
+                        f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt} detail={last_send_error}"
+                    )
+                    continue
+                if not code:
+                    last_send_error = "empty phone otp"
+                    try:
+                        if hasattr(phone_callback_obj, "mark_code_failed"):
+                            phone_callback_obj.mark_code_failed(last_send_error)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(phone_callback_obj, "mark_send_failed"):
+                            phone_callback_obj.mark_send_failed(last_send_error)
+                    except Exception:
+                        pass
+                    log_fn(
+                        "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u4e3a\u7a7a\uff0c"
+                        f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt}"
+                    )
+                    continue
                 validate_headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/phone-verification")
                 validate_resp = _post_json(
                     session,
@@ -484,7 +701,20 @@ def run_protocol_get_rt(
                             phone_callback_obj.mark_code_failed(f"HTTP {validate_resp.status_code}")
                     except Exception:
                         pass
-                    raise RuntimeError(f"获取rt协议模式手机验证码校验失败: HTTP {validate_resp.status_code}")
+                    validate_detail = _continue_error_message(validate_resp)
+                    last_send_error = f"HTTP {validate_resp.status_code}: {validate_detail}"[:240]
+                    if int(getattr(validate_resp, "status_code", 0) or 0) == 429:
+                        raise RuntimeError(f"GET_RT_PHONE_VERIFICATION_RATE_LIMIT: {last_send_error}")
+                    try:
+                        if hasattr(phone_callback_obj, "mark_send_failed"):
+                            phone_callback_obj.mark_send_failed(last_send_error)
+                    except Exception:
+                        pass
+                    log_fn(
+                        "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u6821\u9a8c\u5931\u8d25\uff0c"
+                        f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt} detail={last_send_error}"
+                    )
+                    continue
                 phone_validate_data = _response_json(validate_resp)
                 phone_continue_url = _extract_continue_url_from_payload(phone_validate_data)
                 phone_page = _extract_page_type(phone_validate_data)
@@ -504,17 +734,18 @@ def run_protocol_get_rt(
                     pass
                 break
 
-            try:
-                send_data = send_resp.json() or {}
-            except Exception:
-                send_data = {"raw": getattr(send_resp, "text", "")}
-            last_send_error = json.dumps(send_data, ensure_ascii=False)[:240]
+            last_send_error = send_detail_text[:240]
             try:
                 if hasattr(phone_callback_obj, "mark_send_failed"):
                     phone_callback_obj.mark_send_failed(last_send_error)
             except Exception:
                 pass
             log_fn(f"  获取rt(协议): add_phone 被拒，准备换号 attempt={attempt} detail={last_send_error}")
+            if attempt >= 3 and attempt % 3 == 0:
+                log_fn(
+                    f"  获取rt(协议): add_phone 反欺诈连续 {attempt} 次被拒，"
+                    "建议更换 country/service 或冷却几小时后重试"
+                )
         else:
             raise RuntimeError(f"获取rt协议模式手机号提交失败，已达换号上限: {last_send_error or 'unknown'}")
 
@@ -541,6 +772,22 @@ def run_protocol_get_rt(
     if not callback_url:
         callback_url = engine._follow_platform_redirects_for_callback(session, oauth_start.auth_url)
     if not callback_url:
+        # dump 关键上下文，避免“未获取到 OAuth callback”走到这里时无从排查。
+        try:
+            ctx_continue = str(oauth_continue_url or "")[:240]
+            payload_keys = sorted(list(oauth_payload.keys())) if isinstance(oauth_payload, dict) else []
+            final_url = ""
+            try:
+                final_url = str(getattr(final_authorize, "url", "") or "")[:240]
+            except Exception:
+                final_url = ""
+            log_fn(
+                "  获取rt(协议): callback 缺失上下文 "
+                f"continue={ctx_continue or '-'} payload_keys={payload_keys} "
+                f"final_authorize_url={final_url or '-'}"
+            )
+        except Exception:
+            pass
         raise RuntimeError("获取rt协议模式未获取到 OAuth callback")
 
     token_json = submit_callback_url(

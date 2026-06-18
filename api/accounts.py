@@ -11,7 +11,13 @@ from application.account_exports import AccountExportsService, ExportArtifact
 from application.accounts import AccountsService
 from application.ctf_plus import CtfPlusAccountsService
 from application.phone_binding import PhoneBindingService
-from domain.accounts import AccountCreateCommand, AccountExportSelection, AccountQuery, AccountUpdateCommand
+from domain.accounts import (
+    AccountBatchStatusUpdateCommand,
+    AccountCreateCommand,
+    AccountExportSelection,
+    AccountQuery,
+    AccountUpdateCommand,
+)
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 service = AccountsService()
@@ -64,6 +70,12 @@ class BatchExportRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+
+
+class BatchStatusUpdateRequest(BaseModel):
+    platform: str = "chatgpt"
+    ids: list[int] = Field(default_factory=list)
+    lifecycle_status: str
 
 
 class PhoneBindRequest(BaseModel):
@@ -238,6 +250,14 @@ def phone_bind_accounts(body: PhoneBindRequest):
             fallback_ids=body.fallback_ids,
             phone_lines=body.phone_lines,
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/batch-status")
+def batch_update_account_status(body: BatchStatusUpdateRequest):
+    try:
+        return service.batch_update_status(AccountBatchStatusUpdateCommand(**body.model_dump()))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

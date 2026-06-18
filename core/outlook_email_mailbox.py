@@ -21,6 +21,9 @@ DEFAULT_CODE_PATTERN = r"(?<!#)(?<!\d)(\d{6})(?!\d)"
 OUTLOOK_EMAIL_PLUS_NOT_FOUND_CODES = {"HTTP_ERROR", "NOT_FOUND"}
 OUTLOOK_EMAIL_PLUS_FOLDERS = {"inbox", "junkemail", "deleteditems"}
 OUTLOOK_EMAIL_LOCAL_RESERVATION_TTL_SECONDS = 30 * 60
+OUTLOOK_EMAIL_RETRY_STATUS_CODES = {502, 503, 504}
+OUTLOOK_EMAIL_RETRY_ATTEMPTS = 3
+OUTLOOK_EMAIL_RETRY_DELAY_SECONDS = 0.6
 
 _OUTLOOK_EMAIL_RESERVATION_LOCK = threading.Lock()
 _OUTLOOK_EMAIL_RESERVED_ACCOUNTS: dict[str, float] = {}
@@ -48,6 +51,23 @@ def _split_names(value: Any) -> list[str]:
             seen.add(key)
             result.append(name)
     return result
+
+
+def _outlook_email_error_message(payload: Any, status_code: int) -> str:
+    if not isinstance(payload, dict):
+        return f"HTTP {status_code}"
+    raw_error = payload.get("error")
+    if isinstance(raw_error, dict):
+        message = _text(raw_error.get("message") or raw_error.get("message_en") or raw_error.get("code"))
+        trace_id = _text(raw_error.get("trace_id"))
+        if trace_id:
+            return f"{message or f'HTTP {status_code}'} (HTTP {status_code}, trace_id={trace_id})"
+        return message or f"HTTP {status_code}"
+    message = _text(payload.get("error") or payload.get("message"))
+    trace_id = _text(payload.get("trace_id"))
+    if trace_id:
+        return f"{message or f'HTTP {status_code}'} (HTTP {status_code}, trace_id={trace_id})"
+    return message or f"HTTP {status_code}"
 
 
 def _join_nonempty(parts: list[str]) -> str:
@@ -90,6 +110,10 @@ def _strip_markup(text: str) -> str:
 
 class OutlookEmailEndpointNotFound(RuntimeError):
     """outlookEmail 旧版端点不存在，用于触发 outlookEmailPlus 兼容回退。"""
+
+
+class OutlookEmailTemporaryUnavailable(RuntimeError):
+    """outlookEmail 上游临时不可用；验证码轮询应继续等待。"""
 
 
 class OutlookEmailMailbox(BaseMailbox):
@@ -202,6 +226,44 @@ class OutlookEmailMailbox(BaseMailbox):
             self._session = session
         return self._session
 
+    def _request_with_retries(
+        self,
+        session: requests.Session,
+        method: str,
+        path: str,
+        *,
+        retry_status_codes: set[int] | None = None,
+        **kwargs: Any,
+    ):
+        retry_status_codes = OUTLOOK_EMAIL_RETRY_STATUS_CODES if retry_status_codes is None else retry_status_codes
+        method_upper = method.upper()
+        url = f"{self.api}{path}"
+        for attempt in range(OUTLOOK_EMAIL_RETRY_ATTEMPTS):
+            try:
+                with suppress_insecure_request_warning():
+                    request_fn = getattr(session, method.lower())
+                    response = request_fn(url, timeout=15, **kwargs)
+            except requests.RequestException as exc:
+                if attempt < OUTLOOK_EMAIL_RETRY_ATTEMPTS - 1:
+                    time.sleep(OUTLOOK_EMAIL_RETRY_DELAY_SECONDS * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    f"outlookEmail {method_upper} {path} \u8bf7\u6c42\u5f02\u5e38: {exc}"
+                ) from exc
+            if response.status_code in retry_status_codes and attempt < OUTLOOK_EMAIL_RETRY_ATTEMPTS - 1:
+                time.sleep(OUTLOOK_EMAIL_RETRY_DELAY_SECONDS * (attempt + 1))
+                continue
+            return response
+        raise RuntimeError(f"outlookEmail {method_upper} {path} \u8bf7\u6c42\u5931\u8d25")
+
+    @staticmethod
+    def _response_json(response, label: str) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"{label} \u54cd\u5e94\u4e0d\u662f JSON: HTTP {response.status_code}") from exc
+        return payload if isinstance(payload, dict) else {"items": payload}
+
     def _get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         session = self._get_session()
         clean_params = {
@@ -209,34 +271,83 @@ class OutlookEmailMailbox(BaseMailbox):
             for key, value in (params or {}).items()
             if value not in (None, "")
         }
-        url = f"{self.api}{path}"
-        with suppress_insecure_request_warning():
-            response = session.get(url, params=clean_params, timeout=15)
+        retry_status_codes = set(OUTLOOK_EMAIL_RETRY_STATUS_CODES)
+        if path == "/api/external/accounts" and self.admin_password:
+            retry_status_codes = set()
+        response = self._request_with_retries(
+            session,
+            "GET",
+            path,
+            retry_status_codes=retry_status_codes,
+            params=clean_params,
+        )
+        label = f"outlookEmail GET {path}"
+        payload = self._response_json(response, label)
 
-        try:
-            payload = response.json()
-        except Exception as exc:
-            raise RuntimeError(f"outlookEmail 响应不是 JSON: HTTP {response.status_code}") from exc
-
-        if response.status_code in {401, 403}:
-            raise RuntimeError("outlookEmail API Key 认证失败")
+        if response.status_code == 401:
+            raise RuntimeError(f"{label} API Key \u8ba4\u8bc1\u5931\u8d25")
         if response.status_code >= 400:
             if response.status_code == 404 and self._is_endpoint_not_found(payload):
-                raise OutlookEmailEndpointNotFound(f"outlookEmail 端点不存在: {path}")
-            message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
-            raise RuntimeError(f"outlookEmail 请求失败: {message}")
+                raise OutlookEmailEndpointNotFound(f"outlookEmail GET {path} \u7aef\u70b9\u4e0d\u5b58\u5728")
+            message = _outlook_email_error_message(payload, response.status_code)
+            raise RuntimeError(f"{label} \u8bf7\u6c42\u5931\u8d25: {message}")
         if isinstance(payload, dict) and payload.get("success") is False:
-            message = payload.get("error") or payload.get("message") or "success=false"
-            raise RuntimeError(f"outlookEmail 请求失败: {message}")
+            message = _outlook_email_error_message(payload, response.status_code)
+            raise RuntimeError(f"{label} \u8bf7\u6c42\u5931\u8d25: {message}")
         return payload if isinstance(payload, dict) else {"items": payload}
 
     @staticmethod
     def _is_endpoint_not_found(payload: dict[str, Any]) -> bool:
-        code = _text(payload.get("code")).upper()
-        message = _text(payload.get("message") or payload.get("error"))
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        source = error if error else payload
+        code = _text(source.get("code")).upper()
+        message = _text(source.get("message") or source.get("message_en") or source.get("error"))
+        data = source.get("data") if isinstance(source.get("data"), dict) else {}
         status = data.get("status") if isinstance(data, dict) else None
-        return code in OUTLOOK_EMAIL_PLUS_NOT_FOUND_CODES or status == 404 or "资源不存在" in message
+        message_lc = message.lower()
+        return (
+            code in OUTLOOK_EMAIL_PLUS_NOT_FOUND_CODES
+            or status == 404
+            or ("resource" in message_lc and "not" in message_lc)
+            or "\u8d44\u6e90\u4e0d\u5b58\u5728" in message
+        )
+
+    @staticmethod
+    def _is_external_accounts_unavailable_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        if "api key" in text or "\u8ba4\u8bc1\u5931\u8d25" in text:
+            return False
+        return (
+            "http 404" in text
+            or "http 502" in text
+            or "feature_disabled" in text
+            or "feature disabled" in text
+            or "connection reset" in text
+            or "timed out" in text
+            or "timeout" in text
+            or ("resource" in text and "not" in text)
+            or "\u8d44\u6e90\u4e0d\u5b58\u5728" in text
+            or "bad gateway" in text
+        )
+
+    @staticmethod
+    def _is_temporary_unavailable_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        if "api key" in text or "\u8ba4\u8bc1\u5931\u8d25" in text:
+            return False
+        return (
+            "http 502" in text
+            or "http 503" in text
+            or "http 504" in text
+            or "bad gateway" in text
+            or "cloudflare" in text
+            or "temporarily unavailable" in text
+            or "graph/imap" in text
+            or "\u5747\u8bfb\u53d6\u5931\u8d25" in text
+            or "connection reset" in text
+            or "timed out" in text
+            or "timeout" in text
+        )
 
     @staticmethod
     def _data_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -250,19 +361,15 @@ class OutlookEmailMailbox(BaseMailbox):
 
     def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         session = self._get_session()
-        with suppress_insecure_request_warning():
-            response = session.post(f"{self.api}{path}", json=body, timeout=15)
+        response = self._request_with_retries(session, "POST", path, json=body)
+        label = f"outlookEmail POST {path}"
+        payload = self._response_json(response, label)
 
-        try:
-            payload = response.json()
-        except Exception as exc:
-            raise RuntimeError(f"outlookEmail 响应不是 JSON: HTTP {response.status_code}") from exc
-
-        if response.status_code in {401, 403}:
-            raise RuntimeError("outlookEmail API Key 认证失败")
+        if response.status_code == 401:
+            raise RuntimeError(f"{label} API Key \u8ba4\u8bc1\u5931\u8d25")
         if response.status_code >= 400 or (isinstance(payload, dict) and payload.get("success") is False):
-            message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
-            raise RuntimeError(f"outlookEmail 请求失败: {message}")
+            message = _outlook_email_error_message(payload, response.status_code)
+            raise RuntimeError(f"{label} \u8bf7\u6c42\u5931\u8d25: {message}")
         return payload if isinstance(payload, dict) else {"items": payload}
 
     def _get_admin_session(self) -> requests.Session:
@@ -281,62 +388,48 @@ class OutlookEmailMailbox(BaseMailbox):
                 "accept": "application/json",
             }
         )
-        with suppress_insecure_request_warning():
-            login_response = session.post(
-                f"{self.api}/login",
-                json={"password": self.admin_password},
-                timeout=15,
-            )
-        login_payload = self._response_json(login_response, "outlookEmail 登录")
+        login_response = self._request_with_retries(session, "POST", "/login", json={"password": self.admin_password})
+        login_payload = self._response_json(login_response, "outlookEmail POST /login")
         if login_response.status_code >= 400 or login_payload.get("success") is False:
-            message = login_payload.get("error") or login_payload.get("message") or f"HTTP {login_response.status_code}"
-            raise RuntimeError(f"outlookEmail 管理端登录失败: {message}")
+            message = _outlook_email_error_message(login_payload, login_response.status_code)
+            raise RuntimeError(f"outlookEmail POST /login \u7ba1\u7406\u7aef\u767b\u5f55\u5931\u8d25: {message}")
 
-        with suppress_insecure_request_warning():
-            csrf_response = session.get(f"{self.api}/api/csrf-token", timeout=15)
-        csrf_payload = self._response_json(csrf_response, "outlookEmail CSRF")
+        csrf_response = self._request_with_retries(session, "GET", "/api/csrf-token")
+        csrf_payload = self._response_json(csrf_response, "outlookEmail GET /api/csrf-token")
+        if csrf_response.status_code >= 400 or csrf_payload.get("success") is False:
+            message = _outlook_email_error_message(csrf_payload, csrf_response.status_code)
+            raise RuntimeError(f"outlookEmail GET /api/csrf-token \u7ba1\u7406\u7aef\u8bf7\u6c42\u5931\u8d25: {message}")
         self._csrf_token = _text(csrf_payload.get("csrf_token"))
         if self._csrf_token:
             session.headers.update({"X-CSRFToken": self._csrf_token})
         self._admin_session = session
         return session
 
-    @staticmethod
-    def _response_json(response, label: str) -> dict[str, Any]:
-        try:
-            payload = response.json()
-        except Exception as exc:
-            raise RuntimeError(f"{label} 响应不是 JSON: HTTP {response.status_code}") from exc
-        return payload if isinstance(payload, dict) else {"items": payload}
-
     def _admin_get_json(self, path: str) -> dict[str, Any]:
         session = self._get_admin_session()
-        with suppress_insecure_request_warning():
-            response = session.get(f"{self.api}{path}", timeout=15)
+        response = self._request_with_retries(session, "GET", path)
         payload = self._response_json(response, f"outlookEmail GET {path}")
         if response.status_code >= 400 or payload.get("success") is False:
-            message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
-            raise RuntimeError(f"outlookEmail 管理端请求失败: {message}")
+            message = _outlook_email_error_message(payload, response.status_code)
+            raise RuntimeError(f"outlookEmail GET {path} \u7ba1\u7406\u7aef\u8bf7\u6c42\u5931\u8d25: {message}")
         return payload
 
     def _admin_post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         session = self._get_admin_session()
-        with suppress_insecure_request_warning():
-            response = session.post(f"{self.api}{path}", json=body, timeout=15)
+        response = self._request_with_retries(session, "POST", path, json=body)
         payload = self._response_json(response, f"outlookEmail POST {path}")
         if response.status_code >= 400 or payload.get("success") is False:
-            message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
-            raise RuntimeError(f"outlookEmail 管理端请求失败: {message}")
+            message = _outlook_email_error_message(payload, response.status_code)
+            raise RuntimeError(f"outlookEmail POST {path} \u7ba1\u7406\u7aef\u8bf7\u6c42\u5931\u8d25: {message}")
         return payload
 
     def _admin_delete_json(self, path: str) -> dict[str, Any]:
         session = self._get_admin_session()
-        with suppress_insecure_request_warning():
-            response = session.delete(f"{self.api}{path}", timeout=15)
+        response = self._request_with_retries(session, "DELETE", path)
         payload = self._response_json(response, f"outlookEmail DELETE {path}")
         if response.status_code >= 400 or payload.get("success") is False:
-            message = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
-            raise RuntimeError(f"outlookEmail 管理端删除失败: {message}")
+            message = _outlook_email_error_message(payload, response.status_code)
+            raise RuntimeError(f"outlookEmail DELETE {path} \u7ba1\u7406\u7aef\u5220\u9664\u5931\u8d25: {message}")
         return payload
 
     def _account_query_params(self) -> dict[str, Any]:
@@ -487,6 +580,10 @@ class OutlookEmailMailbox(BaseMailbox):
             return self._list_accounts()
         except OutlookEmailEndpointNotFound:
             if self.admin_password:
+                return self._list_admin_accounts()
+            raise
+        except RuntimeError as exc:
+            if self.admin_password and self._is_external_accounts_unavailable_error(exc):
                 return self._list_admin_accounts()
             raise
 
@@ -811,6 +908,11 @@ class OutlookEmailMailbox(BaseMailbox):
                 return self._list_external_emails(account, runtime_keyword)
             except OutlookEmailEndpointNotFound:
                 payload_data = {"emails": self._list_plus_messages(account)}
+            except RuntimeError as exc:
+                if self._is_temporary_unavailable_error(exc):
+                    payload_data = {"emails": self._list_plus_messages(account)}
+                else:
+                    raise
         return self._emails_from_payload(payload_data)
 
     def _message_scope_params(self, account: MailboxAccount, *, folder: str) -> dict[str, Any]:
@@ -847,6 +949,7 @@ class OutlookEmailMailbox(BaseMailbox):
 
     def _list_plus_messages(self, account: MailboxAccount) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
+        last_error: Exception | None = None
         for folder in self._message_folders():
             params: dict[str, Any] = {
                 **self._message_scope_params(account, folder=folder),
@@ -857,7 +960,13 @@ class OutlookEmailMailbox(BaseMailbox):
                 params["subject_contains"] = self.email_subject_contains
             if self.email_from_contains:
                 params["from_contains"] = self.email_from_contains
-            payload = self._get_json("/api/external/messages", params)
+            try:
+                payload = self._get_json("/api/external/messages", params)
+            except Exception as exc:
+                last_error = exc
+                if self._is_temporary_unavailable_error(exc):
+                    continue
+                raise
             data = self._data_payload(payload)
             emails = data.get("emails") if isinstance(data.get("emails"), list) else []
             for item in emails:
@@ -865,10 +974,15 @@ class OutlookEmailMailbox(BaseMailbox):
                     item.setdefault("folder", folder)
                     items.append(item)
         self._api_variant = "plus"
+        if last_error is not None and not items:
+            raise OutlookEmailTemporaryUnavailable(str(last_error)) from last_error
         return items
 
     def get_current_ids(self, account: MailboxAccount) -> set:
-        return {self._message_id(mail) for mail in self._list_emails(account) if self._message_id(mail)}
+        try:
+            return {self._message_id(mail) for mail in self._list_emails(account) if self._message_id(mail)}
+        except OutlookEmailTemporaryUnavailable:
+            return set()
 
     def _matches_keyword(self, mail: dict[str, Any], runtime_keyword: str = "") -> bool:
         text = self._message_text(mail).lower()
