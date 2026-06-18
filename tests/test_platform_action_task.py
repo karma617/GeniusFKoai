@@ -1811,6 +1811,58 @@ def test_get_rt_target_mode_retries_after_protocol_phone_change_limit(monkeypatc
     assert any("\u53ef\u6062\u590d\u5931\u8d25" in str(event[1]) for event in logger.events)
 
 
+def test_get_rt_target_mode_pauses_pass_after_login_restart_error(monkeypatch):
+    with Session(engine) as session:
+        models = [
+            AccountModel(platform="chatgpt", email=f"target-restart-{idx}@test.com", password="Secret123!")
+            for idx in range(3)
+        ]
+        session.add_all(models)
+        session.commit()
+        account_ids = []
+        for model in models:
+            session.refresh(model)
+            account_ids.append(int(model.id or 0))
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            if len(calls) == 1:
+                return ActionExecutionResult(
+                    ok=False,
+                    error=(
+                        "GET_RT_LOGIN_RESTART_REQUIRED: add-phone/send: "
+                        "Your sign-in session is no longer valid. Please start over to continue."
+                    ),
+                )
+            return ActionExecutionResult(ok=True, data={"message": "ok"})
+
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": account_ids,
+            "task_mode": "target",
+            "sms_provider": "none",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert calls[:3] == [account_ids[0], account_ids[0], account_ids[1]]
+    assert account_ids[1] not in calls[:2]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert logger.result_data["success_count"] == 3
+    assert any("session" in str(event[1]).lower() and "10s" in str(event[1]) for event in logger.events)
+
+
 def test_get_rt_target_mode_stops_after_email_login_cooldown(monkeypatch):
     with Session(engine) as session:
         model = AccountModel(platform="chatgpt", email="target-email-cooldown@test.com", password="Secret123!")

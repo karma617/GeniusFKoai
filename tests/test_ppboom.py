@@ -80,6 +80,20 @@ def test_build_ppboom_payload_maps_config_fields():
     }
 
 
+def test_build_ppboom_payload_defaults_to_gujumpgate_ppboom_billing():
+    account = SimpleNamespace(
+        email="user@example.com",
+        token="fallback-token",
+        extra={"access_token": "access-token"},
+    )
+
+    payload = ppboom.build_ppboom_payload(account, {})
+
+    assert payload["billingCountry"] == "DE"
+    assert payload["billingCurrency"] == "EUR"
+    assert payload["plusCheckoutMode"] == "de_pp"
+
+
 def test_run_ppboom_paypal_link_normalizes_provider_url(monkeypatch):
     captured = {}
 

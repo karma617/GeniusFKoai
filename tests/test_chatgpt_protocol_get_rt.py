@@ -849,6 +849,110 @@ def test_protocol_get_rt_keeps_session_when_getting_phone_number_fails(monkeypat
     assert ("success",) in phone_callback.events
 
 
+def test_protocol_get_rt_restarts_login_when_add_phone_session_is_invalid(monkeypatch):
+    captured = {"send_phones": []}
+    auth_url = "https://auth.openai.com/oauth/authorize?state=state_1"
+
+    class PhoneCallback:
+        def __init__(self):
+            self.values = ["+15550000001", "+15550000002"]
+            self.events = []
+
+        def __call__(self):
+            value = self.values.pop(0)
+            self.events.append(("call", value))
+            return value
+
+        def mark_send_failed(self, reason):
+            self.events.append(("send_failed", reason))
+
+    phone_callback = PhoneCallback()
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = {}
+
+        def get(self, url, **_kwargs):
+            assert url == auth_url
+            return _FakeResponse(200, url="https://auth.openai.com/log-in", data={})
+
+        def post(self, url, **kwargs):
+            body = json.loads(kwargs["data"])
+            if url == "https://auth.openai.com/api/accounts/authorize/continue":
+                return _FakeResponse(200, url=url, data={"page": {"type": "email_otp_verification"}})
+            if url == "https://auth.openai.com/api/accounts/add-phone/send":
+                captured["send_phones"].append(body["phone_number"])
+                return _FakeResponse(
+                    400,
+                    url=url,
+                    data={
+                        "error": {
+                            "message": "Your sign-in session is no longer valid. Please start over to continue.",
+                            "type": "invalid_request_error",
+                            "code": "invalid_state",
+                            "redirect_uri": "https://auth.openai.com/log-in",
+                        }
+                    },
+                )
+            return _FakeResponse(500, url=url, data={"unexpected_post": url})
+
+    class FakeClient:
+        def __init__(self, proxy_url=None):
+            self.session = FakeSession()
+
+    class FakeEngine:
+        def __init__(self, **_kwargs):
+            self.email = ""
+            self.password = ""
+
+        def _set_oai_did_for_session(self, session, device_id):
+            session.cookies["oai-did"] = device_id
+
+        def _build_sentinel_header_for_client(self, *_args, **_kwargs):
+            return "sentinel"
+
+        def _platform_json_headers(self, **_kwargs):
+            return {"referer": _kwargs.get("referer") or "", "content-type": "application/json"}
+
+        @staticmethod
+        def _is_invalid_state_response(_resp):
+            return False
+
+        def _wait_platform_login_code(self, _client):
+            return "123456"
+
+        def _validate_platform_login_otp(self, _client, _device_id, _code):
+            return _FakeResponse(
+                200,
+                url="https://auth.openai.com/api/accounts/email-otp/validate",
+                data={"continue_url": "https://auth.openai.com/add-phone", "page": {"type": "add_phone"}},
+            )
+
+    monkeypatch.setattr(protocol_get_rt, "OpenAIHTTPClient", FakeClient)
+    monkeypatch.setattr(protocol_get_rt, "RegistrationEngine", FakeEngine)
+    monkeypatch.setattr(
+        protocol_get_rt,
+        "generate_oauth_url",
+        lambda **_kwargs: SimpleNamespace(auth_url=auth_url, state="state_1", code_verifier="verifier_1"),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        protocol_get_rt.run_protocol_get_rt(
+            email="user@example.com",
+            password="Secret123!",
+            proxy=None,
+            otp_callback=lambda: "123456",
+            phone_callback=phone_callback,
+            phone_change_limit=3,
+            log_fn=lambda _msg: None,
+        )
+
+    assert "GET_RT_LOGIN_RESTART_REQUIRED" in str(excinfo.value)
+    assert captured["send_phones"] == ["+15550000001"]
+    assert len(phone_callback.values) == 1
+    assert any(event[0] == "send_failed" and "invalid_state" in event[1] for event in phone_callback.events)
+
+
 def test_protocol_get_rt_passwordless_too_many_tries_is_classified(monkeypatch):
     auth_url = "https://auth.openai.com/oauth/authorize?state=state_1"
 

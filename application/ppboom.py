@@ -139,14 +139,17 @@ def _safe_payload_for_log(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ppboom_checkout_mode(config: dict[str, Any]) -> str:
-    mode = _text(config.get("ppboom_plus_checkout_mode"), "jp_pp").lower()
-    return "us_pp" if mode == "us_pp" else "jp_pp"
+    mode = _text(config.get("ppboom_plus_checkout_mode"), "de_pp").lower()
+    return mode if mode in {"de_pp", "jp_pp", "us_pp"} else "de_pp"
 
 
 def _ppboom_billing_defaults(config: dict[str, Any]) -> tuple[str, str]:
-    if _ppboom_checkout_mode(config) == "us_pp":
+    mode = _ppboom_checkout_mode(config)
+    if mode == "us_pp":
         return "US", "USD"
-    return "JP", "JPY"
+    if mode == "jp_pp":
+        return "JP", "JPY"
+    return "DE", "EUR"
 
 
 def build_ppboom_payload(account: Any, config: dict[str, Any]) -> dict[str, Any]:

@@ -69,7 +69,7 @@ const DEFAULT_PAYMENT = {
   ppboom_checkout_rebuild_max_attempts: 3,
   ppboom_device_id: "",
   ppboom_user_agent: "",
-  ppboom_plus_checkout_mode: "jp_pp",
+  ppboom_plus_checkout_mode: "de_pp",
   ppboom_success_delay_seconds: 10,
   ppboom_conversion_proxy_url: "",
   ppboom_cloud_conversion_enabled: "false",
@@ -96,7 +96,7 @@ const PPBOOM_TEXT = {
   linkMode: "\u94fe\u63a5\u751f\u6210\u65b9\u5f0f",
   builtinMode: "\u5185\u7f6e\u751f\u6210\u65b9\u5f0f",
   configTitle: "\u7206\u7834\u914d\u7f6e",
-  jpCheckoutTitle: "\u65e5\u533aPP Plus Checkout",
+  ppCheckoutTitle: "PP Plus Checkout",
   smsTitle: "PayPal \u63a5\u7801",
   helperUrl: "PPBoom URL",
   maxAttempts: "\u8fde\u7eed\u4e32\u884c\u6b21\u6570",
@@ -1191,7 +1191,11 @@ function GeneratePlusModal({
                     </div>
                     <div className="grid gap-3 md:grid-cols-3">
                       {textInput(PPBOOM_TEXT.helperUrl, "ppboom_base_url")}
-                      {selectInput(PPBOOM_TEXT.jpCheckoutTitle, "ppboom_plus_checkout_mode", [
+                      {selectInput(PPBOOM_TEXT.ppCheckoutTitle, "ppboom_plus_checkout_mode", [
+                        {
+                          value: "de_pp",
+                          label: "\u5fb7\u533aPP Plus Checkout",
+                        },
                         {
                           value: "jp_pp",
                           label: "\u65e5\u533aPP Plus Checkout",

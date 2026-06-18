@@ -1363,6 +1363,21 @@ def _is_get_rt_email_login_cooldown_error(message: Any) -> bool:
     return any(marker in text for marker in markers)
 
 
+def _is_get_rt_login_restart_error(message: Any) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "get_rt_login_restart_required",
+        "invalid_state",
+        "sign-in session is no longer valid",
+        "session is no longer valid",
+        "please start over",
+        "start over to continue",
+    )
+    return any(marker in text for marker in markers)
+
+
 def _is_get_rt_target_recoverable_error(message: Any) -> bool:
     if _is_get_rt_sms_provider_switch_error(message):
         return False
@@ -1379,6 +1394,7 @@ def _is_get_rt_target_recoverable_error(message: Any) -> bool:
         "rate_limit_exceeded",
         "too many phone verification requests",
         "invalid_state",
+        "get_rt_login_restart_required",
         "sign-in session is no longer valid",
         "session is no longer valid",
         "phone_rejected_retryable",
@@ -3075,10 +3091,16 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     def run_single_pass(pending_indices: list[int], *, progress_on_finished: bool) -> tuple[list[dict[str, Any]], bool]:
         completed_in_pass = 0
         pass_results: list[dict[str, Any]] = []
+        stop_pass_for_login_restart = False
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             future_map = {}
             next_index = 0
-            while next_index < len(pending_indices) and len(future_map) < concurrency and not logger.is_cancel_requested():
+            while (
+                next_index < len(pending_indices)
+                and len(future_map) < concurrency
+                and not logger.is_cancel_requested()
+                and not stop_pass_for_login_restart
+            ):
                 account_index = pending_indices[next_index]
                 future = pool.submit(run_one, account_index, ids[account_index])
                 future_map[future] = account_index
@@ -3106,8 +3128,20 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                         completed_in_pass += 1
                         done_count = sum(1 for result_item in results if result_item is not None)
                         logger.set_progress(done_count, total)
+                    if task_mode == "target" and _is_get_rt_login_restart_error(item.get("error")):
+                        stop_pass_for_login_restart = True
+                        logger.log(
+                            "\u83b7\u53d6rt: \u76ee\u6807\u6a21\u5f0f\u68c0\u6d4b\u5230\u767b\u5f55 session \u5df2\u5931\u6548\uff0c"
+                            "\u6682\u505c\u672c\u8f6e\u540e\u7eed\u8d26\u53f7\uff0c\u5c06\u5148\u7b49\u5f85 10s \u540e\u4ece\u5934\u91cd\u8bd5",
+                            level="warning",
+                        )
 
-                while next_index < len(pending_indices) and len(future_map) < concurrency and not logger.is_cancel_requested():
+                while (
+                    next_index < len(pending_indices)
+                    and len(future_map) < concurrency
+                    and not logger.is_cancel_requested()
+                    and not stop_pass_for_login_restart
+                ):
                     account_index = pending_indices[next_index]
                     future = pool.submit(run_one, account_index, ids[account_index])
                     future_map[future] = account_index

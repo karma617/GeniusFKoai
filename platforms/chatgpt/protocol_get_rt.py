@@ -320,6 +320,27 @@ def _login_cooldown_error(stage: str, detail: str = "") -> RuntimeError:
     return RuntimeError(f"GET_RT_EMAIL_LOGIN_COOLDOWN: {stage}{suffix}")
 
 
+def _is_login_restart_required_text(text: str) -> bool:
+    value = str(text or "").lower()
+    if not value:
+        return False
+    return any(
+        marker in value
+        for marker in (
+            "invalid_state",
+            "sign-in session is no longer valid",
+            "session is no longer valid",
+            "please start over",
+            "start over to continue",
+        )
+    )
+
+
+def _login_restart_required_error(stage: str, detail: str = "") -> RuntimeError:
+    suffix = f": {detail}" if detail else ""
+    return RuntimeError(f"GET_RT_LOGIN_RESTART_REQUIRED: {stage}{suffix}")
+
+
 def _send_platform_login_otp_checked(
     *,
     client: OpenAIHTTPClient,
@@ -624,6 +645,19 @@ def run_protocol_get_rt(
             else:
                 send_detail_text = str(getattr(send_resp, "text", "") or "")[:480]
 
+            if _is_login_restart_required_text(send_detail_text):
+                last_send_error = send_detail_text[:240]
+                try:
+                    if hasattr(phone_callback_obj, "mark_send_failed"):
+                        phone_callback_obj.mark_send_failed(last_send_error)
+                except Exception:
+                    pass
+                log_fn(
+                    "  \u83b7\u53d6rt(\u534f\u8bae): add_phone session \u5df2\u5931\u6548\uff0c"
+                    f"\u5c06\u4ece\u5934\u91cd\u65b0\u767b\u5f55 detail={last_send_error}"
+                )
+                raise _login_restart_required_error("add-phone/send", last_send_error)
+
             if _is_retryable_phone_send_failure_text(send_detail_text):
                 last_send_error = send_detail_text[:240]
                 try:
@@ -703,6 +737,17 @@ def run_protocol_get_rt(
                         pass
                     validate_detail = _continue_error_message(validate_resp)
                     last_send_error = f"HTTP {validate_resp.status_code}: {validate_detail}"[:240]
+                    if _is_login_restart_required_text(validate_detail):
+                        try:
+                            if hasattr(phone_callback_obj, "mark_send_failed"):
+                                phone_callback_obj.mark_send_failed(last_send_error)
+                        except Exception:
+                            pass
+                        log_fn(
+                            "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP validate session \u5df2\u5931\u6548\uff0c"
+                            f"\u5c06\u4ece\u5934\u91cd\u65b0\u767b\u5f55 detail={last_send_error}"
+                        )
+                        raise _login_restart_required_error("phone-otp/validate", last_send_error)
                     if int(getattr(validate_resp, "status_code", 0) or 0) == 429:
                         raise RuntimeError(f"GET_RT_PHONE_VERIFICATION_RATE_LIMIT: {last_send_error}")
                     try:
