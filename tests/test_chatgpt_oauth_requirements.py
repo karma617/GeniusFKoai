@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import asyncio
 import pytest
 
 from core.base_platform import RegisterConfig
@@ -147,7 +148,7 @@ def test_parse_phone_country_and_local_strips_non_digits():
     )
 
 
-def test_phone_input_matches_expected_requires_exact_local_or_country_plus_local(monkeypatch):
+def test_phone_input_matches_expected_requires_exact_local_only(monkeypatch):
     class FakeLocator:
         def __init__(self, value):
             self._value = value
@@ -167,7 +168,7 @@ def test_phone_input_matches_expected_requires_exact_local_or_country_plus_local
             return FakeLocator(self._value)
 
     assert browser_register_module._phone_input_matches_expected(FakePage("64890950"), "input", "856", "64890950") is True
-    assert browser_register_module._phone_input_matches_expected(FakePage("85664890950"), "input", "856", "64890950") is True
+    assert browser_register_module._phone_input_matches_expected(FakePage("85664890950"), "input", "856", "64890950") is False
     assert browser_register_module._phone_input_matches_expected(FakePage("85685664890950"), "input", "856", "64890950") is False
 
 
@@ -371,7 +372,7 @@ def test_sms_oauth_browser_adapter_enables_phone_first_flow(monkeypatch):
         proxy=None,
         log=lambda message: None,
         identity=SimpleNamespace(identity_provider="sms_oauth", email="user@example.com"),
-        extra={},
+        extra={"phone_first_full_rounds": "17"},
     )
     artifacts = SimpleNamespace(otp_callback="otp-callback", phone_callback="phone-callback")
 
@@ -380,19 +381,131 @@ def test_sms_oauth_browser_adapter_enables_phone_first_flow(monkeypatch):
     assert isinstance(worker, _FakeBrowserRegister)
     assert captured["phone_first_oauth"] is True
     assert captured["bind_email_after_phone_signup"] is True
+    assert captured["phone_first_full_rounds"] == 17
     assert captured["otp_callback"] == "otp-callback"
     assert captured["phone_callback"] == "phone-callback"
 
 
-def test_sms_oauth_protocol_mailbox_adapter_rejects_protocol_flow():
+def test_sms_oauth_protocol_mailbox_adapter_builds_protocol_worker(monkeypatch):
+    captured = {}
+
+    class FakeSmsOAuthWorker:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "platforms.chatgpt.protocol_sms_oauth.ChatGPTProtocolSmsOAuthWorker",
+        FakeSmsOAuthWorker,
+    )
     platform = object.__new__(ChatGPTPlatform)
     platform.mailbox = None
     platform.config = RegisterConfig()
     adapter = ChatGPTPlatform.build_protocol_mailbox_adapter(platform)
-    ctx = SimpleNamespace(identity=SimpleNamespace(identity_provider="sms_oauth"))
+    ctx = SimpleNamespace(
+        identity=SimpleNamespace(identity_provider="sms_oauth", email="user@example.com"),
+        proxy="http://127.0.0.1:7897",
+        log=lambda message: None,
+        extra={"phone_change_limit": "7"},
+    )
+    artifacts = SimpleNamespace(phone_callback="phone-callback")
 
-    with pytest.raises(RuntimeError, match="browser executors"):
-        adapter.preflight(ctx)
+    worker = adapter.worker_builder(ctx, artifacts)
+
+    assert isinstance(worker, FakeSmsOAuthWorker)
+    assert captured["phone_callback"] == "phone-callback"
+    assert captured["proxy_url"] == "http://127.0.0.1:7897"
+    assert captured["phone_change_limit"] == 7
+    assert adapter.use_phone_callback is True
+
+
+def test_sms_oauth_protocol_mapper_marks_phone_first_refresh_token():
+    platform = object.__new__(ChatGPTPlatform)
+    platform.mailbox = None
+    platform.config = RegisterConfig()
+    adapter = ChatGPTPlatform.build_protocol_mailbox_adapter(platform)
+    ctx = SimpleNamespace(
+        identity=SimpleNamespace(identity_provider="sms_oauth"),
+        password="Secret123!",
+        proxy=None,
+        log=lambda message: None,
+    )
+    result = SimpleNamespace(
+        email="user@example.com",
+        password="Secret123!",
+        account_id="acct_123",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        id_token="id-token",
+        session_token="",
+        workspace_id="",
+        metadata={"refresh_token_source": "phone_first_oauth"},
+    )
+
+    mapped = adapter.result_mapper(ctx, result)
+
+    assert mapped.extra["registration_refresh_token"] == "refresh-token"
+    assert mapped.extra["refresh_token_source"] == "phone_first_oauth"
+
+
+def test_sms_oauth_protocol_mapper_saves_registered_account_without_refresh_token():
+    platform = object.__new__(ChatGPTPlatform)
+    platform.mailbox = None
+    platform.config = RegisterConfig()
+    adapter = ChatGPTPlatform.build_protocol_mailbox_adapter(platform)
+    ctx = SimpleNamespace(
+        identity=SimpleNamespace(identity_provider="sms_oauth"),
+        password="Secret123!",
+        proxy=None,
+        log=lambda message: None,
+    )
+    result = SimpleNamespace(
+        email="user@example.com",
+        password="Secret123!",
+        account_id="acct_123",
+        access_token="access-token",
+        refresh_token="",
+        id_token="",
+        session_token="sess_123",
+        workspace_id="",
+        metadata={
+            "cookies": "__Secure-next-auth.session-token=sess_123",
+            "session": {"accessToken": "access-token", "user": {"email": None}},
+            "oauth_error": "registered account but did not acquire refresh_token",
+        },
+    )
+
+    mapped = adapter.result_mapper(ctx, result)
+
+    assert mapped.status.name == "REGISTERED"
+    assert mapped.extra["access_token"] == "access-token"
+    assert mapped.extra["refresh_token"] == ""
+    assert mapped.extra["registration_refresh_token"] == ""
+    assert mapped.extra["session_token"] == "sess_123"
+    assert mapped.extra["session"] == {"accessToken": "access-token", "user": {"email": None}}
+    assert mapped.extra["oauth_error"] == "registered account but did not acquire refresh_token"
+
+
+def test_chatgpt_result_mapper_preserves_oauth_error_without_refresh_token():
+    platform = object.__new__(ChatGPTPlatform)
+    mapped = ChatGPTPlatform._map_chatgpt_result(
+        platform,
+        {
+            "email": "user@example.com",
+            "password": "Secret123!",
+            "account_id": "acct_123",
+            "access_token": "access-token",
+            "session_token": "session-token",
+            "session": {"user": {"email": None}},
+            "oauth_error": "missing refresh token",
+            "record_har_path": "D:/captures/register.har",
+        },
+        require_oauth=False,
+    )
+
+    assert mapped.status.name == "REGISTERED"
+    assert mapped.extra["refresh_token"] == ""
+    assert mapped.extra["oauth_error"] == "missing refresh token"
+    assert mapped.extra["record_har_path"] == "D:/captures/register.har"
 
 
 def test_fetch_chatgpt_session_opens_session_api_directly():
@@ -711,7 +824,455 @@ def test_phone_first_initial_sms_fetch_error_retries_without_full_round_restart(
     assert state["page_type"] == "chatgpt_home"
     assert calls["homepage"] == 3
     assert calls["nuke"] == 0
-    assert any("initial phone rejected" in message for message in logs)
+    assert any("initial phone fetch failed" in message for message in logs)
+
+
+def test_phone_first_initial_sms_fetch_errors_do_not_consume_phone_change_limit(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+        def goto(self, url, **_kwargs):
+            self.url = url
+
+    calls = {"homepage": 0, "password": 0, "submitted_phone": []}
+    logs = []
+
+    def phone_callback():
+        return "+15550000001"
+
+    def fake_homepage_entry(_page, _phone_callback, _log):
+        calls["homepage"] += 1
+        if calls["homepage"] < 3:
+            raise RuntimeError(
+                "SMSBower get number failed: V2=('Connection aborted.', "
+                "ConnectionResetError(10054, 'reset'))"
+            )
+        return {"page_type": "create_account_password", "current_url": _page.url}, _phone_callback()
+
+    def fake_submit_password(_page, _password, _log):
+        calls["password"] += 1
+        if calls["password"] == 1:
+            return {"ok": False, "status": 400, "text": "Failed to create account. Please try again"}
+        _page.url = "https://chatgpt.com/api/auth/session"
+        return {"ok": True, "status": 200, "url": _page.url, "data": None}
+
+    def fake_submit_phone(_page, phone, _log):
+        calls["submitted_phone"].append(phone)
+        return {"page_type": "create_account_password", "current_url": _page.url}
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_homepage_entry)
+    monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
+    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should restart full auth round")))
+    monkeypatch.setattr(browser_register_module, "_submit_phone_identity_via_page", fake_submit_phone)
+    monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    state = browser_register_module._browser_registration_flow(
+        FakePage(),
+        "user@example.com",
+        "Secret123!",
+        otp_callback=None,
+        phone_callback=phone_callback,
+        log=logs.append,
+        signup_method="phone",
+        phone_change_limit=1,
+    )
+
+    assert state["page_type"] == "chatgpt_home"
+    assert calls["homepage"] == 4
+    assert calls["password"] == 2
+    assert calls["submitted_phone"] == []
+    assert any("(2/3)" in message for message in logs if "initial phone fetch failed" in message)
+
+
+def test_sms_country_plan_exhausted_is_not_initial_fetch_retryable():
+    assert not browser_register_module._is_retryable_initial_phone_fetch_error(
+        "SMS country plan exhausted provider=smsbower_api service=dr countries=2"
+    )
+
+
+def test_sms_no_balance_is_not_initial_fetch_retryable():
+    assert not browser_register_module._is_retryable_initial_phone_fetch_error(
+        "SMSBower get number failed: NO_BALANCE: insufficient balance"
+    )
+
+
+def test_smspool_price_pool_unavailable_is_not_initial_fetch_retryable():
+    assert not browser_register_module._is_retryable_initial_phone_fetch_error(
+        "SMSPool purchase returned unusable response: We could not find a suitable pool below the price of: 0.02"
+    )
+
+
+def test_phone_first_no_balance_does_not_restart_full_round(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    calls = {"entry": 0, "reset": 0, "nuke": 0}
+    logs = []
+
+    def fake_entry(_page, _phone_callback, _log):
+        calls["entry"] += 1
+        raise RuntimeError("SMSBower get number failed: NO_BALANCE: insufficient balance")
+
+    def fake_reset(*_args, **_kwargs):
+        calls["reset"] += 1
+
+    def fake_nuke(*_args, **_kwargs):
+        calls["nuke"] += 1
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_entry)
+    monkeypatch.setattr(browser_register_module, "_reset_phone_callback_for_new_number", fake_reset)
+    monkeypatch.setattr(browser_register_module, "_nuke_all_browser_state", fake_nuke)
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(RuntimeError, match="NO_BALANCE"):
+        browser_register_module._browser_registration_flow(
+            FakePage(),
+            "user@example.com",
+            "Secret123!",
+            otp_callback=None,
+            phone_callback=lambda: "+15550000001",
+            log=logs.append,
+            signup_method="phone",
+            phone_change_limit=30,
+        )
+
+    assert calls == {"entry": 1, "reset": 0, "nuke": 0}
+    assert not any("registration round failed" in message for message in logs)
+
+
+def test_phone_first_smspool_price_pool_unavailable_does_not_restart_full_round(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    calls = {"entry": 0, "reset": 0, "nuke": 0}
+    logs = []
+
+    def fake_entry(_page, _phone_callback, _log):
+        calls["entry"] += 1
+        raise RuntimeError(
+            "SMSPool purchase returned unusable response: "
+            "We could not find a suitable pool below the price of: 0.02"
+        )
+
+    def fake_reset(*_args, **_kwargs):
+        calls["reset"] += 1
+
+    def fake_nuke(*_args, **_kwargs):
+        calls["nuke"] += 1
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_entry)
+    monkeypatch.setattr(browser_register_module, "_reset_phone_callback_for_new_number", fake_reset)
+    monkeypatch.setattr(browser_register_module, "_nuke_all_browser_state", fake_nuke)
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(RuntimeError, match="suitable pool below the price"):
+        browser_register_module._browser_registration_flow(
+            FakePage(),
+            "user@example.com",
+            "Secret123!",
+            otp_callback=None,
+            phone_callback=lambda: "+15550000001",
+            log=logs.append,
+            signup_method="phone",
+            phone_change_limit=30,
+        )
+
+    assert calls == {"entry": 1, "reset": 0, "nuke": 0}
+    assert not any("registration round failed" in message for message in logs)
+
+
+def test_phone_first_provider_switch_sentinel_does_not_restart_full_round(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    calls = {"entry": 0, "reset": 0, "nuke": 0}
+    logs = []
+
+    def fake_entry(_page, _phone_callback, _log):
+        calls["entry"] += 1
+        raise RuntimeError(
+            "PHONE_FIRST_PROVIDER_SWITCH: phone identity submit did not advance after phone entry"
+        )
+
+    def fake_reset(*_args, **_kwargs):
+        calls["reset"] += 1
+
+    def fake_nuke(*_args, **_kwargs):
+        calls["nuke"] += 1
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_entry)
+    monkeypatch.setattr(browser_register_module, "_reset_phone_callback_for_new_number", fake_reset)
+    monkeypatch.setattr(browser_register_module, "_nuke_all_browser_state", fake_nuke)
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(RuntimeError, match="PHONE_FIRST_PROVIDER_SWITCH"):
+        browser_register_module._browser_registration_flow(
+            FakePage(),
+            "user@example.com",
+            "Secret123!",
+            otp_callback=None,
+            phone_callback=lambda: "+15550000001",
+            log=logs.append,
+            signup_method="phone",
+            phone_change_limit=30,
+            phone_first_full_rounds=30,
+        )
+
+    assert calls == {"entry": 1, "reset": 0, "nuke": 0}
+    assert not any("registration round failed" in message for message in logs)
+
+
+def test_signup_entry_transition_timeout_raises_provider_switch_and_dumps(monkeypatch):
+    class FakePage:
+        url = "https://auth.openai.com/log-in"
+
+    dumps = []
+    logs = []
+
+    monkeypatch.setattr(browser_register_module, "_derive_registration_state_from_page", lambda _page: {})
+    monkeypatch.setattr(browser_register_module, "_extract_auth_error_text", lambda _page: "")
+    monkeypatch.setattr(browser_register_module, "_dump_debug", lambda _page, prefix: dumps.append(prefix))
+
+    with pytest.raises(RuntimeError, match="PHONE_FIRST_PROVIDER_SWITCH"):
+        browser_register_module._wait_for_signup_entry_transition(
+            FakePage(),
+            logs.append,
+            timeout=0,
+            allow_chatgpt_home=False,
+            click_passwordless_login=False,
+            recover_login_password=False,
+            timeout_error=(
+                "PHONE_FIRST_PROVIDER_SWITCH: "
+                "phone identity submit did not advance after phone entry"
+            ),
+        )
+
+    assert dumps == ["phone_identity_submit_timeout"]
+
+
+def test_chatgpt_home_is_registration_complete():
+    assert browser_register_module._is_registration_complete(
+        {
+            "page_type": "chatgpt_home",
+            "current_url": "https://chatgpt.com/",
+        }
+    )
+
+
+def test_oauth_choose_account_url_is_account_selection():
+    assert (
+        browser_register_module._infer_page_type(
+            None,
+            "https://auth.openai.com/choose-an-account",
+        )
+        == "account_selection"
+    )
+    assert "account_selection" in browser_register_module.OAUTH_EMAIL_SUBMIT_SUCCESS_PAGE_TYPES
+
+
+def test_select_oauth_account_clicks_visible_account_button():
+    events = []
+
+    class FakePage:
+        def query_selector(self, selector):
+            return None
+
+        def evaluate(self, script):
+            events.append("js-click")
+            return "user@example.com"
+
+    assert browser_register_module._select_oauth_account_if_present(FakePage(), lambda message: None)
+    assert "js-click" in events
+
+
+def test_phone_first_about_you_to_chatgpt_home_finishes_without_round_reset(monkeypatch):
+    class FakePage:
+        url = "https://auth.openai.com/create-account/password"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    calls = {"reset": 0, "onboarding": 0}
+    logs = []
+
+    def fake_submit_password(_page, _password, _log):
+        _page.url = "https://auth.openai.com/about-you"
+        return {
+            "ok": True,
+            "status": 200,
+            "url": "https://auth.openai.com/about-you",
+            "data": {"page": {"type": "about_you"}},
+        }
+
+    def fake_submit_about_you(_page, _log):
+        _page.url = "https://chatgpt.com/"
+        return {
+            "ok": True,
+            "status": 200,
+            "url": "https://chatgpt.com/",
+            "data": None,
+        }
+
+    def fake_reset(*_args, **_kwargs):
+        calls["reset"] += 1
+
+    def fake_onboarding(_page, _log):
+        calls["onboarding"] += 1
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        browser_register_module,
+        "_start_phone_first_signup_from_forced_entry",
+        lambda _page, _phone_callback, _log: (
+            {"page_type": "create_account_password", "current_url": _page.url},
+            _phone_callback(),
+        ),
+    )
+    monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
+    monkeypatch.setattr(browser_register_module, "_submit_about_you_via_page", fake_submit_about_you)
+    monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", fake_onboarding)
+    monkeypatch.setattr(browser_register_module, "_reset_phone_callback_for_new_number", fake_reset)
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    state = browser_register_module._browser_registration_flow(
+        FakePage(),
+        "user@example.com",
+        "Secret123!",
+        otp_callback=None,
+        phone_callback=lambda: "+15550000001",
+        log=logs.append,
+        signup_method="phone",
+        phone_change_limit=30,
+    )
+
+    assert state["page_type"] == "chatgpt_home"
+    assert calls["onboarding"] == 1
+    assert calls["reset"] == 0
+    assert not any("registration round failed" in message for message in logs)
+
+
+def test_phone_first_restart_rounds_stay_at_default_when_phone_change_limit_is_debug_override(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    calls = {"password": 0, "submitted_phone": []}
+    logs = []
+
+    def phone_callback():
+        return f"+1555000{calls['password']:04d}"
+
+    def fake_submit_password(_page, _password, _log):
+        calls["password"] += 1
+        return {"ok": False, "status": 400, "text": "Failed to create account. Please try again"}
+
+    def fake_submit_phone(_page, phone, _log):
+        calls["submitted_phone"].append(phone)
+        return {"page_type": "create_account_password", "current_url": _page.url}
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        browser_register_module,
+        "_start_phone_first_signup_from_forced_entry",
+        lambda _page, _phone_callback, _log: (
+            {"page_type": "create_account_password", "current_url": _page.url},
+            _phone_callback(),
+        ),
+    )
+    monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
+    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should restart full auth round")))
+    monkeypatch.setattr(browser_register_module, "_submit_phone_identity_via_page", fake_submit_phone)
+    monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(RuntimeError, match="failed after 3 full rounds"):
+        browser_register_module._browser_registration_flow(
+            FakePage(),
+            "user@example.com",
+            "Secret123!",
+            otp_callback=None,
+            phone_callback=phone_callback,
+            log=logs.append,
+            signup_method="phone",
+            phone_change_limit=30,
+        )
+
+    assert calls["password"] == 3
+    assert len(calls["submitted_phone"]) == 0
+    assert any("starting full registration round 3/3" in message for message in logs)
+    assert not any("starting full registration round 4/" in message for message in logs)
+
+
+def test_phone_first_full_rounds_explicit_debug_override_extends_rounds(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+    calls = {"password": 0}
+    logs = []
+
+    def phone_callback():
+        return f"+1555000{calls['password']:04d}"
+
+    def fake_submit_password(_page, _password, _log):
+        calls["password"] += 1
+        return {"ok": False, "status": 400, "text": "Failed to create account. Please try again"}
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        browser_register_module,
+        "_start_phone_first_signup_from_forced_entry",
+        lambda _page, _phone_callback, _log: (
+            {"page_type": "create_account_password", "current_url": _page.url},
+            _phone_callback(),
+        ),
+    )
+    monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
+    monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
+    monkeypatch.setattr(browser_register_module, "_nuke_all_browser_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(RuntimeError, match="failed after 5 full rounds"):
+        browser_register_module._browser_registration_flow(
+            FakePage(),
+            "user@example.com",
+            "Secret123!",
+            otp_callback=None,
+            phone_callback=phone_callback,
+            log=logs.append,
+            signup_method="phone",
+            phone_change_limit=30,
+            phone_first_full_rounds=5,
+        )
+
+    assert calls["password"] == 5
+    assert any("starting full registration round 5/5" in message for message in logs)
+    assert not any("starting full registration round 6/" in message for message in logs)
 
 
 def test_phone_first_submit_disables_passwordless_login_click(monkeypatch):
@@ -785,13 +1346,14 @@ def test_phone_first_stale_otp_state_uses_visible_password_page(monkeypatch):
 
     def fake_submit_password(_page, _password, _log):
         calls["password"] += 1
-        if calls["password"] == 1:
-            return {"ok": False, "status": 400, "text": "Failed to create account. Please try again"}
         _page.url = "https://chatgpt.com/api/auth/session"
         return {"ok": True, "status": 200, "url": _page.url, "data": None}
 
     def fake_homepage_entry(_page, _phone_callback, _log):
-        return {"page_type": "create_account_password", "current_url": _page.url}, _phone_callback()
+        return {
+            "page_type": "email_otp_verification",
+            "current_url": "https://auth.openai.com/email-verification",
+        }, _phone_callback()
 
     def fake_submit_phone(_page, phone, _log):
         calls["submitted_phone"].append(phone)
@@ -804,7 +1366,7 @@ def test_phone_first_stale_otp_state_uses_visible_password_page(monkeypatch):
     monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_homepage_entry)
     monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
-    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should restart full auth round")))
     monkeypatch.setattr(browser_register_module, "_submit_phone_identity_via_page", fake_submit_phone)
     monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
@@ -821,11 +1383,15 @@ def test_phone_first_stale_otp_state_uses_visible_password_page(monkeypatch):
         phone_change_limit=2,
     )
 
-    assert calls["phone"] == 2
-    assert calls["password"] == 2
-    assert calls["submitted_phone"] == ["+15550000002"]
+    assert calls["phone"] == 1
+    assert calls["password"] == 1
+    assert calls["submitted_phone"] == []
     assert state["page_type"] == "chatgpt_home"
-    assert any("visible password page overrides stale email_otp_verification state" in message for message in logs)
+    assert any(
+        "visible password page overrides stale email_otp_verification state" in message
+        or "password page appeared before SMS wait" in message
+        for message in logs
+    )
 
 
 def test_phone_first_delayed_password_page_avoids_sms_wait(monkeypatch):
@@ -856,13 +1422,14 @@ def test_phone_first_delayed_password_page_avoids_sms_wait(monkeypatch):
 
     def fake_submit_password(_page, _password, _log):
         calls["password"] += 1
-        if calls["password"] == 1:
-            return {"ok": False, "status": 400, "text": "Failed to create account. Please try again"}
         _page.url = "https://chatgpt.com/api/auth/session"
         return {"ok": True, "status": 200, "url": _page.url, "data": None}
 
     def fake_homepage_entry(_page, _phone_callback, _log):
-        return {"page_type": "create_account_password", "current_url": _page.url}, _phone_callback()
+        return {
+            "page_type": "email_otp_verification",
+            "current_url": "https://auth.openai.com/email-verification",
+        }, _phone_callback()
 
     def fake_submit_phone(_page, phone, _log):
         calls["submitted_phone"].append(phone)
@@ -875,7 +1442,7 @@ def test_phone_first_delayed_password_page_avoids_sms_wait(monkeypatch):
     monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_homepage_entry)
     monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
-    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should restart full auth round")))
     monkeypatch.setattr(browser_register_module, "_submit_phone_identity_via_page", fake_submit_phone)
     monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
@@ -892,10 +1459,76 @@ def test_phone_first_delayed_password_page_avoids_sms_wait(monkeypatch):
         phone_change_limit=2,
     )
 
-    assert calls["phone"] == 2
-    assert calls["password"] == 2
-    assert calls["submitted_phone"] == ["+15550000002"]
+    assert calls["phone"] == 1
+    assert calls["password"] == 1
+    assert calls["submitted_phone"] == []
     assert state["page_type"] == "chatgpt_home"
+
+
+def test_phone_first_login_password_restarts_with_next_phone_without_login(monkeypatch):
+    class FakePage:
+        url = "about:blank"
+
+        def evaluate(self, _script):
+            return "ua"
+
+        def goto(self, url, **_kwargs):
+            self.url = url
+
+    class PhoneCallback:
+        def __init__(self):
+            self.phones = ["+15550000001", "+15550000002"]
+            self.failed = []
+
+        def __call__(self):
+            return self.phones.pop(0)
+
+        def mark_send_failed(self, reason):
+            self.failed.append(str(reason))
+
+    phone_callback = PhoneCallback()
+    logs = []
+    calls = {"entry": 0, "password": 0, "nuke": 0}
+
+    def fake_homepage_entry(_page, _phone_callback, _log):
+        calls["entry"] += 1
+        phone = _phone_callback()
+        if calls["entry"] == 1:
+            _page.url = "https://auth.openai.com/log-in/password"
+            return {"page_type": "login_password", "current_url": _page.url}, phone
+        _page.url = "https://auth.openai.com/create-account/password"
+        return {"page_type": "create_account_password", "current_url": _page.url}, phone
+
+    def fake_submit_password(_page, _password, _log):
+        calls["password"] += 1
+        _page.url = "https://chatgpt.com/api/auth/session"
+        return {"ok": True, "status": 200, "url": _page.url, "data": None}
+
+    monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_homepage_entry)
+    monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
+    monkeypatch.setattr(browser_register_module, "_submit_oauth_password_direct", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not login with registration password")))
+    monkeypatch.setattr(browser_register_module, "_nuke_all_browser_state", lambda *_args, **_kwargs: calls.__setitem__("nuke", calls["nuke"] + 1))
+    monkeypatch.setattr(browser_register_module, "_handle_post_signup_onboarding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
+    monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
+
+    state = browser_register_module._browser_registration_flow(
+        FakePage(),
+        "user@example.com",
+        "Secret123!",
+        otp_callback=None,
+        phone_callback=phone_callback,
+        log=logs.append,
+        signup_method="phone",
+        phone_change_limit=2,
+    )
+
+    assert state["page_type"] == "chatgpt_home"
+    assert calls == {"entry": 2, "password": 1, "nuke": 1}
+    assert len(phone_callback.failed) == 1
+    assert "existing account" in phone_callback.failed[0]
+    assert any("current phone resolved to existing account" in message for message in logs)
 
 
 def test_phone_first_create_password_text_beats_stale_tel_otp_state(monkeypatch):
@@ -950,7 +1583,10 @@ def test_phone_first_tel_only_otp_state_does_not_wait_sms(monkeypatch):
         return {"ok": False, "status": 400, "text": "Failed to create account. Please try again"}
 
     def fake_homepage_entry(_page, _phone_callback, _log):
-        return {"page_type": "create_account_password", "current_url": _page.url}, _phone_callback()
+        return {
+            "page_type": "email_otp_verification",
+            "current_url": "https://auth.openai.com/email-verification",
+        }, _phone_callback()
 
     def fake_submit_phone(_page, phone, _log):
         calls["submitted_phone"].append(phone)
@@ -963,7 +1599,7 @@ def test_phone_first_tel_only_otp_state_does_not_wait_sms(monkeypatch):
     monkeypatch.setattr(browser_register_module, "_seed_browser_device_id", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(browser_register_module, "_start_phone_first_signup_from_forced_entry", fake_homepage_entry)
     monkeypatch.setattr(browser_register_module, "_submit_password_via_page", fake_submit_password)
-    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(browser_register_module, "_return_phone_first_signup_to_phone_entry", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should restart full auth round")))
     monkeypatch.setattr(browser_register_module, "_submit_phone_identity_via_page", fake_submit_phone)
     monkeypatch.setattr(browser_register_module, "_get_cookies", lambda _page: {})
     monkeypatch.setattr(browser_register_module.time, "sleep", lambda seconds: None)
@@ -980,8 +1616,9 @@ def test_phone_first_tel_only_otp_state_does_not_wait_sms(monkeypatch):
             phone_change_limit=2,
         )
 
-    assert calls["phone"] == 2
-    assert calls["submitted_phone"] == ["+15550000002"]
+    assert calls["phone"] == 1
+    assert calls["password"] == 0
+    assert calls["submitted_phone"] == []
     assert any(
         "SMS OTP page not confirmed yet" in message
         or "email OTP state not confirmed" in message
@@ -1111,6 +1748,122 @@ def test_browser_register_run_uses_fixed_register_window_size(monkeypatch):
     assert captured["page"].viewport_size == {"width": 1800, "height": 900}
 
 
+def test_browser_register_record_har_uses_camoufox_context(monkeypatch, tmp_path):
+    captured = {"context_kwargs": None, "closed": False, "page": None}
+
+    class FakePage:
+        def __init__(self):
+            self.url = "about:blank"
+            self.context = SimpleNamespace(cookies=lambda: [])
+            self.viewport_size = None
+
+        def set_viewport_size(self, size):
+            self.viewport_size = dict(size)
+
+    class FakeContext:
+        def new_page(self):
+            captured["page"] = FakePage()
+            return captured["page"]
+
+        def close(self):
+            captured["closed"] = True
+
+    class FakeBrowser:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def new_page(self):
+            return FakePage()
+
+        def new_context(self, **kwargs):
+            captured["context_kwargs"] = dict(kwargs)
+            return FakeContext()
+
+    har_path = str(tmp_path / "register.har")
+
+    monkeypatch.setattr(browser_register_module, "Camoufox", lambda **kwargs: FakeBrowser())
+    monkeypatch.setattr(browser_register_module, "_build_register_har_path", lambda email: har_path)
+    monkeypatch.setattr(browser_register_module, "_browser_registration_flow", lambda *args, **kwargs: {"page_type": "oauth_callback"})
+    monkeypatch.setattr(browser_register_module, "_get_cookies", lambda page: {})
+    monkeypatch.setattr(browser_register_module, "_fetch_chatgpt_session_from_page", lambda *args, **kwargs: {"access_token": "at_123", "refresh_token": "", "session_token": "sess_123", "account_id": "acct_123", "cookies": ""})
+    monkeypatch.setattr(browser_register_module, "_do_codex_oauth", lambda *args, **kwargs: None)
+
+    worker = browser_register_module.ChatGPTBrowserRegister(
+        headless=False,
+        proxy=None,
+        otp_callback=None,
+        phone_callback=None,
+        log_fn=lambda message: None,
+        record_har=True,
+    )
+
+    result = worker.run(email="user@example.com", password="Secret123!")
+
+    assert captured["context_kwargs"] == {
+        "record_har_path": har_path,
+        "record_har_url_filter": "**/*",
+    }
+    assert captured["closed"] is True
+    assert captured["page"].viewport_size == {"width": 1800, "height": 900}
+    assert result["record_har_path"] == har_path
+
+
+def test_browser_register_record_har_closes_context_on_registration_error(monkeypatch, tmp_path):
+    captured = {"closed": False}
+
+    class FakePage:
+        def __init__(self):
+            self.url = "about:blank"
+            self.context = SimpleNamespace(cookies=lambda: [])
+
+        def set_viewport_size(self, _size):
+            return None
+
+    class FakeContext:
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            captured["closed"] = True
+
+    class FakeBrowser:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def new_page(self):
+            return FakePage()
+
+        def new_context(self, **_kwargs):
+            return FakeContext()
+
+    def fake_registration_flow(*_args, **_kwargs):
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(browser_register_module, "Camoufox", lambda **kwargs: FakeBrowser())
+    monkeypatch.setattr(browser_register_module, "_build_register_har_path", lambda email: str(tmp_path / "failed.har"))
+    monkeypatch.setattr(browser_register_module, "_browser_registration_flow", fake_registration_flow)
+
+    worker = browser_register_module.ChatGPTBrowserRegister(
+        headless=False,
+        proxy=None,
+        otp_callback=None,
+        phone_callback=None,
+        log_fn=lambda message: None,
+        record_har=True,
+    )
+
+    with pytest.raises(RuntimeError, match="registration failed"):
+        worker.run(email="user@example.com", password="Secret123!")
+
+    assert captured["closed"] is True
+
+
 def test_phone_first_oauth_falls_back_to_fresh_browser_retry(monkeypatch):
     class FakePage:
         def __init__(self):
@@ -1168,7 +1921,37 @@ def test_phone_first_oauth_falls_back_to_fresh_browser_retry(monkeypatch):
     assert result["refresh_token_source"] == "phone_first_oauth"
 
 
-def test_phone_first_oauth_requires_usable_refresh_token(monkeypatch):
+def test_fresh_browser_oauth_retry_runs_in_worker_thread_inside_asyncio_loop(monkeypatch):
+    calls = []
+
+    def fake_sync_retry(self, email, password):
+        calls.append((email, password))
+        return {"access_token": "access-token", "refresh_token": "refresh-token"}
+
+    monkeypatch.setattr(
+        browser_register_module.ChatGPTBrowserRegister,
+        "_retry_oauth_fresh_browser_sync",
+        fake_sync_retry,
+    )
+
+    worker = browser_register_module.ChatGPTBrowserRegister(
+        headless=True,
+        proxy=None,
+        otp_callback=None,
+        phone_callback=None,
+        log_fn=lambda message: None,
+    )
+
+    async def run_retry():
+        return worker._retry_oauth_fresh_browser("user@example.com", "Secret123!")
+
+    result = asyncio.run(run_retry())
+
+    assert result == {"access_token": "access-token", "refresh_token": "refresh-token"}
+    assert calls == [("user@example.com", "Secret123!")]
+
+
+def test_phone_first_oauth_saves_registered_account_when_refresh_token_unavailable(monkeypatch):
     class FakePage:
         def __init__(self):
             self.url = "about:blank"
@@ -1203,5 +1986,10 @@ def test_phone_first_oauth_requires_usable_refresh_token(monkeypatch):
         bind_email_after_phone_signup=True,
     )
 
-    with pytest.raises(RuntimeError, match="usable refresh_token"):
-        worker.run(email="user@example.com", password="Secret123!")
+    result = worker.run(email="user@example.com", password="Secret123!")
+
+    assert result["email"] == "user@example.com"
+    assert result["account_id"] == "acct_123"
+    assert result["access_token"] == "at_123"
+    assert result["refresh_token"] == ""
+    assert "usable refresh_token" in result["oauth_error"]

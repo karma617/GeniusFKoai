@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import requests
 
 from core import outlook_email_mailbox as outlook_module
 from core.base_mailbox import create_mailbox
@@ -333,6 +334,43 @@ def test_outlook_email_external_accounts_502_falls_back_to_admin_accounts(monkey
     assert sessions[0].calls[0]["url"] == "https://mail.example.test/api/external/accounts"
     assert sessions[1].calls[0]["url"] == "https://mail.example.test/login"
     assert sessions[1].calls[2]["url"].startswith("https://mail.example.test/api/accounts?")
+
+
+def test_outlook_email_request_exception_rebuilds_session_before_retry(monkeypatch):
+    sessions: list[FakeSession] = []
+
+    class BrokenThenOkSession(FakeSession):
+        def __init__(self, *, broken: bool):
+            super().__init__([FakeResponse({"success": True, "accounts": [{"id": 7, "email": "ok@outlook.com", "status": "active"}]})])
+            self.broken = broken
+            self.closed = False
+
+        def get(self, url, **kwargs):
+            self.calls.append({"url": url, "kwargs": kwargs, "headers": dict(self.headers)})
+            if self.broken:
+                raise requests.ConnectionError("connection reset")
+            return self.responses.pop(0)
+
+        def close(self):
+            self.closed = True
+
+    def make_session():
+        session = BrokenThenOkSession(broken=not sessions)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr("requests.Session", make_session)
+    monkeypatch.setattr(outlook_module.time, "sleep", lambda _seconds: None)
+
+    mailbox = OutlookEmailMailbox(api_url="https://mail.example.test", api_key="fake-api-key")
+
+    account = mailbox.get_email()
+
+    assert account.email == "ok@outlook.com"
+    assert len(sessions) == 2
+    assert sessions[0].closed is True
+    assert sessions[0].calls[0]["url"] == "https://mail.example.test/api/external/accounts"
+    assert sessions[1].calls[0]["url"] == "https://mail.example.test/api/external/accounts"
 
 
 def test_outlook_email_external_accounts_feature_disabled_falls_back_to_admin_accounts(monkeypatch):

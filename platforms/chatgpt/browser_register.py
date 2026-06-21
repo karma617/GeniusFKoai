@@ -1,11 +1,14 @@
 """ChatGPT 浏览器注册流程（Camoufox）。"""
+import asyncio
 import base64
 import json
+import os
 import random
 import re
 import secrets
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -316,8 +319,11 @@ PHONE_VERIFY_SELECTORS = [
 PHONE_CODE_TIMEOUT_SECONDS = 180
 PHONE_CODE_TIMEOUT_SENTINEL = "SMS_CODE_TIMEOUT_180S"
 PHONE_REJECTED_SENTINEL = "PHONE_REJECTED_RETRYABLE"
+PHONE_FIRST_PHONE_RESET_SENTINEL = "PHONE_FIRST_PHONE_RESET"
+PHONE_FIRST_PROVIDER_SWITCH_SENTINEL = "PHONE_FIRST_PROVIDER_SWITCH"
 PHONE_ATTEMPTS_PER_COUNTRY = 10
 PHONE_MAX_COUNTRIES = 2
+PHONE_FIRST_FULL_ROUNDS = 3
 
 # add-phone 页面会把虚拟号、VOIP 号或不可用号码提示成多语言短句。
 # 这些错误不应终止整批任务，应立即换下一个号码继续尝试。
@@ -417,8 +423,36 @@ def _is_retryable_phone_rejection_text(text: str) -> bool:
     return bool(PHONE_RETRYABLE_REJECTION_RE.search(str(text or "")))
 
 
+def _is_phone_first_existing_account_text(text: str) -> bool:
+    value = str(text or "").lower()
+    return any(
+        marker in value
+        for marker in (
+            "existing account",
+            "resolved to existing account",
+            "phone resolved to existing account",
+            "login_password",
+            "log-in/password",
+            "invalid_username_or_password",
+            "incorrect phone number or password",
+        )
+    )
+
+
 def _is_retryable_initial_phone_fetch_error(text: str) -> bool:
     value = str(text or "").lower()
+    non_retryable_markers = (
+        "sms country plan exhausted",
+        "no_balance",
+        "no balance",
+        "insufficient balance",
+        "not enough balance",
+        "could not find a suitable pool",
+        "suitable pool below the price",
+        "below the price of",
+    )
+    if any(marker in value for marker in non_retryable_markers):
+        return False
     if _is_retryable_phone_rejection_text(value):
         return True
     markers = (
@@ -445,9 +479,27 @@ def _is_retryable_initial_phone_fetch_error(text: str) -> bool:
         "request timeout",
         "timed out",
         "10054",
-        "sms country plan exhausted",
     )
     return any(marker in value for marker in markers)
+
+
+def _is_non_restartable_phone_first_round_error(text: str) -> bool:
+    value = str(text or "").lower()
+    return any(
+        marker in value
+        for marker in (
+            "sms country plan exhausted",
+            "no_balance",
+            "no balance",
+            "insufficient balance",
+            "not enough balance",
+            "could not find a suitable pool",
+            "suitable pool below the price",
+            "below the price of",
+            PHONE_FIRST_PROVIDER_SWITCH_SENTINEL.lower(),
+            "phone identity submit did not advance",
+        )
+    )
 
 
 def _get_phone_country_select_state(page, dial_code: str, country_name: str) -> dict:
@@ -468,8 +520,33 @@ def _get_phone_country_select_state(page, dial_code: str, country_name: str) -> 
                 const rect = el.getBoundingClientRect();
                 return style && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
               };
-              const trigger = document.querySelector('button[aria-haspopup="listbox"], .react-aria-Select button');
-              const triggerText = trigger ? String(trigger.innerText || trigger.textContent || '').trim() : '';
+              const triggerSelectors = [
+                'button[aria-haspopup="listbox"]',
+                '.react-aria-Select button',
+                'button[class*="select" i]',
+                'button[class*="country" i]',
+                '[role="combobox"]',
+                '[role="button"]'
+              ];
+              let trigger = null;
+              for (const ts of triggerSelectors) {
+                const el = document.querySelector(ts);
+                if (el && visible(el)) { trigger = el; break; }
+              }
+              if (!trigger) {
+                const dialPat = /(?:\\(\\+\\d{1,4}\\)|\\+\\(\\d{1,4}\\))/;
+                const all = document.querySelectorAll('button, div, span, [role="button"], [role="combobox"]');
+                for (const el of all) {
+                  if (!visible(el)) continue;
+                  const txt = (el.innerText || el.textContent || '').trim();
+                  if (dialPat.test(txt)) { trigger = el; break; }
+                }
+              }
+              if (!trigger) {
+                const sel = document.querySelector('select');
+                if (sel && visible(sel)) trigger = sel;
+              }
+              const triggerText = trigger ? String(trigger.tagName === 'SELECT' ? ((trigger.options[trigger.selectedIndex] || {}).text || '') : (trigger.innerText || trigger.textContent || '')).trim() : '';
               const triggerNormalized = normalize(triggerText);
               const select = Array.from(document.querySelectorAll('select')).find((sel) => sel.options && sel.options.length > 10);
               let selectValue = '';
@@ -486,7 +563,7 @@ def _get_phone_country_select_state(page, dial_code: str, country_name: str) -> 
                 triggerText,
                 selectValue,
                 selectText,
-                matchesDial: Boolean(dialPattern && (triggerText.includes(`(+${dialPattern})`) || selectText.includes(`(+${dialPattern})`) || selectValue === dialPattern)),
+                matchesDial: Boolean(dialPattern && (triggerText.includes(`(+${dialPattern})`) || triggerText.includes(`+(${dialPattern})`) || triggerText.includes(`+${dialPattern}`) || selectText.includes(`(+${dialPattern})`) || selectText.includes(`+(${dialPattern})`) || selectText.includes(`+${dialPattern}`) || selectValue === dialPattern)),
                 matchesCountry: Boolean(countryPattern && (triggerNormalized.includes(countryPattern) || normalize(selectText).includes(countryPattern) || selectValue === isoCode)),
                 matchesIso: Boolean(isoCode && selectValue === isoCode),
               };
@@ -514,26 +591,8 @@ def _select_phone_country_ui(page, dial_code: str, country_name: str, log) -> bo
 
     # 先检查当前下拉框是否已经是目标国家
     dial_pattern = f"(+{dial_code})"
-    already = page.evaluate(
-        """
-        (dialPattern) => {
-          const visible = (el) => {
-            if (!el) return false;
-            const s = window.getComputedStyle(el);
-            const r = el.getBoundingClientRect();
-            return s && s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
-          };
-          const all = Array.from(document.querySelectorAll('button, div, span, a, [role="button"], [role="combobox"], select'));
-          for (const el of all) {
-            if (!visible(el)) continue;
-            const text = (el.innerText || el.textContent || '').trim();
-            if (text.includes(dialPattern) && text.length < 80) return true;
-          }
-          return false;
-        }
-        """,
-        dial_pattern,
-    )
+    already_state = _get_phone_country_select_state(page, dial_code, country_name)
+    already = bool(already_state.get("hasTrigger") and already_state.get("matchesDial"))
     if already:
         log(f"  国家已是目标值: (+{dial_code})")
         return True
@@ -636,7 +695,12 @@ def _select_phone_country_ui(page, dial_code: str, country_name: str, log) -> bo
                     select_el.select_option(value=iso_code)
                     log(f"  [OK] Playwright selectOption(value={iso_code}) 成功")
                     time.sleep(0.5)
-                    return True
+                    # Verify visible UI synced (not just hidden select value)
+                    _verify = _get_phone_country_select_state(page, dial_code, country_name)
+                    if _verify.get("matchesDial") and _verify.get("hasTrigger"):
+                        log(f"  [OK] selectOption UI 已同步: {_verify.get('triggerText', '')}")
+                        return True
+                    log("  selectOption 设置了隐藏 select 但 UI 未同步，继续策略 4")
                 except Exception:
                     pass
             # 尝试用 label 匹配（包含国家名或拨号码）
@@ -661,11 +725,45 @@ def _select_phone_country_ui(page, dial_code: str, country_name: str, log) -> bo
                     select_el.select_option(value=match_value)
                     log(f"  [OK] Playwright selectOption(value={match_value}) 成功")
                     time.sleep(0.5)
-                    return True
+                    # Verify visible UI synced (not just hidden select value)
+                    _verify = _get_phone_country_select_state(page, dial_code, country_name)
+                    if _verify.get("matchesDial") and _verify.get("hasTrigger"):
+                        log(f"  [OK] selectOption UI 已同步: {_verify.get('triggerText', '')}")
+                        return True
+                    log("  selectOption 设置了隐藏 select 但 UI 未同步，继续策略 4")
             except Exception as e:
                 log(f"  selectOption label 匹配失败: {e}")
     except Exception as e:
         log(f"  Playwright selectOption 策略失败: {e}")
+
+
+    # strategy 3.5: React event dispatch after select_option
+    try:
+        _select_el = page.query_selector('select')
+        if _select_el:
+            page.evaluate(
+                """
+                (isoCode) => {
+                  const sel = document.querySelector('select');
+                  if (!sel) return;
+                  const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLSelectElement.prototype, 'value'
+                  ).set;
+                  setter.call(sel, isoCode);
+                  sel.dispatchEvent(new Event('input', { bubbles: true }));
+                  sel.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                """,
+                iso_code,
+            )
+            time.sleep(1.0)
+            _v35 = _get_phone_country_select_state(page, dial_code, country_name)
+            if _v35.get('matchesDial') and _v35.get('hasTrigger'):
+                log("  [OK] React event sync: " + str(_v35.get("triggerText", "")))
+                return True
+            log("  React event dispatch failed to sync")
+    except Exception as e:
+        log("  React event strategy failed: " + str(e))
 
     # ═══════════════════════════════════════════════════════════════════
     # 策略 4: 点击 trigger 按钮打开 listbox，然后在 listbox 中选择
@@ -676,6 +774,8 @@ def _select_phone_country_ui(page, dial_code: str, country_name: str, log) -> bo
         '.react-aria-Select button',
         'button[class*="select" i]',
         'button[class*="country" i]',
+        '[role="combobox"]',
+        '[role="button"]',
     ]:
         trigger = page.query_selector(sel)
         if trigger:
@@ -685,7 +785,7 @@ def _select_phone_country_ui(page, dial_code: str, country_name: str, log) -> bo
         trigger = page.evaluate(
             r"""
             () => {
-              const pattern = /\(\+\d{1,4}\)/;
+              const pattern = /(?:\(\+\d{1,4}\)|\+\(\d{1,4}\))/;
               const all = document.querySelectorAll('button, [role="button"], [role="combobox"]');
               for (const el of all) {
                 const r = el.getBoundingClientRect();
@@ -1547,6 +1647,26 @@ def _oauth_url_matches_state(url: str, state: str) -> bool:
     return f"state={state}" in url or f"state%3D{state}" in url
 
 
+def _build_register_har_path(email: str) -> str:
+    project_root = Path(__file__).resolve().parents[2]
+    capture_dir = project_root / "tools" / "captures"
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(email or "anon")).strip("_") or "anon"
+    return str(capture_dir / f"register-{timestamp}-{slug}.har")
+
+
+def _close_register_har_context(context, har_path: str, log) -> None:
+    if context is None:
+        return
+    try:
+        context.close()
+        if har_path:
+            log(f"register HAR saved: {har_path}")
+    except Exception as exc:
+        log(f"register HAR save failed: {exc}")
+
+
 def _extract_auth_error_text(page) -> str:
     selectors = [
         "text=Failed to create account",
@@ -1701,8 +1821,6 @@ def _fill_input_like_user(page, selector: str, value: str) -> bool:
         if final_digits == expected_digits:
             return True
         # Some phone widgets render the selected country code inside the input.
-        if expected_digits and final_digits.endswith(expected_digits):
-            return True
     except Exception:
         pass
 
@@ -1736,12 +1854,11 @@ def _phone_input_matches_expected(page, selector: str, dial_code: str, local_num
         return False
     actual_digits = re.sub(r"\D", "", actual)
     expected_digits = re.sub(r"\D", "", str(local_number or ""))
-    dial_digits = re.sub(r"\D", "", str(dial_code or ""))
     if not expected_digits:
         return False
     if actual_digits == expected_digits:
         return True
-    return bool(dial_digits and actual_digits == f"{dial_digits}{expected_digits}")
+    return False
 
 
 def _submit_form_with_fallback(page, input_selector: str) -> bool:
@@ -1943,7 +2060,10 @@ def _derive_registration_state_from_page(page) -> dict:
         return state
 
     otp_selector = _find_first_selector(page, OTP_INPUT_SELECTORS)
-    if otp_selector and "password" not in otp_selector:
+    # tel inputs are phone number fields, not OTP; also skip if URL is a password page
+    _is_tel_only = otp_selector in ("input[type='tel']", 'input[type="tel"]')
+    _is_pass_url = "password" in current_url or "create-account" in current_url
+    if otp_selector and "password" not in otp_selector and not _is_tel_only and not _is_pass_url:
         return _build_manual_flow_state("email_otp_verification", current_url)
 
     try:
@@ -2041,6 +2161,8 @@ def _wait_for_signup_entry_transition(
     *,
     allow_chatgpt_home: bool = True,
     click_passwordless_login: bool = True,
+    recover_login_password: bool = True,
+    timeout_error: str = "",
 ) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -2066,8 +2188,15 @@ def _wait_for_signup_entry_transition(
             "chatgpt_home",
             "oauth_callback",
         }:
-            if state.get("page_type") == "login_password" and _recover_signup_password_page(page, log):
+            if recover_login_password and state.get("page_type") == "login_password" and _recover_signup_password_page(page, log):
                 return _derive_registration_state_from_page(page)
+            # Guard: if we got email_otp, wait briefly to confirm no password page is loading
+            if page_type == "email_otp_verification":
+                import time as _t; _t.sleep(0.8)
+                _recheck = _derive_registration_state_from_page(page)
+                if _is_password_registration(_recheck) or _recheck.get("page_type") == "login_password":
+                    return _recheck
+                state = _recheck
             return state
         error_text = _extract_auth_error_text(page)
         if error_text:
@@ -2192,7 +2321,7 @@ def _sync_generic_phone_hidden_value(page, e164_phone_number: str) -> None:
             """
             (value) => {
               const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-              const inputs = Array.from(document.querySelectorAll('input[type="hidden"], input[name*="phone" i]'));
+              const inputs = Array.from(document.querySelectorAll('input[type="hidden"]'));
               inputs.forEach((input) => {
                 const name = String(input.getAttribute('name') || input.id || '').toLowerCase();
                 if (!/(phone|mobile|tel)/.test(name)) return;
@@ -2643,6 +2772,67 @@ def _find_phone_identity_input_selector(page, *, timeout: int = 10) -> str:
     return ""
 
 
+def _wait_for_signup_entry_transition(
+    page,
+    log,
+    timeout: int = 20,
+    *,
+    allow_chatgpt_home: bool = True,
+    click_passwordless_login: bool = True,
+    recover_login_password: bool = True,
+    timeout_error: str = "",
+) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if click_passwordless_login and _click_passwordless_login_if_available(
+            page,
+            log,
+            context="signup entry submit",
+        ):
+            time.sleep(0.5)
+            continue
+        state = _derive_registration_state_from_page(page)
+        page_type = state.get("page_type")
+        if page_type == "chatgpt_home" and not allow_chatgpt_home:
+            error_text = _extract_auth_error_text(page)
+            if error_text:
+                raise RuntimeError(f"phone identity submit failed: {error_text}")
+            time.sleep(0.5)
+            continue
+        if page_type in {
+            "create_account_password",
+            "login_password",
+            "email_otp_verification",
+            "phone_otp_verification",
+            "phone_entry",
+            "about_you",
+            "add_phone",
+            "chatgpt_home",
+            "oauth_callback",
+        }:
+            if (
+                recover_login_password
+                and page_type == "login_password"
+                and _recover_signup_password_page(page, log)
+            ):
+                return _derive_registration_state_from_page(page)
+            if page_type == "email_otp_verification":
+                time.sleep(0.8)
+                recheck = _derive_registration_state_from_page(page)
+                if _is_password_registration(recheck) or recheck.get("page_type") == "login_password":
+                    return recheck
+                state = recheck
+            return state
+        error_text = _extract_auth_error_text(page)
+        if error_text:
+            raise RuntimeError(f"signup entry submit failed: {error_text}")
+        time.sleep(0.25)
+    if timeout_error:
+        _dump_debug(page, "phone_identity_submit_timeout")
+        raise RuntimeError(timeout_error)
+    raise RuntimeError("signup entry submit did not reach password or OTP page")
+
+
 def _submit_phone_identity_via_page(page, phone_number: str, log) -> dict:
     _click_signup_link_if_on_login(page, log)
     input_selector = _find_phone_identity_input_selector(page, timeout=10)
@@ -2654,19 +2844,20 @@ def _submit_phone_identity_via_page(page, phone_number: str, log) -> dict:
     country_selected = False
     country_state = {}
     if dial_code:
+        _dump_debug(page, "phone_first_before_country_select")
         try:
             country_selected = _select_phone_country_ui(page, dial_code, country_name, log)
         except Exception as exc:
             log(f"Phone-first signup: country select failed: {exc}")
         country_state = _get_phone_country_select_state(page, dial_code, country_name)
         country_selected = bool(
-            country_state.get("matchesIso")
-            or country_state.get("matchesDial")
-            or country_state.get("matchesCountry")
+            country_state.get("hasTrigger")
+            and country_state.get("matchesDial")
         )
         log(
             "Phone-first signup: country select state "
             f"hasTrigger={country_state.get('hasTrigger')} "
+            f"matchesIso={country_state.get('matchesIso')} "
             f"matchesDial={country_state.get('matchesDial')} "
             f"matchesCountry={country_state.get('matchesCountry')}"
         )
@@ -2679,6 +2870,32 @@ def _submit_phone_identity_via_page(page, phone_number: str, log) -> dict:
     if not _fill_input_like_user(page, input_selector, fill_value):
         _dump_debug(page, "phone_fill_failed")
         raise RuntimeError("Phone-first signup failed to fill phone input")
+    # Detect dial-code leak: component prepended the country prefix into input
+    if dial_code and local_number:
+        dial_digits = re.sub(r"\D", "", str(dial_code))
+        try:
+            _loc = getattr(page.locator(input_selector), "first", page.locator(input_selector))
+            _actual_val = str(_loc.input_value() or "").strip()
+        except Exception:
+            _actual_val = ""
+        _actual_digits = re.sub(r"\D", "", _actual_val)
+        _expected_digits = re.sub(r"\D", "", str(local_number))
+        # If the input starts with the dial code prefix, it leaked
+        if (
+            dial_digits
+            and _actual_digits.startswith(dial_digits)
+            and _actual_digits != _expected_digits
+        ):
+            log(f"  ⚠️ 检测到区号泄露到输入框: actual={_mask_phone_number(_actual_val)} 重新填入")
+            # Clear input completely then re-fill with local number only
+            try:
+                _loc.fill("")
+                time.sleep(0.3)
+            except Exception:
+                pass
+            if not _fill_input_like_user(page, input_selector, fill_value):
+                _dump_debug(page, "phone_fill_refill_failed")
+            time.sleep(0.3)
     if dial_code and not _phone_input_matches_expected(page, input_selector, dial_code, local_number):
         _dump_debug(page, "phone_fill_unexpected_value")
         raise RuntimeError("Phone-first signup phone input contains unexpected country code/value")
@@ -2693,7 +2910,17 @@ def _submit_phone_identity_via_page(page, phone_number: str, log) -> dict:
     else:
         raise RuntimeError("Phone-first signup did not find a continue button")
 
-    return _wait_for_signup_entry_transition(page, log, allow_chatgpt_home=False, click_passwordless_login=False)
+    return _wait_for_signup_entry_transition(
+        page,
+        log,
+        allow_chatgpt_home=False,
+        click_passwordless_login=False,
+        recover_login_password=False,
+        timeout_error=(
+            f"{PHONE_FIRST_PROVIDER_SWITCH_SENTINEL}: "
+            "phone identity submit did not advance after phone entry"
+        ),
+    )
 
 
 def _wait_for_page_ready(page, *, timeout: int = 15) -> None:
@@ -2901,11 +3128,11 @@ def _nuke_all_browser_state(page, log) -> None:
         pass
 
 
-def _reset_phone_callback_for_new_number(phone_callback, reason: str) -> None:
+def _reset_phone_callback_for_new_number(phone_callback, reason: str, *, mark_failed: bool = True) -> None:
     if not phone_callback:
         return
     marker = getattr(phone_callback, "mark_send_failed", None)
-    if callable(marker):
+    if mark_failed and callable(marker):
         try:
             marker(str(reason or "phone rejected"))
             return
@@ -2922,6 +3149,19 @@ def _reset_phone_callback_for_new_number(phone_callback, reason: str) -> None:
                 setattr(phone_callback, name, value)
         except Exception:
             pass
+
+
+def _mark_phone_callback_number_fetch_failed(phone_callback, reason: str) -> bool:
+    if not phone_callback:
+        return False
+    marker = getattr(phone_callback, "mark_number_fetch_failed", None)
+    if not callable(marker):
+        return False
+    try:
+        marker(str(reason or "phone number fetch failed"))
+        return True
+    except Exception:
+        return False
 
 
 def _start_phone_first_signup_from_forced_entry(page, phone_callback, log) -> tuple[dict, str]:
@@ -2982,13 +3222,19 @@ def _start_browser_phone_signup_via_authorize(page, phone_callback, device_id: s
     return _start_phone_first_signup_from_forced_entry(page, phone_callback, log)
 
 
+_DUMP_DEBUG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "dumps")
+
 def _dump_debug(page, prefix: str) -> None:
     try:
-        page.screenshot(path=f"/tmp/{prefix}.png")
+        os.makedirs(_DUMP_DEBUG_DIR, exist_ok=True)
+        ts = int(time.time())
+        page.screenshot(path=os.path.join(_DUMP_DEBUG_DIR, f"{prefix}_{ts}.png"))
     except Exception:
         pass
     try:
-        with open(f"/tmp/{prefix}.html", "w", encoding="utf-8", errors="replace") as f:
+        os.makedirs(_DUMP_DEBUG_DIR, exist_ok=True)
+        ts = int(time.time()) if 'ts' not in dir() else ts
+        with open(os.path.join(_DUMP_DEBUG_DIR, f"{prefix}_{ts}.html"), "w", encoding="utf-8", errors="replace") as f:
             f.write(page.content())
     except Exception:
         pass
@@ -3257,6 +3503,8 @@ def _infer_page_type(data: dict | None, current_url: str = "") -> str:
         return "login_password"
     if "sign-in-with-chatgpt" in url and "consent" in url:
         return "consent"
+    if "choose-an-account" in url:
+        return "account_selection"
     if "workspace" in url and "select" in url:
         return "workspace_selection"
     if "organization" in url and "select" in url:
@@ -4047,6 +4295,7 @@ OAUTH_EMAIL_SUBMIT_SUCCESS_PAGE_TYPES = {
     "email_otp_verification",
     "about_you",
     "consent",
+    "account_selection",
     "workspace_selection",
     "organization_selection",
     "add_phone",
@@ -4271,6 +4520,60 @@ def _submit_login_email_via_page(page, email: str, log, *, recover_url: str = ""
     return {"ok": False, "status": 0, "url": last_url, "data": None, "text": last_text or "OAuth 邮箱页提交后未跳转"}
 
 
+
+def _select_oauth_account_if_present(page, log) -> bool:
+    selectors = [
+        'button[data-testid*="account" i]',
+        '[role="button"][data-testid*="account" i]',
+        'button:has-text("@")',
+        '[role="button"]:has-text("@")',
+        'button:has-text("Continue")',
+        'button[type="submit"]',
+    ]
+    clicked = _click_first_no_wait(page, selectors, timeout=2)
+    if clicked:
+        log(f"  OAuth account selection clicked: {clicked}")
+        return True
+    try:
+        result = page.evaluate(
+            """
+            () => {
+              const visible = (el) => {
+                if (!el) return false;
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+              };
+              const textOf = (el) => String(el.innerText || el.textContent || '').trim();
+              const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], [tabindex]'))
+                .filter(visible)
+                .filter((el) => {
+                  const text = textOf(el).toLowerCase();
+                  const testid = String(el.getAttribute('data-testid') || '').toLowerCase();
+                  const aria = String(el.getAttribute('aria-label') || '').toLowerCase();
+                  return text.includes('@')
+                    || text.includes('continue')
+                    || text.includes('choose')
+                    || testid.includes('account')
+                    || aria.includes('account')
+                    || aria.includes('continue');
+                });
+              const target = candidates[0] || null;
+              if (!target) return '';
+              target.scrollIntoView({block: 'center', inline: 'center'});
+              target.click();
+              return textOf(target) || target.getAttribute('data-testid') || target.getAttribute('aria-label') || target.tagName;
+            }
+            """
+        )
+        result = str(result or "").strip()
+        if result:
+            log(f"  OAuth account selection clicked via JS: {result[:120]}")
+            return True
+    except Exception as exc:
+        log(f"  OAuth account selection JS click failed: {exc}")
+    return False
+
 def _do_codex_oauth(
     page,
     cookies_dict: dict,
@@ -4425,6 +4728,14 @@ def _do_codex_oauth(
                 log(f"  OAuth 密码页提交状态: {password_resp.get('status', 0)}")
                 if not password_resp.get("ok"):
                     raise RuntimeError(f"OAuth 密码页提交失败: {(password_resp.get('text') or '')}")
+                continue
+
+            if state["page_type"] == "account_selection":
+                if _select_oauth_account_if_present(page, log):
+                    time.sleep(1.5)
+                    continue
+                log("  OAuth account selection page has no clickable account")
+                time.sleep(1)
                 continue
 
             if state["page_type"] == "email_otp_verification":
@@ -4709,7 +5020,11 @@ def _wait_for_access_token(page, timeout: int = 60) -> str:
 def _is_registration_complete(state: dict) -> bool:
     page_type = str(state.get("page_type") or "")
     url = str(state.get("current_url") or state.get("continue_url") or "").lower()
-    return page_type in {"callback", "oauth_callback"} or (
+    if page_type in {"callback", "oauth_callback"}:
+        return True
+    if page_type == "chatgpt_home":
+        return "chatgpt.com" in url and "redirect_uri" not in url and "about-you" not in url
+    return (
         "chatgpt.com" in url
         and "redirect_uri" not in url
         and "about-you" not in url
@@ -5560,7 +5875,7 @@ def _submit_oauth_password_direct(page, password: str, log) -> dict:
         current_url = str(page.url or "")
         state = _derive_registration_state_from_page(page)
         page_type = str(state.get("page_type") or "")
-        if page_type in {"email_otp_verification", "about_you", "consent", "workspace_selection",
+        if page_type in {"email_otp_verification", "about_you", "consent", "account_selection", "workspace_selection",
                          "organization_selection", "add_phone", "oauth_callback", "chatgpt_home", "external_url"}:
             return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
         if "code=" in current_url:
@@ -6577,7 +6892,9 @@ def _browser_registration_flow_once(
     phone_first_signup = str(signup_method or "").strip().lower() == "phone"
     signup_username = email
     phone_attempt_limit = max(int(phone_change_limit or 1), 1)
+    initial_phone_fetch_retry_limit = 3
     phone_change_used = 0
+    initial_phone_fetch_retry_used = 0
     try:
         user_agent = str(page.evaluate("() => navigator.userAgent") or "").strip() or _random_chrome_ua()
     except Exception:
@@ -6600,16 +6917,17 @@ def _browser_registration_flow_once(
                     error_text = str(exc)
                     if not (
                         phone_callback
-                        and phone_change_used < phone_attempt_limit
+                        and initial_phone_fetch_retry_used < initial_phone_fetch_retry_limit
                         and _is_retryable_initial_phone_fetch_error(error_text)
                     ):
                         raise
                     log(
-                        f"Phone-first signup: initial phone rejected, switching phone "
-                        f"({phone_change_used + 1}/{phone_attempt_limit}): {error_text[:180]}"
+                        f"Phone-first signup: initial phone fetch failed, retrying "
+                        f"({initial_phone_fetch_retry_used + 1}/{initial_phone_fetch_retry_limit}): {error_text[:180]}"
                     )
-                    _reset_phone_callback_for_new_number(phone_callback, error_text)
-                    phone_change_used += 1
+                    _mark_phone_callback_number_fetch_failed(phone_callback, error_text)
+                    _reset_phone_callback_for_new_number(phone_callback, error_text, mark_failed=False)
+                    initial_phone_fetch_retry_used += 1
                     try:
                         page.goto("about:blank", wait_until="domcontentloaded", timeout=5000)
                     except Exception:
@@ -6631,7 +6949,10 @@ def _browser_registration_flow_once(
     register_submitted = False
     seen_states: dict[str, int] = {}
 
-    for step in range(12):
+    max_steps = 12
+    if phone_first_signup:
+        max_steps = max(max_steps, phone_attempt_limit * 3 + 6)
+    for step in range(max_steps):
         signature = "|".join(
             [
                 str(state.get("page_type") or ""),
@@ -6679,23 +7000,15 @@ def _browser_registration_flow_once(
                 ):
                     log(
                         f"Phone-first signup: account creation failed with current phone, "
-                        f"switching phone "
+                        f"restarting auth with next phone "
                         f"({phone_change_used + 1}/{phone_attempt_limit}): {error_text[:180]}"
                     )
                     _reset_phone_callback_for_new_number(phone_callback, error_text)
                     phone_change_used += 1
-                    if not _return_phone_first_signup_to_phone_entry(page, log):
-                        raise RuntimeError("Phone-first signup phone edit/change did not reveal phone input; restart full homepage flow")
-                    new_phone = str(phone_callback() or "").strip()
-                    if not new_phone:
-                        raise RuntimeError("Phone-first signup did not receive a replacement phone number")
-                    log(f"Phone-first signup using replacement phone: {_mask_phone_number(new_phone)}")
-                    signup_username = new_phone
-                    state = _submit_phone_identity_via_page(page, new_phone, log)
-                    state = _refresh_registration_state_from_page_if_password_visible(page, state, log)
-                    register_submitted = False
-                    seen_states.clear()
-                    continue
+                    raise RuntimeError(
+                        f"{PHONE_FIRST_PHONE_RESET_SENTINEL}: account creation failed with current phone: "
+                        f"{error_text[:240]}"
+                    )
                 raise RuntimeError(f"密码页提交失败: {(reg_resp.get('text') or '')}")
             register_submitted = True
             state = _extract_flow_state(reg_resp.get("data"), reg_resp.get("url", page.url))
@@ -6707,12 +7020,13 @@ def _browser_registration_flow_once(
             if phone_first_signup and phone_callback and phone_change_used < phone_attempt_limit:
                 log(
                     f"Phone-first signup: current phone resolved to existing account, "
-                    f"switching phone ({phone_change_used + 1}/{phone_attempt_limit})"
+                    f"restarting auth with next phone ({phone_change_used + 1}/{phone_attempt_limit})"
                 )
                 _reset_phone_callback_for_new_number(phone_callback, "phone resolved to existing account")
                 phone_change_used += 1
-                log("Phone-first signup: restarting from chatgpt.com homepage")
-                raise RuntimeError("Phone-first signup current phone resolved to existing account")
+                raise RuntimeError(
+                    f"{PHONE_FIRST_PHONE_RESET_SENTINEL}: phone resolved to existing account"
+                )
             if _recover_signup_password_page(page, log):
                 state = _derive_registration_state_from_page(page)
                 continue
@@ -6791,40 +7105,24 @@ def _browser_registration_flow_once(
                 continue
             if phone_first_signup and not _is_email_otp(state):
                 continue
-            if phone_first_signup and _is_email_otp(state) and not _is_visible_phone_first_sms_otp_page(page):
-                log("Phone-first signup: email OTP state not confirmed by visible SMS code input; waiting for page transition")
-                state = _build_manual_flow_state("pending_transition", str(getattr(page, "url", "") or ""))
-                continue
-            active_otp_callback = phone_callback if phone_first_signup else otp_callback
+            # phone_first_signup: email_otp_verification = real email OTP; always use otp_callback
+            if phone_first_signup and _is_email_otp(state) and not otp_callback:
+                raise RuntimeError("Phone-first signup: email OTP required but no otp_callback provided")
+            active_otp_callback = otp_callback
             if not active_otp_callback:
                 raise RuntimeError("ChatGPT 注册需要验证码但未提供 callback")
             log("等待 ChatGPT 验证码")
-            if phone_first_signup:
-                code = active_otp_callback()
-                if not code:
-                    raise RuntimeError("未获取到验证码")
-                otp_resp = _submit_otp_via_page(page, code, log)
-            else:
-                otp_resp = _submit_email_otp_with_retry(
-                    page,
-                    active_otp_callback,
-                    log,
-                    max_invalid_retries=3,
-                    label="Register email OTP",
-                )
+            # Always use email OTP retry path in this branch
+            otp_resp = _submit_email_otp_with_retry(
+                page,
+                active_otp_callback,
+                log,
+                max_invalid_retries=3,
+                label="Register email OTP",
+            )
             log(f"验证码页提交状态: {otp_resp.get('status', 0)}")
             if not otp_resp.get("ok"):
-                if phone_first_signup and hasattr(phone_callback, "mark_code_failed"):
-                    try:
-                        phone_callback.mark_code_failed(str(otp_resp.get("text") or "invalid otp"))
-                    except Exception:
-                        pass
                 raise RuntimeError(f"验证码校验失败: {(otp_resp.get('text') or '')}")
-            if phone_first_signup and hasattr(phone_callback, "report_success"):
-                try:
-                    phone_callback.report_success()
-                except Exception:
-                    pass
             state = _extract_flow_state(otp_resp.get("data"), otp_resp.get("url", page.url))
             if not state.get("page_type"):
                 state = _derive_registration_state_from_page(page)
@@ -6897,6 +7195,7 @@ def _browser_registration_flow(
     *,
     signup_method: str = "email",
     phone_change_limit: int = 10,
+    phone_first_full_rounds: int | None = None,
 ) -> dict:
     phone_first_signup = str(signup_method or "").strip().lower() == "phone"
     if not phone_first_signup:
@@ -6912,8 +7211,14 @@ def _browser_registration_flow(
         )
 
     last_error = ""
-    for round_index in range(1, 4):
-        log(f"Phone-first signup: starting full registration round {round_index}/3")
+    try:
+        # phone_change_limit controls phone swaps, not full browser-auth restarts.
+        default_rounds = PHONE_FIRST_FULL_ROUNDS
+        max_full_rounds = max(int(phone_first_full_rounds or default_rounds), 1)
+    except Exception:
+        max_full_rounds = PHONE_FIRST_FULL_ROUNDS
+    for round_index in range(1, max_full_rounds + 1):
+        log(f"Phone-first signup: starting full registration round {round_index}/{max_full_rounds}")
         try:
             return _browser_registration_flow_once(
                 page,
@@ -6927,20 +7232,24 @@ def _browser_registration_flow(
             )
         except Exception as exc:
             last_error = str(exc)
-            if round_index >= 3:
+            if _is_non_restartable_phone_first_round_error(last_error):
                 break
+            if round_index >= max_full_rounds:
+                break
+            is_phone_reset = PHONE_FIRST_PHONE_RESET_SENTINEL in last_error
             log(
                 "Phone-first signup: registration round failed, "
-                f"restarting from chatgpt.com homepage ({round_index + 1}/3): {last_error[:180]}"
+                f"restarting from chatgpt.com homepage ({round_index + 1}/{max_full_rounds}): {last_error[:180]}"
             )
-            _reset_phone_callback_for_new_number(phone_callback, last_error)
+            if not is_phone_reset:
+                _reset_phone_callback_for_new_number(phone_callback, last_error)
             _nuke_all_browser_state(page, log)
             try:
                 page.goto("about:blank", wait_until="domcontentloaded", timeout=5000)
             except Exception:
                 pass
             time.sleep(1)
-    raise RuntimeError(f"Phone-first signup failed after 3 full rounds: {last_error}")
+    raise RuntimeError(f"Phone-first signup failed after {max_full_rounds} full rounds: {last_error}")
 
 
 class ChatGPTBrowserRegister:
@@ -6958,6 +7267,7 @@ class ChatGPTBrowserRegister:
         bind_email_after_phone_signup: bool = False,
         record_har: bool = False,
         phone_change_limit: int = 10,
+        phone_first_full_rounds: int | None = None,
     ):
         self.headless = headless
         self.proxy = proxy
@@ -6968,6 +7278,11 @@ class ChatGPTBrowserRegister:
         self.bind_email_after_phone_signup = bool(bind_email_after_phone_signup)
         self.record_har = bool(record_har)
         self.phone_change_limit = max(int(phone_change_limit or 1), 1)
+        try:
+            default_rounds = PHONE_FIRST_FULL_ROUNDS
+            self.phone_first_full_rounds = max(int(phone_first_full_rounds or default_rounds), 1)
+        except Exception:
+            self.phone_first_full_rounds = PHONE_FIRST_FULL_ROUNDS
         # post_register_in_browser(page, session_info) -> dict|None：
         # 注册拿到 session 后、**浏览器还开着**时回调。短链复用流程用它在
         # 同一个浏览器/同一 page 里打开短链并抓 midtrans_url。返回的 dict 会
@@ -7017,19 +7332,43 @@ class ChatGPTBrowserRegister:
             apply_camoufox_register_window_size(launch_opts)
 
         with self._open_browser(launch_opts) as browser:
+            har_context = None
+            record_har_path = ""
             page = browser.new_page()
+            if self.record_har and self.backend_config.is_camoufox:
+                record_har_path = _build_register_har_path(email)
+                try:
+                    har_context = browser.new_context(
+                        record_har_path=record_har_path,
+                        record_har_url_filter="**/*",
+                    )
+                    page = har_context.new_page()
+                    self.log(f"register HAR capture enabled: {record_har_path}")
+                except Exception as exc:
+                    self.log(f"register HAR capture init failed, continue without HAR: {exc}")
+                    har_context = None
+                    record_har_path = ""
+            elif self.record_har:
+                self.log("register HAR capture skipped: current browser backend does not support record_har_path")
             set_register_page_viewport(page)
             self.log("启动浏览器上下文注册状态机")
-            final_state = _browser_registration_flow(
-                page,
-                email,
-                password,
-                self.otp_callback,
-                self.phone_callback,
-                self.log,
-                signup_method="phone" if self.phone_first_oauth else "email",
-                phone_change_limit=self.phone_change_limit,
-            )
+            try:
+                final_state = _browser_registration_flow(
+                    page,
+                    email,
+                    password,
+                    self.otp_callback,
+                    self.phone_callback,
+                    self.log,
+                    signup_method="phone" if self.phone_first_oauth else "email",
+                    phone_change_limit=self.phone_change_limit,
+                    phone_first_full_rounds=self.phone_first_full_rounds,
+                )
+            except Exception:
+                _close_register_har_context(har_context, record_har_path, self.log)
+                har_context = None
+                record_har_path = ""
+                raise
             self.log(f"注册流程完成: page={final_state.get('page_type') or '-'}")
 
             # 获取 session token 和 cookies
@@ -7052,6 +7391,7 @@ class ChatGPTBrowserRegister:
                 "expires_at": session_info.get("expires_at", ""),
                 "session": session_info.get("session", {}),
                 "registration_state": final_state,
+                "record_har_path": record_har_path,
             }
 
             if self.phone_first_oauth and self.bind_email_after_phone_signup:
@@ -7073,17 +7413,23 @@ class ChatGPTBrowserRegister:
                 if not isinstance(oauth_result, dict) or not (
                     oauth_result.get("access_token") and oauth_result.get("refresh_token")
                 ):
-                    raise RuntimeError("Phone-first signup OAuth callback did not return usable refresh_token")
-                result.update(
-                    {
-                        "account_id": oauth_result.get("account_id") or result.get("account_id", ""),
-                        "access_token": oauth_result.get("access_token", ""),
-                        "refresh_token": oauth_result.get("refresh_token", ""),
-                        "refresh_token_source": "phone_first_oauth",
-                        "id_token": oauth_result.get("id_token", ""),
-                        "oauth": oauth_result,
-                    }
-                )
+                    oauth_error = "Phone-first signup OAuth callback did not return usable refresh_token"
+                    if isinstance(oauth_result, dict) and oauth_result.get("error"):
+                        oauth_error = str(oauth_result.get("error") or oauth_error)
+                    self.log(f"Phone-first signup: registration succeeded, but OAuth RT is unavailable: {oauth_error}")
+                    result["oauth_error"] = oauth_error
+                    result["oauth"] = oauth_result if isinstance(oauth_result, dict) else {}
+                else:
+                    result.update(
+                        {
+                            "account_id": oauth_result.get("account_id") or result.get("account_id", ""),
+                            "access_token": oauth_result.get("access_token", ""),
+                            "refresh_token": oauth_result.get("refresh_token", ""),
+                            "refresh_token_source": "phone_first_oauth",
+                            "id_token": oauth_result.get("id_token", ""),
+                            "oauth": oauth_result,
+                        }
+                    )
 
             # 短链复用流程：注册拿到 session 后、**浏览器还开着**时，在同一个
             # page 里继续打开短链 + 抓 midtrans_url。结果合并进返回值。
@@ -7095,9 +7441,23 @@ class ChatGPTBrowserRegister:
                         result.update(extra)
                 except Exception as exc:
                     self.log(f"浏览器内短链后续流程异常（不影响注册结果）: {exc}")
+            _close_register_har_context(har_context, record_har_path, self.log)
             return result
 
     def _retry_oauth_fresh_browser(self, email, password):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self._retry_oauth_fresh_browser_sync(email, password)
+        self.log("  fresh browser OAuth: asyncio loop detected, running sync browser in a worker thread")
+        try:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="chatgpt-oauth-retry") as pool:
+                return pool.submit(self._retry_oauth_fresh_browser_sync, email, password).result()
+        except Exception as e:
+            self.log(f"  fresh browser OAuth worker exception: {e}")
+            return None
+
+    def _retry_oauth_fresh_browser_sync(self, email, password):
         """在全新浏览器 context 里做 Codex OAuth（绕过 add_phone session）。"""
         if self.backend_config.is_bitbrowser:
             launch_opts = {

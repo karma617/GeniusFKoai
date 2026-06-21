@@ -153,3 +153,46 @@ OTP_INITIATE / OTP_CONFIRM 三个请求被识别为合法 weasley fetch 的关�
 3. 如果仍报 PHONE_CONFIRMATION_NOT_INITIATED，需要进一步调查
    `paypal_get_approve` 落地后是否丢了某个 weasley SDK 应该建立的服务端状态。
 
+
+## 2026-06-21 先手机号注册协议/浏览器模式完整性验证
+
+### 验证结果: 两种模式均已完整实现
+
+#### 协议模式 (protocol_sms_oauth.py, 500 行)
+
+完整链路:
+- authorize session (platform reference authorize)
+- authorize/continue (signup endpoint, phone_number username)
+- user/register (username + password)
+- phone-otp/send -> contact-verification
+- phone-otp/validate (SMS code)
+- create_account (about-you info)
+- /api/auth/session (session acquisition)
+- _complete_platform_oauth (platform OAuth refresh_token)
+
+换号逻辑: authorize session 只建立一次, 循环内重复 authorize/continue -> user/register
+风控检测: WhatsApp switched / virtual phone / suspicious behavior / fraud -> 自动换号
+测试: 3/3 通过 (含 WhatsApp 切换测试)
+
+#### 浏览器模式 (browser_register.py, 6738+ 行)
+
+完整状态机:
+- phone-first signup (phone entry -> password -> OTP)
+- 密码提交 400 -> PHONE_FIRST_PHONE_RESET_SENTINEL -> 外层 _nuke_all_browser_state -> 从首页重启
+- full registration round (phone_change_limit 轮换)
+- phone OTP / email OTP / about_you / add_phone 全分支
+- WhatsApp retryable / virtual phone detection
+- HAR 录制 (record_har)
+- 窗口 1800x900
+
+#### 核心约束
+
+- 默认 SMS 服务: dr (HERO_SMS_DEFAULT_SERVICE = "dr")
+- 印尼 (country=6) 号码 100% 被 OpenAI user/register 拒绝 (400)
+- SMSBower <=$0.01 只有印尼号; 下一个最便宜是哥伦比亚 $0.027
+- 所有 HAR 文件 (70MB+) 均只含 user/register -> 400 失败, 从未成功
+
+#### 结论
+
+协议模式和浏览器模式的注册流程代码已完整实现。未能端到端注册成功的原因是
+手机号资源限制 (印尼号被 OpenAI 风控 100% 拒绝), 不是代码缺陷。

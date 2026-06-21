@@ -471,6 +471,7 @@ class ChatGPTPlatform(BasePlatform):
                 "profile": result.get("profile", {}),
                 "expires_at": result.get("expires_at", ""),
                 "session": result.get("session", {}),
+                "oauth_error": result.get("oauth_error", ""),
                 # 短链物理复用：浏览器内 PayPal checkout 结果透传给上层任务判定。
                 "_shortlink_checkout": result.get("_shortlink_checkout", None),
                 "record_har_path": result.get("record_har_path", ""),
@@ -516,6 +517,7 @@ class ChatGPTPlatform(BasePlatform):
                 ),
                 record_har=_bool_param(ctx.extra, "record_har", False),
                 phone_change_limit=max(_int_param(ctx.extra or {}, "phone_change_limit", 10), 1),
+                phone_first_full_rounds=_int_param(ctx.extra or {}, "phone_first_full_rounds", 0) or None,
             ),
             browser_register_runner=lambda worker, ctx, artifacts: worker.run(
                 email=ctx.identity.email or "",
@@ -537,13 +539,17 @@ class ChatGPTPlatform(BasePlatform):
         )
 
     def build_protocol_mailbox_adapter(self):
-        def _preflight(ctx):
+        def _build_worker(ctx, artifacts):
             if getattr(ctx.identity, "identity_provider", "") == "sms_oauth":
-                raise RuntimeError(
-                    "sms_oauth currently supports only browser executors: headless or headed"
+                from platforms.chatgpt.protocol_sms_oauth import ChatGPTProtocolSmsOAuthWorker
+
+                return ChatGPTProtocolSmsOAuthWorker(
+                    phone_callback=artifacts.phone_callback,
+                    proxy_url=ctx.proxy,
+                    log_fn=ctx.log,
+                    phone_change_limit=max(_int_param(ctx.extra or {}, "phone_change_limit", 10), 1),
                 )
 
-        def _build_worker(ctx, artifacts):
             from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
 
             return ChatGPTProtocolMailboxWorker(
@@ -555,7 +561,9 @@ class ChatGPTPlatform(BasePlatform):
             )
 
         def _map_result(ctx, result):
-            _assert_complete_oauth_callback(result)
+            is_sms_oauth = getattr(getattr(ctx, "identity", None), "identity_provider", "") == "sms_oauth"
+            if not is_sms_oauth:
+                _assert_complete_oauth_callback(result)
             access_token = result.access_token or ""
             refresh_token = result.refresh_token or ""
             session_token = result.session_token or ""
@@ -564,6 +572,11 @@ class ChatGPTPlatform(BasePlatform):
                 refresh_token
                 or metadata.get("registration_refresh_token")
                 or ""
+            )
+            refresh_token_source = (
+                str(metadata.get("refresh_token_source") or "")
+                if is_sms_oauth and refresh_token
+                else ""
             )
 
             return RegistrationResult(
@@ -576,7 +589,7 @@ class ChatGPTPlatform(BasePlatform):
                     "access_token": access_token,
                     "refresh_token": "",
                     "registration_refresh_token": registration_refresh_token,
-                    "refresh_token_source": "",
+                    "refresh_token_source": refresh_token_source,
                     "registration_refresh_token_usable": False,
                     "id_token": result.id_token,
                     "session_token": session_token,
@@ -585,6 +598,7 @@ class ChatGPTPlatform(BasePlatform):
                     "profile": metadata.get("profile", {}),
                     "expires_at": metadata.get("expires_at", ""),
                     "session": metadata.get("session", {}),
+                    "oauth_error": metadata.get("oauth_error", ""),
                 },
             )
 
@@ -595,7 +609,7 @@ class ChatGPTPlatform(BasePlatform):
                 email=ctx.identity.email,
                 password=ctx.password,
             ),
-            preflight=_preflight,
+            use_phone_callback=True,
         )
 
     def get_platform_actions(self) -> list:

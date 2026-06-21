@@ -238,13 +238,21 @@ class OutlookEmailMailbox(BaseMailbox):
         retry_status_codes = OUTLOOK_EMAIL_RETRY_STATUS_CODES if retry_status_codes is None else retry_status_codes
         method_upper = method.upper()
         url = f"{self.api}{path}"
+        active_session = session
         for attempt in range(OUTLOOK_EMAIL_RETRY_ATTEMPTS):
             try:
                 with suppress_insecure_request_warning():
-                    request_fn = getattr(session, method.lower())
+                    request_fn = getattr(active_session, method.lower())
                     response = request_fn(url, timeout=15, **kwargs)
             except requests.RequestException as exc:
                 if attempt < OUTLOOK_EMAIL_RETRY_ATTEMPTS - 1:
+                    if active_session is self._session:
+                        try:
+                            active_session.close()
+                        except Exception:
+                            pass
+                        self._session = None
+                        active_session = self._get_session()
                     time.sleep(OUTLOOK_EMAIL_RETRY_DELAY_SECONDS * (attempt + 1))
                     continue
                 raise RuntimeError(

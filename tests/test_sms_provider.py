@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import requests
 from core.base_sms import (
     FiveSimProvider,
     GrizzlySmsProvider,
@@ -209,6 +210,30 @@ class TestCreateSmsProvider:
         assert "SMSBower" in message
         assert "HeroSMS" not in message
 
+    def test_smsbower_request_exception_retries_before_returning_response(self, monkeypatch):
+        class FakeResponse:
+            status_code = 200
+            text = "ACCESS_BALANCE:1.23"
+
+            def raise_for_status(self):
+                return None
+
+        calls = []
+
+        def fake_get(url, params, timeout=30, proxies=None):
+            calls.append(params)
+            if len(calls) == 1:
+                raise requests.ConnectionError("connection reset")
+            return FakeResponse()
+
+        monkeypatch.setattr("core.base_sms.requests.get", fake_get)
+        monkeypatch.setattr(sms_module.time, "sleep", lambda _seconds: None)
+
+        provider = create_sms_provider("smsbower_api", {"smsbower_api_key": "KEY"})
+
+        assert provider.get_balance() == pytest.approx(1.23)
+        assert len(calls) == 2
+
     def test_unknown_provider(self):
         with pytest.raises(RuntimeError, match="未知"):
             create_sms_provider("unknown", {})
@@ -263,7 +288,42 @@ class TestCreatePhoneCallbacks:
         assert ("cancel", "act_1") in events
         assert any("准备租用手机号" in item for item in logs)
         assert any("已成功租到号码" in item for item in logs)
-        assert any("已释放未使用号码" in item for item in logs)
+        assert any("SMS phone released: activation_id=act_1" in item for item in logs)
+
+    def test_cleanup_logs_pending_release_when_cancel_returns_false(self, monkeypatch):
+        events = []
+        logs = []
+
+        class FakeProvider:
+            def get_number(self, *, service: str, country: str = ""):
+                events.append(("get_number", service, country))
+                return SmsActivation(activation_id="act_pending", phone_number="+15551234567")
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                events.append(("cancel", activation_id))
+                return False
+
+            def report_success(self, activation_id: str) -> bool:
+                return True
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smspool_api",
+            {"smspool_api_key": "KEY"},
+            service="chatgpt",
+            log_fn=logs.append,
+        )
+
+        assert callback() == "+15551234567"
+        cleanup()
+
+        assert ("cancel", "act_pending") in events
+        assert not any("SMS phone released" in item for item in logs)
+        assert any("SMS phone release queued/pending: activation_id=act_pending" in item for item in logs)
 
     def test_number_fetch_logs_balance_and_current_price(self, monkeypatch):
         logs = []
@@ -634,6 +694,49 @@ class TestCreatePhoneCallbacks:
         assert countries[30] == "12"
 
 
+    def test_phone_callback_no_numbers_advances_country_failure_count(self, monkeypatch):
+        events = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "6", "name": "Indonesia", "price": 0.008, "count": 100},
+                    {"country": "53", "name": "Saudi Arabia", "price": 0.023, "count": 100},
+                ]
+
+            def get_number(self, *, service: str, country: str = ""):
+                events.append(("get_number", service, country))
+                return SmsActivation(activation_id=f"act_{len(events)}", phone_number="+15551234567", country=country)
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, _cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 2,
+                "sms_phone_retry_limit": 3,
+            },
+            service="chatgpt",
+        )
+
+        for _ in range(3):
+            callback.mark_number_fetch_failed("SMSBower fetch failed: V2=NO_NUMBERS; V1=NO_NUMBERS")
+        callback()
+
+        countries = [item[2] for item in events if item[0] == "get_number"]
+        assert countries == ["53"]
+
+
     def test_phone_callback_switches_country_immediately_after_voip_rejection(self, monkeypatch):
         events = []
 
@@ -845,6 +948,170 @@ class TestCreatePhoneCallbacks:
         assert "0.004 USD" in joined
         assert "0.054 USD" not in joined
 
+    def test_phone_callback_price_log_ignores_number_info_price_above_max_price(self, monkeypatch):
+        logs = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                pass
+
+            def get_balance(self) -> float:
+                return 1.0
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "6", "name": "Indonesia", "price": 0.008, "count": 100},
+                ]
+
+            def get_current_price_info(self, *, service: str, country: str = ""):
+                return {"price": 0.008, "count": 100, "currency": "USD"}
+
+            def get_number(self, *, service: str, country: str = ""):
+                return SmsActivation(
+                    activation_id="act_high_price",
+                    phone_number="+6281234567890",
+                    country=country,
+                    metadata={
+                        "number_info": {"price": "0.134"},
+                        "price_info": {"price": 0.008, "count": 100, "currency": "USD"},
+                        "max_price": 0.008,
+                    },
+                )
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: FakeProvider())
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 1,
+            },
+            service="chatgpt",
+            log_fn=logs.append,
+        )
+
+        assert callback() == "+6281234567890"
+        cleanup()
+
+        joined = "\n".join(logs)
+        assert "0.008 USD" in joined
+        assert "0.134 USD" not in joined
+
+    def test_phone_callback_uses_country_plan_price_as_temporary_purchase_cap(self, monkeypatch):
+        seen = {}
+        logs = []
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                self.max_price = 0.03
+
+            def get_balance(self) -> float:
+                return 1.0
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "53", "name": "Saudi Arabia", "price": 0.023, "count": 1200},
+                ]
+
+            def get_current_price_info(self, *, service: str, country: str = ""):
+                return {"price": 0.316, "count": 9000, "currency": "USD"}
+
+            def get_number(self, *, service: str, country: str = ""):
+                seen["max_price_during_purchase"] = self.max_price
+                return SmsActivation(
+                    activation_id="act_plan",
+                    phone_number="+966500000000",
+                    country=country,
+                    metadata={"activation_cost": "0.023", "max_price": self.max_price},
+                )
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+        fake_provider = FakeProvider()
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: fake_provider)
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 1,
+                "smsbower_max_price": "0.03",
+            },
+            service="chatgpt",
+            country="53",
+            log_fn=logs.append,
+        )
+
+        assert callback() == "+966500000000"
+        cleanup()
+
+        assert seen["max_price_during_purchase"] == pytest.approx(0.023)
+        assert fake_provider.max_price == pytest.approx(0.03)
+
+    def test_phone_callback_keeps_smsbower_low_price_bucket_below_task_cap(self, monkeypatch):
+        seen = {}
+
+        class FakeProvider(HeroSmsProvider):
+            def __init__(self):
+                self.max_price = 0.03
+
+            def get_balance(self) -> float:
+                return 0.016
+
+            def get_top_countries(self, service: str | None = None):
+                return [
+                    {"country": "6", "name": "Indonesia", "price": 0.008, "count": 1600},
+                ]
+
+            def get_current_price_info(self, *, service: str, country: str = ""):
+                return {"price": 0.134, "count": 170000, "currency": "USD"}
+
+            def get_number(self, *, service: str, country: str = ""):
+                seen["max_price_during_purchase"] = self.max_price
+                return SmsActivation(
+                    activation_id="act_low_bucket",
+                    phone_number="+6283000000000",
+                    country=country,
+                    metadata={"activation_cost": "0.007", "max_price": self.max_price},
+                )
+
+            def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
+                return ""
+
+            def cancel(self, activation_id: str) -> bool:
+                return True
+
+        fake_provider = FakeProvider()
+        monkeypatch.setattr("core.base_sms.create_sms_provider", lambda provider_key, config: fake_provider)
+
+        callback, cleanup = create_phone_callbacks(
+            "smsbower_api",
+            {
+                "smsbower_api_key": "KEY",
+                "sms_country_retry_limit": 1,
+                "smsbower_max_price": "0.03",
+            },
+            service="dr",
+            country="6",
+            log_fn=lambda message: None,
+        )
+
+        assert callback() == "+6283000000000"
+        cleanup()
+
+        assert seen["max_price_during_purchase"] == pytest.approx(0.008)
+        assert fake_provider.max_price == pytest.approx(0.03)
+
 
 class TestSmsActivateProviderCountryResolution:
     def test_get_number_accepts_numeric_country_id(self, monkeypatch):
@@ -919,6 +1186,58 @@ class TestSmsPoolProviderReleaseQueue:
 
 
 class TestHeroSmsProvider:
+    def test_top_countries_parses_smsbower_slug_nested_price_response(self, monkeypatch):
+        class FakeResp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        payload = {
+            "indonesia": {
+                "3406": {"price": 0.335, "count": 41079},
+                "3237": {"price": 0.008, "count": 547},
+                "3408": {"price": 0.018, "count": 347},
+            },
+            "saudi-arabia": {
+                "2377": {"price": 0.023, "count": 1200},
+            },
+            "united-states": {
+                "3170": {"price": 0.12, "count": 7537},
+            },
+        }
+        countries = {
+            "6": {"id": "6", "eng": "Indonesia"},
+            "53": {"id": "53", "eng": "Saudi Arabia"},
+            "187": {"id": "187", "eng": "United States"},
+        }
+
+        def fake_get(_url, params, timeout=30, proxies=None):
+            action = params.get("action")
+            if action == "getTopCountriesByServiceRank":
+                raise RuntimeError("BAD_ACTION")
+            if action == "getTopCountriesByService":
+                return FakeResp(payload)
+            if action == "getCountries":
+                return FakeResp(countries)
+            raise AssertionError(action)
+
+        monkeypatch.setattr("core.base_sms.requests.get", fake_get)
+
+        provider = sms_module.SmsBowerProvider("KEY")
+
+        rows = provider.get_top_countries(service="dr")
+
+        assert rows[:3] == [
+            {"country": "6", "name": "indonesia", "price": 0.008, "count": 547},
+            {"country": "53", "name": "saudi-arabia", "price": 0.023, "count": 1200},
+            {"country": "187", "name": "united-states", "price": 0.12, "count": 7537},
+        ]
+
     def test_get_number_uses_v2_json(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
         monkeypatch.setattr(sms_module, "_HERO_SMS_CACHE", None)
@@ -974,6 +1293,37 @@ class TestHeroSmsProvider:
         assert activation.phone_number == "+15557654321"
         assert calls == ["getPrices", "getNumberV2", "getNumber"]
 
+    def test_get_number_respects_explicit_low_max_price(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
+        monkeypatch.setattr(sms_module, "_HERO_SMS_CACHE", None)
+        calls = []
+
+        class FakeResp:
+            text = '{"activationId":"act_low","phoneNumber":"5551234","countryPhoneCode":"1","activationCost":"0.023"}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "activationId": "act_low",
+                    "phoneNumber": "5551234",
+                    "countryPhoneCode": "1",
+                    "activationCost": "0.023",
+                }
+
+        def fake_get(url, params, timeout=30, proxies=None):
+            calls.append(dict(params))
+            return FakeResp()
+
+        monkeypatch.setattr("core.base_sms.requests.get", fake_get)
+        provider = HeroSmsProvider("hero123", max_price=0.023)
+        activation = provider.get_number(service="chatgpt", country="187")
+
+        assert activation.activation_id == "act_low"
+        number_call = next(item for item in calls if item["action"] == "getNumberV2")
+        assert number_call["maxPrice"] == pytest.approx(0.023)
+
     def test_get_code_skips_attempted_sms_event(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
         monkeypatch.setattr(sms_module, "_HERO_SMS_CACHE", {
@@ -1028,6 +1378,33 @@ class TestHeroSmsProvider:
 
         assert provider.get_code("act_short", timeout=60) == ""
         assert seen == {"activation_id": "act_short", "timeout": 60}
+
+    def test_get_code_does_not_extend_registration_timeout_to_phone_lifetime(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sms_module, "hero_sms_cache_file", lambda: tmp_path / ".herosms_phone_cache.json")
+        monkeypatch.setattr(sms_module, "_HERO_SMS_CACHE", {
+            "api_key_hash": sms_module._hash_secret("hero123"),
+            "service": "dr",
+            "country": "187",
+            "activation_id": "act_registration",
+            "phone_number": "+15550000000",
+            "acquired_at": sms_module.time.time(),
+            "use_count": 0,
+            "used_codes": set(),
+            "attempted_sms_keys": set(),
+            "reuse_stopped": False,
+        })
+        provider = HeroSmsProvider("hero123")
+        seen = {}
+
+        def fake_wait_for_code(activation_id, *, timeout=180, poll_interval=3):
+            seen["activation_id"] = activation_id
+            seen["timeout"] = timeout
+            return None
+
+        monkeypatch.setattr(provider, "wait_for_code", fake_wait_for_code)
+
+        assert provider.get_code("act_registration", timeout=180) == ""
+        assert seen == {"activation_id": "act_registration", "timeout": 180}
 
     def test_mark_send_succeeded_sets_sms_sent_status(self, monkeypatch):
         calls = []

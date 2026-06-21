@@ -226,6 +226,96 @@ def test_chatgpt_sms_oauth_register_falls_back_to_next_sms_provider(monkeypatch)
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
 
 
+def test_chatgpt_sms_oauth_register_skips_exhausted_sms_provider(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        def register(self, email=None, password=None):
+            attempts.append(self.provider)
+            if self.provider == "smsbower_api":
+                raise RuntimeError("no balance: insufficient balance")
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token"},
+            )
+
+    def fake_build_platform_instance(platform_name, payload, logger, resolved_proxy=None, shared_mailbox=None):
+        provider = str((payload.get("extra") or {}).get("sms_provider") or "")
+        return FakePlatform(provider)
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_list_register_sms_provider_candidates",
+        lambda payload: [{"provider": "smsbower_api"}, {"provider": "smspool_api"}],
+    )
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", fake_build_platform_instance)
+    monkeypatch.setattr(tasks_module, "save_account", lambda account: account)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr("core.base_mailbox.create_mailbox", lambda **kwargs: object())
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 2,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "sms_oauth",
+                "mail_provider": "outlook_email_api",
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == ["smsbower_api", "smspool_api", "smspool_api"]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert any("SMS provider exhausted" in str(event[1]) for event in logger.events)
+
+
+def test_chatgpt_sms_oauth_register_candidates_use_enabled_provider_alias(monkeypatch):
+    from infrastructure import provider_settings_repository
+
+    class FakeSetting:
+        def __init__(self, provider_key):
+            self.provider_key = provider_key
+
+    class FakeSettingsRepo:
+        def list_enabled(self, provider_type):
+            assert provider_type == "sms"
+            return [FakeSetting("smspool_api")]
+
+    monkeypatch.setattr(provider_settings_repository, "ProviderSettingsRepository", FakeSettingsRepo)
+
+    candidates = tasks_module._list_register_sms_provider_candidates(
+        {
+            "platform": "chatgpt",
+            "extra": {
+                "identity_provider": "sms_oauth",
+                "sms_provider": "smsbower_api",
+            },
+        }
+    )
+
+    assert [item["provider"] for item in candidates] == ["smspool_api"]
+
+
 def test_chatgpt_sms_oauth_register_keeps_trying_next_provider_after_non_switch_error(monkeypatch):
     attempts = []
 
@@ -948,6 +1038,24 @@ def test_get_rt_sms_provider_aliases_are_normalized():
     assert tasks_module._normalize_get_rt_sms_provider("smspool_api") == "smspool"
     assert tasks_module._normalize_get_rt_sms_provider("sms_pool_api") == "smspool"
     assert tasks_module._normalize_get_rt_sms_provider("sms_api") == "smsapi"
+
+
+def test_register_sms_provider_switch_error_matches_smspool_price_pool_unavailable():
+    assert tasks_module._is_register_sms_provider_switch_error(
+        "SMSPool purchase returned unusable response: We could not find a suitable pool below the price of: 0.02"
+    )
+
+
+def test_register_sms_provider_switch_error_matches_phone_identity_stalled():
+    assert tasks_module._is_register_sms_provider_switch_error(
+        "PHONE_FIRST_PROVIDER_SWITCH: phone identity submit did not advance after phone entry"
+    )
+
+
+def test_get_rt_sms_provider_switch_error_matches_smspool_price_pool_unavailable():
+    assert tasks_module._is_get_rt_sms_provider_switch_error(
+        "SMSPool purchase returned unusable response: We could not find a suitable pool below the price of: 0.02"
+    )
 
 
 def test_get_rt_target_sms_candidates_ignore_disabled_providers_even_with_payload_keys(monkeypatch):

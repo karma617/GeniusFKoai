@@ -47,6 +47,7 @@ class ProtocolMailboxAdapter:
     link_spec: LinkSpec | None = None
     use_captcha: bool = False
     use_executor: bool = False
+    use_phone_callback: bool = False
     preflight: Callable[[RegistrationContext], None] | None = None
 
 

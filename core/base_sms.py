@@ -125,6 +125,14 @@ SMS_ACTIVATE_COUNTRIES = {
 }
 
 
+def _normalize_country_lookup_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _slugify_country_lookup_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+
+
 def _resolve_sms_activate_country_id(country: str, default_country: str) -> str:
     raw = str(country or default_country or "").strip().lower()
     if not raw:
@@ -492,6 +500,7 @@ class HeroSmsProvider(BaseSmsProvider):
         self.openai_resend_callback: Callable[[], None] | None = None
         self.last_code_result: dict | None = None
         self.current_activation: SmsActivation | None = None
+        self._country_alias_cache: dict[str, str] | None = None
 
     def _request(self, params: dict, *, needs_key: bool = True, timeout: int = 30) -> requests.Response:
         payload = dict(params)
@@ -558,6 +567,56 @@ class HeroSmsProvider(BaseSmsProvider):
             if result:
                 return result
         raise RuntimeError("SMS getCountries returned unexpected response")
+
+    def _country_aliases(self) -> dict[str, str]:
+        if self._country_alias_cache is not None:
+            return self._country_alias_cache
+        aliases: dict[str, str] = {}
+
+        def add(alias: str, country_id: str) -> None:
+            alias_text = str(alias or "").strip()
+            country_text = str(country_id or "").strip()
+            if not alias_text or not country_text:
+                return
+            aliases.setdefault(alias_text.lower(), country_text)
+            normalized = _normalize_country_lookup_text(alias_text)
+            if normalized:
+                aliases.setdefault(normalized, country_text)
+            slug = _slugify_country_lookup_text(alias_text)
+            if slug:
+                aliases.setdefault(slug, country_text)
+
+        for alias, country_id in SMS_ACTIVATE_COUNTRIES.items():
+            add(str(alias), str(country_id))
+        try:
+            countries = self.get_countries()
+        except Exception:
+            countries = []
+        for item in countries:
+            if not isinstance(item, dict):
+                continue
+            country_id = str(item.get("id") or item.get("countryId") or item.get("country_id") or "").strip()
+            if not country_id:
+                continue
+            add(country_id, country_id)
+            for key in ("eng", "name", "title", "countryName", "country_name"):
+                add(str(item.get(key) or ""), country_id)
+        self._country_alias_cache = aliases
+        return aliases
+
+    def _resolve_country_alias(self, value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if raw.isdigit():
+            return raw
+        aliases = self._country_aliases()
+        return (
+            aliases.get(raw.lower())
+            or aliases.get(_normalize_country_lookup_text(raw))
+            or aliases.get(_slugify_country_lookup_text(raw))
+            or ""
+        )
 
     def get_prices(self, service: str | None = None, country: str | int | None = None) -> dict:
         params = {"action": "getPrices"}
@@ -640,21 +699,63 @@ class HeroSmsProvider(BaseSmsProvider):
             for key, value in items.items():
                 if not isinstance(value, dict):
                     continue
-                try:
-                    country_id = str(int(key))
-                except (TypeError, ValueError):
+                country_id = self._resolve_country_alias(str(key))
+                if not country_id:
                     continue
-                price = value.get("price") or value.get("cost") or value.get("retail_price")
-                count = value.get("count") or value.get("qty") or value.get("available") or value.get("stock")
-                name = value.get("name") or value.get("countryName") or value.get("country_name") or ""
+                candidates = [value]
+                if not any(field in value for field in ("price", "cost", "retail_price", "retailPrice")):
+                    nested = [item for item in value.values() if isinstance(item, dict)]
+                    if nested:
+                        candidates = nested
+                best: dict[str, Any] | None = None
+                best_price: float | None = None
+                best_count = 0
+                for candidate in candidates:
+                    price_value = (
+                        candidate.get("price")
+                        or candidate.get("cost")
+                        or candidate.get("retail_price")
+                        or candidate.get("retailPrice")
+                    )
+                    count_value = (
+                        candidate.get("count")
+                        or candidate.get("qty")
+                        or candidate.get("available")
+                        or candidate.get("stock")
+                        or candidate.get("total")
+                    )
+                    try:
+                        candidate_price = float(price_value) if price_value is not None else None
+                    except (TypeError, ValueError):
+                        candidate_price = None
+                    try:
+                        candidate_count = int(count_value) if count_value is not None else 0
+                    except (TypeError, ValueError):
+                        candidate_count = 0
+                    if candidate_price is None:
+                        continue
+                    if best is None or candidate_price < (best_price if best_price is not None else 999999.0):
+                        best = candidate
+                        best_price = candidate_price
+                        best_count = candidate_count
+                    elif candidate_price == best_price:
+                        best_count += candidate_count
+                if best is None or best_price is None:
+                    continue
                 try:
-                    price = float(price) if price is not None else None
+                    price = float(best_price)
                 except (TypeError, ValueError):
                     price = None
                 try:
-                    count = int(count) if count is not None else 0
+                    count = int(best_count)
                 except (TypeError, ValueError):
                     count = 0
+                name = (
+                    best.get("name")
+                    or best.get("countryName")
+                    or best.get("country_name")
+                    or str(key)
+                )
                 if price is not None:
                     rows.append({"country": country_id, "name": str(name), "price": price, "count": count})
         elif isinstance(items, list):
@@ -1100,15 +1201,7 @@ class HeroSmsProvider(BaseSmsProvider):
 
     def get_code(self, activation_id: str, *, timeout: int = 120) -> str:
         requested_timeout = max(1, int(timeout or 120))
-        wait_timeout = requested_timeout
-        with _HERO_SMS_CACHE_LOCK:
-            cache = _HERO_SMS_CACHE or {}
-            if cache and str(cache.get("activation_id")) == str(activation_id):
-                remaining = int(HERO_SMS_PHONE_LIFETIME - (time.time() - float(cache.get("acquired_at") or 0)))
-                # get_rt add_phone 显式传 60 秒，须尊重；普通注册仍沿用缓存号寿命窗口。
-                if requested_timeout > 60:
-                    wait_timeout = max(requested_timeout, remaining, 60)
-        candidate = self.wait_for_code(activation_id, timeout=wait_timeout)
+        candidate = self.wait_for_code(activation_id, timeout=requested_timeout)
         self.last_code_result = candidate
         return str((candidate or {}).get("code") or "")
 
@@ -1231,13 +1324,23 @@ class SmsBowerProvider(HeroSmsProvider):
     DISPLAY_NAME = "SMSBower"
 
     def _request(self, params: dict, *, needs_key: bool = True, timeout: int = 30) -> requests.Response:
-        # SMSBower 所有接口都需要 api_key（包括 getServicesList、getCountries）
         payload = dict(params)
         if needs_key or self.api_key:
             payload["api_key"] = self.api_key
-        resp = requests.get(self.BASE_URL, params=payload, timeout=timeout, proxies=self.proxies)
-        resp.raise_for_status()
-        return resp
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = requests.get(self.BASE_URL, params=payload, timeout=timeout, proxies=self.proxies)
+                resp.raise_for_status()
+                return resp
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt >= 2:
+                    break
+                time.sleep(0.6 * (attempt + 1))
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"{self.display_name} request failed")
 
 
 class GrizzlySmsProvider(SmsBowerProvider):
@@ -1728,6 +1831,52 @@ class SmsPoolProvider(BaseSmsProvider):
         except Exception:
             pass
         return [{"code": SMSPOOL_DEFAULT_SERVICE, "name": "OpenAI / ChatGPT"}]
+
+    def get_top_countries(self, service: str | None = None) -> list[dict]:
+        """SMSPool country ranking by price for the given service.
+
+        Uses the compat getPrices endpoint which returns
+        {country_id: {operator: {cost, count}}} for the service.
+        Picks the cheapest operator per country and sorts ascending.
+        """
+        service_code = _remote_sms_service_code(service, self.default_service)
+        try:
+            payload = self._compat_get(
+                {"action": "getPrices", "service": service_code},
+                action_label="SMSPool getPrices",
+            )
+        except Exception:
+            return []
+        rows: list[dict[str, Any]] = []
+        if not isinstance(payload, dict):
+            return []
+        for country_id, operators in payload.items():
+            if not isinstance(operators, dict):
+                continue
+            best_price = None
+            best_stock = 0
+            for _op, info in operators.items():
+                if not isinstance(info, dict):
+                    continue
+                cost = info.get("cost")
+                count = info.get("count") or 0
+                try:
+                    cost_f = float(cost) if cost is not None else None
+                except (TypeError, ValueError):
+                    cost_f = None
+                try:
+                    count_i = int(count) if count is not None else 0
+                except (TypeError, ValueError):
+                    count_i = 0
+                if cost_f is None or cost_f <= 0:
+                    continue
+                if best_price is None or cost_f < best_price:
+                    best_price = cost_f
+                    best_stock = count_i
+            if best_price is not None:
+                rows.append({"country": str(country_id), "price": best_price, "count": best_stock})
+        rows.sort(key=lambda item: (item.get("price") or 999999.0, -(item.get("count") or 0)))
+        return rows
 
 
 class FiveSimProvider(BaseSmsProvider):
@@ -2991,6 +3140,24 @@ class PhoneCallbackController:
             merged["count"] = candidate.get("count")
         return merged
 
+    @staticmethod
+    def _candidate_price_cap(candidate: dict[str, Any] | None, provider: BaseSmsProvider) -> float:
+        if not candidate or not hasattr(provider, "max_price"):
+            return 0
+        try:
+            candidate_price = float(candidate.get("price")) if candidate.get("price") not in (None, "") else 0
+        except (TypeError, ValueError):
+            candidate_price = 0
+        if candidate_price <= 0:
+            return 0
+        try:
+            provider_cap = float(getattr(provider, "max_price", 0) or 0)
+        except (TypeError, ValueError):
+            provider_cap = 0
+        if provider_cap > 0 and candidate_price > provider_cap:
+            return 0
+        return candidate_price
+
     def _price_label(self, info: dict, activation: SmsActivation | None = None) -> str:
         metadata = activation.metadata if activation and isinstance(activation.metadata, dict) else {}
         number_info = metadata.get("number_info") if isinstance(metadata.get("number_info"), dict) else {}
@@ -3005,6 +3172,26 @@ class PhoneCallbackController:
             or (price_info or {}).get("price")
             or info.get("price")
         )
+        max_price = metadata.get("max_price")
+        try:
+            price_float = float(price) if price not in (None, "") else 0
+        except (TypeError, ValueError):
+            price_float = 0
+        try:
+            max_price_float = float(max_price) if max_price not in (None, "") else 0
+        except (TypeError, ValueError):
+            max_price_float = 0
+        try:
+            plan_price = (price_info or {}).get("price")
+            plan_price_float = float(plan_price) if plan_price not in (None, "") else 0
+        except (TypeError, ValueError):
+            plan_price = None
+            plan_price_float = 0
+        if max_price_float > 0 and price_float > max_price_float:
+            if plan_price_float > 0 and plan_price_float <= max_price_float:
+                price = plan_price
+            else:
+                price = max_price
         return self._amount_label(price, currency=currency)
 
     def _billing_log_suffix(self, *, balance: str, price_info: dict, activation: SmsActivation | None = None) -> str:
@@ -3093,7 +3280,14 @@ class PhoneCallbackController:
                 f"正在从 {self.provider_key} 获取手机号... "
                 f"{self._billing_log_suffix(balance=balance_label, price_info=price_info)}"
             )
+            original_max_price = getattr(provider, "max_price", None)
+            candidate_price_cap = self._candidate_price_cap(selected_candidate, provider)
             try:
+                if candidate_price_cap > 0:
+                    try:
+                        setattr(provider, "max_price", candidate_price_cap)
+                    except Exception:
+                        pass
                 self.activation = provider.get_number(service=self.service, country=effective_country)
             except Exception as first_exc:
                 # Only fall back to the configured country on the first country
@@ -3114,6 +3308,12 @@ class PhoneCallbackController:
                         _HERO_SMS_VERIFY_LOCK.release()
                         self._verify_lock_acquired = False
                     raise first_exc
+            finally:
+                if candidate_price_cap > 0:
+                    try:
+                        setattr(provider, "max_price", original_max_price)
+                    except Exception:
+                        pass
             self.phase = "need_code"
             reused = bool((self.activation.metadata or {}).get("reused"))
             reuse_label = "复用号码" if reused else "新号码"
@@ -3224,6 +3424,24 @@ class PhoneCallbackController:
             self.phase = "need_number"
             self.completed = False
 
+    def mark_number_fetch_failed(self, reason: str = "") -> None:
+        reason_text = str(reason or "").lower()
+        if not any(
+            marker in reason_text
+            for marker in (
+                "no_numbers",
+                "no numbers",
+                "no_number",
+                "no available number",
+                "no available phone",
+            )
+        ):
+            return
+        self._send_failure_count += 1
+        self.phase = "need_number"
+        self.activation = None
+        self.completed = False
+
     def mark_send_succeeded(self) -> None:
         if self.activation and self.provider:
             hook = getattr(self.provider, "mark_send_succeeded", None)
@@ -3250,8 +3468,14 @@ class PhoneCallbackController:
                 if self.awaiting_external_success and not getattr(provider, "auto_report_success_on_code", True):
                     self.report_success()
                 else:
-                    provider.cancel(self.activation.activation_id)
-                    self.log(f"已释放未使用号码: activation_id={self.activation.activation_id}")
+                    cancel_ok = provider.cancel(self.activation.activation_id)
+                    if cancel_ok:
+                        self.log(f"SMS phone released: activation_id={self.activation.activation_id}")
+                    else:
+                        self.log(
+                            "SMS phone release queued/pending: "
+                            f"activation_id={self.activation.activation_id}"
+                        )
             except Exception:
                 pass
         if self._verify_lock_acquired:
