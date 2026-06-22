@@ -35,7 +35,16 @@ TASK_TYPE_CODEX_OAUTH = "codex_oauth"
 TASK_TYPE_GET_RT = "get_rt"
 TASK_TYPE_GET_RT_BYPASS = "get_rt_bypass"
 TASK_TYPE_GOPAY_PAY_CHATGPT = "gopay_pay_chatgpt"
-TASK_TYPE_GOPAY_REGISTER_ACCOUNT = "gopay_register_account"
+TASK_TYPE_GOPAY_REGISTER_ACCOUNT = "gopay_register_account"
+
+GET_RT_SMS_BALANCE_ACTION_AUTO_SWITCH = "auto_switch"
+GET_RT_SMS_BALANCE_ACTION_WAIT_RELEASE = "wait_release"
+GET_RT_SMS_BALANCE_ACTION_TERMINATE = "terminate"
+GET_RT_SMS_BALANCE_ACTIONS = {
+    GET_RT_SMS_BALANCE_ACTION_AUTO_SWITCH,
+    GET_RT_SMS_BALANCE_ACTION_WAIT_RELEASE,
+    GET_RT_SMS_BALANCE_ACTION_TERMINATE,
+}
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_CLAIMED = "claimed"
@@ -68,7 +77,26 @@ def _normalize_task_ids(values: Any) -> list[int]:
             continue
         if account_id > 0 and account_id not in ids:
             ids.append(account_id)
-    return ids
+    return ids
+
+
+def _normalize_get_rt_sms_balance_action(value: Any) -> str:
+    action = str(value or "").strip().lower()
+    aliases = {
+        "switch": GET_RT_SMS_BALANCE_ACTION_AUTO_SWITCH,
+        "next": GET_RT_SMS_BALANCE_ACTION_AUTO_SWITCH,
+        "auto": GET_RT_SMS_BALANCE_ACTION_AUTO_SWITCH,
+        "retry": GET_RT_SMS_BALANCE_ACTION_WAIT_RELEASE,
+        "wait": GET_RT_SMS_BALANCE_ACTION_WAIT_RELEASE,
+        "wait_current": GET_RT_SMS_BALANCE_ACTION_WAIT_RELEASE,
+        "stop": GET_RT_SMS_BALANCE_ACTION_TERMINATE,
+        "abort": GET_RT_SMS_BALANCE_ACTION_TERMINATE,
+        "end": GET_RT_SMS_BALANCE_ACTION_TERMINATE,
+    }
+    action = aliases.get(action, action)
+    if action not in GET_RT_SMS_BALANCE_ACTIONS:
+        return GET_RT_SMS_BALANCE_ACTION_AUTO_SWITCH
+    return action
 
 
 def _filter_registered_get_rt_ids(
@@ -444,7 +472,10 @@ def create_get_rt_task(payload: dict[str, Any]) -> dict[str, Any]:
     task_mode = str(payload.get("task_mode") or "single").strip().lower()
     if task_mode not in {"single", "target"}:
         task_mode = "single"
-    payload["task_mode"] = task_mode
+    payload["task_mode"] = task_mode
+    payload["sms_balance_action"] = _normalize_get_rt_sms_balance_action(
+        payload.get("sms_balance_action")
+    )
     ids = _normalize_task_ids(payload.get("ids"))
     if not ids:
         account_id = int(payload.get("account_id") or 0)
@@ -2908,7 +2939,10 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     total = len(ids)
     concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
     browser_mode = str(payload.get("browser_mode") or "camoufox_headed")
-    executor_type = str(payload.get("executor_type") or "browser").strip().lower() or "browser"
+    executor_type = str(payload.get("executor_type") or "browser").strip().lower() or "browser"
+    sms_balance_action = _normalize_get_rt_sms_balance_action(
+        payload.get("sms_balance_action")
+    )
     logger.set_progress(0, total)
     mode_label = "\u76ee\u6807\u6a21\u5f0f" if task_mode == "target" else "\u5355\u8f6e\u6a21\u5f0f"
     if executor_type == "protocol":
@@ -3286,7 +3320,61 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     if item.get("sms_provider_switch_error") or _is_get_rt_sms_provider_switch_error(item.get("error"))
                 ]
                 if balance_errors:
-                    current_provider = str(balance_errors[-1].get("sms_provider") or sms_provider or "").strip()
+                    current_provider = str(balance_errors[-1].get("sms_provider") or sms_provider or "").strip()
+                    if sms_balance_action == GET_RT_SMS_BALANCE_ACTION_TERMINATE:
+
+                        logger.log(
+                            "\u83b7\u53d6rt: \u63a5\u7801\u5e73\u53f0\u4f59\u989d\u4e0d\u8db3\uff0c\u5df2\u6309\u914d\u7f6e\u76f4\u63a5\u7ec8\u6b62\u76ee\u6807\u6a21\u5f0f\u4efb\u52a1",
+                            level="error",
+                        )
+
+                        break
+
+                    if sms_balance_action == GET_RT_SMS_BALANCE_ACTION_WAIT_RELEASE:
+
+                        logger.log(
+                            f"\u83b7\u53d6rt: \u63a5\u7801\u5e73\u53f0\u4f59\u989d\u4e0d\u8db3\uff0c\u5df2\u6309\u914d\u7f6e\u7b49\u5f85\u5f53\u524d\u5e73\u53f0\u624b\u673a\u53f7\u91ca\u653e\u540e\u91cd\u8bd5 provider={current_provider or sms_provider or '(none)'}",
+                            level="warning",
+                        )
+
+                        close_phone_pool(phone_reuse_pool)
+
+                        phone_reuse_pool = None
+
+                        phone_pool_error = ""
+
+                        if sms_provider == "smspool":
+
+                            try:
+
+                                from platforms.gopay.sms_channel import wait_for_smspool_release_queue_drain
+
+                                wait_for_smspool_release_queue_drain(
+                                    api_key=str(sms_runtime.get("smspool_api_key") or ""),
+                                    base_url=str(sms_runtime.get("smspool_base_url") or ""),
+                                    log_fn=logger.log,
+                                )
+
+                            except Exception as exc:
+
+                                logger.log(
+                                    f"\u83b7\u53d6rt: SMSPool \u91ca\u653e\u7b49\u5f85\u5f02\u5e38: {exc}",
+                                    level="warning",
+                                )
+
+                        if sms_provider in {"smspool", "smsapi"}:
+
+                            phone_reuse_pool, phone_pool_error = create_phone_reuse_pool(sms_runtime)
+
+                        elif sms_provider:
+
+                            logger.log(
+                                f"\u83b7\u53d6rt: \u7ee7\u7eed\u4f7f\u7528\u5f53\u524d\u63a5\u7801 provider={sms_provider}"
+                            )
+
+                        attempt_round += 1
+
+                        continue
                     if not switch_to_next_sms_provider(current_provider):
                         logger.log("获取rt: 所有已启用接码平台均不可用，目标模式停止", level="error")
                         break
@@ -3347,7 +3435,8 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         "success_count": success_count,
         "failure_count": failure_count,
         "results": final_results,
-        "task_mode": task_mode,
+        "task_mode": task_mode,
+        "sms_balance_action": sms_balance_action,
     }
     logger.set_result_data(result_data)
     if logger.is_cancel_requested():

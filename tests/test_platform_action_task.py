@@ -1040,6 +1040,13 @@ def test_get_rt_sms_provider_aliases_are_normalized():
     assert tasks_module._normalize_get_rt_sms_provider("sms_api") == "smsapi"
 
 
+def test_get_rt_sms_balance_action_aliases_are_normalized():
+    assert tasks_module._normalize_get_rt_sms_balance_action("switch") == "auto_switch"
+    assert tasks_module._normalize_get_rt_sms_balance_action("wait") == "wait_release"
+    assert tasks_module._normalize_get_rt_sms_balance_action("abort") == "terminate"
+    assert tasks_module._normalize_get_rt_sms_balance_action("unknown") == "auto_switch"
+
+
 def test_register_sms_provider_switch_error_matches_smspool_price_pool_unavailable():
     assert tasks_module._is_register_sms_provider_switch_error(
         "SMSPool purchase returned unusable response: We could not find a suitable pool below the price of: 0.02"
@@ -1503,6 +1510,97 @@ def test_get_rt_target_mode_switches_sms_provider_after_balance_error(monkeypatc
     assert runtime_sms_providers == ["smspool", "smsbower_api"]
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
     assert logger.result_data["success_count"] == 1
+
+
+def test_get_rt_target_mode_terminates_after_balance_error_when_configured(monkeypatch):
+    from infrastructure import provider_settings_repository
+
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="target-sms-stop@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    runtime_sms_providers = []
+
+    class FakeSetting:
+        def __init__(self, provider_key, *, enabled=True, is_default=False, setting_id=1):
+            self.provider_key = provider_key
+            self.enabled = enabled
+            self.is_default = is_default
+            self.id = setting_id
+
+    class FakeSettingsRepo:
+        def get_default_provider_key(self, provider_type):
+            assert provider_type == "sms"
+            return "smspool_api"
+
+        def get_by_key(self, provider_type, provider_key):
+            assert provider_type == "sms"
+            if provider_key == "smspool_api":
+                return FakeSetting("smspool_api", is_default=True, setting_id=1)
+            if provider_key == "smsbower_api":
+                return FakeSetting("smsbower_api", setting_id=2)
+            return None
+
+        def resolve_runtime_settings(self, provider_type, provider_key, overrides=None):
+            assert provider_type == "sms"
+            if provider_key == "smspool_api":
+                return {"smspool_api_key": "SMSPOOL_KEY", "smspool_default_country": "9", "smspool_default_service": "671"}
+            if provider_key == "smsbower_api":
+                return {"smsbower_api_key": "SMSBOWER_KEY", "smsbower_default_country": "6", "smsbower_default_service": "chatgpt"}
+            return {}
+
+        def list_enabled(self, provider_type):
+            assert provider_type == "sms"
+            return [
+                FakeSetting("smspool_api", is_default=True, setting_id=1),
+                FakeSetting("smsbower_api", setting_id=2),
+            ]
+
+    class FakePhonePool:
+        def make_callback(self, *, label=""):
+            return lambda: "+15550000001"
+
+        def cleanup(self):
+            pass
+
+    def fake_build_pool(**kwargs):
+        return FakePhonePool(), ""
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            provider = command.params["sms_provider"]
+            runtime_sms_providers.append(provider)
+            return ActionExecutionResult(ok=False, error="SMSPool purchase failed: insufficient balance")
+
+    monkeypatch.setattr(provider_settings_repository, "ProviderSettingsRepository", FakeSettingsRepo)
+    monkeypatch.setattr(tasks_module, "_filter_get_rt_target_ids", lambda ids, *, platform="chatgpt": (list(ids), []))
+    monkeypatch.setattr(tasks_module, "_auto_upload_sub2api", lambda _logger, _account: True)
+    monkeypatch.setattr(tasks_module, "_is_sub2api_configured", lambda: True)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_module, "PlatformRuntime", FakeRuntime)
+    from platforms.chatgpt import browser_get_rt as browser_get_rt_module
+
+    monkeypatch.setattr(browser_get_rt_module, "build_get_rt_phone_reuse_pool", fake_build_pool)
+    logger = _FakeLogger()
+
+    tasks_module._execute_get_rt_task(
+        {
+            "ids": [account_id],
+            "task_mode": "target",
+            "sms_provider": "default",
+            "sms_balance_action": "terminate",
+            "concurrency": 1,
+        },
+        logger,
+    )
+
+    assert runtime_sms_providers == ["smspool"]
+    assert logger.finished == (tasks_module.TASK_STATUS_FAILED, "")
+    assert logger.result_data["success_count"] == 0
+    assert logger.result_data["sms_balance_action"] == "terminate"
 
 
 def test_get_rt_target_mode_switches_sms_provider_after_smspool_purchase_rate_limit(monkeypatch):

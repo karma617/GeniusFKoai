@@ -32,6 +32,30 @@ const BROWSER_MODE_OPTIONS = [
   { value: 'bitbrowser_headless', label: 'BitBrowser Headless' },
 ]
 
+type GetRtSmsBalanceAction = 'auto_switch' | 'wait_release' | 'terminate'
+
+const GET_RT_SMS_BALANCE_ACTION_OPTIONS: {
+  value: GetRtSmsBalanceAction
+  title: string
+  desc: string
+}[] = [
+  {
+    value: 'auto_switch',
+    title: '\u81ea\u52a8\u5207\u6362\u5e73\u53f0',
+    desc: '\u5f53\u524d\u63a5\u7801\u5e73\u53f0\u4f59\u989d\u4e0d\u8db3\u65f6\uff0c\u7acb\u5373\u5207\u6362\u5230\u4e0b\u4e00\u4e2a\u5df2\u542f\u7528\u63a5\u7801\u5e73\u53f0\u3002',
+  },
+  {
+    value: 'wait_release',
+    title: '\u7b49\u5f85\u91ca\u653e\u540e\u91cd\u8bd5',
+    desc: '\u4e0d\u5207\u6362\u5e73\u53f0\uff0c\u7b49\u5f85\u5f53\u524d\u5e73\u53f0\u5df2\u5360\u7528\u624b\u673a\u53f7\u91ca\u653e\u5b8c\u6bd5\u540e\u91cd\u65b0\u5f00\u59cb\u4e0b\u4e00\u8f6e\u3002',
+  },
+  {
+    value: 'terminate',
+    title: '\u76f4\u63a5\u7ec8\u6b62\u4efb\u52a1',
+    desc: '\u9047\u5230\u4f59\u989d\u4e0d\u8db3\u540e\u4e0d\u518d\u91cd\u8bd5\uff0c\u7acb\u5373\u7ed3\u675f\u76ee\u6807\u6a21\u5f0f\u4efb\u52a1\u3002',
+  },
+]
+
 const ACCOUNT_TOOL_BUTTON_CLASS = 'h-8 shrink-0 whitespace-nowrap bg-transparent'
 const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'registered',
@@ -2015,6 +2039,7 @@ export default function Accounts() {
   const [getRtPhoneReuseCount, setGetRtPhoneReuseCount] = useState(3)
   const [getRtPhoneChangeLimit, setGetRtPhoneChangeLimit] = useState(10)
   const [getRtTaskMode, setGetRtTaskMode] = useState<'single' | 'target'>('single')
+  const [getRtSmsBalanceAction, setGetRtSmsBalanceAction] = useState<GetRtSmsBalanceAction>('auto_switch')
   const [getRtExecutorType, setGetRtExecutorType] = useState('browser')
   const [configOptions, setConfigOptions] = useState<ConfigOptionsResponse>({
     mailbox_providers: [],
@@ -2232,6 +2257,7 @@ export default function Accounts() {
           smsapi_url: getRtSmsapiUrl.trim(),
           phone_reuse_count: Math.max(Number(getRtPhoneReuseCount || 3), 3),
           phone_change_limit: Math.max(Number(getRtPhoneChangeLimit || 10), 1),
+          sms_balance_action: getRtSmsBalanceAction,
         }),
       })
       setGetRtTaskId(String(data?.task_id || data?.id || ''))
@@ -2573,6 +2599,44 @@ export default function Accounts() {
                     </div>
                   ) : null}
                 </div>
+                {getRtTaskMode === 'target' && (
+                  <div>
+                    <label className="mb-2 block text-xs font-medium text-[var(--text-secondary)]">
+                      {'\u63a5\u7801\u5e73\u53f0\u4f59\u989d\u4e0d\u8db3\u65f6'}
+                    </label>
+                    <div className="grid gap-2 md:grid-cols-3">
+                      {GET_RT_SMS_BALANCE_ACTION_OPTIONS.map(option => {
+                        const active = getRtSmsBalanceAction === option.value
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setGetRtSmsBalanceAction(option.value)}
+                            className={cn(
+                              'rounded-xl border px-3 py-3 text-left transition hover:border-[var(--accent)]/70',
+                              active
+                                ? 'border-[var(--accent)] bg-[var(--bg-elevated)] shadow-[0_0_0_1px_var(--accent)]'
+                                : 'border-[var(--border)] bg-[var(--bg-hover)]',
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs font-semibold text-[var(--text-primary)]">{option.title}</span>
+                              <span
+                                className={cn(
+                                  'h-2.5 w-2.5 shrink-0 rounded-full border',
+                                  active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--text-muted)]',
+                                )}
+                              />
+                            </div>
+                            <div className="mt-1.5 help-text-xs">
+                              {option.desc}
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div>
                   <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     {'\u6267\u884c\u65b9\u5f0f'}
