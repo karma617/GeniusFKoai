@@ -1,4 +1,4 @@
-export const LANGUAGE_OPTIONS = [
+﻿export const LANGUAGE_OPTIONS = [
   { value: "zh-CN", label: "中文" },
   { value: "en-US", label: "English" },
 ] as const;
@@ -105,6 +105,10 @@ const ZH_MESSAGES = {
   "smsPool.status.failed": "\u91ca\u653e\u5931\u8d25",
   "smsPool.status.removed": "\u5df2\u79fb\u51fa",
   "smsPool.status.unknown": "\u672a\u77e5",
+  "nav.accountsSmsPoolBlacklist": "\u77ed\u4fe1\u53f7\u7801\u9ed1\u540d\u5355",
+  "smsPool.blacklistTitle": "\u77ed\u4fe1\u53f7\u7801\u9ed1\u540d\u5355",
+  "smsPool.blacklistSubtitle": "\u88ab\u6807\u8bb0\u4e3a\u4e0d\u53ef\u7528\u7684\u624b\u673a\u53f7\uff0c\u53ef\u4ee5\u624b\u52a8\u6062\u590d\u6216\u6e05\u7a7a\u3002",
+  "smsPool.blacklistEmpty": "\u9ed1\u540d\u5355\u4e3a\u7a7a\u3002",
   "nav.settings": "设置",
   "nav.settings.general": "通用",
   "nav.settings.register": "注册策略",
@@ -645,6 +649,10 @@ const EN_MESSAGES: Record<TranslationKey, string> = {
   "smsPool.status.failed": "Failed",
   "smsPool.status.removed": "Removed",
   "smsPool.status.unknown": "Unknown",
+  "nav.accountsSmsPoolBlacklist": "SMS Blacklist",
+  "smsPool.blacklistTitle": "SMS Number Blacklist",
+  "smsPool.blacklistSubtitle": "Phones marked as unusable. You can manually restore or clear them.",
+  "smsPool.blacklistEmpty": "The blacklist is empty.",
   "nav.settings": "Settings",
   "nav.settings.general": "General",
   "nav.settings.register": "Registration",
@@ -1200,3 +1208,4 @@ export function formatDateTime(
 ) {
   return new Date(value).toLocaleString(language, options);
 }
+

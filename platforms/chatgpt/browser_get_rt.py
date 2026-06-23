@@ -994,13 +994,17 @@ class _GetRtPhoneLease:
             ok = bool(self.channel.request_another(self.aid))
         except Exception as exc:
             log(f"  [phone-pool] request another failed phone={self.phone}: {exc}")
-            ok = False
+            raise RuntimeError(f"phone reuse request_another failed: {exc}") from exc
         if ok:
             log(f"  [phone-pool] reuse phone={self.phone} use={self.next_use_no}/{self.max_uses}")
         else:
             log(
                 f"  [phone-pool] reuse phone={self.phone} without resend ack "
                 f"use={self.next_use_no}/{self.max_uses}"
+            )
+            raise RuntimeError(
+                f"phone reuse request_another returned False, "
+                f"cannot notify SMS provider to resend code for {self.phone}"
             )
 
     def wait_code(self, log: Callable[[str], None], *, timeout_sec: int = 180) -> str:

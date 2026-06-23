@@ -1005,11 +1005,13 @@ class SmsActivateStyleChannel:
         api_key: str,
         service: str = "ni",
         country: str = "6",
+        proxy: str = "",
     ):
         self.base_url = str(base_url or "").strip()
         self.api_key = str(api_key or "").strip()
         self.service = str(service or "").strip() or "ni"
         self.country = str(country or "").strip() or "6"
+        self.proxy = str(proxy or "").strip()
         self.last_phone = ""
         self.last_aid = ""
         self.provider_name = "sms_activate"
@@ -1021,6 +1023,8 @@ class SmsActivateStyleChannel:
         for i in range(1, retries + 1):
             try:
                 s = _new_session()
+                if self.proxy:
+                    s.proxies = {"http": self.proxy, "https": self.proxy}
                 r = s.get(self.base_url, params=p, timeout_seconds=30)
                 return (r.text or "").strip()
             except Exception as exc:
@@ -1115,13 +1119,14 @@ class SmsActivateStyleChannel:
             pass
 
 
-def make_smsbower_channel(api_key: str = "", *, service: str = "", country: str = "") -> SmsActivateStyleChannel:
+def make_smsbower_channel(api_key: str = "", *, service: str = "", country: str = "", proxy: str = "") -> SmsActivateStyleChannel:
     """构造 SMSBower 渠道（带默认值兜底）。"""
     ch = SmsActivateStyleChannel(
         base_url=SMSBOWER_API,
         api_key=str(api_key or "").strip() or SMSBOWER_DEFAULT_API_KEY,
         service=str(service or "").strip() or SMSBOWER_DEFAULT_SERVICE,
         country=str(country or "").strip() or SMSBOWER_DEFAULT_COUNTRY,
+        proxy=str(proxy or "").strip(),
     )
     ch.provider_name = "smsbower"
     return ch
