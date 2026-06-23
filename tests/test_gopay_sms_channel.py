@@ -182,7 +182,7 @@ def test_smspool_cancel_failure_enqueues_release_retry(monkeypatch, tmp_path):
     from platforms.gopay import sms_channel
 
     queue_path = tmp_path / "release-queue.json"
-    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "SMS_RELEASE_QUEUE_PATH", queue_path)
     monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_RETRY_SECONDS", 1)
     monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
 
@@ -208,7 +208,9 @@ def test_smspool_release_queue_retries_and_removes_success(monkeypatch, tmp_path
     from platforms.gopay import sms_channel
 
     queue_path = tmp_path / "release-queue.json"
-    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    log_path = tmp_path / "release-log.jsonl"
+    monkeypatch.setattr(sms_channel, "SMS_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "SMS_RELEASE_LOG_PATH", log_path)
     monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
     now = int(sms_channel.time.time())
     queue_path.write_text(json.dumps([{
@@ -232,13 +234,17 @@ def test_smspool_release_queue_retries_and_removes_success(monkeypatch, tmp_path
     assert attempted == 1
     assert released == 1
     assert json.loads(queue_path.read_text(encoding="utf-8")) == []
+    release_logs = sms_channel.get_sms_release_logs()
+    assert any(item["status"] == "success" and item["order_id"] == "ORDER123" for item in release_logs)
 
 
 def test_smspool_release_queue_logs_each_attempt_response(monkeypatch, tmp_path):
     from platforms.gopay import sms_channel
 
     queue_path = tmp_path / "release-queue.json"
-    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    log_path = tmp_path / "release-log.jsonl"
+    monkeypatch.setattr(sms_channel, "SMS_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "SMS_RELEASE_LOG_PATH", log_path)
     monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
     now = int(sms_channel.time.time())
     queue_path.write_text(json.dumps([
@@ -281,17 +287,49 @@ def test_smspool_release_queue_logs_each_attempt_response(monkeypatch, tmp_path)
 
     assert attempted == 2
     assert released == 1
-    assert any("SMSPool release success" in item and "ORDER_OK" in item for item in logs)
-    assert any("SMSPool release failed" in item and "ORDER_FAIL" in item for item in logs)
+    assert any("release success" in item and "ORDER_OK" in item for item in logs)
+    assert any("release failed" in item and "ORDER_FAIL" in item for item in logs)
     assert any("pending_before=" in item for item in logs)
     assert not any("SECRET" in item for item in logs)
+
+    release_logs = sms_channel.get_sms_release_logs()
+    assert any(item["status"] == "failed" and item["order_id"] == "ORDER_FAIL" for item in release_logs)
+    assert any(item["status"] == "success" and item["order_id"] == "ORDER_OK" for item in release_logs)
+    assert not any("SECRET" in json.dumps(item) for item in release_logs)
+
+
+def test_smspool_release_queue_snapshot_masks_api_key(monkeypatch, tmp_path):
+    from platforms.gopay import sms_channel
+
+    queue_path = tmp_path / "release-queue.json"
+    monkeypatch.setattr(sms_channel, "SMS_RELEASE_QUEUE_PATH", queue_path)
+    now = int(sms_channel.time.time())
+    queue_path.write_text(json.dumps([{
+        "order_id": "ORDER_MASK",
+        "api_key": "SECRET_API_KEY_123456",
+        "base_url": "https://api.smspool.net",
+        "phone": "+6283167052099",
+        "reason": "cancel_failed",
+        "created_at": now - 60,
+        "updated_at": now - 60,
+        "attempts": 3,
+        "next_attempt_at": now + 30,
+        "last_response": {"success": 0, "message": "try later", "key": "SECRET_API_KEY_123456"},
+    }]), encoding="utf-8")
+
+    snapshot = sms_channel.get_sms_release_queue_snapshot()
+    assert snapshot["total"] == 1
+    item = snapshot["items"][0]
+    assert item["status"] == "failed"
+    assert item["api_key_masked"] != "SECRET_API_KEY_123456"
+    assert "SECRET_API_KEY_123456" not in json.dumps(snapshot)
 
 
 def test_smspool_purchase_waits_for_release_queue_on_balance_error(monkeypatch, tmp_path):
     from platforms.gopay import sms_channel
 
     queue_path = tmp_path / "release-queue.json"
-    monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_QUEUE_PATH", queue_path)
+    monkeypatch.setattr(sms_channel, "SMS_RELEASE_QUEUE_PATH", queue_path)
     monkeypatch.setattr(sms_channel, "SMSPOOL_RELEASE_DRAIN_POLL_SECONDS", 1)
     monkeypatch.setattr(sms_channel, "_ensure_release_worker", lambda: None)
     monkeypatch.setattr(sms_channel.time, "sleep", lambda _seconds: None)

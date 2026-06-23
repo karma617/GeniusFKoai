@@ -47,7 +47,7 @@ const GET_RT_SMS_BALANCE_ACTION_OPTIONS: {
   {
     value: 'wait_release',
     title: '\u7b49\u5f85\u91ca\u653e\u540e\u91cd\u8bd5',
-    desc: '\u4e0d\u5207\u6362\u5e73\u53f0\uff0c\u7b49\u5f85\u5f53\u524d\u5e73\u53f0\u5df2\u5360\u7528\u624b\u673a\u53f7\u91ca\u653e\u5b8c\u6bd5\u540e\u91cd\u65b0\u5f00\u59cb\u4e0b\u4e00\u8f6e\u3002',
+    desc: '\u56fa\u5b9a\u5f53\u524d\u5e73\u53f0\u548c\u56fd\u5bb6\u7a77\u4e3e\uff0c\u6253\u6ee1\u624b\u673a\u53f7\u66f4\u6362\u6b21\u6570\u540e\u7b49\u5f85 10s\uff0c\u4ece\u5934\u767b\u5f55\u5e76\u518d\u6b21\u5c1d\u8bd5\u5f53\u524d\u56fd\u5bb6\u3002',
   },
   {
     value: 'terminate',
@@ -340,6 +340,8 @@ function RegisterModal({
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
+  const [enableEmailAlias, setEnableEmailAlias] = useState(false)
+  const [emailAliasLimit, setEmailAliasLimit] = useState(4)
   // GoPay 专属：PIN（6 位数字）、Hero-SMS API key、注册代理。仅当
   // platform === 'gopay' 时显示，未填时后端走环境变量回退。
   const [gopayPin, setGopayPin] = useState('147258')
@@ -489,6 +491,10 @@ function RegisterModal({
       if (platform === 'chatgpt' && selection.executorType !== 'protocol') {
         extra.record_har = recordHar ? 'true' : ''
         extra.phone_change_limit = Math.max(Number(registerPhoneChangeLimit || 10), 1)
+      }
+      if (platform === 'chatgpt' && enableEmailAlias) {
+        extra.enable_email_alias = true
+        extra.email_alias_limit = Math.min(Math.max(Number(emailAliasLimit || 4), 1), 4)
       }
       if (selection.identityProvider === 'mailbox') {
         if (!defaultMailboxProvider?.provider_key) {
@@ -689,6 +695,44 @@ function RegisterModal({
                       className="control-surface control-surface-compact text-center" />
                   </div>
                 </div>
+
+                {platform === 'chatgpt' && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                      <input
+                        type="checkbox"
+                        checked={enableEmailAlias}
+                        onChange={(e) => setEnableEmailAlias(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                      />
+                      <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          {t('accounts.enableEmailAlias')}
+                        </div>
+                        <div className="mt-0.5">
+                          {t('accounts.enableEmailAliasHint')}
+                        </div>
+                      </div>
+                    </label>
+                    <div className={`rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 ${enableEmailAlias ? '' : 'opacity-60'}`}>
+                      <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
+                        {t('accounts.emailAliasLimit')}
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={4}
+                        disabled={!enableEmailAlias}
+                        value={emailAliasLimit}
+                        onChange={(e) => setEmailAliasLimit(Math.min(Math.max(Number(e.target.value || 4), 1), 4))}
+                        className="control-surface control-surface-compact w-full text-center"
+                      />
+                      <div className="mt-1 help-text-xs">
+                        {t('accounts.emailAliasLimitHint')}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* GoPay 专属：手机号接码 + PIN + 代理（platform === 'gopay'） */}
                 {platform === 'gopay' && (

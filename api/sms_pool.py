@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from infrastructure.sms_pool_repository import SmsPoolBlacklistRepository
+from platforms.gopay import sms_channel
 
 router = APIRouter(prefix="/sms-pool", tags=["sms-pool"])
 _repo = SmsPoolBlacklistRepository()
@@ -59,3 +60,62 @@ def remove_blacklist(phone: str):
 def clear_blacklist():
     removed = _repo.clear()
     return {"ok": True, "removed": removed}
+
+
+def _release_queue_payload() -> dict:
+    snapshot = sms_channel.get_sms_release_queue_snapshot()
+    logs = sms_channel.get_sms_release_logs(limit=250)
+    snapshot["logs"] = logs
+    snapshot["succeeded_recent"] = sum(1 for item in logs if item.get("status") == "success")
+    snapshot["failed_recent"] = sum(1 for item in logs if item.get("status") == "failed")
+    return snapshot
+
+
+@router.get("/release-queue")
+def get_release_queue():
+    return _release_queue_payload()
+
+
+@router.post("/release-queue/process")
+def process_release_queue():
+    attempted, released = sms_channel.force_process_smspool_release_queue()
+    payload = _release_queue_payload()
+    payload["ok"] = True
+    payload["attempted"] = attempted
+    payload["released"] = released
+    return payload
+
+
+@router.post("/release-queue/{order_id}/process")
+def process_release_queue_item(order_id: str):
+    attempted, released = sms_channel.force_process_smspool_release_queue(order_id=order_id)
+    payload = _release_queue_payload()
+    payload["ok"] = True
+    payload["order_id"] = order_id
+    payload["attempted"] = attempted
+    payload["released"] = released
+    if attempted <= 0:
+        raise HTTPException(404, "release queue item not found")
+    return payload
+
+
+@router.delete("/release-queue/{order_id}")
+def remove_release_queue_item(order_id: str):
+    before = sms_channel.get_sms_release_queue_snapshot()
+    sms_channel.remove_smspool_release(order_id)
+    after = _release_queue_payload()
+    if int(after.get("total") or 0) == int(before.get("total") or 0):
+        raise HTTPException(404, "release queue item not found")
+    after["ok"] = True
+    after["removed"] = 1
+    after["order_id"] = order_id
+    return after
+
+
+@router.delete("/release-logs")
+def clear_release_logs():
+    removed = sms_channel.clear_sms_release_logs()
+    payload = _release_queue_payload()
+    payload["ok"] = True
+    payload["removed"] = removed
+    return payload

@@ -42,6 +42,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -66,10 +67,16 @@ SMSPOOL_DEFAULT_MAX_PRICE = os.environ.get("OPAI_SMSPOOL_MAX_PRICE", "0.11")
 # 的池（可能更贵）。默认 0。
 SMSPOOL_DEFAULT_PRICING_OPTION = os.environ.get("OPAI_SMSPOOL_PRICING_OPTION", "0")
 SMS_TIMEOUT = 180
-SMSPOOL_RELEASE_QUEUE_PATH = Path(
+SMS_RELEASE_QUEUE_PATH = Path(
     os.environ.get(
-        "OPAI_SMSPOOL_RELEASE_QUEUE_PATH",
-        str(Path(__file__).resolve().parents[2] / "data" / "smspool_release_queue.json"),
+        "OPAI_SMS_RELEASE_QUEUE_PATH",
+        str(Path(__file__).resolve().parents[2] / "data" / "sms_release_queue.json"),
+    )
+)
+SMS_RELEASE_LOG_PATH = Path(
+    os.environ.get(
+        "OPAI_SMS_RELEASE_LOG_PATH",
+        str(Path(__file__).resolve().parents[2] / "data" / "sms_release_log.jsonl"),
     )
 )
 SMSPOOL_RELEASE_RETRY_SECONDS = int(os.environ.get("OPAI_SMSPOOL_RELEASE_RETRY_SECONDS", "60") or "60")
@@ -89,11 +96,21 @@ def _utc_ts() -> int:
     return int(time.time())
 
 
+def _utc_iso(ts: int | float | str | None) -> str:
+    try:
+        value = int(float(ts or 0))
+    except Exception:
+        value = 0
+    if value <= 0:
+        return ""
+    return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+
 def _load_release_queue() -> list[dict]:
     try:
-        if not SMSPOOL_RELEASE_QUEUE_PATH.exists():
+        if not SMS_RELEASE_QUEUE_PATH.exists():
             return []
-        data = json.loads(SMSPOOL_RELEASE_QUEUE_PATH.read_text(encoding="utf-8") or "[]")
+        data = json.loads(SMS_RELEASE_QUEUE_PATH.read_text(encoding="utf-8") or "[]")
         return [item for item in data if isinstance(item, dict)]
     except Exception as exc:
         log.warning("smspool release queue load failed: %s", exc)
@@ -102,8 +119,8 @@ def _load_release_queue() -> list[dict]:
 
 def _save_release_queue(items: list[dict]) -> None:
     try:
-        SMSPOOL_RELEASE_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SMSPOOL_RELEASE_QUEUE_PATH.write_text(
+        SMS_RELEASE_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SMS_RELEASE_QUEUE_PATH.write_text(
             json.dumps(items, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -130,6 +147,15 @@ def _smspool_release_response_preview(value, *, limit: int = 500) -> str:
     return text
 
 
+def _mask_api_key(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 6:
+        return "***"
+    return f"{text[:2]}***{text[-4:]}"
+
+
 def _emit_release_log(log_fn, message: str, *, level: str = "info") -> None:
     if not callable(log_fn):
         return
@@ -137,6 +163,146 @@ def _emit_release_log(log_fn, message: str, *, level: str = "info") -> None:
         log_fn(message, level=level)
     except TypeError:
         log_fn(message)
+
+
+def _append_sms_release_log(
+    *,
+    provider: str,
+    status: str,
+    order_id: str = "",
+    phone: str = "",
+    level: str = "info",
+    attempt: int | None = None,
+    next_attempt_at: int | None = None,
+    reason: str = "",
+    response_preview: str = "",
+    message: str = "",
+) -> None:
+    now = _utc_ts()
+    record = {
+        "ts": now,
+        "ts_iso": _utc_iso(now),
+        "provider": str(provider or ""),
+        "status": str(status or ""),
+        "level": str(level or "info"),
+        "order_id": str(order_id or ""),
+        "phone": str(phone or ""),
+        "attempt": int(attempt or 0),
+        "next_attempt_at": int(next_attempt_at or 0) if next_attempt_at else 0,
+        "next_attempt_at_iso": _utc_iso(next_attempt_at),
+        "reason": str(reason or ""),
+        "response_preview": _smspool_release_response_preview(response_preview),
+        "message": _smspool_release_response_preview(message, limit=800),
+    }
+    try:
+        SMS_RELEASE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SMS_RELEASE_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception as exc:
+        log.warning("smspool release log append failed: %s", exc)
+
+
+def get_sms_release_logs(limit: int = 200) -> list[dict]:
+    try:
+        max_items = max(1, min(int(limit or 200), 1000))
+    except Exception:
+        max_items = 200
+    try:
+        if not SMS_RELEASE_LOG_PATH.exists():
+            return []
+        lines = SMS_RELEASE_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    except Exception as exc:
+        log.warning("smspool release log load failed: %s", exc)
+        return []
+
+    records: list[dict] = []
+    for line in lines[-max_items:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        data.pop("api_key", None)
+        data["provider"] = str(data.get("provider") or "smspool")
+        data["response_preview"] = _smspool_release_response_preview(data.get("response_preview") or "")
+        data["message"] = _smspool_release_response_preview(data.get("message") or "", limit=800)
+        records.append(data)
+    return list(reversed(records))
+
+
+def clear_sms_release_logs() -> int:
+    with _release_queue_lock:
+        try:
+            if not SMS_RELEASE_LOG_PATH.exists():
+                return 0
+            removed = len([line for line in SMS_RELEASE_LOG_PATH.read_text(encoding="utf-8").splitlines() if line.strip()])
+            SMS_RELEASE_LOG_PATH.write_text("", encoding="utf-8")
+            return removed
+        except Exception as exc:
+            log.warning("smspool release log clear failed: %s", exc)
+            return 0
+
+
+def _release_queue_status(item: dict, now: int) -> str:
+    attempts = int(item.get("attempts") or 0)
+    try:
+        next_attempt_at = int(item.get("next_attempt_at") or 0)
+    except Exception:
+        next_attempt_at = 0
+    if next_attempt_at > now:
+        return "failed" if attempts > 0 or item.get("last_response") else "waiting"
+    return "retrying" if attempts > 0 else "queued"
+
+
+def _public_release_queue_item(item: dict, now: int) -> dict:
+    try:
+        next_attempt_at = int(item.get("next_attempt_at") or 0)
+    except Exception:
+        next_attempt_at = 0
+    try:
+        created_at = int(item.get("created_at") or 0)
+    except Exception:
+        created_at = 0
+    try:
+        updated_at = int(item.get("updated_at") or 0)
+    except Exception:
+        updated_at = 0
+    last_response_preview = _smspool_release_response_preview(item.get("last_response") or "")
+    return {
+        "provider": str(item.get("provider") or "smspool"),
+        "order_id": str(item.get("order_id") or ""),
+        "phone": str(item.get("phone") or ""),
+        "base_url": str(item.get("base_url") or SMSPOOL_API),
+        "api_key_masked": _mask_api_key(str(item.get("api_key") or "")),
+        "reason": str(item.get("reason") or ""),
+        "created_at": created_at,
+        "created_at_iso": _utc_iso(created_at),
+        "updated_at": updated_at,
+        "updated_at_iso": _utc_iso(updated_at),
+        "attempts": int(item.get("attempts") or 0),
+        "next_attempt_at": next_attempt_at,
+        "next_attempt_at_iso": _utc_iso(next_attempt_at),
+        "wait_seconds": max(0, next_attempt_at - now),
+        "last_response_preview": last_response_preview,
+        "status": _release_queue_status(item, now),
+    }
+
+
+def get_sms_release_queue_snapshot() -> dict:
+    with _release_queue_lock:
+        now = _utc_ts()
+        items = [_public_release_queue_item(item, now) for item in _load_release_queue()]
+    return {
+        "items": items,
+        "total": len(items),
+        "pending": len(items),
+        "queue_path": str(SMS_RELEASE_QUEUE_PATH),
+        "log_path": str(SMS_RELEASE_LOG_PATH),
+    }
 
 
 def is_smspool_insufficient_balance_response(value) -> bool:
@@ -232,8 +398,36 @@ def _cancel_smspool_order_once(*, api_key: str, base_url: str, order_id: str) ->
     return isinstance(data, dict) and int(data.get("success") or 0) == 1, data if isinstance(data, dict) else {}
 
 
+def _cancel_sms_activate_order_once(*, api_key: str, base_url: str, aid: str) -> tuple[bool, dict]:
+    """SMS-Activate 风格接码平台（SMSBower/HeroSMS）释放单次尝试。
+    
+    返回 (success, response_data)
+    """
+    try:
+        session = _new_session()
+        params = {
+            "api_key": api_key,
+            "action": "setStatus",
+            "id": aid,
+            "status": "8",  # 8=cancel
+        }
+        response = session.get(
+            str(base_url or "").strip().rstrip("/"),
+            params=params,
+            timeout_seconds=30,
+        )
+        text = getattr(response, "text", "")
+        # SMS-Activate 风格 API 返回纯文本，成功为 ACCESS_CANCEL
+        if "ACCESS_CANCEL" in text:
+            return True, {"status": "ACCESS_CANCEL", "raw": text}
+        return False, {"status": "error", "raw": text, "status_code": response.status_code}
+    except Exception as exc:
+        return False, {"error": str(exc)}
+
+
 def _enqueue_smspool_release(
     *,
+    provider: str = "smspool",
     api_key: str,
     base_url: str,
     order_id: str,
@@ -246,37 +440,63 @@ def _enqueue_smspool_release(
     if not order_id or not api_key:
         return
     now = _utc_ts()
+    log_status = "queued"
+    log_attempts = 0
+    log_next_attempt_at = now
+    log_phone = str(phone or "")
+    log_reason = str(reason or "")
     with _release_queue_lock:
         items = _load_release_queue()
         for item in items:
             if str(item.get("order_id") or "") == order_id:
+                item["provider"] = str(provider or "smspool")
                 item["api_key"] = api_key
                 item["base_url"] = str(base_url or SMSPOOL_API).strip().rstrip("/")
                 item["phone"] = str(phone or item.get("phone") or "")
                 item["reason"] = str(reason or item.get("reason") or "")
                 item["last_response"] = last_response or item.get("last_response") or {}
                 item["next_attempt_at"] = min(int(item.get("next_attempt_at") or now), now)
+                item["updated_at"] = now
+                log_status = "queued"
+                log_attempts = int(item.get("attempts") or 0)
+                log_next_attempt_at = int(item.get("next_attempt_at") or now)
+                log_phone = str(item.get("phone") or "")
+                log_reason = str(item.get("reason") or "")
                 _save_release_queue(items)
-                _ensure_release_worker()
-                return
-        items.append({
-            "order_id": order_id,
-            "api_key": api_key,
-            "base_url": str(base_url or SMSPOOL_API).strip().rstrip("/"),
-            "phone": str(phone or ""),
-            "reason": str(reason or ""),
-            "created_at": now,
-            "updated_at": now,
-            "attempts": 0,
-            "next_attempt_at": now,
-            "last_response": last_response or {},
-        })
-        _save_release_queue(items)
+                break
+        else:
+            items.append({
+                "provider": str(provider or "smspool"),
+                "order_id": order_id,
+                "api_key": api_key,
+                "base_url": str(base_url or SMSPOOL_API).strip().rstrip("/"),
+                "phone": str(phone or ""),
+                "reason": str(reason or ""),
+                "created_at": now,
+                "updated_at": now,
+                "attempts": 0,
+                "next_attempt_at": now,
+                "last_response": last_response or {},
+            })
+            _save_release_queue(items)
+    _append_sms_release_log(
+        provider="smspool",
+        status=log_status,
+        order_id=order_id,
+        phone=log_phone,
+        level="info",
+        attempt=log_attempts,
+        next_attempt_at=log_next_attempt_at,
+        reason=log_reason,
+        response_preview=last_response or {},
+        message=f"SMSPool release queued: order={order_id} phone={log_phone} reason={log_reason}",
+    )
     _ensure_release_worker()
 
 
 def enqueue_smspool_release_retry(
     *,
+    provider: str = "smspool",
     api_key: str,
     base_url: str,
     order_id: str,
@@ -285,6 +505,7 @@ def enqueue_smspool_release_retry(
     last_response: dict | None = None,
 ) -> None:
     _enqueue_smspool_release(
+        provider=provider,
         api_key=api_key,
         base_url=base_url,
         order_id=order_id,
@@ -294,14 +515,19 @@ def enqueue_smspool_release_retry(
     )
 
 
-def _process_release_queue_once(*, log_fn=None, force: bool = False) -> tuple[int, int]:
+def _process_release_queue_once(*, log_fn=None, force: bool = False, order_id: str = "") -> tuple[int, int]:
     now = _utc_ts()
     released = 0
     attempted = 0
+    target_order_id = str(order_id or "").strip()
     with _release_queue_lock:
         items = _load_release_queue()
         remaining: list[dict] = []
         for item in items:
+            current_order_id = str(item.get("order_id") or "")
+            if target_order_id and current_order_id != target_order_id:
+                remaining.append(item)
+                continue
             try:
                 next_attempt_at = int(item.get("next_attempt_at") or 0)
             except Exception:
@@ -311,29 +537,68 @@ def _process_release_queue_once(*, log_fn=None, force: bool = False) -> tuple[in
                 continue
             attempted += 1
             pending_before = max(0, len(items) - attempted + 1)
+            attempt_no = int(item.get("attempts") or 0) + 1
             _emit_release_log(
                 log_fn,
-                "SMSPool release attempt: "
+                f"{item.get('provider', 'smspool')} release attempt: "
                 f"order={item.get('order_id') or ''} "
                 f"phone={item.get('phone') or ''} "
-                f"attempt={int(item.get('attempts') or 0) + 1} "
+                f"attempt={attempt_no} "
                 f"pending_before={pending_before}"
             )
-            ok, data = _cancel_smspool_order_once(
-                api_key=str(item.get("api_key") or ""),
-                base_url=str(item.get("base_url") or SMSPOOL_API),
+            _append_sms_release_log(
+                provider=str(item.get("provider") or "smspool"),
+        status="retrying",
                 order_id=str(item.get("order_id") or ""),
+                phone=str(item.get("phone") or ""),
+                level="info",
+                attempt=attempt_no,
+                reason=str(item.get("reason") or ""),
+                message=(
+                    f"{item.get('provider', 'smspool')} release attempt: "
+                    f"order={item.get('order_id') or ''} "
+                    f"phone={item.get('phone') or ''} "
+                    f"attempt={attempt_no} pending_before={pending_before}"
+                ),
             )
+            item_provider = str(item.get("provider") or "smspool").lower()
+            if item_provider in ("smsbower", "herosms", "sms_activate"):
+                ok, data = _cancel_sms_activate_order_once(
+                    api_key=str(item.get("api_key") or ""),
+                    base_url=str(item.get("base_url") or ""),
+                    aid=str(item.get("order_id") or ""),
+                )
+            else:
+                ok, data = _cancel_smspool_order_once(
+                    api_key=str(item.get("api_key") or ""),
+                    base_url=str(item.get("base_url") or SMSPOOL_API),
+                    order_id=str(item.get("order_id") or ""),
+                )
             response_preview = _smspool_release_response_preview(data)
             if ok:
                 released += 1
-                log.info("smspool release queue cancelled order=%s", item.get("order_id"))
+                log.info("%s release queue cancelled order=%s", item.get("provider", "smspool"), item.get("order_id"))
                 _emit_release_log(
                     log_fn,
-                    "SMSPool release success: "
+                    f"{item.get('provider', 'smspool')} release success: "
                     f"order={item.get('order_id') or ''} "
                     f"phone={item.get('phone') or ''} "
                     f"response={response_preview}"
+                )
+                _append_sms_release_log(
+                    provider="smspool",
+        status="success",
+                    order_id=str(item.get("order_id") or ""),
+                    phone=str(item.get("phone") or ""),
+                    level="info",
+                    attempt=attempt_no,
+                    reason=str(item.get("reason") or ""),
+                    response_preview=response_preview,
+                    message=(
+                        f"{item.get('provider', 'smspool')} release success: "
+                        f"order={item.get('order_id') or ''} "
+                        f"phone={item.get('phone') or ''}"
+                    ),
                 )
                 continue
             attempts = int(item.get("attempts") or 0) + 1
@@ -345,7 +610,7 @@ def _process_release_queue_once(*, log_fn=None, force: bool = False) -> tuple[in
             remaining.append(item)
             _emit_release_log(
                 log_fn,
-                "SMSPool release failed: "
+                f"{item.get('provider', 'smspool')} release failed: "
                 f"order={item.get('order_id') or ''} "
                 f"phone={item.get('phone') or ''} "
                 f"attempt={attempts} "
@@ -353,9 +618,30 @@ def _process_release_queue_once(*, log_fn=None, force: bool = False) -> tuple[in
                 f"response={response_preview}",
                 level="warning",
             )
+            _append_sms_release_log(
+                provider=str(item.get("provider") or "smspool"),
+        status="failed",
+                order_id=str(item.get("order_id") or ""),
+                phone=str(item.get("phone") or ""),
+                level="warning",
+                attempt=attempts,
+                next_attempt_at=int(item.get("next_attempt_at") or 0),
+                reason=str(item.get("reason") or ""),
+                response_preview=response_preview,
+                message=(
+                    f"{item.get('provider', 'smspool')} release failed: "
+                    f"order={item.get('order_id') or ''} "
+                    f"phone={item.get('phone') or ''} "
+                    f"next_retry_in={delay}s"
+                ),
+            )
         if attempted:
             _save_release_queue(remaining)
     return attempted, released
+
+
+def force_process_smspool_release_queue(*, log_fn=None, order_id: str = "") -> tuple[int, int]:
+    return _process_release_queue_once(log_fn=log_fn, force=True, order_id=order_id)
 
 
 def _remove_smspool_release(order_id: str) -> None:
@@ -364,9 +650,22 @@ def _remove_smspool_release(order_id: str) -> None:
         return
     with _release_queue_lock:
         items = _load_release_queue()
+        removed_items = [item for item in items if str(item.get("order_id") or "") == order_id]
         next_items = [item for item in items if str(item.get("order_id") or "") != order_id]
         if len(next_items) != len(items):
             _save_release_queue(next_items)
+    for item in removed_items:
+        _append_sms_release_log(
+            provider="smspool",
+        status="removed",
+            order_id=str(item.get("order_id") or order_id),
+            phone=str(item.get("phone") or ""),
+            level="info",
+            attempt=int(item.get("attempts") or 0),
+            reason=str(item.get("reason") or ""),
+            response_preview=item.get("last_response") or {},
+            message=f"SMSPool release removed: order={item.get('order_id') or order_id} phone={item.get('phone') or ''}",
+        )
 
 
 def remove_smspool_release(order_id: str) -> None:
@@ -593,7 +892,7 @@ class SmsPoolChannel:
             )
             log.info(
                 "smspool cancel rejected, queued for retry: order=%s phone=%s detail=%s; "
-                "queue=data/smspool_release_queue.json",
+                "queue=data/sms_release_queue.json",
                 order_id,
                 self.last_phone,
                 _smspool_release_response_preview(data) if isinstance(data, dict) else data,
@@ -711,6 +1010,9 @@ class SmsActivateStyleChannel:
         self.api_key = str(api_key or "").strip()
         self.service = str(service or "").strip() or "ni"
         self.country = str(country or "").strip() or "6"
+        self.last_phone = ""
+        self.last_aid = ""
+        self.provider_name = "sms_activate"
 
     def _request(self, action: str, params: dict | None = None, retries: int = 3) -> str:
         p = {"api_key": self.api_key, "action": action}
@@ -732,7 +1034,11 @@ class SmsActivateStyleChannel:
         log.info("getNumber: %s", resp)
         if resp.startswith("ACCESS_NUMBER:"):
             parts = resp.split(":")
-            return f"+{parts[2]}", parts[1]
+            phone = f"+{parts[2]}"
+            aid = parts[1]
+            self.last_phone = phone
+            self.last_aid = aid
+            return phone, aid
         log.warning("getNumber failed: %s", resp)
         return None, None
 
@@ -762,11 +1068,45 @@ class SmsActivateStyleChannel:
         except Exception:
             return False
 
-    def cancel(self, aid: str) -> None:
+    def cancel(self, aid: str) -> bool:
+        aid = str(aid or "").strip()
+        if not aid:
+            return False
+        _remove_smspool_release(aid)
         try:
-            self._request("setStatus", {"id": aid, "status": "8"})
-        except Exception:
-            pass
+            resp = self._request("setStatus", {"id": aid, "status": "8"})
+            if "ACCESS_CANCEL" in resp:
+                _remove_smspool_release(aid)
+                return True
+            _enqueue_smspool_release(
+                provider=self.provider_name,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                order_id=aid,
+                phone=self.last_phone,
+                reason="cancel_failed",
+                last_response={"raw": resp},
+            )
+            log.info(
+                "%s cancel rejected, queued for retry: aid=%s phone=%s response=%s",
+                self.provider_name,
+                aid,
+                self.last_phone,
+                resp[:200] if len(resp) > 200 else resp,
+            )
+            return False
+        except Exception as exc:
+            _enqueue_smspool_release(
+                provider=self.provider_name,
+                api_key=self.api_key,
+                base_url=self.base_url,
+                order_id=aid,
+                phone=self.last_phone,
+                reason="cancel_exception",
+                last_response={"error": str(exc)},
+            )
+            log.warning("%s cancel exception, queued for retry: aid=%s exc=%s", self.provider_name, aid, exc)
+            return False
 
     def done(self, aid: str) -> None:
         try:
@@ -777,12 +1117,14 @@ class SmsActivateStyleChannel:
 
 def make_smsbower_channel(api_key: str = "", *, service: str = "", country: str = "") -> SmsActivateStyleChannel:
     """构造 SMSBower 渠道（带默认值兜底）。"""
-    return SmsActivateStyleChannel(
+    ch = SmsActivateStyleChannel(
         base_url=SMSBOWER_API,
         api_key=str(api_key or "").strip() or SMSBOWER_DEFAULT_API_KEY,
         service=str(service or "").strip() or SMSBOWER_DEFAULT_SERVICE,
         country=str(country or "").strip() or SMSBOWER_DEFAULT_COUNTRY,
     )
+    ch.provider_name = "smsbower"
+    return ch
 
 
 def patch_worker_with_smsbower(
@@ -1001,9 +1343,11 @@ def make_herosms_rebind_channel(
     换绑后的新号要继续用于下一轮 GoPay 支付，所以必须是印尼号（+62 / country=6），
     不能用外国便宜号。
     """
-    return SmsActivateStyleChannel(
+    ch = SmsActivateStyleChannel(
         base_url=HEROSMS_REBIND_API,
         api_key=str(api_key or "").strip(),
         service=str(service or "").strip() or HEROSMS_REBIND_DEFAULT_SERVICE,
         country=str(country or "").strip() or HEROSMS_REBIND_DEFAULT_COUNTRY,
     )
+    ch.provider_name = "herosms"
+    return ch

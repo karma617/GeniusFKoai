@@ -934,33 +934,46 @@ def _mark_get_rt_upload_status(
         session.commit()
 
 
-def _outlook_mailbox_account_from_platform_account(account) -> Any | None:
-    extra = dict(getattr(account, "extra", {}) or {})
-    resources = list(extra.get("provider_resources") or [])
-    identity = dict(extra.get("identity") or {})
-    if isinstance(identity.get("provider_resource"), dict):
-        resources.append(identity["provider_resource"])
+def _mailbox_account_from_platform_account(
+    account,
+    provider_names: set[str] | None = None,
+) -> Any | None:
+    extra = dict(getattr(account, "extra", {}) or {})
+    resources = list(extra.get("provider_resources") or [])
+    identity = dict(extra.get("identity") or {})
+    if isinstance(identity.get("provider_resource"), dict):
+        resources.append(identity["provider_resource"])
     for item in resources:
-        if not isinstance(item, dict):
-            continue
-        provider_name = str(item.get("provider_name") or item.get("provider") or "").strip().lower()
-        if provider_name not in {"outlook_email", "outlook_email_api"}:
-            continue
-        handle = str(item.get("handle") or item.get("email") or getattr(account, "email", "") or "").strip()
-        resource_id = str(item.get("resource_identifier") or item.get("account_id") or "").strip()
-        if not handle:
-            continue
-        from core.base_mailbox import MailboxAccount
+        if not isinstance(item, dict):
+            continue
+        provider_name = str(item.get("provider_name") or item.get("provider") or "").strip().lower()
+        if provider_names is not None and provider_name not in provider_names:
+            continue
+        resource_type = str(item.get("resource_type") or "mailbox").strip().lower()
+        if resource_type != "mailbox":
+            continue
+        handle = str(item.get("handle") or item.get("email") or getattr(account, "email", "") or "").strip()
+        resource_id = str(item.get("resource_identifier") or item.get("account_id") or "").strip()
+        if not handle:
+            continue
+        from core.base_mailbox import MailboxAccount
 
         return MailboxAccount(
             email=handle,
             account_id=resource_id,
             extra={"provider_resource": item},
         )
-    return None
-
-
-def _resolve_outlook_mailbox_for_tagging(shared_mailbox, mailbox_account):
+    return None
+
+
+def _outlook_mailbox_account_from_platform_account(account) -> Any | None:
+    return _mailbox_account_from_platform_account(
+        account,
+        provider_names={"outlook_email", "outlook_email_api"},
+    )
+
+
+def _resolve_outlook_mailbox_for_tagging(shared_mailbox, mailbox_account):
     if shared_mailbox is not None:
         if hasattr(shared_mailbox, "mark_registration_success") or hasattr(shared_mailbox, "mark_plus_success"):
             return shared_mailbox
@@ -985,13 +998,24 @@ def _resolve_outlook_mailbox_for_tagging(shared_mailbox, mailbox_account):
     return None
 
 
-def _mark_outlook_mailbox_event(shared_mailbox, account, event: str, logger: TaskLogger) -> None:
-    mailbox_account = _outlook_mailbox_account_from_platform_account(account)
-    if mailbox_account is None:
-        return
-    mailbox = _resolve_outlook_mailbox_for_tagging(shared_mailbox, mailbox_account)
-    if mailbox is None:
-        return
+def _mark_outlook_mailbox_event(shared_mailbox, account, event: str, logger: TaskLogger) -> None:
+    prefer_shared = False
+    if shared_mailbox is not None:
+        if event == "registration_success" and hasattr(shared_mailbox, "mark_registration_success"):
+            prefer_shared = True
+        elif event == "plus_success" and hasattr(shared_mailbox, "mark_plus_success"):
+            prefer_shared = True
+    if prefer_shared:
+        mailbox_account = _mailbox_account_from_platform_account(account)
+        mailbox = shared_mailbox
+    else:
+        mailbox_account = _outlook_mailbox_account_from_platform_account(account)
+    if mailbox_account is None:
+        return
+    if not prefer_shared:
+        mailbox = _resolve_outlook_mailbox_for_tagging(shared_mailbox, mailbox_account)
+    if mailbox is None:
+        return
     try:
         if event == "registration_success":
             applied = mailbox.mark_registration_success(mailbox_account)
@@ -1003,11 +1027,31 @@ def _mark_outlook_mailbox_event(shared_mailbox, account, event: str, logger: Tas
             return
         if applied:
             logger.log(f"outlookEmail {label}后已打标签: {', '.join(applied)}")
-    except Exception as exc:
-        logger.log(f"outlookEmail 自动打标签失败（忽略）: {exc}", level="warning")
-
-
-def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger: TaskLogger, resolved_proxy: str | None = None, shared_mailbox=None):
+    except Exception as exc:
+        logger.log(f"outlookEmail 自动打标签失败（忽略）: {exc}", level="warning")
+
+
+def _maybe_wrap_email_alias_mailbox(mailbox, *, platform_name: str, extra: dict[str, Any], logger: TaskLogger):
+    if mailbox is None:
+        return None
+    if getattr(mailbox, "email_alias_enabled", False):
+        return mailbox
+    if not _bool_config(
+        extra.get("enable_email_alias", extra.get("email_alias_enabled")),
+        False,
+    ):
+        return mailbox
+    from core.email_alias_mailbox import EmailAliasMailbox, normalize_email_alias_limit
+
+    return EmailAliasMailbox(
+        mailbox,
+        alias_limit=normalize_email_alias_limit(extra.get("email_alias_limit")),
+        platform=platform_name,
+        log_fn=logger.log,
+    )
+
+
+def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger: TaskLogger, resolved_proxy: str | None = None, shared_mailbox=None):
     from core.base_identity import normalize_identity_provider
     from core.base_mailbox import create_mailbox
 
@@ -1027,13 +1071,20 @@ def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger
             from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
             extra["mail_provider"] = ProviderSettingsRepository().get_default_provider_key("mailbox")
-        mailbox = create_mailbox(
-            provider=extra.get("mail_provider", ""),
-            extra=extra,
-            proxy=resolved_proxy,
-        )
-
-    platform_cls = get(platform_name)
+        mailbox = create_mailbox(
+            provider=extra.get("mail_provider", ""),
+            extra=extra,
+            proxy=resolved_proxy,
+        )
+    if identity_provider in {"mailbox", "sms_oauth"}:
+        mailbox = _maybe_wrap_email_alias_mailbox(
+            mailbox,
+            platform_name=platform_name,
+            extra=extra,
+            logger=logger,
+        )
+
+    platform_cls = get(platform_name)
     platform = platform_cls(config=config, mailbox=mailbox)
     if hasattr(platform, "set_logger"):
         platform.set_logger(logger.log)
@@ -2270,11 +2321,17 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if not extra.get("mail_provider"):
                 from infrastructure.provider_settings_repository import ProviderSettingsRepository
                 extra["mail_provider"] = ProviderSettingsRepository().get_default_provider_key("mailbox")
-            shared_mailbox = create_mailbox(
-                provider=extra.get("mail_provider", ""),
-                extra=extra,
-                proxy=registration_base_proxy or None,
-            )
+            shared_mailbox = create_mailbox(
+                provider=extra.get("mail_provider", ""),
+                extra=extra,
+                proxy=registration_base_proxy or None,
+            )
+            shared_mailbox = _maybe_wrap_email_alias_mailbox(
+                shared_mailbox,
+                platform_name=platform_name,
+                extra=extra,
+                logger=logger,
+            )
     except Exception as exc:
         logger.log(f"邮箱初始化失败: {exc}", level="error")
         logger.finish(TASK_STATUS_FAILED, error=f"邮箱初始化失败: {exc}")
@@ -3371,6 +3428,19 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                             logger.log(
                                 f"\u83b7\u53d6rt: \u7ee7\u7eed\u4f7f\u7528\u5f53\u524d\u63a5\u7801 provider={sms_provider}"
                             )
+
+                        logger.log(
+                            "\u83b7\u53d6rt: \u7a77\u4e3e\u6a21\u5f0f\u7b49\u5f85 10s \u540e\u91cd\u65b0\u767b\u5f55\u5e76\u7ee7\u7eed\u5c1d\u8bd5\u5f53\u524d\u63a5\u7801\u56fd\u5bb6",
+                            level="warning",
+                        )
+
+                        for _ in range(10):
+
+                            if logger.is_cancel_requested():
+
+                                break
+
+                            time.sleep(1)
 
                         attempt_round += 1
 
