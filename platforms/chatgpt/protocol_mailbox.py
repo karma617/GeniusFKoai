@@ -212,6 +212,13 @@ class _MailboxEmailService:
             return []
         return list(marker(self._mailbox_account, reason=reason) or [])
 
+    def mark_parent_exhausted(self, reason: str = "") -> list[str]:
+        """Force-mark the parent email as exhausted (alias quota reached)."""
+        marker = getattr(self._mailbox, "mark_parent_exhausted", None)
+        if not callable(marker):
+            return []
+        return list(marker(self._mailbox_account) or [])
+
 
 
     def update_status(self, success, error=None):
@@ -247,7 +254,8 @@ class ChatGPTProtocolMailboxWorker:
         proxy_url: str | None = None,
 
         log_fn: Callable[[str], None] = print,
-
+        skip_post_register_oauth: bool = False,
+        k12_workspace_ids: str = "",
     ):
 
         if not mailbox or not mailbox_account:
@@ -261,6 +269,8 @@ class ChatGPTProtocolMailboxWorker:
         self.proxy_url = proxy_url
 
         self.log_fn = log_fn
+        self.skip_post_register_oauth = skip_post_register_oauth
+        self.k12_workspace_ids = k12_workspace_ids
 
         email_service = _MailboxEmailService(
 
@@ -283,6 +293,7 @@ class ChatGPTProtocolMailboxWorker:
             callback_logger=log_fn,
 
         )
+        self.engine.k12_join_enabled = self.skip_post_register_oauth
 
 
 
@@ -309,5 +320,107 @@ class ChatGPTProtocolMailboxWorker:
         if not result or not result.success:
             raise RuntimeError(result.error_message if result else "??????")
 
+        if self.skip_post_register_oauth and result and result.success:
+            self._run_k12_flow(result)
+
         return result
 
+    def _run_k12_flow(self, result):
+        """K12 强入空间流程：注册成功后跳过接码/支付，直接向 workspace 发加入申请并上传 session。"""
+        try:
+            from platforms.chatgpt.k12_join import (
+                send_workspace_join_requests,
+                exchange_workspace_session,
+                ensure_chatgpt_session_cookie,
+                parse_workspace_ids,
+                upload_session_to_sub2api,
+            )
+
+            metadata = getattr(result, "metadata", None) or {}
+            registration_session = metadata.get("session") if isinstance(metadata.get("session"), dict) else {}
+            access_token = (
+                str(registration_session.get("accessToken") or registration_session.get("access_token") or "").strip()
+                or result.access_token
+                or ""
+            )
+            session_token = (
+                str(registration_session.get("sessionToken") or registration_session.get("session_token") or "").strip()
+                or str(getattr(result, "session_token", "") or "").strip()
+            )
+            cookies = ensure_chatgpt_session_cookie(metadata.get("cookies", "") or "", session_token)
+            workspace_ids = self.k12_workspace_ids or ""
+            proxy = self.proxy_url
+
+            self._log("=" * 60)
+            self._log("[K12] 开始强入 K12 空间流程...")
+            if not cookies:
+                self._log("[K12] 当前结果缺少 chatgpt.com cookies，exchange 可能只能拿到 WARNING_BANNER")
+
+            workspace_list = parse_workspace_ids(workspace_ids)
+            if not workspace_list:
+                self._log("[K12] 未配置 workspace ID，跳过后续步骤")
+                return
+
+            chosen_ws = ""
+            new_session = None
+            for ws_id in workspace_list:
+                # join 和 exchange 必须绑定到同一个 workspace；成功后立即停止，避免一个账号加入多个 workspace。
+                join_results = send_workspace_join_requests(
+                    access_token=access_token,
+                    cookies=cookies,
+                    workspace_ids=ws_id,
+                    proxy=proxy,
+                    log=self._log,
+                )
+                join_ok = any(isinstance(item, dict) and item.get("ok") for item in join_results)
+                if not join_ok:
+                    self._log(f"[K12] workspace {ws_id[:8]}... join 未成功，继续尝试下一个 workspace")
+                    continue
+
+                self._log(f"[K12] workspace {ws_id[:8]}... join 请求已接受，开始校验 exchange session")
+                candidate_session = exchange_workspace_session(
+                    cookies=cookies,
+                    workspace_id=ws_id,
+                    access_token=access_token,
+                    proxy=proxy,
+                    log=self._log,
+                )
+                if candidate_session:
+                    chosen_ws = ws_id
+                    new_session = candidate_session
+                    break
+                self._log(f"[K12] workspace {ws_id[:8]}... exchange 校验失败，继续尝试下一个 workspace")
+
+            if not new_session or not chosen_ws:
+                self._log("[K12] 所有 workspace 均未完成 join + exchange 校验，停止 K12 上传")
+                return
+
+            self._log("[K12] 已确认切换到目标 K12 workspace，开始上传 session...")
+
+            # 3. 上传 session 到 sub2api
+            ok, msg = upload_session_to_sub2api(
+                new_session,
+                log=self._log,
+                proxy=proxy,
+            )
+
+            if ok:
+                self._log(f"[K12] session 上传成功: {msg}")
+            else:
+                self._log(f"[K12] session 上传失败: {msg}")
+
+            # 4. 更新 result 的 access_token 为 K12 workspace session 的 token
+            k12_access_token = str(new_session.get("accessToken") or new_session.get("access_token") or "")
+            if k12_access_token:
+                result.access_token = k12_access_token
+
+            # 保存 K12 信息到 metadata
+            metadata["k12_workspace_id"] = chosen_ws
+            metadata["k12_session"] = new_session
+            result.metadata = metadata
+
+            self._log("[K12] 强入 K12 空间流程完成")
+            self._log("=" * 60)
+
+        except Exception as e:
+            self._log(f"[K12] 流程异常: {e}")

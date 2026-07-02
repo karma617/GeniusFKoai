@@ -234,6 +234,21 @@ class EmailAliasMailbox(BaseMailbox):
                 except Exception:
                     continue
 
+    def _mark_parent_alias_quota_exhausted(self, parent: MailboxAccount, usage: EmailAliasUsage) -> None:
+        marker = getattr(self.mailbox, "mark_registration_success", None)
+        if callable(marker):
+            try:
+                marker(parent)
+                self._log(
+                    "Email alias parent quota exhausted; marked parent as used: "
+                    f"{parent.email} aliases={usage.alias_success_count}/{self.alias_limit} "
+                    f"total={usage.total_success_count}/{self.alias_limit + 1}"
+                )
+                return
+            except Exception as exc:
+                self._log(f"Email alias parent quota mark failed: {parent.email} error={exc}")
+        self._release_parent(parent)
+
     def _resolve_wrapped_mailbox(self, parent: MailboxAccount):
         resolver = getattr(self.mailbox, "_resolve_mailbox", None)
         if callable(resolver):
@@ -332,11 +347,10 @@ class EmailAliasMailbox(BaseMailbox):
             usage = get_email_alias_usage(parent_email, platform=self.platform)
             last_usage = usage
             if usage.alias_success_count >= self.alias_limit or usage.total_success_count >= self.alias_limit + 1:
-                repeated_parent = parent_email in seen_full
-                seen_full.add(parent_email)
-                if repeated_parent:
-                    self._release_parent(parent)
+                if parent_email in seen_full:
                     break
+                seen_full.add(parent_email)
+                self._mark_parent_alias_quota_exhausted(parent, usage)
                 continue
 
             alias_email = _random_alias(parent_email, platform=self.platform)
@@ -419,6 +433,30 @@ class EmailAliasMailbox(BaseMailbox):
         marker = getattr(self.mailbox, "mark_registration_success", None)
         if callable(marker) and usage.total_success_count >= self.alias_limit + 1:
             return list(marker(parent) or [])
+        self._release_parent(parent)
+        return []
+
+    def mark_parent_exhausted(self, account: MailboxAccount) -> list[str]:
+        """Force-mark the parent email as registered/exhausted.
+
+        Called when OpenAI returns user_already_exists - the parent's alias
+        quota is burned on OpenAI's side (which may be ahead of our local DB
+        count). This bypasses the usage-count gate in mark_registration_success
+        and directly tags the parent mailbox so _select_account skips it on
+        the next get_email() call.
+        """
+        parent = self._parent_for(account)
+        _release_reserved_alias(getattr(account, "email", ""))
+        self._log(
+            "Email alias parent exhausted (user_already_exists): "
+            f"alias={getattr(account, 'email', '')} parent={parent.email}"
+        )
+        marker = getattr(self.mailbox, "mark_registration_success", None)
+        if callable(marker):
+            try:
+                return list(marker(parent) or [])
+            except Exception:
+                pass
         self._release_parent(parent)
         return []
 

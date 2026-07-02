@@ -246,6 +246,21 @@ function getChatgptSessionText(acc: any) {
   return stringifyChatgptSessionPayload(getChatgptSessionPayload(acc))
 }
 
+function getChatgptK12SessionPayload(acc: any) {
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const candidates = [
+    overview?.k12_session,
+    overview?.k12?.session,
+    legacyExtra?.k12_session,
+  ]
+  return candidates.find(item => !isEmptyPayload(item)) || null
+}
+
+function getChatgptK12SessionText(acc: any) {
+  return stringifyChatgptSessionPayload(getChatgptK12SessionPayload(acc))
+}
+
 async function writeClipboardText(text: string) {
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)
@@ -338,6 +353,8 @@ function RegisterModal({
   // chatgpt 平台特定：注册成功后是否自动获取支付链接（保存到账号 cashier_url 字段，
   // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
+  const [k12Join, setK12Join] = useState(false)
+  const [k12WorkspaceIds, setK12WorkspaceIds] = useState('')
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   const [enableEmailAlias, setEnableEmailAlias] = useState(false)
@@ -533,6 +550,10 @@ function RegisterModal({
           headless: 'false',
           checkout_mode: 'protocol',
         }
+      }
+      if (platform === 'chatgpt' && k12Join) {
+        extra.k12_join = true
+        extra.k12_workspace_ids = k12WorkspaceIds.trim()
       }
       const res = await apiFetch('/tasks/register', {
         method: 'POST',
@@ -783,6 +804,29 @@ function RegisterModal({
                     </div>
                     <div className="text-xs text-[var(--text-muted)]">
                       留空时分别回退到环境变量 OPAI_HEROSMS_API_KEY / OPAI_GOPAY_DEFAULT_PIN / OPAI_GOPAY_REGISTER_PROXY / OPAI_HEROSMS_MAX_PRICE_USD。maxPrice 设 0 不限价。
+                    </div>
+                  </div>
+                )}
+
+                {/* chatgpt 平台特定：强入 K12 空间（注册后跳过接码，取 session 上传 sub2api + 向 workspace 发加入申请） */}
+                {platform === 'chatgpt' && (
+                  <div className='rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3'>
+                    <label className='flex items-start gap-2 cursor-pointer'>
+                      <input type='checkbox' checked={k12Join} onChange={(e) => setK12Join(e.target.checked)} className='mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]' />
+                      <div className='flex-1 text-xs text-[var(--text-secondary)]'>
+                        <div className='text-sm font-medium text-[var(--text-primary)]'>强入K12空间</div>
+                        <div className='mt-0.5'>注册成功后跳过接码，直接请求 session -&gt; 向 Workspace 发加入申请 -&gt; 转 sub2api 格式上传到云端。需先在设置页配置 sub2api。</div>
+                      </div>
+                    </label>
+                    <div className='mt-2'>
+                      <label className='text-xs text-[var(--text-muted)] block mb-1'>母号 Workspace ID（逗号或换行分隔，留空则只上传 sub2api）</label>
+                      <textarea
+                        value={k12WorkspaceIds}
+                        onChange={(e) => setK12WorkspaceIds(e.target.value)}
+                        rows={3}
+                        placeholder={'一行一个 UUID，或逗号分隔\nca0e29ed-a54c-42d9-a50b-2ba5e065296d'}
+                        className='control-surface control-surface-compact w-full resize-y'
+                      />
                     </div>
                   </div>
                 )}
@@ -1448,7 +1492,8 @@ function ActionMenu({
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const canCopySession = String(acc?.platform || '').trim().toLowerCase() === 'chatgpt'
-  const hasMenuItems = actions.length > 0 || canCopySession
+  const canCopyK12Session = canCopySession && !isEmptyPayload(getChatgptK12SessionPayload(acc))
+  const hasMenuItems = actions.length > 0 || canCopySession || canCopyK12Session
 
   const runAction = (action: any, params: Record<string, any>) => {
     setRunning(action.id)
@@ -1492,7 +1537,8 @@ function ActionMenu({
     const rect = trigger.getBoundingClientRect()
     const viewportPadding = 12
     const menuWidth = 220
-    const estimatedHeight = Math.min(320, (actions.length + (canCopySession ? 1 : 0)) * 40 + 56)
+    const copyActionCount = (canCopySession ? 1 : 0) + (canCopyK12Session ? 1 : 0)
+    const estimatedHeight = Math.min(320, (actions.length + copyActionCount) * 40 + 56)
 
     let left = rect.right - menuWidth
     if (left < viewportPadding) left = viewportPadding
@@ -1510,7 +1556,7 @@ function ActionMenu({
       left: Math.round(left),
       maxHeight: Math.max(160, window.innerHeight - viewportPadding * 2),
     })
-  }, [actions.length, canCopySession])
+  }, [actions.length, canCopySession, canCopyK12Session])
 
   useEffect(() => {
     let active = true
@@ -1696,6 +1742,27 @@ function ActionMenu({
                   >
                     {'\u590d\u5236session'}
                   </button>
+                  {canCopyK12Session && (
+                    <button
+                      onClick={async () => {
+                        setOpen(false)
+                        const sessionText = getChatgptK12SessionText(acc)
+                        if (!sessionText) {
+                          setToast({ type: 'error', text: '未保存K12 session' })
+                          return
+                        }
+                        try {
+                          await writeClipboardText(sessionText)
+                          setToast({ type: 'success', text: '已复制K12 session' })
+                        } catch (error: any) {
+                          setToast({ type: 'error', text: error?.message || t('login.requestFailed') })
+                        }
+                      }}
+                      className="w-full px-3 py-2 text-left text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                    >
+                      复制K12 Session
+                    </button>
+                  )}
                 </>
               )}
               <div className="my-1 border-t border-[var(--border)]/70" />

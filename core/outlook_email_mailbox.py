@@ -24,6 +24,7 @@ OUTLOOK_EMAIL_LOCAL_RESERVATION_TTL_SECONDS = 30 * 60
 OUTLOOK_EMAIL_RETRY_STATUS_CODES = {502, 503, 504}
 OUTLOOK_EMAIL_RETRY_ATTEMPTS = 3
 OUTLOOK_EMAIL_RETRY_DELAY_SECONDS = 0.6
+OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT = 10000
 
 _OUTLOOK_EMAIL_RESERVATION_LOCK = threading.Lock()
 _OUTLOOK_EMAIL_RESERVED_ACCOUNTS: dict[str, float] = {}
@@ -440,10 +441,10 @@ class OutlookEmailMailbox(BaseMailbox):
             raise RuntimeError(f"outlookEmail DELETE {path} \u7ba1\u7406\u7aef\u5220\u9664\u5931\u8d25: {message}")
         return payload
 
-    def _account_query_params(self) -> dict[str, Any]:
+    def _account_query_params(self, *, offset: int | None = None, limit: int | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "limit": self.account_limit,
-            "offset": self.account_offset,
+            "limit": self.account_limit if limit is None else limit,
+            "offset": self.account_offset if offset is None else offset,
         }
         if self.group_id:
             params["group_id"] = self.group_id
@@ -456,10 +457,11 @@ class OutlookEmailMailbox(BaseMailbox):
             params["include_untagged"] = "true" if self.account_include_untagged else "false"
         return params
 
-    def _admin_account_query_params(self) -> str:
+    def _admin_account_query_params(self, *, page: int | None = None, page_size: int | None = None) -> str:
+        effective_page_size = max(1, min(page_size or self.account_limit, 100))
         params = {
-            "page": max(1, (self.account_offset // max(1, min(self.account_limit, 100))) + 1),
-            "page_size": max(1, min(self.account_limit, 100)),
+            "page": page or max(1, (self.account_offset // effective_page_size) + 1),
+            "page_size": effective_page_size,
         }
         if self.group_id:
             params["group_id"] = self.group_id
@@ -565,23 +567,63 @@ class OutlookEmailMailbox(BaseMailbox):
             params["keyword"] = api_keyword
         return params
 
-    def _list_accounts(self) -> list[dict[str, Any]]:
-        payload = self._get_json("/api/external/accounts", self._account_query_params())
+    def _list_accounts(self, *, offset: int | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        payload = self._get_json("/api/external/accounts", self._account_query_params(offset=offset, limit=limit))
         self._api_variant = "legacy"
         items = payload.get("accounts")
         if not isinstance(items, list):
             items = payload.get("items") if isinstance(payload.get("items"), list) else []
         return [item for item in items if isinstance(item, dict)]
 
-    def _list_admin_accounts(self) -> list[dict[str, Any]]:
+    def _list_admin_accounts(self, *, page: int | None = None, page_size: int | None = None) -> list[dict[str, Any]]:
         # outlookEmailPlus 未提供 /api/external/accounts；有管理员密码时走 Web 管理端分页接口。
-        query = self._admin_account_query_params()
+        query = self._admin_account_query_params(page=page, page_size=page_size)
         payload = self._admin_get_json(f"/api/accounts?{query}")
         items = payload.get("accounts")
         if not isinstance(items, list):
             items = []
         self._api_variant = "plus_admin"
         return [item for item in items if isinstance(item, dict)]
+
+    def _iter_external_account_pages_for_selection(self):
+        page_size = max(1, self.account_limit)
+        offset = self.account_offset
+        scanned = 0
+        while scanned < OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT:
+            accounts = self._list_accounts(offset=offset, limit=page_size)
+            yield accounts
+            count = len(accounts)
+            if count < page_size:
+                break
+            offset += page_size
+            scanned += count
+
+    def _iter_admin_account_pages_for_selection(self):
+        page_size = max(1, min(self.account_limit, 100))
+        page = max(1, (self.account_offset // page_size) + 1)
+        scanned = 0
+        while scanned < OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT:
+            accounts = self._list_admin_accounts(page=page, page_size=page_size)
+            yield accounts
+            count = len(accounts)
+            if count < page_size:
+                break
+            page += 1
+            scanned += count
+
+    def _iter_account_pages_for_selection(self):
+        try:
+            yield from self._iter_external_account_pages_for_selection()
+        except OutlookEmailEndpointNotFound:
+            if self.admin_password:
+                yield from self._iter_admin_account_pages_for_selection()
+                return
+            raise
+        except RuntimeError as exc:
+            if self.admin_password and self._is_external_accounts_unavailable_error(exc):
+                yield from self._iter_admin_account_pages_for_selection()
+                return
+            raise
 
     def _list_accounts_for_selection(self) -> list[dict[str, Any]]:
         try:
@@ -693,15 +735,21 @@ class OutlookEmailMailbox(BaseMailbox):
             _OUTLOOK_EMAIL_RESERVED_ACCOUNTS.pop(key, None)
 
     def _select_account(self) -> dict[str, Any]:
+        saw_candidate = False
         try:
-            accounts = self._list_accounts_for_selection()
+            account_pages = self._iter_account_pages_for_selection()
+            for accounts in account_pages:
+                usable = [item for item in accounts if self._is_usable_account(item)]
+                if not usable:
+                    usable = [item for item in accounts if self._account_email(item) and not self._has_skip_tag(item)]
+                if usable:
+                    saw_candidate = True
+                for item in usable:
+                    if self._reserve_local_account(item):
+                        return item
         except OutlookEmailEndpointNotFound:
             return self._claim_pool_account()
-        usable = [item for item in accounts if self._is_usable_account(item)]
-        if not usable:
-            fallback = [item for item in accounts if self._account_email(item) and not self._has_skip_tag(item)]
-            usable = fallback
-        if not usable:
+        if not saw_candidate:
             detail = _join_nonempty(
                 [
                     f"group_id={self.group_id}" if self.group_id else "",
@@ -711,9 +759,6 @@ class OutlookEmailMailbox(BaseMailbox):
             )
             suffix = f"（筛选条件：{detail}）" if detail else ""
             raise RuntimeError(f"outlookEmail 账号列表中没有可用邮箱{suffix}")
-        for item in usable:
-            if self._reserve_local_account(item):
-                return item
         raise RuntimeError("outlookEmail 当前可用邮箱都已被本机其他任务占用，请稍后重试或降低并发")
 
     def _build_account(self, *, email: str, account_id: str = "", source: str, raw: dict[str, Any] | None = None) -> MailboxAccount:

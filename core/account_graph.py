@@ -72,6 +72,8 @@ NON_LEGACY_EXTRA_KEYS = {
     "trial_end_time",
     "session",
     "chatgpt_session",
+    "k12_session",
+    "k12_workspace_id",
     "registration_refresh_token",
     "registrationRefreshToken",
     "registration_refresh_token_usable",
@@ -351,6 +353,18 @@ def _chatgpt_session_payload(extra: dict[str, Any]) -> Any:
                 return json.loads(value)
             except Exception:
                 return value
+    return None
+
+
+def _chatgpt_k12_session_payload(extra: dict[str, Any]) -> Any:
+    value = extra.get("k12_session")
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
     return None
 
 
@@ -988,6 +1002,12 @@ def sync_platform_account_graph(session: Session, model: AccountModel, account: 
         chatgpt_session = _chatgpt_session_payload(extra)
         if chatgpt_session not in (None, "", [], {}):
             incoming_summary["session"] = chatgpt_session
+        k12_session = _chatgpt_k12_session_payload(extra)
+        if k12_session not in (None, "", [], {}):
+            incoming_summary["k12_session"] = k12_session
+        k12_workspace_id = _text(extra.get("k12_workspace_id"))
+        if k12_workspace_id:
+            incoming_summary["k12_workspace_id"] = k12_workspace_id
     legacy_extra = _legacy_extra_payload(extra)
     if legacy_extra:
         incoming_summary["legacy_extra"] = {

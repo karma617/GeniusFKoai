@@ -25,6 +25,7 @@ import logging
 import secrets
 
 import string
+import urllib.parse
 
 from typing import Optional, Dict, Any, Tuple, Callable
 
@@ -590,6 +591,8 @@ class RegistrationEngine:
 
         self._otp_page_type: Optional[str] = None
         self._email_otp_exhausted: bool = False
+
+        self._user_already_exists: bool = False
 
 
 
@@ -2099,6 +2102,45 @@ class RegistrationEngine:
             self._log(f"给无效邮箱打标失败: {exc}", "error")
             return []
 
+    @staticmethod
+    def _is_user_already_exists_response(response) -> bool:
+        """Check if OpenAI rejects account creation because the email already exists."""
+        text = str(getattr(response, "text", "") or "").lower()
+        if "user_already_exists" in text or "an account already exists for this email" in text:
+            return True
+        try:
+            data = response.json()
+            error = data.get("error") if isinstance(data, dict) else {}
+            if isinstance(error, dict):
+                code = str(error.get("code") or "").lower()
+                message = str(error.get("message") or "").lower()
+                if code == "user_already_exists" or "an account already exists for this email" in message:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _mark_parent_email_exhausted(self, reason: str = "openai_user_already_exists") -> list[str]:
+        """Mark the parent mailbox as exhausted when OpenAI returns user_already_exists.
+
+        This forces the mailbox provider to tag the parent email as "registered",
+        so the next get_email() call skips it and allocates a new parent.
+        """
+        marker = getattr(self.email_service, "mark_parent_exhausted", None)
+        if not callable(marker):
+            self._log("当前邮箱服务不支持标记父邮箱耗尽: " + str(self.email), "warning")
+            return []
+        try:
+            applied = list(marker(reason=reason) or [])
+            if applied:
+                self._log("已标记父邮箱为已注册（别名耗尽）: " + ", ".join(applied), "warning")
+            else:
+                self._log("父邮箱耗尽标记未返回标签: " + str(self.email), "warning")
+            return applied
+        except Exception as exc:
+            self._log(f"标记父邮箱耗尽失败: {exc}", "error")
+            return []
+
     def _refresh_mailbox_before_ids(self) -> None:
         """刷新已见邮件集合，避免重发 OTP 后再次读到旧验证码。"""
         refresh = getattr(self.email_service, "refresh_before_ids", None)
@@ -2335,6 +2377,11 @@ class RegistrationEngine:
                 if self._is_deleted_or_deactivated_account_response(response):
                     self._log("OpenAI 判定该邮箱关联账号已删除或停用，准备删除当前邮箱", "warning")
                     self._delete_current_email_after_openai_reject("openai_account_deleted_or_deactivated")
+
+                if self._is_user_already_exists_response(response):
+                    self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为已注册", "warning")
+                    self._mark_parent_email_exhausted("openai_user_already_exists")
+                    self._user_already_exists = True
 
                 return False
 
@@ -3687,6 +3734,14 @@ class RegistrationEngine:
 
                 self._delete_current_email_after_openai_reject("openai_account_deleted_or_deactivated")
 
+            if resp is not None and self._is_user_already_exists_response(resp):
+
+                self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为已注册", "warning")
+
+                self._mark_parent_email_exhausted("openai_user_already_exists")
+
+                raise RuntimeError("EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - parent email alias quota exhausted")
+
             raise RuntimeError(error or f"create_account_http_{status}: {text}")
 
         try:
@@ -3772,6 +3827,13 @@ class RegistrationEngine:
         payload = _decode_jwt_payload_no_verify(id_token) or _decode_jwt_payload_no_verify(access_token)
 
         account_id = _extract_chatgpt_account_id(access_token) or str(payload.get("sub") or "").strip()
+        chatgpt_session, chatgpt_cookies = ({}, "")
+        if getattr(self, "k12_join_enabled", False):
+            chatgpt_session, chatgpt_cookies = self._establish_chatgpt_web_session_for_platform_reference()
+        chatgpt_user = chatgpt_session.get("user") if isinstance(chatgpt_session.get("user"), dict) else {}
+        chatgpt_session_token = str(
+            chatgpt_session.get("sessionToken") or chatgpt_session.get("session_token") or ""
+        ).strip()
 
         result.success = True
 
@@ -3786,6 +3848,8 @@ class RegistrationEngine:
         result.refresh_token = ""
 
         result.id_token = id_token
+        if chatgpt_session_token:
+            result.session_token = chatgpt_session_token
 
         result.source = "register"
 
@@ -3808,6 +3872,11 @@ class RegistrationEngine:
             "registration_refresh_token_usable": False,
 
             "refresh_token_source": "",
+            "cookies": chatgpt_cookies,
+            "profile": chatgpt_user,
+            "expires_at": str(chatgpt_session.get("expires") or "") if isinstance(chatgpt_session, dict) else "",
+            "session": chatgpt_session,
+            "chatgpt_session_source": "nextauth_after_platform_reference",
 
         }
 
@@ -4057,6 +4126,284 @@ class RegistrationEngine:
         token_info["type"] = "platform"
 
         return token_info
+
+
+    def _establish_chatgpt_web_session_for_platform_reference(self) -> tuple[dict, str]:
+        """Platform 注册完成后补建 chatgpt.com NextAuth session，供 K12 workspace 切换使用。"""
+        from .constants import CHATGPT_APP
+
+        if not self.session:
+            return {}, ""
+        try:
+            if not self._start_oauth():
+                self._log("Platform reference: ChatGPT NextAuth OAuth URL 获取失败", "warning")
+                return {}, _cookies_to_header(self.session.cookies)
+            auth_url = str(getattr(self.oauth_start, "auth_url", "") or "").strip()
+            if not auth_url:
+                self._log("Platform reference: ChatGPT NextAuth OAuth URL 为空", "warning")
+                return {}, _cookies_to_header(self.session.cookies)
+            auth_url = self._add_login_hint_to_auth_url(auth_url)
+
+            callback_resp = self.session.get(
+                auth_url,
+                headers=self._platform_nav_headers(referer=f"{CHATGPT_APP}/"),
+                allow_redirects=True,
+                timeout=45,
+            )
+            self._log(
+                "Platform reference: ChatGPT NextAuth 回调状态 "
+                f"{getattr(callback_resp, 'status_code', 0)}, url={getattr(callback_resp, 'url', '')}"
+            )
+            callback_url = self._resolve_chatgpt_nextauth_callback(
+                response=callback_resp,
+                device_id=self._device_id or "",
+                referer=auth_url,
+            )
+            if callback_url:
+                callback_resp = self.session.get(
+                    callback_url,
+                    headers=self._platform_nav_headers(referer=str(getattr(callback_resp, "url", "") or auth_url)),
+                    allow_redirects=True,
+                    timeout=45,
+                )
+                self._log(
+                    "Platform reference: ChatGPT NextAuth callback 跟随状态 "
+                    f"{getattr(callback_resp, 'status_code', 0)}, url={getattr(callback_resp, 'url', '')}"
+                )
+            try:
+                self.session.get(f"{CHATGPT_APP}/", timeout=15)
+            except Exception:
+                pass
+            session_resp = self.session.get(
+                f"{CHATGPT_APP}/api/auth/session",
+                headers={"accept": "application/json"},
+                timeout=20,
+            )
+            self._log(f"Platform reference: ChatGPT session API 状态 {session_resp.status_code}")
+            try:
+                session_data = session_resp.json() or {}
+            except Exception:
+                session_data = {}
+            if isinstance(session_data, dict) and session_data.get("accessToken"):
+                self._log("Platform reference: ChatGPT Web session 获取成功")
+                return session_data, _cookies_to_header(self.session.cookies)
+            keys = list(session_data.keys()) if isinstance(session_data, dict) else type(session_data).__name__
+            self._log(f"Platform reference: ChatGPT Web session 未返回 accessToken: keys={keys}", "warning")
+            return session_data if isinstance(session_data, dict) else {}, _cookies_to_header(self.session.cookies)
+        except Exception as exc:
+            self._log(f"Platform reference: ChatGPT Web session 建立失败: {exc}", "warning")
+            return {}, _cookies_to_header(self.session.cookies)
+
+    def _add_login_hint_to_auth_url(self, auth_url: str) -> str:
+        """给 chatgpt.com NextAuth authorize URL 补 login_hint，减少 choose-an-account 分支。"""
+        if not self.email:
+            return auth_url
+        try:
+            parsed = urllib.parse.urlsplit(auth_url)
+            params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            keys = {key for key, _value in params}
+            if "login_hint" not in keys:
+                params.append(("login_hint", self.email))
+            if "screen_hint" not in keys:
+                params.append(("screen_hint", "login"))
+            query = urllib.parse.urlencode(params)
+            return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+        except Exception:
+            return auth_url
+
+    def _resolve_chatgpt_nextauth_callback(self, *, response, device_id: str, referer: str) -> str:
+        """处理 choose-an-account / workspace-select，返回 chatgpt.com callback URL。"""
+        current_url = str(getattr(response, "url", "") or "")
+        if _extract_oauth_callback_params_from_url(current_url):
+            return current_url
+        if "choose-an-account" not in current_url and "workspace" not in current_url:
+            return ""
+        callback_url = self._resolve_chatgpt_nextauth_callback_via_workspace_select(
+            device_id=device_id,
+            referer=current_url or referer,
+        )
+        if callback_url:
+            return callback_url
+        return self._submit_first_auth_form_for_callback(response=response, referer=referer)
+
+    def _resolve_chatgpt_nextauth_callback_via_workspace_select(self, *, device_id: str, referer: str) -> str:
+        """在 choose-an-account 后用 auth session dump 的 workspace 选择继续授权。"""
+        from .constants import OPENAI_AUTH
+
+        if not self.session:
+            return ""
+        workspace_id = ""
+        try:
+            dump_resp = self.session.get(
+                f"{OPENAI_AUTH}/api/accounts/client_auth_session_dump",
+                headers={"accept": "application/json", "referer": referer},
+                allow_redirects=False,
+                timeout=20,
+            )
+            dump = dump_resp.json() if getattr(dump_resp, "text", "") else {}
+            if isinstance(dump, dict):
+                workspace_id = self._workspace_id_from_auth_payload(dump)
+            self._log(
+                "Platform reference: client_auth_session_dump "
+                f"状态 {getattr(dump_resp, 'status_code', 0)}, workspace={workspace_id[:8] if workspace_id else '-'}"
+            )
+        except Exception as exc:
+            self._log(f"Platform reference: client_auth_session_dump 失败: {exc}", "warning")
+        if not workspace_id:
+            workspace_id = self._workspace_id_from_auth_payload(self._decode_client_auth_session_cookie(self.session))
+        if not workspace_id:
+            return ""
+        try:
+            ws_resp = self.session.post(
+                OPENAI_API_ENDPOINTS["select_workspace"],
+                headers=self._platform_json_headers(device_id=device_id or str(uuid.uuid4()), referer=referer),
+                data=json.dumps({"workspace_id": workspace_id}, separators=(",", ":")),
+                allow_redirects=False,
+                timeout=30,
+            )
+            self._log(f"Platform reference: ChatGPT workspace/select 状态 {getattr(ws_resp, 'status_code', 0)}")
+            next_url = str((getattr(ws_resp, "headers", {}) or {}).get("Location") or "").strip()
+            if not next_url:
+                try:
+                    data = ws_resp.json() or {}
+                except Exception:
+                    data = {}
+                if isinstance(data, dict):
+                    next_url = str(data.get("continue_url") or "").strip()
+                    if not next_url:
+                        org_url = self._select_first_organization_for_nextauth(
+                            data,
+                            device_id=device_id,
+                            referer=referer,
+                        )
+                        if org_url:
+                            next_url = org_url
+            next_url = urllib.parse.urljoin(referer, next_url)
+            if _extract_oauth_callback_params_from_url(next_url):
+                return next_url
+            return self._follow_platform_redirects_for_callback(self.session, next_url) if next_url else ""
+        except Exception as exc:
+            self._log(f"Platform reference: ChatGPT workspace/select 失败: {exc}", "warning")
+            return ""
+
+    def _select_first_organization_for_nextauth(self, data: dict, *, device_id: str, referer: str) -> str:
+        from .constants import OPENAI_AUTH
+
+        orgs = list((((data.get("data") or {}).get("orgs")) or [])) if isinstance(data, dict) else []
+        if not orgs or not isinstance(orgs[0], dict) or not orgs[0].get("id"):
+            return ""
+        body = {"org_id": str(orgs[0].get("id") or "").strip()}
+        projects = list(orgs[0].get("projects") or [])
+        if projects and isinstance(projects[0], dict) and projects[0].get("id"):
+            body["project_id"] = str(projects[0].get("id") or "").strip()
+        try:
+            resp = self.session.post(
+                f"{OPENAI_AUTH}/api/accounts/organization/select",
+                headers=self._platform_json_headers(device_id=device_id or str(uuid.uuid4()), referer=referer),
+                data=json.dumps(body, separators=(",", ":")),
+                allow_redirects=False,
+                timeout=30,
+            )
+            self._log(f"Platform reference: ChatGPT organization/select 状态 {getattr(resp, 'status_code', 0)}")
+            next_url = str((getattr(resp, "headers", {}) or {}).get("Location") or "").strip()
+            if not next_url:
+                try:
+                    next_url = str((resp.json() or {}).get("continue_url") or "").strip()
+                except Exception:
+                    next_url = ""
+            return urllib.parse.urljoin(referer, next_url) if next_url else ""
+        except Exception as exc:
+            self._log(f"Platform reference: ChatGPT organization/select 失败: {exc}", "warning")
+            return ""
+
+    @staticmethod
+    def _workspace_id_from_auth_payload(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        auth_session = payload.get("oai-client-auth-session") or payload.get("auth_session") or payload
+        if not isinstance(auth_session, dict):
+            return ""
+        workspaces = auth_session.get("workspaces") or []
+        if not isinstance(workspaces, list) or not workspaces:
+            return ""
+        first = workspaces[0] if isinstance(workspaces[0], dict) else {}
+        return str(first.get("id") or "").strip()
+
+    def _submit_first_auth_form_for_callback(self, *, response, referer: str) -> str:
+        """兜底提交 choose-an-account HTML 中第一个 form。"""
+        from html.parser import HTMLParser
+
+        class _FormParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.forms: list[dict[str, Any]] = []
+                self._current: dict[str, Any] | None = None
+
+            def handle_starttag(self, tag, attrs):
+                attrs_dict = {str(k).lower(): str(v or "") for k, v in attrs}
+                if tag.lower() == "form":
+                    self._current = {
+                        "action": attrs_dict.get("action", ""),
+                        "method": attrs_dict.get("method", "get").upper(),
+                        "fields": {},
+                    }
+                    self.forms.append(self._current)
+                elif self._current is not None and tag.lower() in {"input", "button"}:
+                    name = attrs_dict.get("name", "")
+                    if not name:
+                        return
+                    if tag.lower() == "button" and name in self._current["fields"]:
+                        return
+                    self._current["fields"][name] = attrs_dict.get("value", "")
+
+            def handle_endtag(self, tag):
+                if tag.lower() == "form":
+                    self._current = None
+
+        try:
+            parser = _FormParser()
+            parser.feed(str(getattr(response, "text", "") or ""))
+            if not parser.forms:
+                return ""
+            form = parser.forms[0]
+            action = urllib.parse.urljoin(str(getattr(response, "url", "") or referer), str(form.get("action") or ""))
+            method = str(form.get("method") or "GET").upper()
+            fields = dict(form.get("fields") or {})
+            if method == "POST":
+                resp = self.session.post(
+                    action,
+                    headers={
+                        **self._platform_nav_headers(referer=str(getattr(response, "url", "") or referer)),
+                        "content-type": "application/x-www-form-urlencoded",
+                        "origin": "https://auth.openai.com",
+                    },
+                    data=urllib.parse.urlencode(fields),
+                    allow_redirects=False,
+                    timeout=30,
+                )
+            else:
+                query = urllib.parse.urlencode(fields)
+                url = action + (("&" if "?" in action else "?") + query if query else "")
+                resp = self.session.get(
+                    url,
+                    headers=self._platform_nav_headers(referer=str(getattr(response, "url", "") or referer)),
+                    allow_redirects=False,
+                    timeout=30,
+                )
+            self._log(f"Platform reference: choose-an-account form 提交状态 {getattr(resp, 'status_code', 0)}")
+            next_url = str((getattr(resp, "headers", {}) or {}).get("Location") or "").strip()
+            if not next_url:
+                try:
+                    next_url = str((resp.json() or {}).get("continue_url") or "").strip()
+                except Exception:
+                    next_url = ""
+            next_url = urllib.parse.urljoin(action, next_url)
+            if _extract_oauth_callback_params_from_url(next_url):
+                return next_url
+            return self._follow_platform_redirects_for_callback(self.session, next_url) if next_url else ""
+        except Exception as exc:
+            self._log(f"Platform reference: choose-an-account form 提交失败: {exc}", "warning")
+            return ""
 
 
     def _acquire_platform_tokens(self) -> Optional[dict]:
@@ -4770,7 +5117,11 @@ class RegistrationEngine:
 
                 if not self._create_user_account():
 
-                    result.error_message = "创建用户账户失败"
+                    result.error_message = (
+                        "EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - parent email alias quota exhausted"
+                        if getattr(self, "_user_already_exists", False)
+                        else "创建用户账户失败"
+                    )
 
                     return result
 
@@ -4784,7 +5135,11 @@ class RegistrationEngine:
 
                 if not self._create_user_account():
 
-                    result.error_message = "创建用户账户失败"
+                    result.error_message = (
+                        "EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - parent email alias quota exhausted"
+                        if getattr(self, "_user_already_exists", False)
+                        else "创建用户账户失败"
+                    )
 
                     return result
 

@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Tuple
 from urllib.parse import urlparse
@@ -23,6 +24,8 @@ DEFAULT_SUB2API_GROUP_NAME = "codex"
 DEFAULT_SUB2API_ACCOUNT_PRIORITY = 1
 DEFAULT_SUB2API_CONCURRENCY = 10
 DEFAULT_SUB2API_RATE_MULTIPLIER = 1
+DEFAULT_SUB2API_REQUEST_RETRIES = 8
+DEFAULT_SUB2API_RETRY_DELAY_SECONDS = 2
 
 
 class Sub2ApiRequestError(RuntimeError):
@@ -104,6 +107,10 @@ def _error_message(payload: Any, status_code: int, path: str) -> str:
     return f"SUB2API 请求失败（HTTP {status_code}）：{path}"
 
 
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429} or status_code >= 500
+
+
 def _request_json(
     origin: str,
     path: str,
@@ -112,6 +119,8 @@ def _request_json(
     token: str = "",
     body: dict | None = None,
     timeout: int = 30,
+    retries: int = DEFAULT_SUB2API_REQUEST_RETRIES,
+    retry_delay: float = DEFAULT_SUB2API_RETRY_DELAY_SECONDS,
 ) -> Any:
     headers = {
         "Accept": "application/json",
@@ -120,50 +129,83 @@ def _request_json(
     if token:
         headers["Authorization"] = f"Bearer {token}"
     data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
-    try:
-        response = cffi_requests.request(
-            method,
-            f"{origin}{path}",
-            headers=headers,
-            data=data,
-            proxies=None,
-            verify=False,
-            timeout=timeout,
-            impersonate="chrome110",
-        )
-    except Exception as exc:
-        raise Sub2ApiRequestError(f"SUB2API 请求异常：{exc}", path=path) from exc
-
-    status_code = int(getattr(response, "status_code", 0) or 0)
-    text = getattr(response, "text", "") or ""
-    try:
-        payload = json.loads(text) if text else None
-    except Exception:
-        payload = None
-
-    if isinstance(payload, dict) and "code" in payload:
+    max_attempts = max(1, int(retries or 0) + 1)
+    last_error: Sub2ApiRequestError | None = None
+    for attempt in range(1, max_attempts + 1):
         try:
-            code = int(payload.get("code"))
+            response = cffi_requests.request(
+                method,
+                f"{origin}{path}",
+                headers=headers,
+                data=data,
+                proxies=None,
+                verify=False,
+                timeout=timeout,
+                impersonate="chrome110",
+            )
+        except Exception as exc:
+            last_error = Sub2ApiRequestError(f"SUB2API 请求异常：{exc}", path=path)
+            if attempt < max_attempts:
+                logger.warning("[SUB2API] 请求异常，将重试 %s/%s: %s", attempt, retries, exc)
+                if retry_delay > 0:
+                    time.sleep(retry_delay)
+                continue
+            raise last_error from exc
+
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        text = getattr(response, "text", "") or ""
+        try:
+            payload = json.loads(text) if text else None
         except Exception:
-            code = -1
-        if code == 0:
-            return payload.get("data")
-        raise Sub2ApiRequestError(
-            _error_message(payload, status_code, path),
-            status_code=status_code,
-            path=path,
-        )
+            payload = None
 
-    if status_code < 200 or status_code >= 300:
-        raise Sub2ApiRequestError(
-            _error_message(payload, status_code, path),
-            status_code=status_code,
-            path=path,
-        )
-    return payload
+        if isinstance(payload, dict) and "code" in payload:
+            try:
+                code = int(payload.get("code"))
+            except Exception:
+                code = -1
+            if code == 0:
+                return payload.get("data")
+            error = Sub2ApiRequestError(
+                _error_message(payload, status_code, path),
+                status_code=status_code,
+                path=path,
+            )
+            if _is_retryable_status(status_code) and attempt < max_attempts:
+                logger.warning("[SUB2API] 请求失败，将重试 %s/%s: %s", attempt, retries, error)
+                if retry_delay > 0:
+                    time.sleep(retry_delay)
+                last_error = error
+                continue
+            raise error
+
+        if status_code < 200 or status_code >= 300:
+            error = Sub2ApiRequestError(
+                _error_message(payload, status_code, path),
+                status_code=status_code,
+                path=path,
+            )
+            if _is_retryable_status(status_code) and attempt < max_attempts:
+                logger.warning("[SUB2API] 请求失败，将重试 %s/%s: %s", attempt, retries, error)
+                if retry_delay > 0:
+                    time.sleep(retry_delay)
+                last_error = error
+                continue
+            raise error
+        return payload
+    if last_error:
+        raise last_error
+    raise Sub2ApiRequestError(f"SUB2API 请求失败：{path}", path=path)
 
 
-def login_sub2api(api_url: str, email: str, password: str, *, timeout: int = 30) -> tuple[str, str]:
+def login_sub2api(
+    api_url: str,
+    email: str,
+    password: str,
+    *,
+    timeout: int = 30,
+    retries: int = DEFAULT_SUB2API_REQUEST_RETRIES,
+) -> tuple[str, str]:
     """登录 SUB2API 管理端，返回 origin 与 access token。"""
     origin = normalize_sub2api_origin(api_url)
     if not origin:
@@ -179,6 +221,7 @@ def login_sub2api(api_url: str, email: str, password: str, *, timeout: int = 30)
         method="POST",
         body={"email": _normalize_string(email), "password": str(password or "")},
         timeout=timeout,
+        retries=retries,
     )
     token = _normalize_string((payload or {}).get("access_token") or (payload or {}).get("accessToken"))
     if not token:
@@ -201,9 +244,16 @@ def normalize_sub2api_group_names(value: Any) -> list[str]:
     return names or [DEFAULT_SUB2API_GROUP_NAME]
 
 
-def get_groups_by_names(origin: str, token: str, group_names: Any, *, timeout: int = 30) -> list[dict]:
+def get_groups_by_names(
+    origin: str,
+    token: str,
+    group_names: Any,
+    *,
+    timeout: int = 30,
+    retries: int = DEFAULT_SUB2API_REQUEST_RETRIES,
+) -> list[dict]:
     target_names = normalize_sub2api_group_names(group_names)
-    groups = _request_json(origin, "/api/v1/admin/groups/all", token=token, timeout=timeout)
+    groups = _request_json(origin, "/api/v1/admin/groups/all", token=token, timeout=timeout, retries=retries)
     matched: list[dict] = []
     missing: list[str] = []
     all_groups = groups if isinstance(groups, list) else []
@@ -251,7 +301,14 @@ def _is_active_proxy(proxy: dict) -> bool:
     return not status or status == "active"
 
 
-def resolve_sub2api_proxy(origin: str, token: str, preference: str, *, timeout: int = 30) -> dict | None:
+def resolve_sub2api_proxy(
+    origin: str,
+    token: str,
+    preference: str,
+    *,
+    timeout: int = 30,
+    retries: int = DEFAULT_SUB2API_REQUEST_RETRIES,
+) -> dict | None:
     """按 ID、精确名称、模糊文本依次匹配 SUB2API 代理。"""
     normalized = _normalize_string(preference)
     if not normalized:
@@ -261,6 +318,7 @@ def resolve_sub2api_proxy(origin: str, token: str, preference: str, *, timeout: 
         "/api/v1/admin/proxies/all?with_count=true",
         token=token,
         timeout=timeout,
+        retries=retries,
     )
     active = [
         item for item in (proxies if isinstance(proxies, list) else [])
@@ -384,19 +442,37 @@ def _account_tokens(account: Any) -> dict[str, str]:
     }
 
 
+def _account_plan_type(account: Any) -> str:
+    value = (
+        _normalize_string(getattr(account, "plan_type", ""))
+        or _extract_credential(account, "plan_type")
+        or _extract_credential(account, "planType")
+    )
+    if value:
+        return value.lower()
+    extra = getattr(account, "extra", None)
+    usage = extra.get("usage") if isinstance(extra, dict) and isinstance(extra.get("usage"), dict) else {}
+    return _normalize_string(usage.get("plan_type") or usage.get("planType")).lower()
+
+
+def _is_k12_account(account: Any) -> bool:
+    return _account_plan_type(account) == "k12"
+
+
 def _build_codex_session_content(account: Any, tokens: dict[str, str]) -> str:
     extra = _account_extra(account)
     session = getattr(account, "session", None) or extra.get("session")
     access_token = tokens["access_token"]
     if not access_token:
         raise ValueError("账号缺少 access_token，无法导入 SUB2API。")
-    if not tokens["refresh_token"]:
+    if not tokens["refresh_token"] and not _is_k12_account(account):
         raise ValueError("账号尚未获取 rt，不能导入 SUB2API。")
     if isinstance(session, dict) and session:
         session_payload = dict(session)
-        # 中文说明：仅获取 rt 后才允许导入 SUB2API，避免仅注册号被远端消费。
+        # 普通账号必须先获取 rt；K12 session 允许无 refreshToken 上传。
         session_payload.setdefault("accessToken", access_token)
-        session_payload.setdefault("refreshToken", tokens["refresh_token"])
+        if tokens["refresh_token"]:
+            session_payload.setdefault("refreshToken", tokens["refresh_token"])
         if tokens["session_token"]:
             session_payload.setdefault("sessionToken", tokens["session_token"])
         if tokens["id_token"]:
@@ -464,7 +540,7 @@ def _build_direct_account_payload(
     access_token = tokens["access_token"]
     if not access_token:
         raise ValueError("账号缺少 access_token，无法导入 SUB2API。")
-    if not tokens["refresh_token"]:
+    if not tokens["refresh_token"] and not _is_k12_account(account):
         raise ValueError("账号尚未获取 rt，不能导入 SUB2API。")
     claims = _decode_jwt_payload(access_token)
     auth_info = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
@@ -507,6 +583,7 @@ def _build_direct_account_payload(
             "email": email,
             "expires_at": expires_at,
             "expires_in": _seconds_until(expires_at),
+            "plan_type": _account_plan_type(account),
             "client_id": _extract_credential(account, "client_id") or _extract_credential(account, "clientId"),
         }),
         "extra": _strip_empty({

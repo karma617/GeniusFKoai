@@ -639,6 +639,40 @@ def test_chatgpt_registered_account_persists_full_session_for_copy(client):
     assert "session" not in dict(item["overview"].get("legacy_extra") or {})
 
 
+def test_chatgpt_registered_account_persists_k12_session_for_copy(client):
+    k12_session_payload = {
+        "user": {"email": "k12-session-copy@test.com"},
+        "accessToken": "k12-access-token-from-session",
+        "expires": "2026-06-19T00:00:00.000Z",
+    }
+    save_account(
+        Account(
+            platform="chatgpt",
+            email="k12-session-copy@test.com",
+            password="TestPass123!",
+            user_id="acct-k12-session-copy",
+            token="k12-access-token-from-session",
+            status=AccountStatus.REGISTERED,
+            extra={
+                "account_id": "acct-k12-session-copy",
+                "access_token": "k12-access-token-from-session",
+                "k12_workspace_id": "workspace-k12-copy",
+                "k12_session": k12_session_payload,
+            },
+        )
+    )
+
+    resp = client.get("/api/accounts", params={"platform": "chatgpt"})
+
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert item["overview"]["k12_session"] == k12_session_payload
+    assert item["overview"]["k12_workspace_id"] == "workspace-k12-copy"
+    legacy_extra = dict(item["overview"].get("legacy_extra") or {})
+    assert "k12_session" not in legacy_extra
+    assert "k12_workspace_id" not in legacy_extra
+
+
 def test_batch_status_update_rejects_invalid_request(client):
     account = _create_account(client, email="batch-invalid@test.com").json()
 

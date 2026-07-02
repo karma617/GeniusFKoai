@@ -209,6 +209,17 @@ def _is_current_sms_phone_exhausted_error(error: object) -> bool:
     return "SMS_PHONE_EXHAUSTED" in str(error or "")
 
 
+EMAIL_ALIAS_PARENT_RETRY_RESULT = "__email_alias_parent_retry__"
+EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT = 20
+
+
+def _is_email_alias_parent_exhausted_error(error: object) -> bool:
+    text = str(error or "")
+    return (
+        "EMAIL_ALIAS_PARENT_EXHAUSTED" in text
+        or "Email alias quota exhausted for parent mailbox" in text
+    )
+
 _SMSPOOL_RELEASE_DRAIN_TASK_TYPES = {
     TASK_TYPE_REGISTER,
     TASK_TYPE_GET_RT,
@@ -2575,7 +2586,11 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if resolved_proxy:
                 proxy_pool.report_fail(resolved_proxy)
             error = str(exc)
-            logger.record_error(error)
+            if _is_email_alias_parent_exhausted_error(error):
+                logger.log("父邮箱别名配额已耗尽，正在切换新父邮箱继续当前注册")
+                return EMAIL_ALIAS_PARENT_RETRY_RESULT
+
+            logger.record_error(error)
             logger.log(f"✗ 注册失败: {error}", level="error")
             if current_register_sms_provider and _is_register_sms_provider_switch_error(error):
                 with register_sms_lock:
@@ -2641,7 +2656,8 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     try:
         submitted = 0
-        completed = 0
+        completed = 0
+        email_alias_retry_count = 0
         futures: dict[Any, int] = {}
         # ChatGPT Plus 自动支付链接场景：用户诉求"设置生成 N 个必须生成 N 个
         # 成功"——失败的账号进入 gpt 账户池但**不增加进度**，调度继续投新任务
@@ -2651,16 +2667,36 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             platform_name == "chatgpt"
             and _bool_config(extra.get("auto_chatgpt_plus_payment"), False)
         )
-        if chatgpt_plus_must_succeed:
-            max_attempts = max(count * 5, count, 1)
+        email_alias_retry_enabled = _bool_config(
+            extra.get("enable_email_alias", extra.get("email_alias_enabled")),
+            False,
+        )
+
+        if chatgpt_plus_must_succeed:
+            max_attempts = max(
+                count * 5,
+                count * (EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT + 1)
+                if email_alias_retry_enabled
+                else count,
+                1,
+            )
         elif register_sms_candidates:
-            max_attempts = max(count * len(register_sms_candidates), count, 1)
+            max_attempts = max(
+                count * len(register_sms_candidates),
+                count * (EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT + 1)
+                if email_alias_retry_enabled
+                else count,
+                1,
+            )
         else:
             max_attempts = max(
-                count if not herosms_enabled else max_success * 3, 1
+                count if not herosms_enabled else max_success * 3, 1
             )
 
-        def _hero_phone_alive() -> bool:
+        if email_alias_retry_enabled and not (chatgpt_plus_must_succeed or register_sms_candidates):
+            max_attempts += count * EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT
+
+        def _hero_phone_alive() -> bool:
             if not (herosms_enabled and hero_reuse_to_max):
                 return False
             try:
@@ -2711,7 +2747,10 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     return False
                 return submitted < max_attempts
             if not herosms_enabled:
-                return submitted < count
+                if email_alias_retry_enabled:
+                    allowed_attempts = min(max_attempts, count + email_alias_retry_count)
+                    return success + len(futures) < count and submitted < allowed_attempts
+                return submitted < count
             if success + len(futures) >= max_success:
                 return False
             if success < target_success:
@@ -2730,7 +2769,11 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 for future in done:
                     futures.pop(future, None)
                     result = future.result()
-                    completed += 1
+                    if result == EMAIL_ALIAS_PARENT_RETRY_RESULT:
+                        email_alias_retry_count += 1
+                        continue
+
+                    completed += 1
                     if result is True:
                         success += 1
                     elif result != "__cancel_requested__":
@@ -2763,7 +2806,17 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             "extra_success": max(0, success - target_success),
             "hero_sms_reuse": True,
         })
-    summary = f"完成: 成功 {success} 个, 失败 {len(errors)} 个"
+    if (
+        email_alias_retry_enabled
+        and email_alias_retry_count > 0
+        and success < target_success
+        and not errors
+        and submitted >= max_attempts
+        and not logger.is_cancel_requested()
+    ):
+        errors.append("Email alias quota exhausted: no available parent mailbox after retry")
+
+    summary = f"完成: 成功 {success} 个, 失败 {len(errors)} 个"
     logger.log(summary, event_type="summary")
     if logger.is_cancel_requested():
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")

@@ -187,6 +187,60 @@ def test_outlook_email_reserves_selected_account_locally(monkeypatch):
     assert first.extra["provider_account"]["metadata"]["local_reservation_key"]
 
 
+def test_outlook_email_scans_next_page_when_first_page_has_only_skip_tags(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {
+                            "id": 1,
+                            "email": "registered1@outlook.com",
+                            "status": "active",
+                            "tags": [{"name": "已注册"}],
+                        },
+                        {
+                            "id": 2,
+                            "email": "registered2@outlook.com",
+                            "status": "active",
+                            "tags": [{"name": "已注册"}],
+                        },
+                    ],
+                }
+            ),
+            FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {
+                            "id": 3,
+                            "email": "fresh@outlook.com",
+                            "status": "active",
+                            "tags": [],
+                        }
+                    ],
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        group_id="4",
+        account_limit="2",
+        skip_tag_names="已注册",
+    )
+
+    account = mailbox.get_email()
+
+    assert account.email == "fresh@outlook.com"
+    assert session.calls[0]["kwargs"]["params"]["offset"] == 0
+    assert session.calls[1]["kwargs"]["params"]["offset"] == 2
+
+
 def test_outlook_email_plus_claims_pool_when_legacy_accounts_endpoint_missing(monkeypatch):
     session = FakeSession(
         [

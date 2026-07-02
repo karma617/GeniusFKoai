@@ -1,0 +1,29 @@
+﻿--- a/platforms/chatgpt/browser_get_rt.py
++++ b/platforms/chatgpt/browser_get_rt.py
+@@ -987,18 +987,23 @@ class _GetRtPhoneLease:
+     @property
+     def next_use_no(self) -> int:
+         return self.completed_uses + 1
+ 
+     def prepare_for_use(self, log: Callable[[str], None]) -> None:
+         if self.completed_uses <= 0 or not hasattr(self.channel, "request_another"):
+             return
+         try:
+             ok = bool(self.channel.request_another(self.aid))
+         except Exception as exc:
+             log(f"  [phone-pool] request another failed phone={self.phone}: {exc}")
+-            ok = False
++            raise RuntimeError(f"phone reuse request_another failed: {exc}") from exc
+         if ok:
+             log(f"  [phone-pool] reuse phone={self.phone} use={self.next_use_no}/{self.max_uses}")
+         else:
+             log(
+                 f"  [phone-pool] reuse phone={self.phone} without resend ack "
+                 f"use={self.next_use_no}/{self.max_uses}"
+             )
++            raise RuntimeError(
++                f"phone reuse request_another returned False, "
++                f"cannot notify SMS provider to resend code for {self.phone}"
++            )
+ 
+     def wait_code(self, log: Callable[[str], None], *, timeout_sec: int = 180) -> str:

@@ -164,6 +164,113 @@ def test_chatgpt_register_task_succeeds_after_successful_registration(monkeypatc
     )
 
 
+def test_chatgpt_register_retries_email_alias_parent_exhausted(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            attempts.append(len(attempts) + 1)
+            if len(attempts) == 1:
+                raise RuntimeError(
+                    "Email alias quota exhausted for parent mailbox old@outlook.com "
+                    "aliases=4/4 total=4/5"
+                )
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token"},
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_build_platform_instance",
+        lambda *args, **kwargs: FakePlatform(),
+    )
+    monkeypatch.setattr(tasks_module, "save_account", lambda account: account)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "oauth_browser",
+                "enable_email_alias": True,
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == [1, 2]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert not any(event[0] == "error" for event in logger.events)
+    assert any("正在切换新父邮箱继续当前注册" in str(event[1]) for event in logger.events)
+
+
+def test_chatgpt_register_does_not_retry_outlook_no_available_mailbox(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            attempts.append(1)
+            raise RuntimeError(
+                "outlookEmail 账号列表中没有可用邮箱"
+                "（筛选条件：group_id=4，skip_tags=已注册）"
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_build_platform_instance",
+        lambda *args, **kwargs: FakePlatform(),
+    )
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "oauth_browser",
+                "enable_email_alias": True,
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == [1]
+    assert logger.finished[0] == tasks_module.TASK_STATUS_FAILED
+    assert any(event[0] == "error" for event in logger.events)
+    assert not any("开始注册第 2/1 个账号" in str(event[1]) for event in logger.events)
+
+
 def test_chatgpt_sms_oauth_register_falls_back_to_next_sms_provider(monkeypatch):
     attempts = []
 

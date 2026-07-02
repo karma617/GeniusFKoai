@@ -558,6 +558,8 @@ class ChatGPTPlatform(BasePlatform):
                 provider=(self.config.extra or {}).get("mail_provider", ""),
                 proxy_url=ctx.proxy,
                 log_fn=ctx.log,
+                skip_post_register_oauth=_bool_param(ctx.extra or {}, "k12_join", False),
+                k12_workspace_ids=str((ctx.extra or {}).get("k12_workspace_ids", "") or "").strip(),
             )
 
         def _map_result(ctx, result):
@@ -598,6 +600,8 @@ class ChatGPTPlatform(BasePlatform):
                     "profile": metadata.get("profile", {}),
                     "expires_at": metadata.get("expires_at", ""),
                     "session": metadata.get("session", {}),
+                    "k12_session": metadata.get("k12_session", {}),
+                    "k12_workspace_id": metadata.get("k12_workspace_id", ""),
                     "oauth_error": metadata.get("oauth_error", ""),
                 },
             )

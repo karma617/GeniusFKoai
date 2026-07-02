@@ -1,0 +1,37 @@
+warning: LF will be replaced by CRLF in platforms/chatgpt/protocol_mailbox.py.
+The file will have its original line endings in your working directory
+[1mdiff --git a/platforms/chatgpt/protocol_mailbox.py b/platforms/chatgpt/protocol_mailbox.py[m
+[1mindex dff1361..d386f54 100644[m
+[1m--- a/platforms/chatgpt/protocol_mailbox.py[m
+[1m+++ b/platforms/chatgpt/protocol_mailbox.py[m
+[36m@@ -212,6 +212,13 @@[m [mclass _MailboxEmailService:[m
+             return [][m
+         return list(marker(self._mailbox_account, reason=reason) or [])[m
+ [m
+[32m+[m[32m    def mark_parent_exhausted(self) -> list[str]:[m
+[32m+[m[32m        """Force-mark the parent email as exhausted (alias quota reached)."""[m
+[32m+[m[32m        marker = getattr(self._mailbox, "mark_parent_exhausted", None)[m
+[32m+[m[32m        if not callable(marker):[m
+[32m+[m[32m            return [][m
+[32m+[m[32m        return list(marker(self._mailbox_account) or [])[m
+[32m+[m
+ [m
+ [m
+     def update_status(self, success, error=None):[m
+[36m@@ -247,7 +254,7 @@[m [mclass ChatGPTProtocolMailboxWorker:[m
+         proxy_url: str | None = None,[m
+ [m
+         log_fn: Callable[[str], None] = print,[m
+[31m-[m
+[32m+[m[32m        skip_post_register_oauth: bool = False,[m
+     ):[m
+ [m
+         if not mailbox or not mailbox_account:[m
+[36m@@ -261,6 +268,7 @@[m [mclass ChatGPTProtocolMailboxWorker:[m
+         self.proxy_url = proxy_url[m
+ [m
+         self.log_fn = log_fn[m
+[32m+[m[32m        self.skip_post_register_oauth = skip_post_register_oauth[m
+ [m
+         email_service = _MailboxEmailService([m
+ [m
