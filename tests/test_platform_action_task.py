@@ -164,6 +164,100 @@ def test_chatgpt_register_task_succeeds_after_successful_registration(monkeypatc
     )
 
 
+def test_chatgpt_register_default_saves_local_upload_jsons_instead_of_remote(monkeypatch):
+    calls = {"remote": 0, "local": 0}
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token", "refresh_token": "refresh-token"},
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: calls.__setitem__("remote", calls["remote"] + 1))
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1))
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {"identity_provider": "oauth_browser"},
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert calls == {"remote": 0, "local": 1}
+
+
+def test_chatgpt_register_remote_upload_checkbox_keeps_remote_upload(monkeypatch):
+    calls = {"remote": 0, "local": 0}
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token", "refresh_token": "refresh-token"},
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: calls.__setitem__("remote", calls["remote"] + 1))
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1))
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {"identity_provider": "oauth_browser", "remote_upload_enabled": True},
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert calls == {"remote": 1, "local": 0}
+
+
+def test_local_sub2api_json_allows_registered_account_without_refresh_token():
+    account = Account(
+        platform="chatgpt",
+        email="local-json@test.com",
+        password="Secret123!",
+        token="access-token",
+        user_id="acct_123",
+        extra={"access_token": "access-token"},
+    )
+
+    target = tasks_module._build_chatgpt_upload_account(account)
+    payload = tasks_module._build_local_sub2api_payload(target)
+
+    assert payload["credentials"]["access_token"] == "access-token"
+    assert "refresh_token" not in payload["credentials"]
+    assert payload["credentials"]["chatgpt_account_id"] == "acct_123"
+
+
 def test_chatgpt_register_retries_email_alias_parent_exhausted(monkeypatch):
     attempts = []
 

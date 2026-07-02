@@ -197,6 +197,93 @@ class SentinelPayload:
 
 
 
+@dataclass
+class ProtocolFingerprint:
+    """单个协议注册任务内稳定复用的浏览器指纹。"""
+
+    device_id: str
+    user_agent: str
+    sec_ch_ua: str
+    sec_ch_ua_full: str
+    sec_ch_ua_platform: str = '"Windows"'
+    sec_ch_ua_platform_version: str = '"10.0.0"'
+    sec_ch_ua_arch: str = '"x86_64"'
+    sec_ch_ua_bitness: str = '"64"'
+    sec_ch_ua_mobile: str = "?0"
+    sec_ch_ua_model: str = '""'
+    accept_language: str = "en-US,en;q=0.9"
+    auth_session_logging_id: str = ""
+
+    @classmethod
+    def create(cls) -> "ProtocolFingerprint":
+        chrome_versions = (
+            "136.0.7103.114",
+            "137.0.7151.120",
+            "138.0.7204.101",
+            "139.0.7258.128",
+            "140.0.7339.80",
+            "141.0.7390.78",
+            "142.0.7444.60",
+            "143.0.7499.40",
+            "144.0.7540.32",
+            "145.0.7588.24",
+        )
+        full_version = secrets.choice(chrome_versions)
+        major = full_version.split(".", 1)[0]
+        brand_version = str(major)
+        grease_version = str(secrets.choice((8, 24, 99)))
+        brand_orders = [
+            [
+                f'"Google Chrome";v="{brand_version}"',
+                f'"Chromium";v="{brand_version}"',
+                f'"Not:A-Brand";v="{grease_version}"',
+            ],
+            [
+                f'"Chromium";v="{brand_version}"',
+                f'"Not?A_Brand";v="{grease_version}"',
+                f'"Google Chrome";v="{brand_version}"',
+            ],
+            [
+                f'"Not)A;Brand";v="{grease_version}"',
+                f'"Google Chrome";v="{brand_version}"',
+                f'"Chromium";v="{brand_version}"',
+            ],
+        ]
+        full_orders = [
+            [
+                f'"Google Chrome";v="{full_version}"',
+                f'"Chromium";v="{full_version}"',
+                f'"Not:A-Brand";v="{grease_version}.0.0.0"',
+            ],
+            [
+                f'"Chromium";v="{full_version}"',
+                f'"Not?A_Brand";v="{grease_version}.0.0.0"',
+                f'"Google Chrome";v="{full_version}"',
+            ],
+            [
+                f'"Not)A;Brand";v="{grease_version}.0.0.0"',
+                f'"Google Chrome";v="{full_version}"',
+                f'"Chromium";v="{full_version}"',
+            ],
+        ]
+        order_index = secrets.randbelow(len(brand_orders))
+        return cls(
+            device_id=str(uuid.uuid4()),
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                f"Chrome/{full_version} Safari/537.36"
+            ),
+            sec_ch_ua=", ".join(brand_orders[order_index]),
+            sec_ch_ua_full=", ".join(full_orders[order_index]),
+            auth_session_logging_id=str(uuid.uuid4()),
+        )
+
+    def apply_to_client(self, client: OpenAIHTTPClient) -> None:
+        client.default_headers["User-Agent"] = self.user_agent
+        client.default_headers["Accept-Language"] = self.accept_language
+
+
 def _decode_jwt_payload_no_verify(token: str) -> dict:
     """不验签解 JWT payload，仅用于读取 ChatGPT Web session 中的账号标识。"""
     try:
@@ -523,11 +610,14 @@ class RegistrationEngine:
 
         self.task_uuid = task_uuid
 
+        self.protocol_fingerprint = ProtocolFingerprint.create()
+
 
 
         # 创建 HTTP 客户端
 
         self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
+        self.protocol_fingerprint.apply_to_client(self.http_client)
 
 
 
@@ -725,6 +815,15 @@ class RegistrationEngine:
                 pass
 
         return did
+
+
+    def _protocol_device_id(self) -> str:
+
+        fingerprint = getattr(self, "protocol_fingerprint", None)
+        did = str(getattr(fingerprint, "device_id", "") or "").strip()
+        if did:
+            return did
+        return str(uuid.uuid4())
 
 
 
@@ -1016,7 +1115,7 @@ class RegistrationEngine:
 
             if not oai_did:
 
-                oai_did = self._seed_oai_did_cookie(str(uuid.uuid4()))
+                oai_did = self._seed_oai_did_cookie(self._protocol_device_id())
 
                 self._log(f"chatgpt.com 未返回 oai-did，已本地生成: {oai_did[:20]}...")
 
@@ -1048,19 +1147,31 @@ class RegistrationEngine:
 
             # 3. 调用 signin/openai 获取 authorize URL
 
-            signin_url = f"{CHATGPT_APP}/api/auth/signin/openai"
+            signin_query = urllib.parse.urlencode(
+                {
+                    "prompt": "login",
+                    "ext-oai-did": oai_did or "",
+                    "auth_session_logging_id": self.protocol_fingerprint.auth_session_logging_id,
+                    "screen_hint": "login_or_signup",
+                    "login_hint": self.email or "",
+                }
+            )
+            signin_url = f"{CHATGPT_APP}/api/auth/signin/openai?{signin_query}"
 
-            if oai_did:
-
-                signin_url += f"?prompt=login&ext-oai-did={oai_did}"
-
-
-
+            signin_body = urllib.parse.urlencode(
+                {
+                    "callbackUrl": f"{CHATGPT_APP}/",
+                    "csrfToken": csrf_token,
+                    "json": "true",
+                }
+            )
             signin_resp = self.session.post(
 
                 signin_url,
 
                 headers={
+
+                    "accept": "application/json",
 
                     "content-type": "application/x-www-form-urlencoded",
 
@@ -1070,7 +1181,9 @@ class RegistrationEngine:
 
                 },
 
-                data=f"callbackUrl={CHATGPT_APP}%2F&csrfToken={csrf_token}&json=true",
+                data=signin_body,
+
+                allow_redirects=True,
 
                 timeout=15,
 
@@ -1096,6 +1209,15 @@ class RegistrationEngine:
 
                 self._log("signin/openai 未返回 authorize URL", "error")
 
+                return False
+
+            parsed_auth_url = urllib.parse.urlsplit(str(auth_url))
+            normalized_path = parsed_auth_url.path.rstrip("/")
+            if (
+                parsed_auth_url.netloc.endswith("chatgpt.com")
+                and normalized_path in {"/api/auth/signin", "/auth/login"}
+            ):
+                self._log(f"signin/openai 返回登录页/CSRF fallback，未建立 NextAuth OAuth: {auth_url}", "warning")
                 return False
 
 
@@ -1172,7 +1294,7 @@ class RegistrationEngine:
 
             if not did:
 
-                did = self._seed_oai_did_cookie(str(uuid.uuid4()))
+                did = self._seed_oai_did_cookie(self._protocol_device_id())
 
                 self._log(f"Device ID 未由 OpenAI 返回，已本地生成: {did}")
 
@@ -2158,9 +2280,10 @@ class RegistrationEngine:
             self._refresh_mailbox_before_ids()
 
             self.http_client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+            self.protocol_fingerprint.apply_to_client(self.http_client)
             self.session = self.http_client.session
             self.oauth_start = None
-            self._device_id = None
+            self._device_id = self.protocol_fingerprint.device_id
             self._sentinel_token = None
             self._signup_sentinel = None
             self._email_otp_continue_url = None
@@ -2448,6 +2571,7 @@ class RegistrationEngine:
             # 1. 创建新 HTTP client + session
 
             login_client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+            self.protocol_fingerprint.apply_to_client(login_client)
 
             login_session = login_client.session
 
@@ -2985,31 +3109,32 @@ class RegistrationEngine:
         default_ua = PLATFORM_REFERENCE_USER_AGENT
         http_client = getattr(self, "http_client", None)
         default_headers = getattr(http_client, "default_headers", {}) if http_client else {}
+        fingerprint = getattr(self, "protocol_fingerprint", None)
         user_agent = default_headers.get("User-Agent") or default_ua
 
         headers = {
 
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 
-            "accept-language": "en-US,en;q=0.9",
+            "accept-language": getattr(fingerprint, "accept_language", "en-US,en;q=0.9"),
 
             "user-agent": user_agent,
 
-            "sec-ch-ua": PLATFORM_REFERENCE_SEC_CH_UA,
+            "sec-ch-ua": getattr(fingerprint, "sec_ch_ua", PLATFORM_REFERENCE_SEC_CH_UA),
 
-            "sec-ch-ua-arch": '"x86_64"',
+            "sec-ch-ua-arch": getattr(fingerprint, "sec_ch_ua_arch", '"x86_64"'),
 
-            "sec-ch-ua-bitness": '"64"',
+            "sec-ch-ua-bitness": getattr(fingerprint, "sec_ch_ua_bitness", '"64"'),
 
-            "sec-ch-ua-full-version-list": PLATFORM_REFERENCE_SEC_CH_UA_FULL,
+            "sec-ch-ua-full-version-list": getattr(fingerprint, "sec_ch_ua_full", PLATFORM_REFERENCE_SEC_CH_UA_FULL),
 
-            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-mobile": getattr(fingerprint, "sec_ch_ua_mobile", "?0"),
 
-            "sec-ch-ua-model": '""',
+            "sec-ch-ua-model": getattr(fingerprint, "sec_ch_ua_model", '""'),
 
-            "sec-ch-ua-platform": '"Windows"',
+            "sec-ch-ua-platform": getattr(fingerprint, "sec_ch_ua_platform", '"Windows"'),
 
-            "sec-ch-ua-platform-version": '"10.0.0"',
+            "sec-ch-ua-platform-version": getattr(fingerprint, "sec_ch_ua_platform_version", '"10.0.0"'),
 
             "sec-fetch-dest": "document",
 
@@ -3037,13 +3162,14 @@ class RegistrationEngine:
         default_ua = PLATFORM_REFERENCE_USER_AGENT
         http_client = getattr(self, "http_client", None)
         default_headers = getattr(http_client, "default_headers", {}) if http_client else {}
+        fingerprint = getattr(self, "protocol_fingerprint", None)
         user_agent = default_headers.get("User-Agent") or default_ua
 
         headers = {
 
             "accept": "application/json",
 
-            "accept-language": "en-US,en;q=0.9",
+            "accept-language": getattr(fingerprint, "accept_language", "en-US,en;q=0.9"),
 
             "content-type": "application/json",
 
@@ -3057,21 +3183,21 @@ class RegistrationEngine:
 
             "oai-device-id": device_id,
 
-            "sec-ch-ua": PLATFORM_REFERENCE_SEC_CH_UA,
+            "sec-ch-ua": getattr(fingerprint, "sec_ch_ua", PLATFORM_REFERENCE_SEC_CH_UA),
 
-            "sec-ch-ua-arch": '"x86_64"',
+            "sec-ch-ua-arch": getattr(fingerprint, "sec_ch_ua_arch", '"x86_64"'),
 
-            "sec-ch-ua-bitness": '"64"',
+            "sec-ch-ua-bitness": getattr(fingerprint, "sec_ch_ua_bitness", '"64"'),
 
-            "sec-ch-ua-full-version-list": PLATFORM_REFERENCE_SEC_CH_UA_FULL,
+            "sec-ch-ua-full-version-list": getattr(fingerprint, "sec_ch_ua_full", PLATFORM_REFERENCE_SEC_CH_UA_FULL),
 
-            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-mobile": getattr(fingerprint, "sec_ch_ua_mobile", "?0"),
 
-            "sec-ch-ua-model": '""',
+            "sec-ch-ua-model": getattr(fingerprint, "sec_ch_ua_model", '""'),
 
-            "sec-ch-ua-platform": '"Windows"',
+            "sec-ch-ua-platform": getattr(fingerprint, "sec_ch_ua_platform", '"Windows"'),
 
-            "sec-ch-ua-platform-version": '"10.0.0"',
+            "sec-ch-ua-platform-version": getattr(fingerprint, "sec_ch_ua_platform_version", '"10.0.0"'),
 
             "sec-fetch-dest": "empty",
 
@@ -3768,15 +3894,13 @@ class RegistrationEngine:
         """按 E:\\AI\\chatgpt2api\\services\\register\\openai_register.py 主链注册。"""
 
         client = OpenAIHTTPClient(proxy_url=self.proxy_url)
-
-        # 参照源注册器固定使用 Chrome 145 指纹，Sentinel 与业务请求须保持一致。
-        client.default_headers["User-Agent"] = PLATFORM_REFERENCE_USER_AGENT
+        self.protocol_fingerprint.apply_to_client(client)
 
         self.http_client = client
 
         self.session = client.session
 
-        device_id = str(uuid.uuid4())
+        device_id = self.protocol_fingerprint.device_id
 
         self._device_id = device_id
 
@@ -4256,7 +4380,7 @@ class RegistrationEngine:
         try:
             ws_resp = self.session.post(
                 OPENAI_API_ENDPOINTS["select_workspace"],
-                headers=self._platform_json_headers(device_id=device_id or str(uuid.uuid4()), referer=referer),
+                headers=self._platform_json_headers(device_id=device_id or self._protocol_device_id(), referer=referer),
                 data=json.dumps({"workspace_id": workspace_id}, separators=(",", ":")),
                 allow_redirects=False,
                 timeout=30,
@@ -4299,7 +4423,7 @@ class RegistrationEngine:
         try:
             resp = self.session.post(
                 f"{OPENAI_AUTH}/api/accounts/organization/select",
-                headers=self._platform_json_headers(device_id=device_id or str(uuid.uuid4()), referer=referer),
+                headers=self._platform_json_headers(device_id=device_id or self._protocol_device_id(), referer=referer),
                 data=json.dumps(body, separators=(",", ":")),
                 allow_redirects=False,
                 timeout=30,
@@ -4417,10 +4541,11 @@ class RegistrationEngine:
             return None
 
         client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+        self.protocol_fingerprint.apply_to_client(client)
 
         session = client.session
 
-        device_id = str(uuid.uuid4())
+        device_id = self.protocol_fingerprint.device_id
 
         self._set_oai_did_for_session(session, device_id)
 
@@ -5270,6 +5395,7 @@ class RegistrationEngine:
                 # 用全新 session（Hydra 需要干净 session）
 
                 login_client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+                self.protocol_fingerprint.apply_to_client(login_client)
 
                 login_session = login_client.session
 

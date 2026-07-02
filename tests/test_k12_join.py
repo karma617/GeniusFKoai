@@ -218,6 +218,27 @@ def test_exchange_workspace_session_accepts_chatgpt_account_id_from_access_token
     assert result["accessToken"] == access_token
 
 
+def test_protocol_fingerprint_is_stable_per_engine_and_distinct_between_engines():
+    service = SimpleNamespace(service_type=SimpleNamespace(value="test"))
+    engine_a = RegistrationEngine(email_service=service, callback_logger=lambda _message: None)
+    engine_b = RegistrationEngine(email_service=service, callback_logger=lambda _message: None)
+
+    assert engine_a.protocol_fingerprint.device_id != engine_b.protocol_fingerprint.device_id
+    assert engine_a.protocol_fingerprint.auth_session_logging_id != engine_b.protocol_fingerprint.auth_session_logging_id
+
+    nav_headers = engine_a._platform_nav_headers(referer="https://auth.openai.com/")
+    json_headers = engine_a._platform_json_headers(
+        device_id=engine_a.protocol_fingerprint.device_id,
+        referer="https://auth.openai.com/log-in",
+    )
+
+    assert nav_headers["user-agent"] == engine_a.protocol_fingerprint.user_agent
+    assert json_headers["user-agent"] == engine_a.protocol_fingerprint.user_agent
+    assert nav_headers["sec-ch-ua"] == engine_a.protocol_fingerprint.sec_ch_ua
+    assert json_headers["sec-ch-ua"] == engine_a.protocol_fingerprint.sec_ch_ua
+    assert json_headers["oai-device-id"] == engine_a.protocol_fingerprint.device_id
+
+
 def test_join_200_success_false_is_not_success(monkeypatch):
     class FakeResponse:
         status_code = 200
@@ -278,6 +299,7 @@ def test_k12_flow_continues_next_workspace_after_exchange_mismatch(monkeypatch):
     worker.log_fn = logs.append
     worker.k12_workspace_ids = "workspace-1,workspace-2,workspace-3"
     worker.proxy_url = None
+    worker.remote_upload_enabled = True
     result = SimpleNamespace(
         access_token="registration-token",
         session_token="session-token",
@@ -295,6 +317,138 @@ def test_k12_flow_continues_next_workspace_after_exchange_mismatch(monkeypatch):
     assert result.access_token == "k12-access-token"
     assert result.metadata["k12_workspace_id"] == "workspace-2"
     assert any("继续尝试下一个 workspace" in message for message in logs)
+
+
+def test_k12_flow_default_saves_local_json_instead_of_remote_upload(monkeypatch):
+    from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
+
+    import platforms.chatgpt.k12_join as k12_module
+
+    calls = {"upload": 0, "local": 0}
+    logs = []
+
+    monkeypatch.setattr(
+        k12_module,
+        "send_workspace_join_requests",
+        lambda **kwargs: [{"workspace_id": kwargs["workspace_ids"], "ok": True, "message": "ok"}],
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "exchange_workspace_session",
+        lambda **_kwargs: {"accessToken": "k12-access-token", "user": {"email": "k12@example.com"}},
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "upload_session_to_sub2api",
+        lambda *args, **kwargs: calls.__setitem__("upload", calls["upload"] + 1) or (True, "uploaded"),
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "save_session_to_local_upload_jsons",
+        lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1) or ("data/cpa/a.json", "data/sub2api/a.json"),
+    )
+
+    worker = ChatGPTProtocolMailboxWorker.__new__(ChatGPTProtocolMailboxWorker)
+    worker.log_fn = logs.append
+    worker.k12_workspace_ids = "workspace-1"
+    worker.proxy_url = None
+    worker.remote_upload_enabled = False
+    result = SimpleNamespace(
+        access_token="registration-token",
+        session_token="session-token",
+        metadata={
+            "session": {"accessToken": "registration-token", "sessionToken": "session-token"},
+            "cookies": "oai-did=device-1",
+        },
+    )
+
+    worker._run_k12_flow(result)
+
+    assert calls == {"upload": 0, "local": 1}
+    assert any("SUB2API JSON 已保存" in message for message in logs)
+
+
+def test_k12_flow_remote_upload_checkbox_keeps_remote_upload(monkeypatch):
+    from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
+
+    import platforms.chatgpt.k12_join as k12_module
+
+    calls = {"upload": 0, "local": 0}
+
+    monkeypatch.setattr(
+        k12_module,
+        "send_workspace_join_requests",
+        lambda **kwargs: [{"workspace_id": kwargs["workspace_ids"], "ok": True, "message": "ok"}],
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "exchange_workspace_session",
+        lambda **_kwargs: {"accessToken": "k12-access-token", "user": {"email": "k12@example.com"}},
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "upload_session_to_sub2api",
+        lambda *args, **kwargs: calls.__setitem__("upload", calls["upload"] + 1) or (True, "uploaded"),
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "save_session_to_local_upload_jsons",
+        lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1) or ("data/cpa/a.json", "data/sub2api/a.json"),
+    )
+
+    worker = ChatGPTProtocolMailboxWorker.__new__(ChatGPTProtocolMailboxWorker)
+    worker.log_fn = lambda _message: None
+    worker.k12_workspace_ids = "workspace-1"
+    worker.proxy_url = None
+    worker.remote_upload_enabled = True
+    result = SimpleNamespace(
+        access_token="registration-token",
+        session_token="session-token",
+        metadata={
+            "session": {"accessToken": "registration-token", "sessionToken": "session-token"},
+            "cookies": "oai-did=device-1",
+        },
+    )
+
+    worker._run_k12_flow(result)
+
+    assert calls == {"upload": 1, "local": 0}
+
+
+def test_k12_flow_skips_workspace_when_chatgpt_web_session_missing(monkeypatch):
+    from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
+
+    import platforms.chatgpt.k12_join as k12_module
+
+    calls = {"join": 0, "exchange": 0}
+    logs = []
+
+    def fake_join_requests(**_kwargs):
+        calls["join"] += 1
+        return [{"workspace_id": "workspace-1", "ok": True, "message": "ok"}]
+
+    def fake_exchange_workspace_session(**_kwargs):
+        calls["exchange"] += 1
+        return {"accessToken": "k12-access-token"}
+
+    monkeypatch.setattr(k12_module, "send_workspace_join_requests", fake_join_requests)
+    monkeypatch.setattr(k12_module, "exchange_workspace_session", fake_exchange_workspace_session)
+
+    worker = ChatGPTProtocolMailboxWorker.__new__(ChatGPTProtocolMailboxWorker)
+    worker.log_fn = logs.append
+    worker.k12_workspace_ids = "workspace-1"
+    worker.proxy_url = None
+    result = SimpleNamespace(
+        access_token="registration-token",
+        session_token="",
+        metadata={"session": {"WARNING_BANNER": "warning"}, "cookies": "oai-did=device-1"},
+    )
+
+    worker._run_k12_flow(result)
+
+    assert calls == {"join": 0, "exchange": 0}
+    assert result.access_token == "registration-token"
+    assert any("缺少 ChatGPT Web session accessToken" in message for message in logs)
 
 
 def test_platform_reference_nextauth_resolves_choose_account_via_workspace_select():
@@ -377,3 +531,61 @@ def test_platform_reference_nextauth_resolves_choose_account_via_workspace_selec
     assert session_data["accessToken"] == "chatgpt-access"
     assert "__Secure-next-auth.session-token=session-token-1" in cookies
     assert any(url == "https://auth.openai.com/api/accounts/workspace/select" for url, _kwargs in calls["posts"])
+
+
+def test_platform_reference_nextauth_rejects_signin_csrf_fallback():
+    from platforms.chatgpt.register import RegistrationEngine
+
+    calls = {"posts": []}
+
+    class FakeCookies(dict):
+        def get(self, name, default=None, **_kwargs):
+            return super().get(name, default)
+
+    class FakeResponse:
+        def __init__(self, status_code=200, *, url="", data=None, text=""):
+            self.status_code = status_code
+            self.url = url
+            self._data = data
+            self.text = text
+
+        def json(self):
+            if self._data is None:
+                raise ValueError("no json")
+            return self._data
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = FakeCookies()
+
+        def get(self, url, **_kwargs):
+            if url == "https://chatgpt.com/":
+                return FakeResponse(200, url=url, data={})
+            if url == "https://chatgpt.com/api/auth/csrf":
+                return FakeResponse(200, url=url, data={"csrfToken": "csrf_1"})
+            raise AssertionError(f"unexpected GET {url}")
+
+        def post(self, url, **kwargs):
+            calls["posts"].append((url, kwargs))
+            if url.startswith("https://chatgpt.com/api/auth/signin/openai"):
+                return FakeResponse(
+                    200,
+                    url=url,
+                    data={"url": "https://chatgpt.com/api/auth/signin?csrf=true"},
+                )
+            raise AssertionError(f"unexpected POST {url}")
+
+    service = SimpleNamespace(service_type=SimpleNamespace(value="test"))
+    engine = RegistrationEngine(email_service=service, callback_logger=lambda _message: None)
+    engine.session = FakeSession()
+    engine.email = "user@example.com"
+    engine._device_id = "device-1"
+
+    assert engine._start_oauth() is False
+    assert engine.oauth_start is None
+    signin_url, signin_kwargs = calls["posts"][0]
+    assert "login_hint=user%40example.com" in signin_url
+    assert "screen_hint=login_or_signup" in signin_url
+    assert f"ext-oai-did={engine.protocol_fingerprint.device_id}" in signin_url
+    assert f"auth_session_logging_id={engine.protocol_fingerprint.auth_session_logging_id}" in signin_url
+    assert "callbackUrl=https%3A%2F%2Fchatgpt.com%2F" in signin_kwargs["data"]

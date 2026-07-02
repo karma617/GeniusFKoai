@@ -1,13 +1,15 @@
 """Task orchestration and persistence helpers."""
 from __future__ import annotations
 
-import json
+import json
+import re
 import queue
 import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from sqlmodel import Session, select, func
@@ -197,11 +199,27 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
-def _dump_json(data: Any) -> str:
-    return json.dumps(data or {}, ensure_ascii=False, default=_json_default)
-
-
-def _is_global_sms_pool_exhausted_error(error: object) -> bool:
+def _dump_json(data: Any) -> str:
+    return json.dumps(data or {}, ensure_ascii=False, default=_json_default)
+
+
+def _safe_json_stem(value: Any) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._+-]+", "_", str(value or "").strip())
+    stem = stem.strip("._-")
+    return stem or "account"
+
+
+def _write_local_upload_json(target_dir: str, email: Any, payload: Any) -> str:
+    directory = Path("data") / target_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"{_safe_json_stem(email)}_{timestamp}_{uuid.uuid4().hex[:8]}.json"
+    path = directory / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
+    return str(path)
+
+
+def _is_global_sms_pool_exhausted_error(error: object) -> bool:
     return "SMS_POOL_EXHAUSTED" in str(error or "")
 
 
@@ -903,12 +921,108 @@ def _auto_upload_sub2api(task_logger: TaskLogger, account) -> None:
                 time.sleep(delay)
         task_logger.log(f"  [SUB2API] 请求异常重试 {max_attempts} 次仍失败，保留为未上传: {last_msg}", level="warning")
         return False
-    except Exception as exc:
-        task_logger.log(f"  [SUB2API] 自动上传异常: {exc}", level="warning")
-        return False
-
-
-def _mark_get_rt_upload_status(
+    except Exception as exc:
+        task_logger.log(f"  [SUB2API] 自动上传异常: {exc}", level="warning")
+        return False
+
+
+def _save_local_upload_jsons(task_logger: TaskLogger, account) -> tuple[str, str]:
+    if getattr(account, "platform", "") != "chatgpt":
+        return "", ""
+    cpa_path = ""
+    sub2api_path = ""
+    target = _build_chatgpt_upload_account(account)
+    try:
+        from platforms.chatgpt.cpa_upload import generate_token_json
+
+        cpa_payload = generate_token_json(target)
+        cpa_path = _write_local_upload_json("cpa", getattr(account, "email", ""), cpa_payload)
+        task_logger.log(f"  [本地CPA] 已保存: {cpa_path}")
+    except Exception as exc:
+        task_logger.log(f"  [本地CPA] 保存失败: {exc}", level="warning")
+    try:
+        sub2api_payload = _build_local_sub2api_payload(target)
+        sub2api_path = _write_local_upload_json("sub2api", getattr(account, "email", ""), sub2api_payload)
+        task_logger.log(f"  [本地SUB2API] 已保存: {sub2api_path}")
+    except Exception as exc:
+        task_logger.log(f"  [本地SUB2API] 保存失败: {exc}", level="warning")
+    return cpa_path, sub2api_path
+
+
+def _build_local_sub2api_payload(account) -> dict:
+    from platforms.chatgpt.sub2api_upload import (
+        DEFAULT_SUB2API_CONCURRENCY,
+        DEFAULT_SUB2API_RATE_MULTIPLIER,
+        _account_expires,
+        _account_name,
+        _account_plan_type,
+        _account_tokens,
+        _decode_jwt_payload,
+        _extract_credential,
+        _normalize_string,
+        _seconds_until,
+        _strip_empty,
+    )
+
+    tokens = _account_tokens(account)
+    access_token = tokens["access_token"]
+    if not access_token:
+        raise ValueError("账号缺少 access_token，无法生成 SUB2API JSON。")
+    claims = _decode_jwt_payload(access_token)
+    auth_info = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
+    expires_at, expires_epoch = _account_expires(account, access_token)
+    account_id = (
+        _normalize_string(getattr(account, "account_id", ""))
+        or _extract_credential(account, "account_id")
+        or _extract_credential(account, "chatgpt_account_id")
+        or _normalize_string(auth_info.get("chatgpt_account_id") if isinstance(auth_info, dict) else "")
+    )
+    user_id = (
+        _normalize_string(getattr(account, "user_id", ""))
+        or _normalize_string(auth_info.get("chatgpt_user_id") if isinstance(auth_info, dict) else "")
+        or _normalize_string(auth_info.get("user_id") if isinstance(auth_info, dict) else "")
+    )
+    workspace_id = (
+        _normalize_string(getattr(account, "workspace_id", ""))
+        or _extract_credential(account, "workspace_id")
+        or _normalize_string(auth_info.get("organization_id") if isinstance(auth_info, dict) else "")
+    )
+    email = _normalize_string(getattr(account, "email", "")) or _normalize_string(claims.get("email") if isinstance(claims, dict) else "")
+    payload = {
+        "name": email or _account_name(account, access_token),
+        "platform": "openai",
+        "type": "oauth",
+        "expires_at": expires_epoch,
+        "auto_pause_on_expired": True,
+        "concurrency": DEFAULT_SUB2API_CONCURRENCY,
+        "priority": 1,
+        "rate_multiplier": DEFAULT_SUB2API_RATE_MULTIPLIER,
+        "group_ids": [],
+        "credentials": _strip_empty({
+            "access_token": access_token,
+            "refresh_token": tokens["refresh_token"],
+            "id_token": tokens["id_token"],
+            "session_token": tokens["session_token"],
+            "chatgpt_account_id": account_id,
+            "chatgpt_user_id": user_id,
+            "organization_id": workspace_id,
+            "email": email,
+            "expires_at": expires_at,
+            "expires_in": _seconds_until(expires_at),
+            "plan_type": _account_plan_type(account),
+            "client_id": _extract_credential(account, "client_id") or _extract_credential(account, "clientId"),
+        }),
+        "extra": _strip_empty({
+            "email": email,
+            "name": email or _account_name(account, access_token),
+            "source": "geniusfkoai",
+            "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }),
+    }
+    return _strip_empty(payload)
+
+
+def _mark_get_rt_upload_status(
     account_id: int,
     *,
     uploaded: bool,
@@ -2570,11 +2684,14 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 _mark_outlook_mailbox_event(shared_mailbox, account, "plus_success", logger)
             if resolved_proxy:
                 proxy_pool.report_success(resolved_proxy)
-            logger.record_success()
-            logger.log(f"✓ 注册成功: {account.email}")
-            _save_task_log(platform_name, account.email, "success")
-            _auto_upload_cpa(logger, account)
-            _auto_push_any2api(logger, account)
+            logger.record_success()
+            logger.log(f"✓ 注册成功: {account.email}")
+            _save_task_log(platform_name, account.email, "success")
+            if _bool_config(extra.get("remote_upload_enabled"), False):
+                _auto_upload_cpa(logger, account)
+            else:
+                _save_local_upload_jsons(logger, account)
+            _auto_push_any2api(logger, account)
             account_extra = dict(account.extra or {})
             overview = dict(account_extra.get("account_overview") or {})
             cashier_url = str(account_extra.get("cashier_url") or overview.get("cashier_url") or "")

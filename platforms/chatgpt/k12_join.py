@@ -15,6 +15,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from curl_cffi import requests as cffi_requests
@@ -45,6 +46,22 @@ from platforms.chatgpt.sub2api_upload import (
 K12_SUB2API_PLAN_TYPE = 'k12'
 K12_SUB2API_UPLOAD_RETRIES = 8
 K12_SUB2API_UPLOAD_RETRY_DELAY_SECONDS = 2
+
+
+def _safe_json_stem(value: Any) -> str:
+    stem = re.sub(r"[^A-Za-z0-9._+-]+", "_", str(value or "").strip())
+    stem = stem.strip("._-")
+    return stem or "account"
+
+
+def _write_local_json(target_dir: str, email: Any, payload: Any) -> str:
+    directory = Path("data") / target_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"{_safe_json_stem(email)}_{timestamp}_{uuid.uuid4().hex[:8]}.json"
+    path = directory / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
 
 def _first_non_empty(*values: Any) -> str | None:
     for value in values:
@@ -205,6 +222,24 @@ def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 
         'name': name,
         'sub2api_account': sub2api_account,
     }
+
+
+def save_session_to_local_upload_jsons(session_json: Any) -> tuple[str, str]:
+    info = convert_session_to_sub2api_account(session_json)
+    email = info.get('email') or 'k12'
+    sub2api_path = _write_local_json('sub2api', email, info['sub2api_account'])
+    cpa_payload = {
+        'access_token': info.get('access_token') or '',
+        'account_id': info.get('account_id') or '',
+        'email': info.get('email') or '',
+        'expired': info.get('expires_at') or '',
+        'id_token': info.get('id_token') or '',
+        'last_refresh': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00'),
+        'refresh_token': info.get('refresh_token') or '',
+        'type': 'codex',
+    }
+    cpa_path = _write_local_json('cpa', email, cpa_payload)
+    return cpa_path, sub2api_path
 
 
 # ===================== account_id 兜底提取（参考 FrciblyK12/cpa_upload.py） =====================

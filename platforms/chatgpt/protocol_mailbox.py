@@ -256,6 +256,7 @@ class ChatGPTProtocolMailboxWorker:
         log_fn: Callable[[str], None] = print,
         skip_post_register_oauth: bool = False,
         k12_workspace_ids: str = "",
+        remote_upload_enabled: bool = False,
     ):
 
         if not mailbox or not mailbox_account:
@@ -271,6 +272,7 @@ class ChatGPTProtocolMailboxWorker:
         self.log_fn = log_fn
         self.skip_post_register_oauth = skip_post_register_oauth
         self.k12_workspace_ids = k12_workspace_ids
+        self.remote_upload_enabled = remote_upload_enabled
 
         email_service = _MailboxEmailService(
 
@@ -333,6 +335,7 @@ class ChatGPTProtocolMailboxWorker:
                 exchange_workspace_session,
                 ensure_chatgpt_session_cookie,
                 parse_workspace_ids,
+                save_session_to_local_upload_jsons,
                 upload_session_to_sub2api,
             )
 
@@ -353,8 +356,12 @@ class ChatGPTProtocolMailboxWorker:
 
             self._log("=" * 60)
             self._log("[K12] 开始强入 K12 空间流程...")
-            if not cookies:
-                self._log("[K12] 当前结果缺少 chatgpt.com cookies，exchange 可能只能拿到 WARNING_BANNER")
+            if not registration_session.get("accessToken") and not registration_session.get("access_token"):
+                self._log("[K12] 当前结果缺少 ChatGPT Web session accessToken，跳过 workspace join/exchange")
+                return
+            if "__Secure-next-auth.session-token=" not in cookies:
+                self._log("[K12] 当前结果缺少 chatgpt.com NextAuth session cookie，跳过 workspace join/exchange")
+                return
 
             workspace_list = parse_workspace_ids(workspace_ids)
             if not workspace_list:
@@ -397,17 +404,23 @@ class ChatGPTProtocolMailboxWorker:
 
             self._log("[K12] 已确认切换到目标 K12 workspace，开始上传 session...")
 
-            # 3. 上传 session 到 sub2api
-            ok, msg = upload_session_to_sub2api(
-                new_session,
-                log=self._log,
-                proxy=proxy,
-            )
+            if self.remote_upload_enabled:
+                ok, msg = upload_session_to_sub2api(
+                    new_session,
+                    log=self._log,
+                    proxy=proxy,
+                )
 
-            if ok:
-                self._log(f"[K12] session 上传成功: {msg}")
+                if ok:
+                    self._log(f"[K12] session 上传成功: {msg}")
+                else:
+                    self._log(f"[K12] session 上传失败: {msg}")
             else:
-                self._log(f"[K12] session 上传失败: {msg}")
+                cpa_path, sub2api_path = save_session_to_local_upload_jsons(new_session)
+                if cpa_path:
+                    self._log(f"[K12] CPA JSON 已保存: {cpa_path}")
+                if sub2api_path:
+                    self._log(f"[K12] SUB2API JSON 已保存: {sub2api_path}")
 
             # 4. 更新 result 的 access_token 为 K12 workspace session 的 token
             k12_access_token = str(new_session.get("accessToken") or new_session.get("access_token") or "")

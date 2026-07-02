@@ -560,6 +560,7 @@ class ChatGPTPlatform(BasePlatform):
                 log_fn=ctx.log,
                 skip_post_register_oauth=_bool_param(ctx.extra or {}, "k12_join", False),
                 k12_workspace_ids=str((ctx.extra or {}).get("k12_workspace_ids", "") or "").strip(),
+                remote_upload_enabled=_bool_param(ctx.extra or {}, "remote_upload_enabled", False),
             )
 
         def _map_result(ctx, result):

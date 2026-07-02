@@ -345,3 +345,77 @@
   - docs/k12-space-join.md: 补充 K12 Session 复制和 SUB2API 8 次重试策略说明。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 plugin.py 中 `k12_session`/`k12_workspace_id` extra 写入；撤销 account_graph.py 的 K12 session overview 暴露；撤销 Accounts.tsx 的 K12 复制按钮与读取函数；撤销 sub2api_upload.py 的请求重试、helper retries 参数和默认 8 次配置；撤销 k12_join.py 的 8 次重试与 retries=0 调用；撤销 tests/docs/progress 本轮新增内容即可恢复旧行为。
+
+## 2026-07-02 - Task: 阻断无效 NextAuth session 的 K12 exchange
+
+### What was done
+- 定位单账号日志中 `ChatGPT Web session 未返回 accessToken: keys=['WARNING_BANNER']` 的直接原因：`signin/openai` 返回了 `chatgpt.com/api/auth/signin?csrf=true`，随后回落到 `chatgpt.com/auth/login`，未形成有效 NextAuth 登录态。
+- 将 ChatGPT NextAuth `signin/openai` 请求参数对齐到已有 sms_oauth 路径，补充 `login_hint`、`screen_hint`、`auth_session_logging_id`，并用标准 form encoding 发送 body。
+- 对 `signin/openai` 返回的 `chatgpt.com/api/auth/signin?csrf=true` 或 `chatgpt.com/auth/login` 增加显式失败判定，不再把它当作 OAuth URL 继续。
+- K12 强入前增加 Web session 前置门禁：缺少 ChatGPT Web session accessToken 或 `__Secure-next-auth.session-token` 时直接跳过 workspace join/exchange，避免继续刷 `WARNING_BANNER`。
+- 更新 K12 文档，说明 NextAuth 未建立时的跳过策略。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q -> 16 passed，1 个 StarletteDeprecationWarning。
+- .venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\k12_join.py -> 无输出，编译通过。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: NextAuth signin/openai 请求补齐参数并拒绝 CSRF/login fallback URL。
+  - platforms/chatgpt/protocol_mailbox.py: K12 前置校验 Web session accessToken 与 NextAuth session cookie，缺失时跳过 join/exchange。
+  - tests/test_k12_join.py: 增加 signin CSRF fallback 拒绝与缺 Web session 不调用 workspace 的回归测试。
+  - docs/k12-space-join.md: 补充 NextAuth 未建立时跳过 K12 join/exchange 的行为说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 register.py 中 signin_query/signin_body、fallback URL 判定与 allow_redirects 调整；撤销 protocol_mailbox.py 中 Web session 前置门禁；撤销 tests/test_k12_join.py 本轮新增测试；撤销 docs/progress 本轮追加内容即可恢复旧行为。
+
+## 2026-07-02 - Task: 协议注册任务级随机指纹
+
+### What was done
+- 为协议注册引入任务级浏览器指纹：每个 RegistrationEngine 初始化时生成独立 `oai-did`、User-Agent、Client Hints、Accept-Language 与 `auth_session_logging_id`。
+- 同一个协议任务内的 NextAuth signin、Platform reference、Platform OAuth、Codex 登录恢复和 OTP state 刷新分支复用同一套指纹，避免同一任务请求之间反复切换设备特征。
+- 不同任务各自生成指纹，避免并发任务共享完全相同的浏览器环境特征。
+- 将 Chrome 指纹限定为内部一致的版本样本，确保 UA 与 `sec-ch-ua` / `sec-ch-ua-full-version-list` 相互匹配。
+- 增加回归测试覆盖同一任务内请求头稳定、不同任务 device/auth logging id 不同，以及 NextAuth signin fallback 路径使用任务级 device/auth logging id。
+- 更新 K12 文档，说明协议注册任务级指纹策略。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q -> 17 passed，1 个 StarletteDeprecationWarning。
+- .venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\k12_join.py -> 无输出，编译通过。
+- git diff --check -- platforms/chatgpt/register.py tests/test_k12_join.py progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 新增 ProtocolFingerprint，并让协议注册主链、NextAuth signin、Platform 请求头和登录恢复分支复用任务级指纹。
+  - tests/test_k12_join.py: 增加协议指纹稳定性与 NextAuth signin 参数回归断言。
+  - docs/k12-space-join.md: 补充 K12/NextAuth 前置流程中的任务级协议指纹说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 register.py 中 ProtocolFingerprint、_protocol_device_id、任务级 device/auth logging id 复用和请求头读取指纹的改动；撤销 tests/test_k12_join.py 中协议指纹相关测试断言；撤销 docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-02 - Task: 注册远端上传开关与本地 JSON 落盘
+
+### What was done
+- 注册弹窗新增“是否启用上传到远端”复选框，默认不勾选，位置在“注册成功后自动获取支付链接”上方。
+- 默认不勾选时，ChatGPT 注册成功后不执行自动远端 CPA 上传；改为在本地生成 `data/cpa/*.json` 与 `data/sub2api/*.json`。
+- 勾选“是否启用上传到远端”后，普通注册保留原自动 CPA 上传行为；K12 强入流程保留原 SUB2API 远端上传行为。
+- K12 强入默认不再上传 SUB2API 远端，join + exchange 成功后改为用 K12 session 本地生成 CPA 与 SUB2API JSON。
+- 本地 SUB2API JSON 允许注册态账号没有 refresh_token，避免新注册成功但尚未 get_rt 时无法落文件。
+- 更新 K12 文档，说明默认本地保存与远端上传开关行为。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest tests\test_k12_join.py tests\test_platform_action_task.py -q -> 85 passed，1 个 StarletteDeprecationWarning。
+- .venv\Scripts\python.exe -m py_compile application\tasks.py platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\k12_join.py platforms\chatgpt\plugin.py -> 无输出，编译通过。
+- npm run build（frontend）-> tsc -b 与 vite build 通过；仅有 Vite chunk size warning。
+- git diff --check -- application/tasks.py platforms/chatgpt/protocol_mailbox.py platforms/chatgpt/k12_join.py platforms/chatgpt/plugin.py frontend/src/pages/Accounts.tsx tests/test_k12_join.py tests/test_platform_action_task.py docs/k12-space-join.md progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 注册弹窗新增远端上传开关，并通过 extra.remote_upload_enabled 传给后端。
+  - application/tasks.py: 注册成功默认本地保存 CPA/SUB2API JSON，勾选远端上传时才执行原自动 CPA 上传；新增本地 JSON 文件写入与本地 SUB2API payload 构造。
+  - platforms/chatgpt/plugin.py: 将 remote_upload_enabled 传入协议邮箱注册 worker。
+  - platforms/chatgpt/protocol_mailbox.py: K12 join + exchange 成功后按 remote_upload_enabled 决定远端上传或本地保存 JSON。
+  - platforms/chatgpt/k12_join.py: 增加 K12 session 本地 CPA/SUB2API JSON 保存函数。
+  - tests/test_k12_join.py: 增加 K12 默认本地保存、勾选后远端上传的回归测试。
+  - tests/test_platform_action_task.py: 增加普通注册默认本地保存、勾选后远端上传、无 RT 也可生成本地 SUB2API JSON 的回归测试。
+  - docs/k12-space-join.md: 更新默认本地保存与远端上传开关说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 Accounts.tsx 中 remoteUploadEnabled 状态、UI 和 extra 参数；撤销 tasks.py 中 _write_local_upload_json、_save_local_upload_jsons、_build_local_sub2api_payload 及注册成功分支判断；撤销 plugin.py/protocol_mailbox.py/k12_join.py 中 remote_upload_enabled 和本地保存分支；撤销 tests/docs/progress 本轮新增内容即可恢复旧行为。

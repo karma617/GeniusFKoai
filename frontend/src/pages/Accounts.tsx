@@ -353,6 +353,7 @@ function RegisterModal({
   // chatgpt 平台特定：注册成功后是否自动获取支付链接（保存到账号 cashier_url 字段，
   // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
+  const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
   const [k12Join, setK12Join] = useState(false)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState('')
   const [recordHar, setRecordHar] = useState(false)
@@ -554,6 +555,9 @@ function RegisterModal({
       if (platform === 'chatgpt' && k12Join) {
         extra.k12_join = true
         extra.k12_workspace_ids = k12WorkspaceIds.trim()
+      }
+      if (platform === 'chatgpt') {
+        extra.remote_upload_enabled = remoteUploadEnabled
       }
       const res = await apiFetch('/tasks/register', {
         method: 'POST',
@@ -832,6 +836,25 @@ function RegisterModal({
                 )}
 
                 {/* chatgpt 平台特定：注册成功后自动获取支付链接（cashier_url）写回账号 extra */}
+                {platform === 'chatgpt' && (
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                    <input
+                      type="checkbox"
+                      checked={remoteUploadEnabled}
+                      onChange={(e) => setRemoteUploadEnabled(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                    />
+                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        是否启用上传到远端
+                      </div>
+                      <div className="mt-0.5">
+                        默认不上传远端，只在本地生成 data/sub2api 和 data/cpa JSON；勾选后按当前流程上传到远端。
+                      </div>
+                    </div>
+                  </label>
+                )}
+
                 {platform === 'chatgpt' && (
                   <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
