@@ -296,6 +296,7 @@ class ChatGPTProtocolMailboxWorker:
 
         )
         self.engine.k12_join_enabled = self.skip_post_register_oauth
+        self.engine.k12_workspace_ids = self.k12_workspace_ids
 
 
 

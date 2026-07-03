@@ -684,6 +684,8 @@ class RegistrationEngine:
 
         self._user_already_exists: bool = False
 
+        self._platform_authorize_final_url: str = ""
+
 
 
     def _log(self, message: str, level: str = "info"):
@@ -2178,6 +2180,43 @@ class RegistrationEngine:
         return False
 
     @staticmethod
+    def _is_invalid_auth_step_response(response) -> bool:
+        """判断当前请求是否不符合 OpenAI 当前授权页面步骤。"""
+        text = str(getattr(response, "text", "") or "").lower()
+        if "invalid_auth_step" in text or "invalid authorization step" in text:
+            return True
+        try:
+            data = response.json()
+            error = data.get("error") if isinstance(data, dict) else {}
+            if isinstance(error, dict):
+                return str(error.get("code") or "").lower() == "invalid_auth_step"
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
+    def _is_auth_error_url(url: str, code: str = "") -> bool:
+        """判断 auth.openai.com 是否跳到了业务错误页。"""
+        value = str(url or "")
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.path.rstrip("/") != "/error":
+            return False
+        if not code:
+            return True
+        query = urllib.parse.parse_qs(parsed.query)
+        payload = str((query.get("payload") or [""])[0] or "")
+        if code in value:
+            return True
+        if payload:
+            try:
+                payload += "=" * (-len(payload) % 4)
+                data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+                return str(data.get("errorCode") or "") == code
+            except Exception:
+                return False
+        return False
+
+    @staticmethod
     def _is_deleted_or_deactivated_account_response(response) -> bool:
         """判断 OpenAI 是否拒绝已删除/停用过的邮箱继续创建账号。"""
         marker = "deleted or deactivated"
@@ -3529,6 +3568,8 @@ class RegistrationEngine:
 
         final_url = getattr(resp, "url", "") if resp is not None else ""
 
+        self._platform_authorize_final_url = str(final_url or "")
+
         self._log(f"platform authorize 状态: {status}, final_url={final_url}")
 
         if resp is None or getattr(resp, "status_code", 0) != 200:
@@ -3542,7 +3583,245 @@ class RegistrationEngine:
         return oauth_start
 
 
-    def _platform_reference_register_user(self, client: OpenAIHTTPClient, device_id: str) -> None:
+    def _platform_reference_prepare_existing_login_otp(self, client: OpenAIHTTPClient, device_id: str) -> None:
+
+        """已注册账号走 ChatGPT NextAuth 登录入口，让系统自动触发首封 OTP。"""
+
+        from .constants import CHATGPT_APP
+
+        if not self.email:
+
+            raise RuntimeError("platform_existing_login_missing_email")
+
+        self._is_existing_account = True
+
+        self._log("检测到已注册账号登录页，准备登录邮箱验证码流程")
+
+        client.session.get(f"{CHATGPT_APP}/", timeout=15)
+
+        client.session.get(f"{CHATGPT_APP}/api/auth/providers", timeout=15)
+
+        csrf_resp = client.session.get(f"{CHATGPT_APP}/api/auth/csrf", timeout=15)
+
+        csrf_token = ""
+
+        try:
+
+            csrf_token = str((csrf_resp.json() or {}).get("csrfToken") or "").strip()
+
+        except Exception:
+
+            csrf_token = ""
+
+        if not csrf_token:
+
+            csrf_cookie = str(client.session.cookies.get("__Host-next-auth.csrf-token", "") or "")
+
+            csrf_token = csrf_cookie.split("%7C")[0] if "%7C" in csrf_cookie else csrf_cookie.split("|")[0]
+
+        if not csrf_token:
+
+            raise RuntimeError("existing_login_missing_csrf")
+
+        query = urllib.parse.urlencode(
+
+            {
+
+                "prompt": "login",
+
+                "ext-passkey-client-capabilities": "11111",
+
+                "ext-oai-did": device_id,
+
+                "auth_session_logging_id": self.protocol_fingerprint.auth_session_logging_id,
+
+                "screen_hint": "login_or_signup",
+
+                "login_hint": self.email,
+
+            }
+
+        )
+
+        body = urllib.parse.urlencode(
+
+            {
+
+                "callbackUrl": f"{CHATGPT_APP}/",
+
+                "csrfToken": csrf_token,
+
+                "json": "true",
+
+            }
+
+        )
+
+        resp, error = self._platform_request_with_retry(
+
+            client.session,
+
+            "post",
+
+            f"{CHATGPT_APP}/api/auth/signin/openai?{query}",
+
+            headers={
+
+                "accept": "application/json",
+
+                "content-type": "application/x-www-form-urlencoded",
+
+                "origin": CHATGPT_APP,
+
+                "referer": f"{CHATGPT_APP}/",
+
+                "sec-fetch-site": "same-origin",
+
+            },
+
+            data=body,
+
+            allow_redirects=True,
+
+        )
+
+        status = getattr(resp, "status_code", "unknown") if resp is not None else "none"
+
+        text = getattr(resp, "text", "") if resp is not None else ""
+
+        self._log(f"signin/openai 登录入口状态: {status}")
+
+        if text:
+
+            self._log(f"signin/openai 登录入口响应: {text}")
+
+        if resp is None or getattr(resp, "status_code", 0) != 200:
+
+            raise RuntimeError(error or f"existing_login_signin_openai_http_{status}: {text}")
+
+        try:
+
+            signin_data = resp.json() or {}
+
+        except Exception:
+
+            signin_data = {}
+
+        auth_url = str(signin_data.get("url") or "").strip()
+
+        if not auth_url:
+
+            raise RuntimeError(f"existing_login_signin_openai_missing_url: {text}")
+
+        self._log(f"signin/openai 返回授权 URL: {auth_url}")
+
+        auth_resp, auth_error = self._platform_request_with_retry(
+
+            client.session,
+
+            "get",
+
+            auth_url,
+
+            headers={
+
+                **self._platform_nav_headers(referer=f"{CHATGPT_APP}/"),
+
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+
+                "sec-fetch-dest": "document",
+
+                "sec-fetch-mode": "navigate",
+
+                "sec-fetch-site": "none",
+
+            },
+
+            allow_redirects=True,
+
+        )
+
+        auth_status = getattr(auth_resp, "status_code", "unknown") if auth_resp is not None else "none"
+
+        auth_final_url = str(getattr(auth_resp, "url", "") or "") if auth_resp is not None else ""
+
+        self._log(f"signin/openai 授权跳转状态: {auth_status}, final_url={auth_final_url}")
+
+        if auth_resp is None or getattr(auth_resp, "status_code", 0) != 200:
+
+            auth_text = getattr(auth_resp, "text", "") if auth_resp is not None else ""
+
+            raise RuntimeError(auth_error or f"existing_login_authorize_http_{auth_status}: {auth_text}")
+
+        if self._is_auth_error_url(auth_final_url):
+
+            raise RuntimeError(f"existing_login_authorize_error: final_url={auth_final_url}")
+
+        if "email-verification" not in auth_final_url and "email-otp" not in auth_final_url:
+
+            self._log(f"signin/openai 授权跳转未进入邮箱验证码页: {auth_final_url}", "warning")
+
+        self._otp_sent_at = time.time()
+
+        self._otp_page_type = "email_otp_verification"
+
+        self._log("signin/openai 授权跳转已触发已注册账号邮箱验证码，先等待首封邮件")
+
+
+    def _platform_reference_resend_otp(self, client: OpenAIHTTPClient) -> None:
+
+        """已注册账号邮件未到时，按 HAR 使用 resend 重新发送。"""
+
+        from .constants import OPENAI_AUTH
+
+        self._log("开始重新发送登录邮箱验证码")
+
+        resp, error = self._platform_request_with_retry(
+
+            client.session,
+
+            "post",
+
+            f"{OPENAI_AUTH}/api/accounts/email-otp/resend",
+
+            headers=self._platform_json_headers(device_id=self._device_id or "", referer=f"{OPENAI_AUTH}/email-verification"),
+
+            data="",
+
+            allow_redirects=False,
+
+        )
+
+        status = getattr(resp, "status_code", "unknown") if resp is not None else "none"
+
+        text = getattr(resp, "text", "") if resp is not None else ""
+
+        self._log(f"登录验证码重发状态: {status}")
+
+        self._log(f"登录验证码重发响应: {text}")
+
+        if resp is None or getattr(resp, "status_code", 0) != 200:
+
+            raise RuntimeError(error or f"resend_otp_http_{status}: {text}")
+
+        try:
+
+            payload = resp.json() or {}
+
+        except Exception:
+
+            payload = {}
+
+        if payload.get("success") is False:
+
+            raise RuntimeError(f"resend_otp_failed: {text}")
+
+        self._otp_sent_at = time.time()
+
+        self._log("重新发送登录邮箱验证码完成")
+
+
+    def _platform_reference_register_user(self, client: OpenAIHTTPClient, device_id: str) -> bool:
 
         """按 openai_register.py 提交注册密码。"""
 
@@ -3604,6 +3883,14 @@ class RegistrationEngine:
 
                 self._log("注册失败提示: 邮箱域名很可能因滥用被封禁，请更换邮箱域名", "warning")
 
+            if resp is not None and self._is_invalid_auth_step_response(resp):
+
+                self._is_existing_account = True
+
+                self._log("提交注册密码返回 invalid_auth_step，判定当前邮箱已进入登录流程，跳过密码并继续发送邮箱验证码", "warning")
+
+                return False
+
             raise RuntimeError(error or f"user_register_http_{status}: {text}")
 
         try:
@@ -3622,6 +3909,8 @@ class RegistrationEngine:
 
         self._log("提交注册密码完成")
 
+        return True
+
 
     def _platform_reference_send_otp(self, client: OpenAIHTTPClient) -> None:
 
@@ -3631,6 +3920,8 @@ class RegistrationEngine:
 
         self._log("开始发送验证码")
 
+        referer = f"{OPENAI_AUTH}/email-verification" if self._is_existing_account else f"{OPENAI_AUTH}/create-account/password"
+
         resp, error = self._platform_request_with_retry(
 
             client.session,
@@ -3639,7 +3930,7 @@ class RegistrationEngine:
 
             OPENAI_API_ENDPOINTS["send_otp"],
 
-            headers=self._platform_nav_headers(referer=f"{OPENAI_AUTH}/create-account/password"),
+            headers=self._platform_nav_headers(referer=referer),
 
             allow_redirects=True,
 
@@ -3658,6 +3949,10 @@ class RegistrationEngine:
         if resp is None or getattr(resp, "status_code", 0) not in (200, 302):
 
             raise RuntimeError(error or f"send_otp_http_{status}: {text}")
+
+        if self._is_auth_error_url(str(final_url or ""), "invalid_auth_step"):
+
+            raise RuntimeError(f"send_otp_invalid_auth_step: final_url={final_url}")
 
         self._otp_sent_at = time.time()
 
@@ -3700,7 +3995,13 @@ class RegistrationEngine:
 
                 try:
 
-                    self._platform_reference_send_otp(client)
+                    if self._is_existing_account:
+
+                        self._platform_reference_resend_otp(client)
+
+                    else:
+
+                        self._platform_reference_send_otp(client)
 
                 except Exception as exc:
 
@@ -3889,6 +4190,260 @@ class RegistrationEngine:
         self._log("创建账号资料完成")
 
 
+    def _preferred_k12_workspace_id_from_payload(self, payload: dict) -> str:
+        auth_session = payload.get("oai-client-auth-session") if isinstance(payload, dict) else {}
+        auth_session = auth_session if isinstance(auth_session, dict) else {}
+        workspaces = auth_session.get("workspaces") or []
+        workspace_items = [item for item in workspaces if isinstance(item, dict)]
+        workspace_ids = [str(item.get("id") or "").strip() for item in workspace_items if str(item.get("id") or "").strip()]
+        configured_ids: list[str] = []
+        try:
+            from platforms.chatgpt.k12_join import parse_workspace_ids
+
+            configured_ids = parse_workspace_ids(str(getattr(self, "k12_workspace_ids", "") or ""))
+        except Exception:
+            configured_ids = []
+        for configured_id in configured_ids:
+            if configured_id in workspace_ids:
+                return configured_id
+        for item in workspace_items:
+            if str(item.get("kind") or "").strip().lower() == "organization":
+                workspace_id = str(item.get("id") or "").strip()
+                if workspace_id:
+                    return workspace_id
+        return workspace_ids[0] if workspace_ids else ""
+
+    def _is_existing_k12_workspace_payload(self, payload: dict) -> bool:
+        """OTP response is already on the auth.openai.com workspace selection branch."""
+        if not isinstance(payload, dict):
+            return False
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        page_type = str(page.get("type") or "").strip().lower()
+        continue_url = str(payload.get("continue_url") or "").strip()
+        parsed = urllib.parse.urlsplit(continue_url) if continue_url else None
+        is_auth_workspace_url = bool(
+            parsed
+            and parsed.netloc.endswith("auth.openai.com")
+            and parsed.path.rstrip("/") in {"/workspace", "/choose-an-account"}
+        )
+        if page_type in {"workspace", "workspace_selection", "organization_selection"} or is_auth_workspace_url:
+            return True
+
+        workspace_id = self._preferred_k12_workspace_id_from_payload(payload)
+        if not workspace_id:
+            return False
+        try:
+            from platforms.chatgpt.k12_join import parse_workspace_ids
+
+            configured_ids = parse_workspace_ids(str(getattr(self, "k12_workspace_ids", "") or ""))
+        except Exception:
+            configured_ids = []
+        return bool(configured_ids and workspace_id in configured_ids)
+
+    @staticmethod
+    def _chatgpt_callback_url_from_payload(payload: dict) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        candidates = [
+            str(payload.get("continue_url") or "").strip(),
+        ]
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        page_payload = page.get("payload") if isinstance(page.get("payload"), dict) else {}
+        candidates.append(str(page_payload.get("url") or "").strip())
+        for candidate in candidates:
+            if _extract_oauth_callback_params_from_url(candidate):
+                return candidate
+        return ""
+
+    def _platform_reference_complete_existing_callback_session(
+        self,
+        client: OpenAIHTTPClient,
+        validate_payload: dict,
+    ) -> tuple[dict, str]:
+        """已注册账号 OTP 返回 ChatGPT callback 时，直接落地 NextAuth session。"""
+        from .constants import CHATGPT_APP, OPENAI_AUTH
+
+        if not client or not client.session:
+            return {}, ""
+        session = client.session
+        callback_url = self._chatgpt_callback_url_from_payload(validate_payload)
+        if not callback_url:
+            return {}, _cookies_to_header(session.cookies)
+        referer = str((validate_payload or {}).get("continue_url") or f"{OPENAI_AUTH}/email-verification")
+        try:
+            callback_resp = session.get(
+                callback_url,
+                headers=self._platform_nav_headers(referer=referer),
+                allow_redirects=True,
+                timeout=45,
+            )
+            self._log(
+                "已注册账号 ChatGPT callback 跟随状态 "
+                f"{getattr(callback_resp, 'status_code', 0)}, url={getattr(callback_resp, 'url', '')}"
+            )
+        except Exception as exc:
+            self._log(f"已注册账号 ChatGPT callback 跟随失败: {exc}", "warning")
+            return {}, _cookies_to_header(session.cookies)
+
+        try:
+            session.get(f"{CHATGPT_APP}/", timeout=15)
+        except Exception:
+            pass
+        session_resp = session.get(
+            f"{CHATGPT_APP}/api/auth/session",
+            headers={"accept": "application/json"},
+            timeout=20,
+        )
+        self._log(f"已注册账号 ChatGPT session API 状态 {getattr(session_resp, 'status_code', 0)}")
+        try:
+            session_data = session_resp.json() or {}
+        except Exception:
+            session_data = {}
+        if isinstance(session_data, dict) and session_data.get("accessToken"):
+            self._log("已注册账号 ChatGPT Web session 获取成功")
+            return session_data, _cookies_to_header(session.cookies)
+        keys = list(session_data.keys()) if isinstance(session_data, dict) else type(session_data).__name__
+        self._log(f"已注册账号 ChatGPT Web session 未返回 accessToken: keys={keys}", "warning")
+        return session_data if isinstance(session_data, dict) else {}, _cookies_to_header(session.cookies)
+
+
+    def _platform_reference_complete_existing_k12_session(
+        self,
+        client: OpenAIHTTPClient,
+        device_id: str,
+        validate_payload: dict,
+    ) -> tuple[dict, str, str]:
+        """已注册账号 OTP 后直接完成 ChatGPT Web session，供 K12 exchange 使用。"""
+        from .constants import CHATGPT_APP, OPENAI_AUTH
+
+        if not client or not client.session:
+            return {}, "", ""
+        session = client.session
+        referer = str((validate_payload or {}).get("continue_url") or f"{OPENAI_AUTH}/workspace")
+        workspace_id = self._preferred_k12_workspace_id_from_payload(validate_payload or {})
+        callback_url = ""
+        if workspace_id:
+            try:
+                ws_resp = session.post(
+                    OPENAI_API_ENDPOINTS["select_workspace"],
+                    headers=self._platform_json_headers(device_id=device_id, referer=referer),
+                    data=json.dumps({"workspace_id": workspace_id}, separators=(",", ":")),
+                    allow_redirects=False,
+                    timeout=30,
+                )
+                self._log(
+                    "已注册账号 K12 workspace/select "
+                    f"workspace={workspace_id[:8]} 状态: {getattr(ws_resp, 'status_code', 0)}"
+                )
+                next_url = str((getattr(ws_resp, "headers", {}) or {}).get("Location") or "").strip()
+                ws_data = {}
+                if not next_url:
+                    try:
+                        ws_data = ws_resp.json() or {}
+                    except Exception:
+                        ws_data = {}
+                    if isinstance(ws_data, dict):
+                        next_url = str(ws_data.get("continue_url") or "").strip()
+                        if not next_url:
+                            org_url = self._select_first_organization_for_nextauth(
+                                ws_data,
+                                device_id=device_id,
+                                referer=referer,
+                            )
+                            if org_url:
+                                next_url = org_url
+                if next_url:
+                    next_url = urllib.parse.urljoin(referer, next_url)
+                    callback_url = (
+                        next_url
+                        if _extract_oauth_callback_params_from_url(next_url)
+                        else self._follow_platform_redirects_for_callback(session, next_url)
+                    )
+            except Exception as exc:
+                self._log(f"已注册账号 K12 workspace/select 失败: {exc}", "warning")
+
+        if not callback_url:
+            callback_url = self._resolve_chatgpt_nextauth_callback_via_workspace_select(
+                device_id=device_id,
+                referer=referer,
+            )
+        if callback_url:
+            callback_resp = session.get(
+                callback_url,
+                headers=self._platform_nav_headers(referer=referer),
+                allow_redirects=True,
+                timeout=45,
+            )
+            self._log(
+                "已注册账号 K12 ChatGPT callback 跟随状态 "
+                f"{getattr(callback_resp, 'status_code', 0)}, url={getattr(callback_resp, 'url', '')}"
+            )
+        else:
+            self._log("已注册账号 K12 未取得 ChatGPT callback URL", "warning")
+
+        try:
+            session.get(f"{CHATGPT_APP}/", timeout=15)
+        except Exception:
+            pass
+        session_resp = session.get(
+            f"{CHATGPT_APP}/api/auth/session",
+            headers={"accept": "application/json"},
+            timeout=20,
+        )
+        self._log(f"已注册账号 K12 ChatGPT session API 状态 {getattr(session_resp, 'status_code', 0)}")
+        try:
+            session_data = session_resp.json() or {}
+        except Exception:
+            session_data = {}
+        if isinstance(session_data, dict) and session_data.get("accessToken"):
+            self._log("已注册账号 K12 ChatGPT Web session 获取成功")
+            return session_data, _cookies_to_header(session.cookies), workspace_id
+        keys = list(session_data.keys()) if isinstance(session_data, dict) else type(session_data).__name__
+        self._log(f"已注册账号 K12 ChatGPT Web session 未返回 accessToken: keys={keys}", "warning")
+        return session_data if isinstance(session_data, dict) else {}, _cookies_to_header(session.cookies), workspace_id
+
+
+    def _finish_existing_k12_platform_reference_result(
+        self,
+        result: RegistrationResult,
+        chatgpt_session: dict,
+        chatgpt_cookies: str,
+        workspace_id: str = "",
+        chatgpt_session_source: str = "existing_login_workspace_select",
+    ) -> RegistrationResult:
+        access_token = str(chatgpt_session.get("accessToken") or chatgpt_session.get("access_token") or "").strip()
+        session_token = str(chatgpt_session.get("sessionToken") or chatgpt_session.get("session_token") or "").strip()
+        chatgpt_user = chatgpt_session.get("user") if isinstance(chatgpt_session.get("user"), dict) else {}
+        result.success = bool(access_token)
+        result.email = self.email or ""
+        result.password = self.password or ""
+        result.account_id = _extract_chatgpt_account_id(access_token) or str(chatgpt_user.get("id") or "").strip()
+        result.workspace_id = workspace_id or ""
+        result.access_token = access_token
+        result.refresh_token = ""
+        result.id_token = access_token
+        result.session_token = session_token
+        result.source = "login"
+        result.metadata = {
+            "email_service": getattr(getattr(self.email_service, "service_type", None), "value", ""),
+            "proxy_used": self.proxy_url,
+            "registered_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "auth_source": "platform_reference_existing_k12_login",
+            "registration_refresh_token": "",
+            "registration_refresh_token_usable": False,
+            "refresh_token_source": "",
+            "cookies": chatgpt_cookies,
+            "profile": chatgpt_user,
+            "expires_at": str(chatgpt_session.get("expires") or "") if isinstance(chatgpt_session, dict) else "",
+            "session": chatgpt_session,
+            "chatgpt_session_source": chatgpt_session_source,
+            "k12_workspace_id": workspace_id or "",
+        }
+        if not access_token:
+            result.error_message = "已注册账号 K12 ChatGPT Web session 获取失败"
+        return result
+
+
     def _run_platform_reference_register(self, result: RegistrationResult) -> RegistrationResult:
 
         """按 E:\\AI\\chatgpt2api\\services\\register\\openai_register.py 主链注册。"""
@@ -3916,23 +4471,105 @@ class RegistrationEngine:
 
         self._refresh_mailbox_before_ids()
 
-        self._platform_reference_register_user(client, device_id)
+        existing_login_url = "/log-in/password" in str(self._platform_authorize_final_url or "")
 
-        self._platform_reference_send_otp(client)
+        if existing_login_url:
 
-        code = self._wait_platform_reference_register_code(client)
+            self._platform_reference_prepare_existing_login_otp(client, device_id)
 
-        if not code:
+        else:
 
-            result.error_message = "邮箱验证码三轮未收到，已标记无效邮箱" if self._email_otp_exhausted else "获取验证码失败"
+            password_submitted = self._platform_reference_register_user(client, device_id)
 
-            return result
+            if not password_submitted:
 
-        self._platform_reference_validate_otp(client, device_id, code)
+                self._log("已切换到已注册账号邮箱验证码流程")
 
-        self._platform_reference_create_account(client, device_id)
+                self._platform_reference_prepare_existing_login_otp(client, device_id)
 
-        continue_url = self._create_account_continue_url or "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
+            else:
+
+                self._platform_reference_send_otp(client)
+
+        validate_payload = {}
+
+        otp_already_completed = bool(self._create_account_continue_url and "code=" in str(self._create_account_continue_url))
+
+        if otp_already_completed:
+
+            self._log("已获得 OAuth callback，跳过邮箱验证码等待")
+
+        else:
+
+            code = self._wait_platform_reference_register_code(client)
+
+            if not code:
+
+                result.error_message = "邮箱验证码三轮未收到，已标记无效邮箱" if self._email_otp_exhausted else "获取验证码失败"
+
+                return result
+
+            validate_payload = self._platform_reference_validate_otp(client, device_id, code)
+
+        if (
+            self._is_existing_account
+            and getattr(self, "k12_join_enabled", False)
+            and self._is_existing_k12_workspace_payload(validate_payload if isinstance(validate_payload, dict) else {})
+        ):
+
+            self._log("已注册账号 K12 模式：跳过 Platform OAuth，直接建立 ChatGPT Web session")
+
+            chatgpt_session, chatgpt_cookies, selected_workspace_id = self._platform_reference_complete_existing_k12_session(
+                client,
+                device_id,
+                validate_payload if isinstance(validate_payload, dict) else {},
+            )
+
+            return self._finish_existing_k12_platform_reference_result(
+                result,
+                chatgpt_session,
+                chatgpt_cookies,
+                selected_workspace_id,
+            )
+
+        if self._is_existing_account and getattr(self, "k12_join_enabled", False):
+
+            chatgpt_session, chatgpt_cookies = self._platform_reference_complete_existing_callback_session(
+                client,
+                validate_payload if isinstance(validate_payload, dict) else {},
+            )
+
+            if isinstance(chatgpt_session, dict) and chatgpt_session.get("accessToken"):
+
+                self._log("已注册账号普通 ChatGPT callback 已完成，后续继续执行 K12 join")
+
+                return self._finish_existing_k12_platform_reference_result(
+                    result,
+                    chatgpt_session,
+                    chatgpt_cookies,
+                    "",
+                    "existing_login_callback",
+                )
+
+            self._log("已注册账号未取得 ChatGPT callback session，回退到 Platform OAuth 换 token", "warning")
+
+        if self._is_existing_account:
+
+            self._log("已注册账号验证码通过，跳过创建账号资料")
+
+        else:
+
+            self._platform_reference_create_account(client, device_id)
+
+        if self._is_existing_account:
+
+            continue_url = oauth_start.auth_url
+
+            self._log("已注册账号登录完成，重新进入 Platform OAuth 授权换 token")
+
+        else:
+
+            continue_url = self._create_account_continue_url or "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"
 
         token_info = self._complete_platform_oauth(client, device_id, oauth_start, continue_url)
 
@@ -4278,11 +4915,33 @@ class RegistrationEngine:
                 "Platform reference: ChatGPT NextAuth 回调状态 "
                 f"{getattr(callback_resp, 'status_code', 0)}, url={getattr(callback_resp, 'url', '')}"
             )
-            callback_url = self._resolve_chatgpt_nextauth_callback(
-                response=callback_resp,
-                device_id=self._device_id or "",
-                referer=auth_url,
-            )
+            callback_url = ""
+            callback_resp_url = str(getattr(callback_resp, "url", "") or "")
+            if "email-verification" in callback_resp_url or "email-otp" in callback_resp_url:
+                self._otp_sent_at = time.time()
+                self._otp_page_type = "email_otp_verification"
+                self._log("Platform reference: ChatGPT NextAuth 需要邮箱验证码，等待第二封验证码")
+                code = self._wait_platform_login_code(self.http_client)
+                if code:
+                    otp_payload = self._platform_reference_validate_otp(
+                        self.http_client,
+                        self._device_id or self._protocol_device_id(),
+                        code,
+                    )
+                    callback_url = self._chatgpt_callback_url_from_payload(otp_payload)
+                    if not callback_url:
+                        callback_url = self._resolve_chatgpt_nextauth_callback_via_workspace_select(
+                            device_id=self._device_id or "",
+                            referer=callback_resp_url or auth_url,
+                        )
+                else:
+                    self._log("Platform reference: ChatGPT NextAuth 邮箱验证码未获取，无法建立 Web session", "warning")
+            else:
+                callback_url = self._resolve_chatgpt_nextauth_callback(
+                    response=callback_resp,
+                    device_id=self._device_id or "",
+                    referer=auth_url,
+                )
             if callback_url:
                 callback_resp = self.session.get(
                     callback_url,

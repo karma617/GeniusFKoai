@@ -19,9 +19,22 @@ class _RefreshPlanBody(BaseModel):
     ids: list[int] = Field(default_factory=list)
 
 
+class _HealthCheckBody(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+
+
 @router.post("/check-all")
 def check_all_accounts(platform: str = ""):
     return service.check_all_async(platform)
+
+
+@router.post("/health-check")
+def health_check_accounts(
+    platform: str = "",
+    body: _HealthCheckBody | None = None,
+):
+    ids = body.ids if body else []
+    return service.health_check_async(platform, account_ids=ids or None)
 
 
 @router.post("/refresh-plan")

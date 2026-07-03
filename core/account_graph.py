@@ -243,6 +243,58 @@ def recover_lifecycle_status_for_valid_account(graph: dict[str, Any]) -> str:
     return "registered"
 
 
+def _overview_or_credentials_mark_k12(overview: dict[str, Any], credentials: list[dict[str, Any]]) -> bool:
+    legacy_extra = _safe_dict(overview.get("legacy_extra"))
+    chatgpt_usage = _safe_dict(overview.get("chatgpt_usage"))
+    if overview.get("k12_session") or legacy_extra.get("k12_session"):
+        return True
+    if _text(overview.get("k12_workspace_id") or legacy_extra.get("k12_workspace_id")).strip():
+        return True
+    if _text(chatgpt_usage.get("plan_type") or chatgpt_usage.get("planType")).lower() == "k12":
+        return True
+    for item in credentials:
+        if not isinstance(item, dict) or item.get("scope") != "platform":
+            continue
+        if _text(item.get("key")).lower() in {"plan_type", "plantype"} and _text(item.get("value")).lower() == "k12":
+            return True
+    return False
+
+
+def _looks_like_html_response(value: Any) -> bool:
+    text = _text(value).lstrip().lower()
+    return text.startswith("<html") or text.startswith("<!doctype html") or "<html" in text[:200]
+
+
+def _recover_k12_html_false_invalid_overview(
+    overview: dict[str, Any],
+    credentials: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not _overview_or_credentials_mark_k12(overview, credentials):
+        return overview
+    if overview.get("valid") is not True:
+        return overview
+    if not _looks_like_html_response(overview.get("deactivated_reason")):
+        return overview
+    if _text(overview.get("lifecycle_status")).lower() != "invalid":
+        return overview
+
+    recovered = dict(overview)
+    lifecycle_status = recover_lifecycle_status_for_valid_account({"overview": recovered})
+    trial_end_time = int(recovered.get("trial_end_time") or 0)
+    validity_status = "valid"
+    plan_state = _derive_plan_state(lifecycle_status, recovered, trial_end_time)
+    recovered.update(
+        {
+            "lifecycle_status": lifecycle_status,
+            "validity_status": validity_status,
+            "plan_state": plan_state,
+            "display_status": _derive_display_status(lifecycle_status, validity_status, plan_state),
+            "k12_false_invalid_recovered": True,
+        }
+    )
+    return recovered
+
+
 def _parse_checked_at(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return ensure_utc_datetime(value)
@@ -756,6 +808,7 @@ def load_account_graphs(session: Session, account_ids: list[int]) -> dict[int, d
     for account_id, payload in graphs.items():
         overview = _safe_dict(payload.get("overview"))
         overview = _normalize_legacy_rt_status(overview, payload.get("credentials") or [])
+        overview = _recover_k12_html_false_invalid_overview(overview, payload.get("credentials") or [])
         payload["overview"] = overview
         payload["lifecycle_status"] = _text(overview.get("lifecycle_status") or "registered") or "registered"
         payload["validity_status"] = _text(overview.get("validity_status") or "unknown") or "unknown"

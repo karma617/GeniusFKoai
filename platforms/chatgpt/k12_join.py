@@ -158,19 +158,19 @@ def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 
         payload.get('email') if isinstance(payload, dict) else None,
     )
     account_id = _first_non_empty(
+        auth.get('chatgpt_account_id'),
         account_obj.get('id'),
         record.get('account_id'),
         record.get('chatgptAccountId'),
         record.get('chatgpt_account_id'),
-        auth.get('chatgpt_account_id'),
         id_auth.get('chatgpt_account_id'),
     )
     user_id = _first_non_empty(
+        auth.get('chatgpt_user_id') or auth.get('user_id'),
         user_obj.get('id'),
         record.get('user_id'),
         record.get('chatgptUserId'),
         record.get('chatgpt_user_id'),
-        auth.get('chatgpt_user_id') or auth.get('user_id'),
         id_auth.get('chatgpt_user_id') or id_auth.get('user_id'),
     )
     plan_type = K12_SUB2API_PLAN_TYPE
@@ -441,6 +441,24 @@ def ensure_chatgpt_session_cookie(cookies: str | None, session_token: str | None
     return f"{header}; {addition}" if header else addition
 
 
+def compact_chatgpt_session_cookies(cookies: str | None, session_token: str | None = "") -> str:
+    """只保留 /api/auth/session exchange 必需的小 Cookie，避免历史 Cookie 触发 431。"""
+    header = ensure_chatgpt_session_cookie(cookies, session_token)
+    allowed = {"__Secure-next-auth.session-token", "next-auth.session-token", "oai-did"}
+    selected: dict[str, str] = {}
+    for item in str(header or "").split(";"):
+        if "=" not in item:
+            continue
+        name, value = item.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if name in allowed and value:
+            selected[name] = value
+    if "__Secure-next-auth.session-token" not in selected and "next-auth.session-token" not in selected:
+        return header
+    return "; ".join(f"{name}={value}" for name, value in selected.items())
+
+
 def parse_workspace_ids(raw: str) -> list[str]:
     return [w.strip() for w in re.split(r'[\n,]+', raw or '') if w.strip()]
 
@@ -455,6 +473,20 @@ def _join_response_ok(status: int, text: str) -> bool:
     if isinstance(data, dict) and "success" in data:
         return data.get("success") is True
     return True
+
+
+def _is_unusable_workspace_response(status: int, text: str) -> bool:
+    if int(status or 0) not in {404, 500}:
+        return False
+    try:
+        data = json.loads((text or "").strip() or "{}")
+    except Exception:
+        return False
+    detail = str(data.get("detail") or "").strip() if isinstance(data, dict) else ""
+    return (int(status or 0), detail) in {
+        (404, "Not Found"),
+        (500, "Internal Server Error"),
+    }
 
 
 def _find_key_recursive(value: Any, key: str) -> str:
@@ -556,6 +588,9 @@ def send_workspace_join_requests(
                 if status in (401, 403):
                     log(f'  [K12] join {ws_id[:8]} 鉴权失败: {message}')
                     break
+                if _is_unusable_workspace_response(status, text):
+                    log(f'  [K12] join {ws_id[:8]} 空间不可用: {message}')
+                    break
             except Exception as exc:
                 message = f'网络错误: {exc}'
             log(f'  [K12] join {ws_id[:8]} 第 {attempt + 1} 次失败: {message}')
@@ -617,8 +652,11 @@ def exchange_workspace_session(
     )
     headers = dict(_EXCHANGE_HEADERS_BASE)
     headers["oai-device-id"] = device_id
-    if cookies:
-        headers["cookie"] = cookies
+    compact_cookies = compact_chatgpt_session_cookies(cookies)
+    if compact_cookies:
+        headers["cookie"] = compact_cookies
+        if cookies and len(compact_cookies) < len(str(cookies)):
+            log(f"  [K12] exchange cookie header 已压缩: {len(str(cookies))} -> {len(compact_cookies)}")
 
     last_error = ""
     for attempt in range(max_retries + 1):
@@ -658,6 +696,9 @@ def exchange_workspace_session(
                 last_error = f"HTTP {status}: {text[:500]}"
                 log(f"  [K12] exchange {workspace_id[:8]} 第 {attempt + 1} 次失败: {last_error}")
                 if status in (401, 403):
+                    break
+                if _is_unusable_workspace_response(status, text):
+                    log(f"  [K12] exchange {workspace_id[:8]} 空间不可用，跳过当前 workspace")
                     break
         except Exception as exc:
             last_error = f"网络错误: {exc}"
@@ -724,6 +765,9 @@ def send_workspace_join_and_pick_first_success(
                 message = f"HTTP {status}: {text[:200]}"
                 if status in (401, 403):
                     log(f"  [K12] join {ws_id[:8]} 鉴权失败: {message}")
+                    break
+                if _is_unusable_workspace_response(status, text):
+                    log(f"  [K12] join {ws_id[:8]} 空间不可用: {message}")
                     break
             except Exception as exc:
                 message = f"网络错误: {exc}"

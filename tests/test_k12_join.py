@@ -7,8 +7,10 @@ import json
 import time
 from types import SimpleNamespace
 
+import pytest
+
 import platforms.chatgpt.k12_join as k12
-from platforms.chatgpt.register import RegistrationEngine
+from platforms.chatgpt.register import RegistrationEngine, RegistrationResult
 
 
 def _make_access_token(exp_seconds: int) -> str:
@@ -48,6 +50,19 @@ def test_ensure_chatgpt_session_cookie_keeps_existing_token():
     assert k12.ensure_chatgpt_session_cookie(cookies, "new") == cookies
 
 
+def test_compact_chatgpt_session_cookies_keeps_only_exchange_required_cookies():
+    cookies = (
+        "oai-did=device-1; "
+        "cf_clearance=" + ("x" * 9000) + "; "
+        "__Secure-next-auth.session-token=session-1; "
+        "_ga=tracking"
+    )
+
+    assert k12.compact_chatgpt_session_cookies(cookies) == (
+        "oai-did=device-1; __Secure-next-auth.session-token=session-1"
+    )
+
+
 def test_convert_session_to_sub2api_account_shape():
     at = _make_access_token(int(time.time()) + 3600)
     session = {
@@ -67,6 +82,23 @@ def test_convert_session_to_sub2api_account_shape():
     assert account['credentials']['plan_type'] == 'k12'
     assert account['extra']['source'] == 'chatgpt_web_session'
     assert info['id_token'] is not None
+
+
+def test_convert_session_prefers_access_token_chatgpt_account_id():
+    at = _make_access_token(int(time.time()) + 3600)
+    session = {
+        'accessToken': at,
+        'account': {'id': 'auth0|login-subject'},
+        'user': {'email': 'tester@example.com', 'id': 'auth0|login-subject'},
+        'chatgpt_account_id': 'auth0|login-subject',
+    }
+
+    info = k12.convert_session_to_sub2api_account(session)
+
+    assert info['account_id'] == 'abc123'
+    assert info['user_id'] == 'user-1'
+    assert info['sub2api_account']['credentials']['chatgpt_account_id'] == 'abc123'
+    assert info['sub2api_account']['credentials']['chatgpt_user_id'] == 'user-1'
 
 
 def test_convert_session_requires_access_token():
@@ -193,6 +225,38 @@ def test_exchange_workspace_session_accepts_chatgpt_account_id_with_mismatched_a
     assert any("已获取 ChatGPT account 标识" in message for message in logs)
 
 
+def test_exchange_workspace_session_sends_compact_cookie_header(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 431
+        text = ""
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(k12.cffi_requests, "request", fake_request)
+    monkeypatch.setattr(k12.time, "sleep", lambda _seconds: None)
+
+    k12.exchange_workspace_session(
+        cookies=(
+            "oai-did=device-1; "
+            "cf_clearance=" + ("x" * 9000) + "; "
+            "__Secure-next-auth.session-token=session-1; "
+            "_ga=tracking"
+        ),
+        workspace_id="k12-workspace",
+        log=lambda _message: None,
+        max_retries=0,
+    )
+
+    assert calls
+    sent_cookie = calls[0][2]["headers"]["cookie"]
+    assert sent_cookie == "oai-did=device-1; __Secure-next-auth.session-token=session-1"
+    assert "cf_clearance" not in sent_cookie
+
+
 def test_exchange_workspace_session_accepts_chatgpt_account_id_from_access_token_claims(monkeypatch):
     access_token = _make_access_token(int(time.time()) + 3600)
 
@@ -263,6 +327,79 @@ def test_join_200_success_false_is_not_success(monkeypatch):
             "message": 'HTTP 200: {"success":false,"error":"not joined"}',
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body"),
+    [
+        (404, '{"detail":"Not Found"}'),
+        (500, '{"detail":"Internal Server Error"}'),
+    ],
+)
+def test_join_unusable_workspace_response_does_not_retry(monkeypatch, status_code, body):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.text = body
+
+    def fake_request(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(k12.cffi_requests, "request", fake_request)
+    monkeypatch.setattr(k12.time, "sleep", lambda _seconds: calls.append(("sleep", _seconds)))
+
+    results = k12.send_workspace_join_requests(
+        access_token="access-token",
+        cookies="cookie=1",
+        workspace_ids="workspace-1",
+        log=lambda _message: None,
+        max_retries=3,
+    )
+
+    assert len(calls) == 1
+    assert results == [
+        {
+            "workspace_id": "workspace-1",
+            "ok": False,
+            "message": f"HTTP {status_code}: {body}",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body"),
+    [
+        (404, '{"detail":"Not Found"}'),
+        (500, '{"detail":"Internal Server Error"}'),
+    ],
+)
+def test_exchange_unusable_workspace_response_does_not_retry(monkeypatch, status_code, body):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = status_code
+            self.text = body
+
+    def fake_request(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(k12.cffi_requests, "request", fake_request)
+    monkeypatch.setattr(k12.time, "sleep", lambda _seconds: calls.append(("sleep", _seconds)))
+
+    result = k12.exchange_workspace_session(
+        cookies="__Secure-next-auth.session-token=session",
+        workspace_id="workspace-1",
+        log=lambda _message: None,
+        max_retries=3,
+    )
+
+    assert result is None
+    assert len(calls) == 1
 
 
 def test_k12_flow_continues_next_workspace_after_exchange_mismatch(monkeypatch):
@@ -533,6 +670,96 @@ def test_platform_reference_nextauth_resolves_choose_account_via_workspace_selec
     assert any(url == "https://auth.openai.com/api/accounts/workspace/select" for url, _kwargs in calls["posts"])
 
 
+def test_platform_reference_nextauth_waits_second_email_otp_for_web_session():
+    calls = {"gets": [], "posts": []}
+
+    class FakeCookies(dict):
+        def set(self, name, value, **_kwargs):
+            self[name] = value
+
+    class FakeResponse:
+        def __init__(self, status_code=200, *, url="", data=None, text="", headers=None):
+            self.status_code = status_code
+            self.url = url
+            self._data = data
+            self.text = text
+            self.headers = headers or {}
+
+        def json(self):
+            if self._data is None:
+                raise ValueError("no json")
+            return self._data
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = FakeCookies()
+
+        def get(self, url, **kwargs):
+            calls["gets"].append((url, kwargs))
+            if url == "https://chatgpt.com/":
+                return FakeResponse(200, url=url, data={})
+            if url == "https://chatgpt.com/api/auth/csrf":
+                return FakeResponse(200, url=url, data={"csrfToken": "csrf_1"})
+            if url.startswith("https://auth.openai.com/api/accounts/authorize"):
+                return FakeResponse(200, url="https://auth.openai.com/email-verification", text="<html></html>")
+            if url.startswith("https://chatgpt.com/api/auth/callback/openai"):
+                self.cookies["__Secure-next-auth.session-token"] = "session-token-2"
+                return FakeResponse(200, url="https://chatgpt.com/", data={})
+            if url == "https://chatgpt.com/api/auth/session":
+                return FakeResponse(
+                    200,
+                    url=url,
+                    data={"accessToken": "chatgpt-access-2", "sessionToken": "session-token-2"},
+                    text='{"accessToken":"chatgpt-access-2"}',
+                )
+            return FakeResponse(200, url=url, data={})
+
+        def post(self, url, **kwargs):
+            calls["posts"].append((url, kwargs))
+            if url.startswith("https://chatgpt.com/api/auth/signin/openai"):
+                return FakeResponse(
+                    200,
+                    url=url,
+                    data={"url": "https://auth.openai.com/api/accounts/authorize?state=state_2"},
+                )
+            if url == "https://auth.openai.com/api/accounts/email-otp/validate":
+                assert kwargs["data"] == '{"code":"654321"}'
+                return FakeResponse(
+                    200,
+                    url=url,
+                    data={
+                        "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=code_2&state=state_2",
+                        "page": {
+                            "type": "external_url",
+                            "payload": {
+                                "url": "https://chatgpt.com/api/auth/callback/openai?code=code_2&state=state_2",
+                            },
+                        },
+                    },
+                    text='{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=code_2&state=state_2"}',
+                )
+            return FakeResponse(500, url=url, data={"unexpected": url})
+
+    class FakeEmailService:
+        service_type = SimpleNamespace(value="test")
+
+        def get_verification_code(self, **_kwargs):
+            return "654321"
+
+    engine = RegistrationEngine(email_service=FakeEmailService(), callback_logger=lambda _message: None)
+    engine.session = FakeSession()
+    engine.http_client = SimpleNamespace(session=engine.session, default_headers={})
+    engine.email = "user@example.com"
+    engine.email_info = {"service_id": "mail-1"}
+    engine._device_id = "device-1"
+
+    session_data, cookies = engine._establish_chatgpt_web_session_for_platform_reference()
+
+    assert session_data["accessToken"] == "chatgpt-access-2"
+    assert "__Secure-next-auth.session-token=session-token-2" in cookies
+    assert any(url == "https://auth.openai.com/api/accounts/email-otp/validate" for url, _kwargs in calls["posts"])
+
+
 def test_platform_reference_nextauth_rejects_signin_csrf_fallback():
     from platforms.chatgpt.register import RegistrationEngine
 
@@ -589,3 +816,169 @@ def test_platform_reference_nextauth_rejects_signin_csrf_fallback():
     assert f"ext-oai-did={engine.protocol_fingerprint.device_id}" in signin_url
     assert f"auth_session_logging_id={engine.protocol_fingerprint.auth_session_logging_id}" in signin_url
     assert "callbackUrl=https%3A%2F%2Fchatgpt.com%2F" in signin_kwargs["data"]
+
+
+def test_platform_reference_existing_k12_login_skips_platform_oauth(monkeypatch):
+    from platforms.chatgpt import register as register_module
+
+    calls = {"platform_oauth": 0, "k12_session": 0}
+    access_token = _make_access_token(int(time.time()) + 3600)
+
+    class FakeCookies(dict):
+        def set(self, name, value, **_kwargs):
+            self[name] = value
+
+    class FakeClient:
+        def __init__(self, proxy_url=None):
+            self.session = SimpleNamespace(cookies=FakeCookies())
+            self.default_headers = {}
+
+    service = SimpleNamespace(service_type=SimpleNamespace(value="test"))
+    engine = RegistrationEngine(email_service=service, callback_logger=lambda _message: None)
+    engine.email = "user@example.com"
+    engine.password = "Secret123!"
+    engine.k12_join_enabled = True
+    engine.k12_workspace_ids = "workspace-k12"
+
+    def fake_authorize(_client, _device_id):
+        engine._platform_authorize_final_url = "https://auth.openai.com/log-in/password"
+        return SimpleNamespace(auth_url="https://auth.openai.com/api/accounts/authorize?state=platform", state="state", code_verifier="verifier")
+
+    def fake_prepare_existing(_client, _device_id):
+        engine._is_existing_account = True
+
+    def fake_complete_platform_oauth(*_args, **_kwargs):
+        calls["platform_oauth"] += 1
+        raise AssertionError("existing K12 login must not request Platform OAuth")
+
+    def fake_complete_existing_k12(_client, _device_id, validate_payload):
+        calls["k12_session"] += 1
+        assert validate_payload["continue_url"] == "https://auth.openai.com/workspace"
+        return (
+            {"accessToken": access_token, "sessionToken": "session-token-1", "user": {"email": "user@example.com"}},
+            "__Secure-next-auth.session-token=session-token-1",
+            "workspace-k12",
+        )
+
+    monkeypatch.setattr(register_module, "OpenAIHTTPClient", FakeClient)
+    engine._platform_reference_authorize = fake_authorize
+    engine._refresh_mailbox_before_ids = lambda: None
+    engine._platform_reference_prepare_existing_login_otp = fake_prepare_existing
+    engine._wait_platform_reference_register_code = lambda _client: "123456"
+    engine._platform_reference_validate_otp = lambda _client, _device_id, _code: {
+        "continue_url": "https://auth.openai.com/workspace",
+        "page": {"type": "workspace"},
+    }
+    engine._platform_reference_complete_existing_k12_session = fake_complete_existing_k12
+    engine._complete_platform_oauth = fake_complete_platform_oauth
+
+    result = engine._run_platform_reference_register(RegistrationResult(success=False, logs=[]))
+
+    assert result.success is True
+    assert result.source == "login"
+    assert result.access_token == access_token
+    assert result.session_token == "session-token-1"
+    assert result.metadata["chatgpt_session_source"] == "existing_login_workspace_select"
+    assert result.metadata["k12_workspace_id"] == "workspace-k12"
+    assert calls == {"platform_oauth": 0, "k12_session": 1}
+
+
+def test_existing_k12_workspace_payload_detection_distinguishes_callback_login():
+    service = SimpleNamespace(service_type=SimpleNamespace(value="test"))
+    engine = RegistrationEngine(email_service=service, callback_logger=lambda _message: None)
+    engine.k12_workspace_ids = "workspace-k12"
+
+    workspace_payload = {
+        "continue_url": "https://auth.openai.com/workspace",
+        "page": {"type": "workspace"},
+        "oai-client-auth-session": {"workspaces": [{"id": "workspace-k12", "kind": "organization"}]},
+    }
+    callback_payload = {
+        "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=ac_1&state=state-1",
+        "page": {
+            "type": "external_url",
+            "payload": {"url": "https://chatgpt.com/api/auth/callback/openai?code=ac_1&state=state-1"},
+        },
+        "oai-client-auth-session": {"email_verified": True},
+    }
+
+    assert engine._is_existing_k12_workspace_payload(workspace_payload) is True
+    assert engine._is_existing_k12_workspace_payload(callback_payload) is False
+    assert engine._chatgpt_callback_url_from_payload(callback_payload).startswith(
+        "https://chatgpt.com/api/auth/callback/openai?code="
+    )
+
+
+def test_platform_reference_existing_callback_login_uses_chatgpt_session_not_workspace(monkeypatch):
+    from platforms.chatgpt import register as register_module
+
+    calls = {"platform_oauth": 0, "k12_session": 0, "callback_session": 0}
+    access_token = _make_access_token(int(time.time()) + 3600)
+
+    class FakeCookies(dict):
+        def set(self, name, value, **_kwargs):
+            self[name] = value
+
+    class FakeClient:
+        def __init__(self, proxy_url=None):
+            self.session = SimpleNamespace(cookies=FakeCookies())
+            self.default_headers = {}
+
+    service = SimpleNamespace(service_type=SimpleNamespace(value="test"))
+    engine = RegistrationEngine(email_service=service, callback_logger=lambda _message: None)
+    engine.email = "user@example.com"
+    engine.password = "Secret123!"
+    engine.k12_join_enabled = True
+    engine.k12_workspace_ids = "workspace-k12"
+
+    validate_payload = {
+        "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=ac_1&state=state-1",
+        "page": {
+            "type": "external_url",
+            "payload": {"url": "https://chatgpt.com/api/auth/callback/openai?code=ac_1&state=state-1"},
+        },
+        "oai-client-auth-session": {"email_verified": True},
+    }
+
+    def fake_authorize(_client, _device_id):
+        engine._platform_authorize_final_url = "https://auth.openai.com/log-in/password"
+        return SimpleNamespace(auth_url="https://auth.openai.com/api/accounts/authorize?state=platform", state="state", code_verifier="verifier")
+
+    def fake_prepare_existing(_client, _device_id):
+        engine._is_existing_account = True
+
+    def fake_complete_existing_k12(*_args, **_kwargs):
+        calls["k12_session"] += 1
+        raise AssertionError("external_url callback must not be treated as existing K12 workspace login")
+
+    def fake_complete_callback(_client, payload):
+        calls["callback_session"] += 1
+        assert payload is validate_payload
+        return (
+            {"accessToken": access_token, "sessionToken": "session-token-1", "user": {"email": "user@example.com"}},
+            "__Secure-next-auth.session-token=session-token-1",
+        )
+
+    def fake_complete_platform_oauth(*_args, **_kwargs):
+        calls["platform_oauth"] += 1
+        raise AssertionError("existing ChatGPT callback login must not request Platform OAuth")
+
+    monkeypatch.setattr(register_module, "OpenAIHTTPClient", FakeClient)
+    engine._platform_reference_authorize = fake_authorize
+    engine._refresh_mailbox_before_ids = lambda: None
+    engine._platform_reference_prepare_existing_login_otp = fake_prepare_existing
+    engine._wait_platform_reference_register_code = lambda _client: "123456"
+    engine._platform_reference_validate_otp = lambda _client, _device_id, _code: validate_payload
+    engine._platform_reference_complete_existing_k12_session = fake_complete_existing_k12
+    engine._platform_reference_complete_existing_callback_session = fake_complete_callback
+    engine._complete_platform_oauth = fake_complete_platform_oauth
+
+    result = engine._run_platform_reference_register(RegistrationResult(success=False, logs=[]))
+
+    assert result.success is True
+    assert result.source == "login"
+    assert result.access_token == access_token
+    assert result.session_token == "session-token-1"
+    assert result.metadata["chatgpt_session_source"] == "existing_login_callback"
+    assert result.metadata["k12_workspace_id"] == ""
+    assert calls == {"platform_oauth": 0, "k12_session": 0, "callback_session": 1}

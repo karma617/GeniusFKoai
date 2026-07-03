@@ -419,3 +419,589 @@
   - docs/k12-space-join.md: 更新默认本地保存与远端上传开关说明。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 Accounts.tsx 中 remoteUploadEnabled 状态、UI 和 extra 参数；撤销 tasks.py 中 _write_local_upload_json、_save_local_upload_jsons、_build_local_sub2api_payload 及注册成功分支判断；撤销 plugin.py/protocol_mailbox.py/k12_join.py 中 remote_upload_enabled 和本地保存分支；撤销 tests/docs/progress 本轮新增内容即可恢复旧行为。
+
+## 2026-07-02 - Task: 账号列表 K12 徽标标注
+
+### What was done
+- 账号列表徽标渲染增加 K12 账号识别：ChatGPT 账号存在 K12 session、K12 workspace ID 或 `plan_type=k12` 时视为 K12 账号。
+- K12 账号原本显示在"邮箱验证"左侧的 `Free` 徽标会替换为绿色 `K12` 徽标；如果没有 `Free` 徽标，则在"邮箱验证"前补一个绿色 `K12` 徽标。
+- 详情弹窗与两套账号列表表格复用同一套徽标归一化和样式规则，避免不同列表视图显示不一致。
+- K12 文档补充账号列表徽标显示规则。
+
+### Testing
+- npm run build（frontend）-> tsc -b 与 vite build 通过；仅有 Vite chunk size warning。
+- git diff --check -- frontend/src/pages/Accounts.tsx docs/k12-space-join.md progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 增加 K12 账号徽标归一化，将 K12 账号的 Free 徽标替换为绿色 K12。
+  - docs/k12-space-join.md: 补充账号列表 K12 徽标显示规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 Accounts.tsx 中 isChatgptK12Account、normalizeAccountBadges、getAccountBadgeClassName 以及三个徽标渲染点的 className 接线；撤销 docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧显示。
+
+## 2026-07-02 - Task: 记住 K12 Workspace ID 输入
+
+### What was done
+- 自动注册 ChatGPT 弹窗的 K12 Workspace ID 输入框会读取本地保存的上一次填写值，避免每次打开都重新输入。
+- 自动注册任务成功创建后保存当前输入；如果提交时清空输入框，则清除本地记忆，避免继续带出旧空间 ID。
+- 本地记忆只保存在当前浏览器的 `localStorage`，不改变后端注册参数和任务执行逻辑。
+- K12 文档补充 Workspace ID 输入框记忆规则。
+
+### Testing
+- npm run build（frontend）-> tsc -b 与 vite build 通过；仅有 Vite chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 增加 K12 Workspace ID 本地读取与成功创建任务后的保存/清除逻辑。
+  - docs/k12-space-join.md: 补充 K12 Workspace ID 输入框本地记忆说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 Accounts.tsx 中 CHATGPT_K12_WORKSPACE_IDS_STORAGE_KEY、readStoredChatgptK12WorkspaceIds、writeStoredChatgptK12WorkspaceIds、k12WorkspaceIds 初始值读取和 start 成功后的写入；撤销 docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: 后台 SUB2API 同步跳过 K12 账号
+
+### What was done
+- 确认日志中的后台任务来自 `LifecycleManager` 的 token 自动续期与 SUB2API 同步，不是前端列表刷新本身创建的手动任务。
+- 生命周期后台同步增加 K12 账号判定：账号图里存在 K12 session、K12 workspace ID 或 `plan_type=k12` 时视为 K12 账号。
+- K12 账号仍保留 session 刷新和存活检查，但普通 SUB2API 同步上传分支会直接跳过，避免用普通账号 refresh_token 导入规则反复报“账号尚未获取 rt”。
+- 增加回归测试覆盖三种 K12 判定来源，并确认普通 free 账号不会被误判为 K12。
+- K12 文档补充生命周期后台同步会跳过 K12 普通 SUB2API 上传的行为说明。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest test\test_lifecycle_panel_targets.py test\test_chatgpt_sub2api_auto_upload.py -q -> 8 passed。
+- .venv\Scripts\python.exe -m py_compile core\lifecycle.py -> 无输出，编译通过。
+
+### Notes
+- 修改文件清单
+  - core/lifecycle.py: 新增 K12 账号图判定，并让生命周期后台 SUB2API 同步上传跳过 K12 账号。
+  - test/test_lifecycle_panel_targets.py: 增加 K12 session、workspace ID、plan_type=k12 与普通 free 账号的判定回归测试。
+  - docs/k12-space-join.md: 补充生命周期后台同步对 K12 账号的跳过规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/lifecycle.py 中 _is_k12_account_graph 和 SUB2API 同步前的 K12 跳过分支；撤销 test/test_lifecycle_panel_targets.py 中本轮新增测试；撤销 docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: K12 存活检查 HTML 响应不再误标失效
+
+### What was done
+- 生命周期后台 `/backend-api/me` 存活检查遇到 K12 账号非 200 响应时，不再直接写入 `invalid`；改为记录检查异常并保留当前状态。
+- 账号图谱读取增加 K12 误失效展示恢复：当账号有 K12 证据、`valid=True` 且 `deactivated_reason` 是 HTML 响应时，列表展示恢复为有效的注册态。
+- 对截图中的三条 K12 账号做了只读验证，图谱读取结果已从 `invalid` 恢复为 `registered/valid`，并带 `k12_false_invalid_recovered=True`。
+- 增加回归测试覆盖 K12 HTML 误失效恢复，以及 `valid=False` 的真实失效不被恢复。
+- K12 文档补充存活检查非 200/HTML 响应不落 `invalid` 的规则。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest test\test_lifecycle_panel_targets.py test\test_chatgpt_sub2api_auto_upload.py -q -> 10 passed。
+- .venv\Scripts\python.exe -m py_compile core\lifecycle.py core\account_graph.py -> 无输出，编译通过。
+- .venv\Scripts\python.exe -（只读查询截图中三条账号）-> 三条均读取为 `lifecycle_status=registered`、`validity_status=valid`、`display_status=registered`。
+
+### Notes
+- 修改文件清单
+  - core/lifecycle.py: K12 存活检查非 200 响应只记录 `check_error` / `k12_liveness_check_error`，不再写入 `invalid`。
+  - core/account_graph.py: 增加 K12 HTML 误失效展示恢复逻辑，避免已有误判继续在列表显示红色“失效”。
+  - test/test_lifecycle_panel_targets.py: 增加 K12 HTML 误失效恢复与真实失效不恢复的回归测试。
+  - docs/k12-space-join.md: 补充 K12 存活检查误判保护说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/lifecycle.py 中 K12 `/backend-api/me` 非 200 分支；撤销 core/account_graph.py 中 _overview_or_credentials_mark_k12、_looks_like_html_response、_recover_k12_html_false_invalid_overview 及 load_account_graphs 接线；撤销 test/test_lifecycle_panel_targets.py、docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: 单账号菜单强入 K12 空间
+
+### What was done
+- 单个 ChatGPT 账号的"更多"菜单新增"强入K12空间"动作，点击后弹出参数窗口输入 Workspace ID。
+- 动作执行复用注册后的 K12 join + exchange + SUB2API 上传逻辑：读取账号注册时保存的 Web session 和 cookie，逐个尝试 Workspace ID，exchange 成功后上传 K12 session。
+- K12 exchange 成功后把 K12 session、workspace ID、上传状态和 `plan_type=k12` 写回账号；SUB2API 上传失败时保留 K12 强入结果并记录上传失败状态。
+- 参数弹窗的 Workspace ID 会复用并更新之前自动注册弹窗保存的本地记忆，减少重复输入。
+- 文档补充单账号"更多"菜单强入 K12 空间的入口和写回行为。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_har.py::test_chatgpt_k12_join_upload_action_uses_saved_web_session tests\test_platform_action_task.py::test_platform_runtime_persists_k12_join_upload_session -q -> 2 passed, 1 warning。
+- .venv\Scripts\python.exe -m py_compile platforms\chatgpt\plugin.py infrastructure\platform_runtime.py -> 无输出，编译通过。
+- npm run build（frontend）-> tsc -b 与 vite build 通过；仅有 Vite chunk size warning。
+- git diff --check -- platforms/chatgpt/plugin.py infrastructure/platform_runtime.py frontend/src/pages/Accounts.tsx tests/test_chatgpt_get_rt_har.py tests/test_platform_action_task.py docs/k12-space-join.md progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/plugin.py: 新增单账号 K12 join/upload action，并复用注册 K12 流程读取 Web session、join、exchange 和上传 SUB2API。
+  - infrastructure/platform_runtime.py: 持久化 K12 session、workspace ID、上传状态和 K12 凭据写回。
+  - frontend/src/pages/Accounts.tsx: 单账号动作弹窗预填并保存 Workspace ID。
+  - tests/test_chatgpt_get_rt_har.py: 新增动作复用 Web session 执行 K12 join/upload 的回归测试。
+  - tests/test_platform_action_task.py: 新增 K12 join/upload 动作结果写回账号图谱的回归测试。
+  - docs/k12-space-join.md: 补充单账号菜单强入 K12 空间说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/plugin.py 中 `k12_join_upload` 平台动作和 `_handle_k12_join_upload`；撤销 infrastructure/platform_runtime.py 中 `k12_join_upload` 写回分支；撤销 frontend/src/pages/Accounts.tsx 中该动作的 Workspace ID 预填/保存接线；撤销两处测试、docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: 修正 SUB2API JSON 的 ChatGPT account ID
+
+### What was done
+- 确认你贴出的本地 SUB2API JSON 中，`credentials.chatgpt_account_id` 被写成了 `auth0|...` 登录主体，而 accessToken 的 OpenAI auth claim 中已有正确的 ChatGPT account UUID。
+- 本地保存 SUB2API JSON 时，`chatgpt_account_id` 和 `chatgpt_user_id` 改为优先使用 accessToken 的 `https://api.openai.com/auth` claim；只有 claim 缺失时才回退账号对象和凭据字段。
+- SUB2API 远端直建降级 payload 同步使用同一取值顺序，避免勾选远端上传且导入接口不可用时仍写错账号 ID。
+- K12 session 转 SUB2API JSON 也同步优先取 accessToken claim，避免 session 里的 `account.id` 或顶层字段误覆盖真实 ChatGPT account UUID。
+- K12 文档补充远端上传和本地 JSON 的 `chatgpt_account_id` 取值规则。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_local_sub2api_json_allows_registered_account_without_refresh_token tests\test_platform_action_task.py::test_local_sub2api_json_prefers_access_token_chatgpt_account_id tests\test_sub2api_upload.py::test_direct_payload_prefers_access_token_chatgpt_account_id tests\test_k12_join.py::test_convert_session_prefers_access_token_chatgpt_account_id tests\test_k12_join.py::test_upload_session_to_sub2api_k12_payload_does_not_set_rate_multiplier -q -> 5 passed, 1 warning。
+- .venv\Scripts\python.exe -m py_compile application\tasks.py platforms\chatgpt\sub2api_upload.py platforms\chatgpt\k12_join.py -> 无输出，编译通过。
+- .venv\Scripts\python.exe -m pytest tests\test_sub2api_upload.py tests\test_k12_join.py tests\test_platform_action_task.py::test_local_sub2api_json_allows_registered_account_without_refresh_token tests\test_platform_action_task.py::test_local_sub2api_json_prefers_access_token_chatgpt_account_id -q -> 28 passed, 1 warning。
+- git diff --check -- application/tasks.py platforms/chatgpt/sub2api_upload.py platforms/chatgpt/k12_join.py tests/test_platform_action_task.py tests/test_sub2api_upload.py tests/test_k12_join.py docs/k12-space-join.md progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 本地 SUB2API JSON 的 ChatGPT account/user ID 优先从 accessToken OpenAI auth claim 读取。
+  - platforms/chatgpt/sub2api_upload.py: 远端直建降级 payload 的 ChatGPT account/user ID 优先从 accessToken OpenAI auth claim 读取。
+  - platforms/chatgpt/k12_join.py: K12 session 转 SUB2API JSON 时优先使用 accessToken OpenAI auth claim。
+  - tests/test_platform_action_task.py: 增加本地 JSON 避免写入 `auth0|...` 的回归测试。
+  - tests/test_sub2api_upload.py: 增加远端直建 payload 避免写入 `auth0|...` 的回归测试。
+  - tests/test_k12_join.py: 增加 K12 session 转换避免写入 `auth0|...` 的回归测试。
+  - docs/k12-space-join.md: 补充 K12 SUB2API payload 的 account ID 取值规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/tasks.py、platforms/chatgpt/sub2api_upload.py、platforms/chatgpt/k12_join.py 中 ChatGPT account/user ID 取值顺序调整；撤销三处测试、docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: K12 空间不可用响应跳过当前 Workspace
+
+### What was done
+- K12 workspace join 与 exchange 遇到 `500 {"detail":"Internal Server Error"}` 时，视为当前空间 ID 不可用，不再重试当前 workspace。
+- K12 workspace join 与 exchange 遇到 `404 {"detail":"Not Found"}` 时，同样视为当前空间 ID 不可用，直接交给上层继续尝试下一个 workspace。
+- 保留其它网络错误和可重试失败的原有重试逻辑，不扩大跳过范围。
+- K12 文档补充 404/500 空间不可用响应的跳过规则。
+
+### Testing
+- .venv\Scripts\python.exe -m pytest tests\test_k12_join.py::test_join_unusable_workspace_response_does_not_retry tests\test_k12_join.py::test_exchange_unusable_workspace_response_does_not_retry tests\test_k12_join.py::test_k12_flow_continues_next_workspace_after_exchange_mismatch -q -> 5 passed, 1 warning。
+- .venv\Scripts\python.exe -m py_compile platforms\chatgpt\k12_join.py -> 无输出，编译通过。
+- .venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q -> 24 passed, 1 warning。
+- git diff --check -- platforms/chatgpt/k12_join.py tests/test_k12_join.py docs/k12-space-join.md progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/k12_join.py: 增加 workspace 不可用响应判定，并让 join/exchange 对 404 Not Found 与 500 Internal Server Error 跳过当前 workspace。
+  - tests/test_k12_join.py: 增加 join/exchange 遇到 404/500 不重试当前 workspace 的回归测试。
+  - docs/k12-space-join.md: 补充 K12 空间不可用响应跳过规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/k12_join.py 中 `_is_unusable_workspace_response` 与 join/exchange 接线；撤销 tests/test_k12_join.py、docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: ChatGPT 账号批量测活按钮
+
+### What was done
+- 在 ChatGPT 账号列表“刷新额度”左侧增加“批量测活”按钮；有选中账号时只测选中账号，未选中时测活当前平台全部账号。
+- 新增后台批量测活任务，直接请求 OpenAI/ChatGPT 上游 `wham/usage` 接口判定账号是否存活。
+- `400/401/403/404` 等无法获取账号数据的响应会把账号标记为失效；`429/5xx/超时` 等临时错误只记录检测错误，不改成失效。
+- 补充批量测活使用说明文档。
+
+### Testing
+- python -m py_compile application/tasks.py application/account_checks.py api/account_checks.py -> 无输出，编译通过。
+- npm run build -> 前端 TypeScript 与 Vite 构建通过；保留 Vite 大 chunk 提示。
+
+### Notes
+- 修改文件清单
+  - api/account_checks.py: 新增 `/accounts/health-check` 路由，接收选中账号 ID。
+  - application/account_checks.py: 接入批量测活任务创建与唤醒。
+  - application/tasks.py: 新增批量测活任务类型、wham/usage 单账号探测、状态写回和并发批处理执行器。
+  - frontend/src/pages/Accounts.tsx: 在 ChatGPT 账号列表工具栏新增“批量测活”按钮，并复用现有任务浮层。
+  - frontend/src/lib/i18n.ts: 新增批量测活按钮和任务标题文案。
+  - docs/account-health-check.md: 记录批量测活行为、上游接口、状态判定和验证命令。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 api/account_checks.py、application/account_checks.py、application/tasks.py 中 health-check 任务与路由；撤销 frontend/src/pages/Accounts.tsx、frontend/src/lib/i18n.ts 的按钮与文案；删除 docs/account-health-check.md，并移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: 邮箱服务新增 Gmail OAuth 别名裂变
+
+### What was done
+- 在邮箱服务第三方服务中新增 `Gmail OAuth（别名裂变）` provider，可用一个 Gmail 主号生成 plus 后缀或点号变体邮箱。
+- 新增 Gmail OAuth 授权链接生成与授权码换 Token 接口，设置弹窗可直接完成授权并回填 Token。
+- 新增 Gmail OAuth 邮箱驱动，通过 Gmail API 匹配目标别名收件人并提取验证码或验证链接。
+- 补充 Gmail OAuth 别名裂变使用文档和运行依赖。
+
+### Testing
+- python -m py_compile core\gmail_oauth_mailbox.py core\base_mailbox.py api\provider_settings.py infrastructure\provider_definitions_repository.py -> 无输出，编译通过。
+- npm run build -> 前端 TypeScript 与 Vite 构建通过；保留 Vite 大 chunk 提示。
+- python -c "import googleapiclient.discovery, google_auth_oauthlib.flow, google_auth_httplib2, socks; print('gmail deps ok')" -> 输出 `gmail deps ok`。
+- git diff --check -- core\gmail_oauth_mailbox.py core\base_mailbox.py api\provider_settings.py infrastructure\provider_definitions_repository.py requirements.txt frontend\src\components\settings\ProviderCards.tsx docs\gmail-oauth-fission.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/gmail_oauth_mailbox.py: 新增 Gmail OAuth 授权、别名生成、Gmail API 收码和验证链接读取逻辑。
+  - core/base_mailbox.py: 将 `gmail_oauth_fission` 注册到邮箱 provider 工厂。
+  - api/provider_settings.py: 新增 Gmail OAuth 授权链接生成和授权码换 Token 接口。
+  - infrastructure/provider_definitions_repository.py: 新增第三方邮箱服务 `Gmail OAuth（别名裂变）` 的内置定义和配置字段。
+  - frontend/src/components/settings/ProviderCards.tsx: 在 Gmail OAuth provider 编辑弹窗中新增授权辅助区。
+  - requirements.txt: 补充 Gmail API/OAuth 运行依赖。
+  - docs/gmail-oauth-fission.md: 新增配置步骤、原理和注意事项。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/gmail_oauth_mailbox.py；撤销 core/base_mailbox.py 中 `gmail_oauth_fission` 工厂注册；撤销 api/provider_settings.py 中 Gmail OAuth 两个接口；撤销 infrastructure/provider_definitions_repository.py 中 Gmail OAuth provider 定义；撤销 frontend/src/components/settings/ProviderCards.tsx 中 Gmail 授权辅助区；撤销 requirements.txt、docs/gmail-oauth-fission.md 与 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-03 - Task: Gmail OAuth 支持多母号池
+
+### What was done
+- Gmail OAuth 邮箱服务新增母号池 JSON 配置，一个母号可独立配置 `master_email`、`credentials_json`、`token_json` 和手动子号列表。
+- 注册分配邮箱时随机选择母号本身加子号成功使用总数小于 5 的母号，达到 5 的母号自动跳过。
+- 每个母号手动子号最多 5 个；手动子号可用时优先随机抽取，手动子号为空或用完时继续随机生成 Gmail 别名。
+- 保留单母号配置兼容路径；填写母号池 JSON 时优先使用母号池。
+- Gmail OAuth 文档补充多母号池配置示例和使用规则。
+
+### Testing
+- python -m py_compile core\gmail_oauth_mailbox.py core\base_mailbox.py infrastructure\provider_definitions_repository.py -> 无输出，编译通过。
+- npm run build -> 前端 TypeScript 与 Vite 构建通过；保留 Vite 大 chunk 提示。
+- .venv\Scripts\python.exe 运行母号池解析脚本 -> 输出 `a+001@gmail.com a@gmail.com`，确认优先分配手动子号。
+- .venv\Scripts\python.exe 运行超过 5 个 aliases 的母号池配置 -> 捕获 `RuntimeError`，确认手动子号上限校验生效。
+- git diff --check -- core\gmail_oauth_mailbox.py core\base_mailbox.py infrastructure\provider_definitions_repository.py docs\gmail-oauth-fission.md progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/gmail_oauth_mailbox.py: 新增母号池解析、母号使用量统计、随机母号选择、手动子号优先分配和 5 个总使用上限。
+  - core/base_mailbox.py: 将 `gmail_oauth_pool_json` 传入 Gmail OAuth 邮箱驱动。
+  - infrastructure/provider_definitions_repository.py: Gmail OAuth 第三方服务新增 `Gmail 母号池 JSON` 配置字段。
+  - docs/gmail-oauth-fission.md: 补充多母号池 JSON 示例、抽号规则和限制说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/gmail_oauth_mailbox.py 中母号池相关解析、选择和计数逻辑；撤销 core/base_mailbox.py 中 `gmail_oauth_pool_json` 参数传递；撤销 infrastructure/provider_definitions_repository.py 中 `Gmail 母号池 JSON` 字段；撤销 docs/gmail-oauth-fission.md 与 progress.md 本轮追加内容即可恢复单母号行为。
+
+## 2026-07-03 - Task: Gmail 母号池改成交互式配置界面
+
+### What was done
+- Gmail OAuth 配置弹窗隐藏原始母号池 JSON、单母号 credentials 和 token 文本框，改为可视化 `Gmail 母号池` 列表。
+- 每个母号卡片支持填写 Gmail 地址、上传 `credentials.json` 文件、生成该母号授权链接、显示 credentials/token 状态。
+- 授权码换 Token 改为写回当前选中的母号卡片，不再要求用户手动复制 Token JSON。
+- 每个母号卡片支持添加/删除最多 5 个手动子号；未添加子号时仍会走后端随机生成别名。
+- 保留旧单母号配置的迁移兼容：已保存的单母号 credentials/token 会在打开弹窗时自动转为一个母号卡片。
+
+### Testing
+- npm run build -> 前端 TypeScript 与 Vite 构建通过；保留 Vite 大 chunk 提示。
+- git diff --check -- frontend\src\components\settings\ProviderCards.tsx docs\gmail-oauth-fission.md progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: 新增 Gmail 母号池可视化编辑器、credentials 文件上传、逐母号授权和子号管理。
+  - docs/gmail-oauth-fission.md: 将多母号池配置说明改为交互式 UI 操作说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/components/settings/ProviderCards.tsx 中 Gmail 母号池编辑器、逐母号授权和 raw 字段隐藏逻辑；撤销 docs/gmail-oauth-fission.md 与 progress.md 本轮追加内容即可恢复 JSON 文本框配置方式。
+
+## 2026-07-03 - Task: 放大 Gmail OAuth 配置弹窗宽度
+
+### What was done
+- 将 `Gmail OAuth（别名裂变）` provider 的配置弹窗宽度单独调整为 `50vw`，避免母号池操作区挤压。
+- 保持其它邮箱 provider 的配置弹窗宽度不变。
+
+### Testing
+- npm run build -> 前端 TypeScript 与 Vite 构建通过；保留 Vite 大 chunk 提示。
+- git diff --check -- frontend\src\components\settings\ProviderCards.tsx progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: Gmail OAuth 配置弹窗额外应用 `w-[50vw] max-w-[50vw]`。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/components/settings/ProviderCards.tsx 中 Gmail OAuth 弹窗宽度类即可恢复原宽度；移除 progress.md 本轮追加内容。
+
+## 2026-07-03 - Task: Gmail OAuth 授权自动监听 localhost 回调
+
+### What was done
+- Gmail OAuth 生成授权链接时支持自动回调模式，后端会临时监听 `127.0.0.1:80` 接收 Google 返回的 `code`。
+- 回调收到 `code` 后自动换取 Gmail Token，并把结果放入授权会话状态。
+- 前端母号授权改为自动轮询授权会话；授权成功后自动写回对应母号的 Token。
+- 保留授权码输入框作为监听 80 端口失败时的手动兜底。
+
+### Testing
+- python -m py_compile api\provider_settings.py -> 无输出，编译通过。
+- npm run build -> 前端 TypeScript 与 Vite 构建通过；保留 Vite 大 chunk 提示。
+- git diff --check -- api\provider_settings.py frontend\src\components\settings\ProviderCards.tsx progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - api/provider_settings.py: 新增 Gmail OAuth 自动回调会话、临时 localhost 监听、状态查询接口和自动换 Token 逻辑。
+  - frontend/src/components/settings/ProviderCards.tsx: 母号授权改为自动回调轮询并写回 Token，手动 code 输入改为兜底。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 api/provider_settings.py 中 Gmail OAuth 自动回调监听和状态接口；撤销 frontend/src/components/settings/ProviderCards.tsx 中 auto_callback、轮询和自动写回逻辑；移除 progress.md 本轮追加内容即可恢复手动复制 code 行为。
+
+## 2026-07-03 - Task: Gmail OAuth 自动回调改用非 80 端口
+
+### What was done
+- Gmail OAuth 自动回调监听端口从 `127.0.0.1:80` 改为 `127.0.0.1:53682`，避免 80 端口常见占用和权限问题。
+- OAuth redirect URI 同步改为 `http://127.0.0.1:53682/`，确保授权链接和换 Token 使用同一个回调地址。
+- 前端提示文案同步显示新的回调监听地址。
+
+### Testing
+- python -m py_compile core\gmail_oauth_mailbox.py api\provider_settings.py -> 无输出，编译通过。
+- npm run build -> 前端 TypeScript 与 Vite 构建通过；保留 Vite 大 chunk 提示。
+- git diff --check -- core\gmail_oauth_mailbox.py api\provider_settings.py frontend\src\components\settings\ProviderCards.tsx progress.md -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/gmail_oauth_mailbox.py: Gmail OAuth redirect URI 改为 `http://127.0.0.1:53682/`。
+  - api/provider_settings.py: Gmail OAuth 自动回调 HTTPServer 改为监听 `127.0.0.1:53682`。
+  - frontend/src/components/settings/ProviderCards.tsx: 自动回调提示文案改为新端口。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销上述三个文件中的 `53682` 端口调整即可恢复 80 端口行为；移除 progress.md 本轮追加内容。
+
+## 2026-07-03 - Task: Platform 注册 invalid_auth_step 切换邮箱验证码
+
+### What was done
+- Platform reference 注册流程在提交注册密码返回 `invalid_auth_step` 时，不再直接中断任务。
+- 将该状态判定为当前邮箱已进入已注册账号登录流程，跳过密码步骤并继续发送邮箱验证码。
+- 已注册账号验证码通过后跳过创建账号资料，继续使用验证码流程返回的 OAuth callback 完成后续换 token。
+
+### Testing
+- py -3 -m py_compile platforms\chatgpt\register.py -> 无输出，编译通过。
+- .\.venv\Scripts\python.exe -c "<invalid_auth_step helper check>" -> 输出 `invalid_auth_step helper ok`。
+- git diff --check -- platforms\chatgpt\register.py -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 对密码提交接口的 `invalid_auth_step` 增加已存在账号 OTP 分支，并在验证码通过后跳过创建账号资料。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 `_is_invalid_auth_step_response`、`_platform_reference_register_user` 返回值处理、已存在账号发送验证码 referer 和跳过创建资料逻辑；移除 progress.md 本轮追加内容即可恢复原先 400 直接失败行为。
+
+## 2026-07-03 - Task: 按已注册账号 HAR 修正 Platform 登录分流
+
+### What was done
+- 分析 `chatgpt-google.com.har`：文件只包含已注册账号输入邮箱验证码后的 `email-otp/validate` 和 ChatGPT 登录完成请求，没有包含 `email-otp/send`，因此只能证明已注册账号后半段是登录 OTP 校验流。
+- Platform reference 注册流程改为在 authorize 后识别 `log-in/password`，提前判定为已注册账号登录流，不再先撞注册密码接口。
+- 已注册账号登录流新增 `authorize/continue -> passwordless/send-otp -> email-otp/send/等待验证码` 分支，验证码通过后跳过创建账号资料。
+- `email-otp/send` 遇到 HTTP 200 但最终跳转 `auth.openai.com/error` 且错误码为 `invalid_auth_step` 时，改为发送失败，不再误写“发送验证码完成”。
+- 补充 ChatGPT Platform 注册分流说明文档。
+
+### Testing
+- py -3 -m py_compile platforms\chatgpt\register.py -> 无输出，编译通过。
+- .\.venv\Scripts\python.exe -c "<auth error url helper check>" -> 输出 `auth error url helper ok`。
+- git diff --check -- platforms\chatgpt\register.py -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 增加 authorize 最终页保存、已注册账号登录 OTP 准备流程、passwordless 发码流程和 auth error URL 判断。
+  - docs/chatgpt-register-flow.md: 新增 Platform 注册/登录分流与 OTP 发送判定说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 `_platform_authorize_final_url`、`_is_auth_error_url`、`_platform_reference_prepare_existing_login_otp`、`_platform_reference_send_passwordless_otp`、主流程 authorize 后分流和 send_otp 错误页判断；删除 docs/chatgpt-register-flow.md，并移除 progress.md 本轮追加内容即可恢复上一版行为。
+
+## 2026-07-03 - Task: 按更新 HAR 改为 signin/openai 首发和 resend 重发
+
+### What was done
+- 重新分析更新后的 `chatgpt-google.com.har`：已注册账号填写邮箱后先请求 `chatgpt.com/api/auth/signin/openai`，该请求后没有 `email-otp/send`，说明首封验证码由 signin/openai 触发。
+- 手动点击重新发码对应 `auth.openai.com/api/accounts/email-otp/resend`，响应 `{"success": true}`，不是 `email-otp/send`。
+- 已注册账号登录流改为：NextAuth providers/csrf -> signin/openai 自动首发 -> 首轮只等待邮箱 -> 后续超时再调用 resend。
+- 登录验证码通过后重新进入原 Platform OAuth 授权链接换 token，避免拿 ChatGPT callback 去换 Platform token。
+- 更新 ChatGPT Platform 注册分流文档。
+
+### Testing
+- py -3 -m py_compile platforms\chatgpt\register.py -> 无输出，编译通过。
+- rg -n "passwordless_send|_platform_reference_send_passwordless|email-otp/resend|signin/openai|_platform_reference_resend_otp|已注册账号登录完成" platforms\chatgpt\register.py -> 确认旧 passwordless 分支已移除，signin/openai 与 resend 分支存在。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 已注册账号登录 OTP 改为 NextAuth signin/openai 触发首封验证码，重发改用 email-otp/resend，并在登录完成后回到 Platform OAuth 换 token。
+  - docs/chatgpt-register-flow.md: 将已注册账号登录 OTP 说明改为 signin/openai 首发、resend 重发。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 signin/openai 首发、_platform_reference_resend_otp、等待验证码重发分支和已注册账号回到 Platform OAuth 的改动；撤销 docs/chatgpt-register-flow.md 与 progress.md 本轮追加内容即可回到上一版 passwordless 分流。
+
+## 2026-07-03 - Task: signin/openai 后继续打开授权 URL
+
+### What was done
+- 根据 13:09 日志确认上一版只拿到了 `signin/openai` 返回的授权 URL，没有继续打开该 URL，因此首封验证码没有真正触发。
+- 已注册账号登录 OTP 流程补上 `GET signin/openai 返回的 url`，并记录授权跳转最终 URL。
+- 只有授权跳转完成后才设置 OTP 发送时间并开始等待邮箱；如果跳到 auth 错误页则直接报错。
+- 文档补充 `signin/openai` 后必须继续打开返回授权 URL。
+
+### Testing
+- py -3 -m py_compile platforms\chatgpt\register.py -> 无输出，编译通过。
+- git diff --check -- platforms\chatgpt\register.py docs\chatgpt-register-flow.md progress.md -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: `signin/openai` 成功后解析返回 JSON 的 `url` 并继续 GET 该授权 URL，再进入邮箱验证码等待。
+  - docs/chatgpt-register-flow.md: 补充已注册账号登录流必须打开 `signin/openai` 返回的授权 URL。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中解析并 GET `signin/openai` 返回授权 URL 的逻辑；撤销 docs/chatgpt-register-flow.md 与 progress.md 本轮追加内容即可回到上一版只 POST signin/openai 的行为。
+
+## 2026-07-03 - Task: 对齐浏览器成功 HAR 的 signin/openai 授权跳转
+
+### What was done
+- 读取浏览器成功注册 HAR：真实链路为 `signin/openai` 返回授权 URL，随后浏览器导航 GET `auth.openai.com/api/accounts/authorize`，302 到 `auth.openai.com/email-verification` 并触发首封验证码。
+- 协议侧 `signin/openai` 请求头改为更接近浏览器成功 HAR：`accept=application/json`、`sec-fetch-site=same-origin`。
+- 打开返回授权 URL 时改为文档导航头：`accept=text/html,...`、`sec-fetch-dest=document`、`sec-fetch-mode=navigate`、`sec-fetch-site=none`。
+- 文档补充授权 URL 是浏览器导航跳转，302 到 email-verification 后才触发首封验证码。
+
+### Testing
+- py -3 -m py_compile platforms\chatgpt\register.py -> 无输出，编译通过。
+- git diff --check -- platforms\chatgpt\register.py docs\chatgpt-register-flow.md progress.md -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 已注册账号登录流的 signin/openai 和后续 authorize GET 请求头对齐浏览器成功 HAR。
+  - docs/chatgpt-register-flow.md: 补充授权跳转 302 到邮箱验证页才触发首封验证码。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 signin/openai 与 authorize GET 的请求头调整；撤销 docs/chatgpt-register-flow.md 与 progress.md 本轮追加内容即可回到上一版逻辑。
+
+## 2026-07-03 - Task: Gmail OAuth HTML 邮件验证码提取防误抓颜色值
+
+### What was done
+- 定位错误验证码来源：OpenAI 邮件 HTML 中存在 `color:#202123`，上层传入的 ChatGPT OTP 正则 `(?<!\d)(\d{6})(?!\d)` 没有排除 `#`，导致 Gmail OAuth 在原始 HTML 里误抓 `202123`。
+- Gmail OAuth 邮件正文解析改为优先取 `text/plain`，没有纯文本时再取 `text/html`。
+- 提取验证码前先清理 HTML：移除 `style/script`、标签、链接、邮箱地址和 CSS 颜色值，再从可见文本里按通用 6 位数字提取。
+- 保留常见 OpenAI 文案附近提取作为优先规则，但兜底不依赖固定英文文案。
+- Gmail OAuth 文档补充 HTML 清理取码规则。
+
+### Testing
+- py -3 -m py_compile core\gmail_oauth_mailbox.py -> 无输出，编译通过。
+- .\.venv\Scripts\python.exe -c "<OpenAI pasted HTML OTP check>" -> 输出 `openai html otp ok`，确认从用户提供 HTML 中提取 `756543` 而不是 `202123`。
+- .\.venv\Scripts\python.exe - "<generic html otp check>" -> 输出 `generic html otp ok`，确认无固定英文文案时也能避开 CSS 颜色值提取验证码。
+
+### Notes
+- 修改文件清单
+  - core/gmail_oauth_mailbox.py: Gmail OAuth 邮件体优先纯文本、HTML 兜底，并在取码前清理 HTML/CSS/链接/邮箱地址。
+  - docs/gmail-oauth-fission.md: 补充 Gmail OAuth HTML 邮件取码防误抓样式值规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/gmail_oauth_mailbox.py 中 `html` 导入、`_body_from_payload` MIME 优先级调整、`_clean_message_text` 和 `_extract_code_from_text`；撤销 docs/gmail-oauth-fission.md 与 progress.md 本轮追加内容即可恢复原始 HTML 直接正则提取行为。
+
+## 2026-07-03 - Task: 修复单账号 K12 exchange HTTP 431
+
+### What was done
+- 根据单账号强入 K12 日志确认 join 已返回 `{"success":true}`，失败集中在 exchange 的 HTTP 431。
+- K12 exchange 请求改为使用压缩后的 Cookie header，只保留 NextAuth session token 与 `oai-did`，避免账号历史 Cookie 过大导致 `/api/auth/session` 返回 431。
+- join 请求保持原逻辑不变；仅影响 exchange 切换 workspace 并获取 K12 session 的请求头。
+- K12 文档补充 exchange Cookie 压缩与 431 处理规则。
+
+### Testing
+- py -3 -m py_compile platforms\chatgpt\k12_join.py -> 无输出，编译通过。
+- .\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q -> 26 passed, 1 warning（仅 fastapi/starlette testclient 依赖弃用提示）。
+- git diff --check -- platforms\chatgpt\k12_join.py tests\test_k12_join.py docs\k12-space-join.md -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/k12_join.py: 新增 exchange 专用 Cookie 压缩，并在 exchange 请求前替换过大的 Cookie header。
+  - tests/test_k12_join.py: 增加 Cookie 压缩 helper 和 exchange 实际发送压缩 Cookie 的回归测试。
+  - docs/k12-space-join.md: 补充 exchange 请求会压缩 Cookie header，避免 HTTP 431。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/k12_join.py 中 `compact_chatgpt_session_cookies` 及 exchange 调用接线；撤销 tests/test_k12_join.py、docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复 exchange 原样携带完整 Cookie 的行为。
+
+## 2026-07-03 - Task: Gmail OAuth 子号注册成功打标并跳过复用
+
+### What was done
+- 确认 Gmail OAuth 子号原先主要依赖账号表和 provider resource 记录避免复用，但没有 Gmail 专用的注册成功标记。
+- Gmail OAuth provider 增加注册成功打标：注册完成后会把对应子号的 `provider_resources.metadata` 更新为 `registration_status=registered`、`gmail_oauth_registered=true`。
+- Gmail OAuth 分配手动子号和随机子号时，会同时检查账号表与本地注册成功标记，已注册完成的子号不会再次被取出。
+- 注册任务的邮箱打标日志从 `outlookEmail` 泛化为 `邮箱`，避免 Gmail 打标时显示错误 provider 名称。
+- Gmail OAuth 文档补充子号注册成功标记和跳过规则。
+
+### Testing
+- py -3 -m py_compile core\gmail_oauth_mailbox.py application\tasks.py -> 无输出，编译通过。
+- .\.venv\Scripts\python.exe -m pytest tests\test_gmail_oauth_mailbox.py -q -> 2 passed, 1 warning（仅 fastapi/starlette testclient 依赖弃用提示）。
+- git diff --check -- core\gmail_oauth_mailbox.py application\tasks.py tests\test_gmail_oauth_mailbox.py docs\gmail-oauth-fission.md -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - core/gmail_oauth_mailbox.py: 增加 Gmail 子号注册成功 metadata 标记，并在取邮箱时跳过已标记子号。
+  - application/tasks.py: 邮箱自动打标日志文案从 outlookEmail 泛化为邮箱。
+  - tests/test_gmail_oauth_mailbox.py: 新增 Gmail 子号注册成功打标和跳过已打标子号的回归测试。
+  - docs/gmail-oauth-fission.md: 补充 Gmail 子号注册成功后本地打标与跳过复用规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/gmail_oauth_mailbox.py 中注册成功 metadata 判断、`mark_registration_success` 与取邮箱过滤；撤销 application/tasks.py 日志文案调整；删除 tests/test_gmail_oauth_mailbox.py；撤销 docs/gmail-oauth-fission.md 与 progress.md 本轮追加内容即可恢复原行为。
+
+## 2026-07-03 - Task: 已注册账号 K12 模式跳过 Platform OAuth
+
+### What was done
+- 根据 14:04 日志确认：已注册账号邮箱验证码校验成功后，auth 响应已经返回 `continue_url=https://auth.openai.com/workspace` 和 workspace 列表，说明流程已进入 ChatGPT Web workspace 选择阶段。
+- 修复 K12 模式下已注册账号仍回头执行 Platform OAuth token exchange 的问题；现在验证码通过后会直接执行 workspace/select -> ChatGPT callback -> `/api/auth/session`，构造 ChatGPT Web session 给后续 K12 join/exchange 流程。
+- K12 注册 worker 会把配置的 Workspace ID 传给注册引擎；如果 OTP validate 响应里包含该 workspace，则优先选择配置的 workspace，否则优先选择 organization workspace。
+- 普通已注册账号路径不变；只有 `k12_join` 开启时才跳过 Platform OAuth。
+- K12 文档补充已注册账号 workspace 响应后的短路规则。
+
+### Testing
+- py -3 -m py_compile platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py -> 无输出，编译通过。
+- .\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py::test_platform_reference_existing_k12_login_skips_platform_oauth -q -> 1 passed, 1 warning（仅 fastapi/starlette testclient 依赖弃用提示）。
+- .\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q -> 27 passed, 1 warning（仅 fastapi/starlette testclient 依赖弃用提示）。
+- git diff --check -- platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py tests\test_k12_join.py -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 已注册账号 K12 模式下 OTP validate 后直接建立 ChatGPT Web session，不再进入 Platform OAuth token exchange。
+  - platforms/chatgpt/protocol_mailbox.py: 将 K12 Workspace ID 传入注册引擎，供已注册账号 workspace 选择优先匹配。
+  - tests/test_k12_join.py: 新增已注册账号 K12 模式不会调用 Platform OAuth 的回归测试。
+  - docs/k12-space-join.md: 补充已注册账号验证码通过后直接 workspace/select 获取 ChatGPT Web session 的规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 `_preferred_k12_workspace_id_from_payload`、`_platform_reference_complete_existing_k12_session`、`_finish_existing_k12_platform_reference_result` 及 `_run_platform_reference_register` 的 K12 已注册账号短路；撤销 platforms/chatgpt/protocol_mailbox.py 的 `k12_workspace_ids` 传递；撤销 tests/test_k12_join.py、docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复原先已注册账号继续走 Platform OAuth 的行为。
+
+## 2026-07-03 - Task: Gmail OAuth 配置弹窗宽度 50vw 生效
+
+### What was done
+- 定位 Gmail OAuth 配置弹窗宽度未生效原因：全局 `.dialog-panel-sm { max-width: 520px; }` 在 Tailwind utilities 后加载，覆盖了之前的 `max-w-[50vw]`。
+- Gmail OAuth provider 的编辑弹窗改为 inline style 设置 `width: 50vw` 和 `maxWidth: 50vw`，直接压过全局小弹窗宽度限制。
+- 其它 provider 仍保持原来的 `dialog-panel-sm` 宽度，不受影响。
+
+### Testing
+- npm run build（frontend）-> tsc -b 与 vite build 通过；仅有 Vite chunk size warning。
+- git diff --check -- frontend\src\components\settings\ProviderCards.tsx -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: Gmail OAuth 编辑弹窗使用 inline width/maxWidth 50vw，避免被 `.dialog-panel-sm` 覆盖。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/components/settings/ProviderCards.tsx 中 Gmail OAuth 弹窗 inline style；移除 progress.md 本轮追加内容即可恢复原来的 520px 小弹窗。
+
+## 2026-07-03 - Task: Gmail OAuth 表单内置 Google Cloud 开通教程
+
+### What was done
+- Gmail OAuth 配置弹窗顶部新增“开通母邮箱 Gmail API”教程卡片，按步骤说明创建/选择项目、启用 Gmail API、配置 OAuth consent screen、目标对象正式发布、创建 Desktop OAuth Client 和下载 credentials.json。
+- 教程卡片提供 Google Cloud Console、Gmail API Library、OAuth consent screen / 目标对象、Credentials 创建 OAuth Client 的直达链接。
+- 文档同步拆分为 `Google Cloud 开通 Gmail API` 和 `系统内配置` 两段，确保表单说明与项目文档一致。
+
+### Testing
+- npm run build（frontend）-> tsc -b 与 vite build 通过；仅有 Vite chunk size warning。
+- git diff --check -- frontend\src\components\settings\ProviderCards.tsx docs\gmail-oauth-fission.md -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: Gmail OAuth 弹窗新增 Google Cloud 开通教程和关键入口链接。
+  - docs/gmail-oauth-fission.md: 更新 Gmail API 开通与系统内配置步骤。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/components/settings/ProviderCards.tsx 中“开通母邮箱 Gmail API”教程卡片；撤销 docs/gmail-oauth-fission.md 配置步骤调整；移除 progress.md 本轮追加内容即可恢复原说明。
+
+## 2026-07-03 - Task: 已注册账号 K12 模式判定修正
+
+### What was done
+- 对比 14:04 与 14:46 两份注册日志后修正判定：只有 OTP 校验响应是 `page.type=workspace`、`continue_url` 指向 `auth.openai.com/workspace` / `choose-an-account`，或响应 workspace 列表命中配置的 K12 workspace，才视为“已注册账号 K12 workspace 选择流程”。
+- OTP 校验返回 `page.type=external_url` 且 URL 为 `chatgpt.com/api/auth/callback/openai?...` 时，改为普通已注册登录 callback：直接跟随 callback 建立 ChatGPT Web session，再交给后续 K12 join/exchange 流程，不再错误调用 workspace/select，也不再回退 Platform OAuth token exchange。
+- K12 文档补充普通已注册 callback 与 workspace 选择页的区别。
+
+### Testing
+- `py -3 -m py_compile platforms\chatgpt\register.py tests\test_k12_join.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q` -> 29 passed, 1 warning。
+- `git diff --check -- platforms\chatgpt\register.py tests\test_k12_join.py` -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 新增 OTP payload 判定、ChatGPT callback URL 提取和已注册 callback session 建立逻辑。
+  - tests/test_k12_join.py: 新增 workspace payload 与 external_url callback 的判定/流程回归测试。
+  - docs/k12-space-join.md: 补充已注册普通 callback 不等于 K12 workspace 选择页的说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 `_is_existing_k12_workspace_payload`、`_chatgpt_callback_url_from_payload`、`_platform_reference_complete_existing_callback_session` 及 `_run_platform_reference_register` 的普通 callback 分支；撤销 tests/test_k12_join.py 和 docs/k12-space-join.md 本轮追加内容；移除 progress.md 本轮追加内容即可恢复原先“已注册 + K12 开启即走 workspace_select”的行为。
+
+## 2026-07-03 - Task: Outlook K12 补建 ChatGPT Web session 二次 OTP
+
+### What was done
+- 分析 15:10 Outlook alias 日志，确认 Outlook 注册和第一次邮箱验证码均成功；缺少 `ChatGPT Web session accessToken` 的原因是注册后补建 ChatGPT NextAuth Web session 时进入了 `auth.openai.com/email-verification`，旧代码没有等待第二封验证码就直接读取 `/api/auth/session`，因此只拿到 `WARNING_BANNER`。
+- `_establish_chatgpt_web_session_for_platform_reference` 增加 NextAuth email-verification 分支：标记 OTP 发送时间，等待同一邮箱的第二封验证码，调用 email-otp/validate，提取 `chatgpt.com/api/auth/callback/openai?...` 后再读取 ChatGPT Web session。
+- K12 文档补充新注册账号补建 Web session 时可能需要第二封邮箱验证码。
+
+### Testing
+- `py -3 -m py_compile platforms\chatgpt\register.py tests\test_k12_join.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q` -> 30 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: ChatGPT NextAuth 补 session 时处理 email-verification 二次 OTP。
+  - tests/test_k12_join.py: 新增 NextAuth 二次邮箱验证码后成功获得 Web session accessToken 的回归测试。
+  - docs/k12-space-join.md: 记录新注册账号补建 Web session 的二次 OTP 行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 `_establish_chatgpt_web_session_for_platform_reference` 中 email-verification 二次 OTP 分支；撤销 tests/test_k12_join.py 与 docs/k12-space-join.md 本轮追加内容；移除 progress.md 本轮追加内容即可恢复到直接读取 `/api/auth/session` 的旧行为。
+
+## 2026-07-03 - Task: Gmail OAuth 并发子号分配防重复
+
+### What was done
+- 分析 15:30 并发注册日志，确认两个线程同时拿到 `woaitt617+ambercocoaclover@gmail.com`，根因是 Gmail OAuth 子号分配只跳过已注册成功记录，没有在分配时标记“运行中占用”。
+- Gmail OAuth 邮箱驱动新增进程内 active claim 池和全局锁：`get_email()` 取出子号后立即 claim；其它并发线程会跳过已 claim 子号。
+- active claim 会计入母号 5 个总数上限，默认 1 小时自动过期；注册成功打标时释放 claim。
+- Gmail OAuth 文档补充并发 claim 规则。
+
+### Testing
+- `py -3 -m py_compile core\gmail_oauth_mailbox.py tests\test_gmail_oauth_mailbox.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_oauth_mailbox.py tests\test_k12_join.py -q` -> 33 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/gmail_oauth_mailbox.py: 新增 active claim 锁、TTL、母号 active 计数和分配时占用标记。
+  - tests/test_gmail_oauth_mailbox.py: 新增连续分配不会重复拿同一手动子号的回归测试。
+  - docs/gmail-oauth-fission.md: 记录并发注册时的临时占用行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/gmail_oauth_mailbox.py 中 `_CLAIM_LOCK` / `_ACTIVE_CLAIMS` / active claim 相关逻辑；撤销 tests/test_gmail_oauth_mailbox.py 和 docs/gmail-oauth-fission.md 本轮追加内容；移除 progress.md 本轮追加内容即可恢复原先只按已注册记录跳过子号的行为。

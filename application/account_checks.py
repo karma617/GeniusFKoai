@@ -9,6 +9,7 @@ from application.tasks import (
     _run_single_account_check,
     create_account_check_all_task,
     create_account_check_task,
+    create_account_health_check_task,
 )
 from core.db import AccountModel, engine
 from services.task_runtime import task_runtime
@@ -28,6 +29,11 @@ class AccountChecksService:
         if not self.repository.get(account_id):
             return None
         task = create_account_check_task(account_id)
+        task_runtime.wake_up()
+        return task
+
+    def health_check_async(self, platform: str = "", account_ids: list[int] | None = None) -> dict[str, Any]:
+        task = create_account_health_check_task(platform or "", account_ids or [])
         task_runtime.wake_up()
         return task
 

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import secrets
+import threading
+import time
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -56,6 +62,155 @@ class ProviderTestRequest(BaseModel):
     provider_key: str
     config: dict[str, str] = Field(default_factory=dict)
     auth: dict[str, str] = Field(default_factory=dict)
+
+
+class GmailOAuthAuthUrlRequest(BaseModel):
+    credentials_json: str = ""
+    auto_callback: bool = False
+
+
+class GmailOAuthExchangeRequest(BaseModel):
+    credentials_json: str = ""
+    code: str = ""
+    code_verifier: str = ""
+
+
+_GMAIL_OAUTH_SESSIONS: dict[str, dict] = {}
+_GMAIL_OAUTH_LOCK = threading.Lock()
+_GMAIL_OAUTH_CALLBACK_HOST = "127.0.0.1"
+_GMAIL_OAUTH_CALLBACK_PORT = 53682
+
+
+def _gmail_oauth_callback_html(message: str) -> bytes:
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>Gmail OAuth</title></head>"
+        "<body style='font-family:system-ui;margin:48px;line-height:1.6'>"
+        f"<h2>{message}</h2><p>可以关闭这个页面，回到项目配置弹窗继续。</p>"
+        "</body></html>"
+    ).encode("utf-8")
+
+
+def _start_gmail_oauth_callback_listener(session_id: str) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            state = (query.get("state") or [""])[0]
+            code = (query.get("code") or [""])[0]
+            error = (query.get("error") or [""])[0]
+            status = "error"
+            message = error or "授权回调缺少 code"
+            token_json = ""
+            with _GMAIL_OAUTH_LOCK:
+                session = _GMAIL_OAUTH_SESSIONS.get(state)
+            if session and code and not error:
+                try:
+                    from core.gmail_oauth_mailbox import gmail_oauth_exchange_code
+
+                    token_json = gmail_oauth_exchange_code(
+                        session.get("credentials_json", ""),
+                        code,
+                        session.get("code_verifier", ""),
+                    )
+                    status = "success"
+                    message = "Gmail 授权成功，Token 已生成"
+                except Exception as exc:
+                    message = str(exc)
+            with _GMAIL_OAUTH_LOCK:
+                if session:
+                    session.update({
+                        "status": status,
+                        "message": message,
+                        "token_json": token_json,
+                        "updated_at": time.time(),
+                    })
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(_gmail_oauth_callback_html(message))
+
+    def run_server():
+        try:
+            server = HTTPServer((_GMAIL_OAUTH_CALLBACK_HOST, _GMAIL_OAUTH_CALLBACK_PORT), Handler)
+        except Exception as exc:
+            with _GMAIL_OAUTH_LOCK:
+                session = _GMAIL_OAUTH_SESSIONS.get(session_id)
+                if session:
+                    session.update({"status": "error", "message": f"无法监听 http://{_GMAIL_OAUTH_CALLBACK_HOST}:{_GMAIL_OAUTH_CALLBACK_PORT}: {exc}", "updated_at": time.time()})
+            return
+        with _GMAIL_OAUTH_LOCK:
+            session = _GMAIL_OAUTH_SESSIONS.get(session_id)
+            if session:
+                session["listener_ready"] = True
+        server.timeout = 300
+        server.handle_request()
+        server.server_close()
+
+    threading.Thread(target=run_server, name=f"gmail-oauth-callback-{session_id}", daemon=True).start()
+
+
+@router.post("/gmail-oauth/auth-url")
+def create_gmail_oauth_auth_url(body: GmailOAuthAuthUrlRequest):
+    try:
+        from core.gmail_oauth_mailbox import gmail_oauth_authorization_url
+
+        url, verifier = gmail_oauth_authorization_url(body.credentials_json)
+        if not body.auto_callback:
+            return {"ok": True, "url": url, "code_verifier": verifier}
+
+        session_id = secrets.token_urlsafe(16)
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        query["state"] = [session_id]
+        url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query, doseq=True)))
+        with _GMAIL_OAUTH_LOCK:
+            _GMAIL_OAUTH_SESSIONS[session_id] = {
+                "status": "pending",
+                "message": "",
+                "credentials_json": body.credentials_json,
+                "code_verifier": verifier,
+                "token_json": "",
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "listener_ready": False,
+            }
+        _start_gmail_oauth_callback_listener(session_id)
+        return {"ok": True, "url": url, "code_verifier": verifier, "session_id": session_id}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/gmail-oauth/callback-status/{session_id}")
+def get_gmail_oauth_callback_status(session_id: str):
+    with _GMAIL_OAUTH_LOCK:
+        session = dict(_GMAIL_OAUTH_SESSIONS.get(session_id) or {})
+    if not session:
+        return {"ok": False, "error": "授权会话不存在或已过期"}
+    return {
+        "ok": True,
+        "status": session.get("status", "pending"),
+        "message": session.get("message", ""),
+        "token_json": session.get("token_json", ""),
+        "listener_ready": bool(session.get("listener_ready")),
+    }
+
+
+@router.post("/gmail-oauth/exchange-code")
+def exchange_gmail_oauth_code(body: GmailOAuthExchangeRequest):
+    try:
+        from core.gmail_oauth_mailbox import gmail_oauth_exchange_code
+
+        token_json = gmail_oauth_exchange_code(
+            body.credentials_json,
+            body.code,
+            body.code_verifier,
+        )
+        return {"ok": True, "token_json": token_json}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @router.post("/test")

@@ -546,15 +546,15 @@ def _build_direct_account_payload(
     auth_info = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
     expires_at, expires_epoch = _account_expires(account, access_token)
     account_id = (
-        _normalize_string(getattr(account, "account_id", ""))
-        or _extract_credential(account, "account_id")
+        _normalize_string(auth_info.get("chatgpt_account_id") if isinstance(auth_info, dict) else "")
         or _extract_credential(account, "chatgpt_account_id")
-        or _normalize_string(auth_info.get("chatgpt_account_id") if isinstance(auth_info, dict) else "")
+        or _extract_credential(account, "account_id")
+        or _normalize_string(getattr(account, "account_id", ""))
     )
     user_id = (
-        _normalize_string(getattr(account, "user_id", ""))
-        or _normalize_string(auth_info.get("chatgpt_user_id") if isinstance(auth_info, dict) else "")
+        _normalize_string(auth_info.get("chatgpt_user_id") if isinstance(auth_info, dict) else "")
         or _normalize_string(auth_info.get("user_id") if isinstance(auth_info, dict) else "")
+        or _normalize_string(getattr(account, "user_id", ""))
     )
     workspace_id = (
         _normalize_string(getattr(account, "workspace_id", ""))

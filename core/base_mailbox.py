@@ -296,6 +296,24 @@ def _create_local_ms_pool(extra: dict, proxy: str | None) -> 'BaseMailbox':
     )
 
 
+def _create_gmail_oauth_fission(extra: dict, proxy: str | None) -> 'BaseMailbox':
+    from core.gmail_oauth_mailbox import GmailOAuthMailbox
+
+    mailbox_proxy = str(extra.get("gmail_oauth_mailbox_proxy") or "").strip()
+    return GmailOAuthMailbox(
+        master_email=extra.get("gmail_oauth_master_email", ""),
+        fission_enable=extra.get("gmail_oauth_fission_enable", ""),
+        fission_mode=extra.get("gmail_oauth_fission_mode", ""),
+        suffix_mode=extra.get("gmail_oauth_suffix_mode", ""),
+        suffix_len_min=extra.get("gmail_oauth_suffix_len_min", ""),
+        suffix_len_max=extra.get("gmail_oauth_suffix_len_max", ""),
+        credentials_json=extra.get("gmail_oauth_credentials_json", ""),
+        token_json=extra.get("gmail_oauth_token_json", ""),
+        pool_json=extra.get("gmail_oauth_pool_json", ""),
+        proxy=mailbox_proxy or proxy,
+    )
+
+
 def _create_laoudo(extra: dict, proxy: str | None) -> 'BaseMailbox':
     return LaoudoMailbox(
         auth_token=extra.get("laoudo_auth", ""),
@@ -326,6 +344,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "testmail_api": _create_testmail,
     "outlook_email_api": _create_outlook_email,
     "local_ms_pool": _create_local_ms_pool,
+    "gmail_oauth_fission": _create_gmail_oauth_fission,
     "laoudo_api": _create_laoudo,
     # backward-compat fallback
     "generic_http": _create_generic_http,
@@ -338,6 +357,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "testmail": _create_testmail,
     "outlook_email": _create_outlook_email,
     "local_ms": _create_local_ms_pool,
+    "gmail_oauth": _create_gmail_oauth_fission,
     "laoudo": _create_laoudo,
 }
 

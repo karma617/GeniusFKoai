@@ -56,6 +56,25 @@ def test_k12_account_without_refresh_token_builds_direct_payload():
     assert "refresh_token" not in payload["credentials"]
 
 
+def test_direct_payload_prefers_access_token_chatgpt_account_id():
+    account = SimpleNamespace(
+        email="k12@example.com",
+        account_id="auth0|login-subject",
+        user_id="auth0|login-subject",
+        credentials={"access_token": _make_access_token(), "plan_type": "k12"},
+    )
+
+    payload = sub2api_upload._build_direct_account_payload(
+        account,
+        group_ids=[1],
+        proxy_id=None,
+        priority=1,
+    )
+
+    assert payload["credentials"]["chatgpt_account_id"] == "account-1"
+    assert payload["credentials"]["chatgpt_user_id"] == "user-1"
+
+
 def test_k12_account_without_refresh_token_builds_import_payload():
     account = SimpleNamespace(
         email="k12@example.com",

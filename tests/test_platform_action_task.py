@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import json
+import time
+
 from application import tasks as tasks_module
 from application.tasks import _mark_get_rt_upload_status
 from core.account_graph import load_account_graphs
@@ -44,6 +48,20 @@ class _FakeLogger:
 
     def finish(self, status, *, error=""):
         self.finished = (status, error)
+
+
+def _make_openai_access_token(*, account_id: str, user_id: str) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
+    payload = {
+        "exp": int(time.time()) + 3600,
+        "email": "local-json@test.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+            "chatgpt_user_id": user_id,
+        },
+    }
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    return f"{header}.{body}.sig"
 
 
 def test_task_logger_finish_waits_for_smspool_release_queue(monkeypatch):
@@ -256,6 +274,27 @@ def test_local_sub2api_json_allows_registered_account_without_refresh_token():
     assert payload["credentials"]["access_token"] == "access-token"
     assert "refresh_token" not in payload["credentials"]
     assert payload["credentials"]["chatgpt_account_id"] == "acct_123"
+
+
+def test_local_sub2api_json_prefers_access_token_chatgpt_account_id():
+    access_token = _make_openai_access_token(
+        account_id="chatgpt-account-uuid",
+        user_id="chatgpt-user-id",
+    )
+    account = Account(
+        platform="chatgpt",
+        email="local-json@test.com",
+        password="Secret123!",
+        token=access_token,
+        user_id="auth0|login-subject",
+        extra={"access_token": access_token},
+    )
+
+    target = tasks_module._build_chatgpt_upload_account(account)
+    payload = tasks_module._build_local_sub2api_payload(target)
+
+    assert payload["credentials"]["chatgpt_account_id"] == "chatgpt-account-uuid"
+    assert payload["credentials"]["chatgpt_user_id"] == "chatgpt-user-id"
 
 
 def test_chatgpt_register_retries_email_alias_parent_exhausted(monkeypatch):
@@ -2780,6 +2819,72 @@ def test_platform_runtime_marks_sub2api_manual_upload_success(monkeypatch):
     assert patched["lifecycle_status"] == "rt_uploaded"
     assert patched["summary_updates"]["display_status"] == "rt_uploaded"
     assert patched["summary_updates"]["rt_upload_status"] == "uploaded"
+
+
+def test_platform_runtime_persists_k12_join_upload_session(monkeypatch):
+    patched = {}
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.added = []
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model_cls, account_id):
+            return type("Model", (), {"id": account_id, "platform": "chatgpt", "updated_at": None})()
+
+        def add(self, model):
+            self.added.append(model)
+
+        def commit(self):
+            self.committed = True
+
+    class FakePlatform:
+        def __init__(self, config=None):
+            pass
+
+        def execute_action(self, action_id, account, params):
+            return {
+                "ok": True,
+                "data": {
+                    "message": "K12 强入成功，SUB2API 上传成功",
+                    "upload_target": "k12_sub2api",
+                    "upload_status": "uploaded",
+                    "k12_workspace_id": "workspace-1",
+                    "k12_session": {"accessToken": "k12-access-token"},
+                    "access_token": "k12-access-token",
+                    "plan_type": "k12",
+                },
+            }
+
+    def fake_patch_account_graph(session, model, **kwargs):
+        patched.update(kwargs)
+
+    monkeypatch.setattr(runtime_module, "Session", FakeSession)
+    monkeypatch.setattr(runtime_module, "load_all", lambda: None)
+    monkeypatch.setattr(runtime_module, "get", lambda platform: FakePlatform)
+    monkeypatch.setattr(runtime_module, "build_platform_account", lambda session, model: object())
+    monkeypatch.setattr(runtime_module, "patch_account_graph", fake_patch_account_graph)
+
+    result = runtime_module.PlatformRuntime().execute_action(
+        ActionExecutionCommand(
+            platform="chatgpt",
+            account_id=123,
+            action_id="k12_join_upload",
+            params={"workspace_ids": "workspace-1"},
+        )
+    )
+
+    assert result.ok is True
+    assert patched["lifecycle_status"] == "registered"
+    assert patched["summary_updates"]["k12_workspace_id"] == "workspace-1"
+    assert patched["summary_updates"]["k12_session"]["accessToken"] == "k12-access-token"
+    assert patched["credential_updates"]["access_token"] == "k12-access-token"
 
 
 def test_platform_runtime_persists_failed_get_rt_banned_status(monkeypatch):

@@ -16,6 +16,60 @@ const CATEGORY_GROUPS = [
   { key: 'custom', labelKey: 'providers.category.custom', descKey: 'providers.category.customDesc' },
 ] satisfies Array<{ key: string; labelKey: TranslationKey; descKey: TranslationKey }>
 
+type GmailMother = {
+  id: string
+  master_email: string
+  credentials_json: string
+  token_json: string
+  aliases: string[]
+}
+
+function newGmailMother(): GmailMother {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    master_email: '',
+    credentials_json: '',
+    token_json: '',
+    aliases: [],
+  }
+}
+
+function parseGmailPool(value: string): GmailMother[] {
+  const text = (value || '').trim()
+  if (!text) return []
+  try {
+    const payload = JSON.parse(text)
+    const items = Array.isArray(payload) ? payload : Array.isArray(payload?.accounts) ? payload.accounts : []
+    return items.map((item: any, index: number) => ({
+      id: `${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+      master_email: String(item?.master_email || item?.email || ''),
+      credentials_json: typeof item?.credentials_json === 'string'
+        ? item.credentials_json
+        : JSON.stringify(item?.credentials_json || item?.credentials || {}, null, 2),
+      token_json: typeof item?.token_json === 'string'
+        ? item.token_json
+        : JSON.stringify(item?.token_json || item?.token || {}, null, 2),
+      aliases: Array.isArray(item?.aliases)
+        ? item.aliases.map((alias: any) => String(alias || '').trim()).filter(Boolean).slice(0, 5)
+        : [],
+    }))
+  } catch {
+    return []
+  }
+}
+
+function serializeGmailPool(items: GmailMother[]): string {
+  const payload = items
+    .map(item => ({
+      master_email: item.master_email.trim(),
+      credentials_json: item.credentials_json.trim(),
+      token_json: item.token_json.trim(),
+      aliases: item.aliases.map(alias => alias.trim()).filter(Boolean).slice(0, 5),
+    }))
+    .filter(item => item.master_email || item.credentials_json || item.token_json || item.aliases.length)
+  return payload.length ? JSON.stringify(payload, null, 2) : ''
+}
+
 /* ------------------------------------------------------------------ */
 /*  Toggle                                                             */
 /* ------------------------------------------------------------------ */
@@ -145,6 +199,21 @@ function EditModal({
   const [testResult, setTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
   const [asyncOptions, setAsyncOptions] = useState<Record<string, Array<{ value: string; label: string }>>>({})
   const [asyncLoading, setAsyncLoading] = useState<Record<string, boolean>>({})
+  const [gmailAuthCode, setGmailAuthCode] = useState('')
+  const [gmailCodeVerifier, setGmailCodeVerifier] = useState('')
+  const [gmailAuthMotherId, setGmailAuthMotherId] = useState('')
+  const [gmailCallbackSessionId, setGmailCallbackSessionId] = useState('')
+  const [gmailOauthLoading, setGmailOauthLoading] = useState(false)
+  const [gmailOauthResult, setGmailOauthResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
+  const [gmailMothers, setGmailMothers] = useState<GmailMother[]>(() => {
+    const parsed = parseGmailPool((setting?.auth?.gmail_oauth_pool_json || '') || (setting?.config?.gmail_oauth_pool_json || ''))
+    if (parsed.length > 0) return parsed
+    const legacyMaster = setting?.config?.gmail_oauth_master_email || ''
+    const legacyCredentials = setting?.auth?.gmail_oauth_credentials_json || ''
+    const legacyToken = setting?.auth?.gmail_oauth_token_json || ''
+    if (!legacyMaster && !legacyCredentials && !legacyToken) return []
+    return [{ ...newGmailMother(), master_email: legacyMaster, credentials_json: legacyCredentials, token_json: legacyToken }]
+  })
 
   // 加载 async-select 字段的选项
   useEffect(() => {
@@ -182,7 +251,10 @@ function EditModal({
     const config: Record<string, string> = {}
     const auth: Record<string, string> = {}
     for (const field of fields) {
-      if (field.category === 'auth') auth[field.key] = form[field.key] || ''
+      const value = provider.value === 'gmail_oauth_fission' && field.key === 'gmail_oauth_pool_json'
+        ? serializeGmailPool(gmailMothers)
+        : form[field.key] || ''
+      if (field.category === 'auth') auth[field.key] = value
       else config[field.key] = form[field.key] || ''
     }
     setSaving(true)
@@ -217,7 +289,10 @@ function EditModal({
     const config: Record<string, string> = {}
     const auth: Record<string, string> = {}
     for (const field of fields) {
-      if (field.category === 'auth') auth[field.key] = form[field.key] || ''
+      const value = provider.value === 'gmail_oauth_fission' && field.key === 'gmail_oauth_pool_json'
+        ? serializeGmailPool(gmailMothers)
+        : form[field.key] || ''
+      if (field.category === 'auth') auth[field.key] = value
       else config[field.key] = form[field.key] || ''
     }
     setTesting(true)
@@ -239,9 +314,133 @@ function EditModal({
     }
   }
 
+  const handleGmailExchangeCode = async () => {
+    setGmailOauthLoading(true)
+    setGmailOauthResult(null)
+    try {
+      const result = await apiFetch('/provider-settings/gmail-oauth/exchange-code', {
+        method: 'POST',
+        body: JSON.stringify({
+          credentials_json: gmailAuthMotherId
+            ? gmailMothers.find(item => item.id === gmailAuthMotherId)?.credentials_json || ''
+            : '',
+          code: gmailAuthCode,
+          code_verifier: gmailCodeVerifier,
+        }),
+      })
+      if (!result.ok) {
+        setGmailOauthResult({ ok: false, error: result.error || 'Gmail 授权码换 Token 失败' })
+        return
+      }
+      setGmailMothers(items => items.map(item => item.id === gmailAuthMotherId ? { ...item, token_json: result.token_json || '' } : item))
+      setGmailOauthResult({ ok: true, message: '已换取 Token 并回填，请保存配置。' })
+    } catch (e: any) {
+      setGmailOauthResult({ ok: false, error: e.message || 'Gmail 授权码换 Token 失败' })
+    } finally {
+      setGmailOauthLoading(false)
+    }
+  }
+
+  const updateGmailMother = (id: string, patch: Partial<GmailMother>) => {
+    setGmailMothers(items => items.map(item => item.id === id ? { ...item, ...patch } : item))
+  }
+
+  const handleGmailMotherAuthUrl = async (mother: GmailMother) => {
+    setGmailOauthLoading(true)
+    setGmailOauthResult(null)
+    try {
+      const result = await apiFetch('/provider-settings/gmail-oauth/auth-url', {
+        method: 'POST',
+        body: JSON.stringify({ credentials_json: mother.credentials_json || '', auto_callback: true }),
+      })
+      if (!result.ok) {
+        setGmailOauthResult({ ok: false, error: result.error || '生成 Gmail 授权链接失败' })
+        return
+      }
+      setGmailAuthMotherId(mother.id)
+      setGmailCallbackSessionId(result.session_id || '')
+      setGmailCodeVerifier(result.code_verifier || '')
+      setGmailAuthCode('')
+      window.open(result.url, '_blank', 'noopener,noreferrer')
+      setGmailOauthResult({ ok: true, message: `已打开 ${mother.master_email || '该母号'} 的授权链接；授权成功后会自动回填 Token。` })
+    } catch (e: any) {
+      setGmailOauthResult({ ok: false, error: e.message || '生成 Gmail 授权链接失败' })
+    } finally {
+      setGmailOauthLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!gmailCallbackSessionId || !gmailAuthMotherId) return
+    let stopped = false
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await apiFetch(`/provider-settings/gmail-oauth/callback-status/${gmailCallbackSessionId}`)
+        if (!result.ok || stopped) return
+        if (result.status === 'success') {
+          setGmailMothers(items => items.map(item => item.id === gmailAuthMotherId ? { ...item, token_json: result.token_json || '' } : item))
+          setGmailOauthResult({ ok: true, message: 'Gmail 授权成功，Token 已自动回填，请保存配置。' })
+          setGmailCallbackSessionId('')
+          window.clearInterval(timer)
+        } else if (result.status === 'error') {
+          setGmailOauthResult({ ok: false, error: result.message || 'Gmail 授权失败' })
+          setGmailCallbackSessionId('')
+          window.clearInterval(timer)
+        } else if (!result.listener_ready) {
+          setGmailOauthResult({ ok: true, message: '正在启动 127.0.0.1:53682 回调监听；如果稍后失败，可复制 code 手动换 Token。' })
+        }
+      } catch (e: any) {
+        if (!stopped) setGmailOauthResult({ ok: false, error: e.message || '查询 Gmail 授权状态失败' })
+      }
+    }, 1500)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [gmailCallbackSessionId, gmailAuthMotherId])
+
+  const handleGmailCredentialsFile = async (motherId: string, file?: File) => {
+    if (!file) return
+    try {
+      const text = await file.text()
+      JSON.parse(text)
+      updateGmailMother(motherId, { credentials_json: text })
+      setGmailOauthResult({ ok: true, message: 'credentials.json 已导入该母号。' })
+    } catch (e: any) {
+      setGmailOauthResult({ ok: false, error: e.message || 'credentials.json 文件不是合法 JSON' })
+    }
+  }
+
+  const addGmailAlias = (motherId: string) => {
+    setGmailMothers(items => items.map(item => {
+      if (item.id !== motherId || item.aliases.length >= 5) return item
+      return { ...item, aliases: [...item.aliases, ''] }
+    }))
+  }
+
+  const updateGmailAlias = (motherId: string, index: number, value: string) => {
+    setGmailMothers(items => items.map(item => {
+      if (item.id !== motherId) return item
+      const aliases = [...item.aliases]
+      aliases[index] = value
+      return { ...item, aliases }
+    }))
+  }
+
+  const removeGmailAlias = (motherId: string, index: number) => {
+    setGmailMothers(items => items.map(item => item.id === motherId
+      ? { ...item, aliases: item.aliases.filter((_, i) => i !== index) }
+      : item
+    ))
+  }
+
   return (
     <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog-panel dialog-panel-sm flex flex-col" onClick={e => e.stopPropagation()}>
+      <div
+        className="dialog-panel dialog-panel-sm flex flex-col"
+        style={provider.value === 'gmail_oauth_fission' ? { width: '50vw', maxWidth: '50vw' } : undefined}
+        onClick={e => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
           <div>
             <h2 className="text-base font-semibold text-[var(--text-primary)]">{provider.label}</h2>
@@ -253,6 +452,10 @@ function EditModal({
           {fields.length === 0 ? (
             <p className="text-sm text-[var(--text-muted)]">{t('providers.noConfig')}</p>
           ) : fields.map(field => {
+            if (
+              provider.value === 'gmail_oauth_fission'
+              && ['gmail_oauth_master_email', 'gmail_oauth_pool_json', 'gmail_oauth_credentials_json', 'gmail_oauth_token_json'].includes(field.key)
+            ) return null
             const sk = `${provider.value}:${field.key}`
             return (
               <div key={field.key}>
@@ -312,6 +515,200 @@ function EditModal({
               </div>
             )
           })}
+          {provider.value === 'gmail_oauth_fission' && (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-4">
+              <div className="mb-5 rounded-lg border border-blue-500/20 bg-blue-500/10 p-3">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">开通母邮箱 Gmail API</h3>
+                    <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+                      先在 Google Cloud 给每个 Gmail 母号创建 OAuth Client，下载到的 JSON 文件就是下面要上传的 credentials.json。
+                    </p>
+                  </div>
+                  <a
+                    href="https://console.cloud.google.com/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] shadow-[var(--shadow-soft)] hover:text-[var(--text-primary)]"
+                  >
+                    打开控制台
+                  </a>
+                </div>
+                <div className="grid gap-2 text-xs text-[var(--text-secondary)] sm:grid-cols-2">
+                  {[
+                    '1. 进入 Google Cloud Console，创建或选择一个项目。',
+                    '2. APIs & Services -> Library，搜索并启用 Gmail API。',
+                    '3. APIs & Services -> OAuth consent screen，配置同意屏幕。',
+                    '4. 左侧点“目标对象”，直接正式发布项目。',
+                    '5. APIs & Services -> Credentials，Create Credentials -> OAuth client ID。',
+                    '6. 应用类型选择 Desktop app，创建后点击下载 JSON。',
+                  ].map(step => (
+                    <div key={step} className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 leading-5">
+                      {step}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <a
+                    href="https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-blue-500/20 bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-500/10 dark:text-blue-300"
+                  >
+                    启用 Gmail API
+                  </a>
+                  <a
+                    href="https://console.cloud.google.com/apis/credentials/consent"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-blue-500/20 bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-500/10 dark:text-blue-300"
+                  >
+                    同意屏幕 / 目标对象
+                  </a>
+                  <a
+                    href="https://console.cloud.google.com/apis/credentials"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-blue-500/20 bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-500/10 dark:text-blue-300"
+                  >
+                    创建 OAuth Client
+                  </a>
+                </div>
+              </div>
+              <div className="mb-5 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">Gmail 母号池</h3>
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">添加多个 Gmail 母号；每个母号最多 5 个手动子号，使用总数达到 5 后自动跳过。</p>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setGmailMothers(items => [...items, newGmailMother()])}>
+                    <Plus className="mr-1 h-3.5 w-3.5" /> 添加母号
+                  </Button>
+                </div>
+                {gmailMothers.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-4 text-center text-xs text-[var(--text-muted)]">
+                    暂无母号。点击“添加母号”后填写 Gmail 地址并上传 credentials.json。
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {gmailMothers.map((mother, index) => (
+                      <div key={mother.id} className="rounded-lg border border-[var(--border)] bg-[var(--bg-pane)] p-3">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div className="text-sm font-medium text-[var(--text-primary)]">母号 {index + 1}</div>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => setGmailMothers(items => items.filter(item => item.id !== mother.id))}>
+                            <Trash2 className="mr-1 h-3.5 w-3.5" /> 删除
+                          </Button>
+                        </div>
+                        <div className="space-y-3">
+                          <div>
+                            <label className="mb-1.5 block text-xs font-medium text-[var(--text-secondary)]">Gmail 母号</label>
+                            <input
+                              type="text"
+                              value={mother.master_email}
+                              onChange={e => updateGmailMother(mother.id, { master_email: e.target.value })}
+                              placeholder="your@gmail.com"
+                              className="control-surface"
+                              autoComplete="off"
+                            />
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <label className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                              上传 credentials.json
+                              <input
+                                type="file"
+                                accept="application/json,.json"
+                                className="hidden"
+                                onChange={e => {
+                                  handleGmailCredentialsFile(mother.id, e.target.files?.[0])
+                                  e.currentTarget.value = ''
+                                }}
+                              />
+                            </label>
+                            <Button type="button" variant="outline" size="sm" onClick={() => handleGmailMotherAuthUrl(mother)} disabled={gmailOauthLoading || !mother.credentials_json.trim()}>
+                              生成该母号授权链接
+                            </Button>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className={`rounded-lg px-3 py-2 text-xs ${mother.credentials_json.trim() ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-[var(--bg-hover)] text-[var(--text-muted)]'}`}>
+                              credentials: {mother.credentials_json.trim() ? '已导入' : '未导入'}
+                            </div>
+                            <div className={`rounded-lg px-3 py-2 text-xs ${mother.token_json.trim() ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-[var(--bg-hover)] text-[var(--text-muted)]'}`}>
+                              token: {mother.token_json.trim() ? '已授权' : '未授权'}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="mb-2 flex items-center justify-between gap-3">
+                              <label className="text-xs font-medium text-[var(--text-secondary)]">手动子号（最多 5 个）</label>
+                              <Button type="button" variant="outline" size="sm" onClick={() => addGmailAlias(mother.id)} disabled={mother.aliases.length >= 5}>
+                                <Plus className="mr-1 h-3.5 w-3.5" /> 添加子号
+                              </Button>
+                            </div>
+                            {mother.aliases.length === 0 ? (
+                              <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-2 text-xs text-[var(--text-muted)]">
+                                未添加手动子号；注册时会自动随机生成 Gmail 别名。
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                {mother.aliases.map((alias, aliasIndex) => (
+                                  <div key={`${mother.id}-${aliasIndex}`} className="flex gap-2">
+                                    <input
+                                      type="text"
+                                      value={alias}
+                                      onChange={e => updateGmailAlias(mother.id, aliasIndex, e.target.value)}
+                                      placeholder={`${mother.master_email.split('@')[0] || 'your'}+001@gmail.com`}
+                                      className="control-surface"
+                                      autoComplete="off"
+                                    />
+                                    <Button type="button" variant="ghost" size="icon" onClick={() => removeGmailAlias(mother.id, aliasIndex)}>
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Gmail OAuth 授权</h3>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  对母号列表中的某个母号点击授权链接后，系统会监听 127.0.0.1:53682 回调并自动回填 Token；下方 code 输入仅作为自动回调失败时的兜底。
+                </p>
+              </div>
+              <div className="space-y-3">
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-xs text-[var(--text-muted)]">
+                  当前授权母号：{gmailMothers.find(item => item.id === gmailAuthMotherId)?.master_email || '请先在上方某个母号点击“生成该母号授权链接”'}
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-[var(--text-secondary)]">授权码 code（兜底）</label>
+                  <input
+                    type="text"
+                    value={gmailAuthCode}
+                    onChange={e => setGmailAuthCode(e.target.value)}
+                    placeholder="粘贴 redirect URL 中的 code 参数"
+                    className="control-surface"
+                    autoComplete="off"
+                  />
+                </div>
+                <Button type="button" variant="outline" onClick={handleGmailExchangeCode} disabled={gmailOauthLoading || !gmailAuthMotherId || !gmailAuthCode.trim()} className="w-full">
+                  用授权码换取 Token
+                </Button>
+                {gmailOauthResult && (
+                  <div className={`rounded-lg px-3 py-2 text-xs ${
+                    gmailOauthResult.ok
+                      ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      : 'border border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-400'
+                  }`}>
+                    {gmailOauthResult.ok ? gmailOauthResult.message : gmailOauthResult.error}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
         {/* Test result */}
         {testResult && (

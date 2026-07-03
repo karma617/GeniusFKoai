@@ -285,3 +285,55 @@ def test_chatgpt_upload_actions_return_structured_data(monkeypatch):
     assert sub2api_result["data"]["upload_status"] == "uploaded"
     assert cpa_result["data"]["upload_target"] == "cpa"
     assert tm_result["data"]["upload_target"] == "team_manager"
+
+
+def test_chatgpt_k12_join_upload_action_uses_saved_web_session(monkeypatch):
+    from platforms.chatgpt import k12_join as k12_join_module
+
+    captured = {}
+
+    def fake_join(**kwargs):
+        captured["join"] = kwargs
+        return [{"ok": True, "workspace_id": "workspace-1"}]
+
+    def fake_exchange(**kwargs):
+        captured["exchange"] = kwargs
+        return {
+            "accessToken": "k12-access-token",
+            "sessionToken": "k12-session-token",
+            "user": {"email": "user@example.com"},
+        }
+
+    def fake_upload(session_json, **kwargs):
+        captured["upload"] = {"session": session_json, **kwargs}
+        return True, "SUB2API ok"
+
+    monkeypatch.setattr(k12_join_module, "send_workspace_join_requests", fake_join)
+    monkeypatch.setattr(k12_join_module, "exchange_workspace_session", fake_exchange)
+    monkeypatch.setattr(k12_join_module, "upload_session_to_sub2api", fake_upload)
+
+    platform = ChatGPTPlatform(RegisterConfig())
+    account = Account(
+        platform="chatgpt",
+        email="user@example.com",
+        password="Secret123!",
+        token="web-access-token",
+        extra={
+            "session_token": "web-session-token",
+            "account_overview": {
+                "session": {
+                    "accessToken": "web-session-access-token",
+                    "sessionToken": "web-session-token",
+                },
+            },
+        },
+    )
+
+    result = platform.execute_action("k12_join_upload", account, {"workspace_ids": "workspace-1"})
+
+    assert result["ok"] is True
+    assert result["data"]["k12_workspace_id"] == "workspace-1"
+    assert result["data"]["k12_session"]["accessToken"] == "k12-access-token"
+    assert result["data"]["upload_status"] == "uploaded"
+    assert captured["join"]["access_token"] == "web-session-access-token"
+    assert "__Secure-next-auth.session-token=web-session-token" in captured["join"]["cookies"]

@@ -23,6 +23,7 @@ const STATUS_VARIANT: Record<string, any> = {
 
 const platformActionsCache = new Map<string, any[]>()
 const platformActionsPromiseCache = new Map<string, Promise<any[]>>()
+const CHATGPT_K12_WORKSPACE_IDS_STORAGE_KEY = 'accounts.chatgpt.k12WorkspaceIds'
 
 const BROWSER_MODE_OPTIONS = [
   { value: 'camoufox_headed', label: 'Camoufox Headed' },
@@ -185,7 +186,68 @@ function getDisplayWarnings(acc: any) {
 
 function getDisplayBadges(acc: any) {
   const badges = getDisplaySummary(acc)?.badges
-  return Array.isArray(badges) ? badges : []
+  return normalizeAccountBadges(acc, Array.isArray(badges) ? badges : [])
+}
+
+function isChatgptK12Account(acc: any) {
+  if (String(acc?.platform || '').trim().toLowerCase() !== 'chatgpt') return false
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  if (!isEmptyPayload(overview?.k12_session) || !isEmptyPayload(overview?.k12?.session) || !isEmptyPayload(legacyExtra?.k12_session)) return true
+  if (String(overview?.k12_workspace_id || legacyExtra?.k12_workspace_id || '').trim()) return true
+  return getCredentials(acc).some((item: any) =>
+    String(item?.key || '').trim().toLowerCase() === 'plan_type' &&
+    String(item?.value || '').trim().toLowerCase() === 'k12',
+  )
+}
+
+function normalizeAccountBadges(acc: any, badges: any[]) {
+  if (!isChatgptK12Account(acc)) return badges
+  let hasK12Badge = false
+  let replacedFree = false
+  const next = badges.map((badge: any) => {
+    const label = String(badge?.label || '').trim()
+    const lowerLabel = label.toLowerCase()
+    if (lowerLabel === 'k12') {
+      hasK12Badge = true
+      return { ...badge, label: 'K12', tone: 'success' }
+    }
+    if (!replacedFree && lowerLabel === 'free') {
+      replacedFree = true
+      hasK12Badge = true
+      return { ...badge, label: 'K12', tone: 'success' }
+    }
+    return badge
+  })
+  if (!hasK12Badge) {
+    const mailboxBadgeIndex = next.findIndex((badge: any) => String(badge?.label || '').trim() === '邮箱验证')
+    const k12Badge = { label: 'K12', tone: 'success' }
+    if (mailboxBadgeIndex >= 0) next.splice(mailboxBadgeIndex, 0, k12Badge)
+    else next.unshift(k12Badge)
+  }
+  return next
+}
+
+function getAccountBadgeClassName(badge: any, mode: 'detail' | 'modern' | 'legacy') {
+  const tone = String(badge?.tone || '').trim().toLowerCase()
+  const isK12 = String(badge?.label || '').trim().toLowerCase() === 'k12'
+  const successClass = 'border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+  if (mode === 'detail') {
+    return cn(
+      'rounded-full border px-2 py-0.5 text-[11px]',
+      tone === 'success' || isK12 ? successClass : 'border-[var(--border)] bg-[var(--bg-hover)] text-[var(--text-secondary)]',
+    )
+  }
+  if (mode === 'modern') {
+    return cn(
+      'rounded border px-1.5 py-0.5 text-[10px] font-medium',
+      tone === 'success' || isK12 ? successClass : 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-secondary)]',
+    )
+  }
+  return cn(
+    'rounded border px-1 py-0.5 text-[11px] font-medium shadow-sm',
+    tone === 'success' || isK12 ? successClass : 'border-[var(--border)]/50 bg-[var(--bg-pane)]/40 text-[var(--text-muted)]',
+  )
 }
 
 function getDisplaySections(acc: any) {
@@ -314,6 +376,10 @@ function buildActionParamDraft(action: any, acc: any) {
       draft[param.key] = `${emailPrefix}Development`
       return
     }
+    if (action?.id === 'k12_join_upload' && param?.key === 'workspace_ids') {
+      draft[param.key] = readStoredChatgptK12WorkspaceIds()
+      return
+    }
     if (Array.isArray(param?.options) && param.options.length > 0) {
       draft[param?.key || ''] = String(param.options[0] ?? '')
       return
@@ -321,6 +387,29 @@ function buildActionParamDraft(action: any, acc: any) {
     draft[param?.key || ''] = ''
   })
   return draft
+}
+
+function readStoredChatgptK12WorkspaceIds() {
+  if (typeof window === 'undefined') return ''
+  try {
+    return window.localStorage.getItem(CHATGPT_K12_WORKSPACE_IDS_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredChatgptK12WorkspaceIds(value: string) {
+  if (typeof window === 'undefined') return
+  try {
+    const text = value.trim()
+    if (text) {
+      window.localStorage.setItem(CHATGPT_K12_WORKSPACE_IDS_STORAGE_KEY, text)
+    } else {
+      window.localStorage.removeItem(CHATGPT_K12_WORKSPACE_IDS_STORAGE_KEY)
+    }
+  } catch {
+    // Ignore browsers that block localStorage.
+  }
 }
 
 // ── 注册弹框 ────────────────────────────────────────────────
@@ -355,7 +444,7 @@ function RegisterModal({
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
   const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
   const [k12Join, setK12Join] = useState(false)
-  const [k12WorkspaceIds, setK12WorkspaceIds] = useState('')
+  const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   const [enableEmailAlias, setEnableEmailAlias] = useState(false)
@@ -570,6 +659,9 @@ function RegisterModal({
         }),
       })
       setTaskId(res.task_id)
+      if (platform === 'chatgpt') {
+        writeStoredChatgptK12WorkspaceIds(k12WorkspaceIds)
+      }
     } finally { setStarting(false) }
   }
 
@@ -1703,6 +1795,9 @@ function ActionMenu({
           onSubmit={(params) => {
             const action = pendingAction.action
             setPendingAction(null)
+            if (action?.id === 'k12_join_upload') {
+              writeStoredChatgptK12WorkspaceIds(params.workspace_ids || '')
+            }
             runAction(action, params)
           }}
         />
@@ -1908,7 +2003,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
               {displayBadges.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {displayBadges.map((badge: any, index: number) => (
-                    <span key={`${badge?.label || 'badge'}-${index}`} className="rounded-full border border-[var(--border)] bg-[var(--bg-hover)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
+                    <span key={`${badge?.label || 'badge'}-${index}`} className={getAccountBadgeClassName(badge, 'detail')}>
                       {badge?.label}
                     </span>
                   ))}
@@ -2150,6 +2245,7 @@ export default function Accounts() {
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [batchRefreshing, setBatchRefreshing] = useState(false)
+  const [batchHealthChecking, setBatchHealthChecking] = useState(false)
   const [batchStatusOpen, setBatchStatusOpen] = useState(false)
   const [batchStatusUpdating, setBatchStatusUpdating] = useState(false)
   const [batchStatusValue, setBatchStatusValue] = useState('registered')
@@ -2329,6 +2425,23 @@ export default function Accounts() {
   }
   const emailApiLine = (email: string) =>
     `${email} https://hsxhome.com/api/find/openai?email=${email}&t=fzKIywnF4KEGGB_i`
+
+  const startHealthCheck = async () => {
+    setBatchHealthChecking(true)
+    try {
+      const res = await apiFetch(`/accounts/health-check?platform=${tab}`, {
+        method: 'POST',
+        body: JSON.stringify({ ids: selectedCount > 0 ? [...selectedIds] : [] }),
+      })
+      if (res?.task_id) {
+        setBatchTask({ taskId: res.task_id, title: t('accounts.healthCheckTask', { platform: platformLabel }) })
+        setBatchTaskStatus(null)
+      }
+    } catch (e) {
+      console.error(e)
+      setBatchHealthChecking(false)
+    }
+  }
 
   const startCodexOAuth = async () => {
     setError('')
@@ -2544,11 +2657,13 @@ export default function Accounts() {
             setBatchTask(null)
             setBatchTaskStatus(null)
             setBatchRefreshing(false)
+            setBatchHealthChecking(false)
             load()
           }}
           onDone={(status) => {
             setBatchTaskStatus(status)
             setBatchRefreshing(false)
+            setBatchHealthChecking(false)
             load()
           }}
         />
@@ -3220,10 +3335,23 @@ export default function Accounts() {
                     </option>
                   ))}
                 </select>
+                {tab === 'chatgpt' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={batchHealthChecking || batchRefreshing || loading}
+                    className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
+                    title={t('accounts.healthCheckTitle')}
+                    onClick={startHealthCheck}
+                  >
+                    <ShieldCheck className={cn("mr-1.5 h-3.5 w-3.5", batchHealthChecking && "animate-pulse")} />
+                    {batchHealthChecking ? t('accounts.healthChecking') : t('accounts.healthCheck')}
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={batchRefreshing || loading}
+                  disabled={batchRefreshing || batchHealthChecking || loading}
                   className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
                   title={t('accounts.refreshCreditsTitle')}
                   onClick={async () => {
@@ -3394,7 +3522,7 @@ export default function Accounts() {
                                 {displayBadges.length > 0 && (
                                   <div className="mt-1.5 flex flex-wrap gap-1">
                                     {displayBadges.slice(0, 2).map((badge: any, index: number) => (
-                                      <span key={`${badge?.label || 'badge'}-${index}`} className="rounded border border-[var(--border-soft)] bg-[var(--bg-pane)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-secondary)]">
+                                      <span key={`${badge?.label || 'badge'}-${index}`} className={getAccountBadgeClassName(badge, 'modern')}>
                                         {badge?.label}
                                       </span>
                                     ))}
@@ -3679,10 +3807,23 @@ export default function Accounts() {
           </div>
           
           <div className="flex items-center gap-2">
+            {tab === 'chatgpt' && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={batchHealthChecking || batchRefreshing || loading}
+                className="h-7 px-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                title={t('accounts.healthCheckTitle')}
+                onClick={startHealthCheck}
+              >
+                <ShieldCheck className={`mr-1 h-3.5 w-3.5 ${batchHealthChecking ? 'animate-pulse' : ''}`} />
+                {batchHealthChecking ? t('accounts.healthChecking') : t('accounts.healthCheck')}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
-              disabled={batchRefreshing || loading}
+              disabled={batchRefreshing || batchHealthChecking || loading}
               className="h-7 px-2.5 text-[var(--text-muted)] hover:text-amber-500 hover:bg-amber-500/10"
               title={t('accounts.refreshCreditsTitle')}
               onClick={async () => {
@@ -3833,7 +3974,7 @@ export default function Accounts() {
                   {displayBadges.length > 0 && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       {displayBadges.slice(0, 3).map((badge: any, index: number) => (
-                        <span key={`${badge?.label || 'badge'}-${index}`} className="rounded border border-[var(--border)]/50 bg-[var(--bg-pane)]/40 px-1 py-0.5 text-[11px] font-medium text-[var(--text-muted)] shadow-sm">
+                        <span key={`${badge?.label || 'badge'}-${index}`} className={getAccountBadgeClassName(badge, 'legacy')}>
                           {badge?.label}
                         </span>
                       ))}

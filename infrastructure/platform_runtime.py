@@ -45,7 +45,7 @@ PERSISTED_ACTION_DATA_KEYS = {
 
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}
 OAUTH_RESULT_ACTION_IDS = {"get_rt"}
-UPLOAD_RESULT_ACTION_IDS = {"upload_sub2api"}
+UPLOAD_RESULT_ACTION_IDS = {"upload_sub2api", "k12_join_upload"}
 FAILED_ACTION_PERSISTED_ERROR_TYPES = {"account_banned", "session_stale_refreshed"}
 CASHIER_URL_ACTION_IDS = {
     "payment_link",
@@ -277,7 +277,27 @@ def _build_oauth_result_overview(platform: str, data: dict[str, Any]) -> dict[st
 
 
 def _build_upload_result_overview(platform: str, action_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
-    if platform != "chatgpt" or action_id != "upload_sub2api" or not isinstance(data, dict):
+    if platform != "chatgpt" or not isinstance(data, dict):
+        return None
+    if action_id == "k12_join_upload":
+        k12_session = data.get("k12_session")
+        if not isinstance(k12_session, dict) or not k12_session:
+            return None
+        now = _utcnow_iso()
+        return {
+            "platform": platform,
+            "checked_at": now,
+            "lifecycle_status": "registered",
+            "display_status": "registered",
+            "valid": True,
+            "plan_state": "free",
+            "k12_session": k12_session,
+            "k12_workspace_id": str(data.get("k12_workspace_id") or ""),
+            "k12_upload_status": str(data.get("upload_status") or ""),
+            "k12_upload_message": str(data.get("message") or ""),
+            "k12_uploaded_at": now if str(data.get("upload_status") or "") == "uploaded" else "",
+        }
+    if action_id != "upload_sub2api":
         return None
     if str(data.get("upload_status") or "").strip() != "uploaded":
         return None

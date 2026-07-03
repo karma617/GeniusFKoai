@@ -59,6 +59,18 @@ def _optional_int_param(params: dict, key: str) -> int | None:
         return None
 
 
+def _safe_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _first_non_empty(*values) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _mask_proxy(proxy: str | None) -> str:
     value = str(proxy or "").strip()
     if not value or "@" not in value:
@@ -691,6 +703,10 @@ class ChatGPTPlatform(BasePlatform):
                  {"key": "account_priority", "label": "账号优先级（留空默认 1）", "type": "number"},
                  {"key": "default_proxy_name", "label": "默认代理名称 / ID（留空不用代理）", "type": "text"},
              ]},
+            {"id": "k12_join_upload", "label": "强入K12空间",
+             "params": [
+                 {"key": "workspace_ids", "label": "母号 Workspace ID（逗号或换行分隔）", "type": "textarea"},
+             ]},
             {"id": "upload_tm", "label": "上传 Team Manager",
              "params": [
                  {"key": "api_url", "label": "TM API URL", "type": "text"},
@@ -718,7 +734,7 @@ class ChatGPTPlatform(BasePlatform):
             if not bool(result.get("ok")):
                 return self._postprocess_get_rt_failure(account, result)
             return result
-        if action_id in {"upload_cpa", "upload_sub2api", "upload_tm"}:
+        if action_id in {"upload_cpa", "upload_sub2api", "upload_tm", "k12_join_upload"}:
             return self._execute_platform_action(action_id, account, params)
         return super().execute_action(action_id, account, params)
 
@@ -766,7 +782,9 @@ class ChatGPTPlatform(BasePlatform):
         a.client_id = extra.get("client_id", OAUTH_CLIENT_ID)
         a.workspace_id = extra.get("workspace_id", "")
         a.expires_at = extra.get("expires_at", "")
-        a.session = extra.get("session", {})
+        overview = _safe_dict(extra.get("account_overview"))
+        legacy_extra = _safe_dict(overview.get("legacy_extra"))
+        a.session = extra.get("session") or overview.get("session") or overview.get("chatgpt_session") or legacy_extra.get("session") or {}
         a.cookies = extra.get("cookies", "")
         a.user_id = account.user_id or ""
         a.account_id = account.user_id or ""
@@ -840,6 +858,9 @@ class ChatGPTPlatform(BasePlatform):
             )
             return {"ok": ok, "data": {"message": msg, "upload_target": "sub2api", "upload_status": "uploaded" if ok else "failed"}}
 
+        if action_id == "k12_join_upload":
+            return self._handle_k12_join_upload(a, params, proxy=proxy)
+
         if action_id == "upload_tm":
             from platforms.chatgpt.cpa_upload import upload_to_team_manager
             ok, msg = upload_to_team_manager(a, api_url=params.get("api_url"),
@@ -850,6 +871,86 @@ class ChatGPTPlatform(BasePlatform):
             return self._handle_generate_link(account, params)
 
         raise NotImplementedError(f"Unknown action: {action_id}")
+
+    def _handle_k12_join_upload(self, account, params: dict, *, proxy: str | None = None) -> dict:
+        from platforms.chatgpt.k12_join import (
+            ensure_chatgpt_session_cookie,
+            exchange_workspace_session,
+            parse_workspace_ids,
+            send_workspace_join_requests,
+            upload_session_to_sub2api,
+        )
+
+        workspace_ids = str(params.get("workspace_ids") or params.get("k12_workspace_ids") or "").strip()
+        workspace_list = parse_workspace_ids(workspace_ids)
+        if not workspace_list:
+            return {"ok": False, "error": "请输入母号 Workspace ID"}
+
+        registration_session = account.session if isinstance(account.session, dict) else {}
+        access_token = _first_non_empty(
+            registration_session.get("accessToken"),
+            registration_session.get("access_token"),
+            account.access_token,
+        )
+        session_token = _first_non_empty(
+            registration_session.get("sessionToken"),
+            registration_session.get("session_token"),
+            account.session_token,
+        )
+        cookies = ensure_chatgpt_session_cookie(str(account.cookies or ""), session_token)
+        if not access_token:
+            return {"ok": False, "error": "账号缺少 ChatGPT Web session accessToken，无法强入 K12"}
+        if "__Secure-next-auth.session-token=" not in cookies:
+            return {"ok": False, "error": "账号缺少 ChatGPT Web session cookie，无法强入 K12"}
+
+        chosen_ws = ""
+        k12_session = None
+        for ws_id in workspace_list:
+            join_results = send_workspace_join_requests(
+                access_token=access_token,
+                cookies=cookies,
+                workspace_ids=ws_id,
+                proxy=proxy,
+                log=self.log,
+            )
+            join_ok = any(isinstance(item, dict) and item.get("ok") for item in join_results)
+            if not join_ok:
+                self.log(f"[K12] workspace {ws_id[:8]}... join 未成功，继续尝试下一个 workspace")
+                continue
+            candidate_session = exchange_workspace_session(
+                cookies=cookies,
+                workspace_id=ws_id,
+                access_token=access_token,
+                proxy=proxy,
+                log=self.log,
+            )
+            if candidate_session:
+                chosen_ws = ws_id
+                k12_session = candidate_session
+                break
+            self.log(f"[K12] workspace {ws_id[:8]}... exchange 校验失败，继续尝试下一个 workspace")
+
+        if not chosen_ws or not k12_session:
+            return {"ok": False, "error": "所有 workspace 均未完成 join + exchange 校验，停止 K12 上传"}
+
+        upload_ok, upload_msg = upload_session_to_sub2api(k12_session, log=self.log, proxy=proxy)
+        k12_access_token = str(k12_session.get("accessToken") or k12_session.get("access_token") or "")
+        k12_session_token = str(k12_session.get("sessionToken") or k12_session.get("session_token") or "")
+        upload_status = "uploaded" if upload_ok else "failed"
+        message = f"K12 强入成功，SUB2API 上传{'成功' if upload_ok else '失败'}: {upload_msg}"
+        return {
+            "ok": True,
+            "data": {
+                "message": message,
+                "upload_target": "k12_sub2api",
+                "upload_status": upload_status,
+                "k12_workspace_id": chosen_ws,
+                "k12_session": k12_session,
+                "access_token": k12_access_token,
+                "session_token": k12_session_token,
+                "plan_type": "k12",
+            },
+        }
 
     # Override specific capability handlers
     def _handle_query_state(self, account: Account, params: dict) -> dict:

@@ -29,9 +29,10 @@ from application.ctf_plus import CtfPlusAccountsService
 from application.phone_binding import PhoneBindingService
 
 TASK_TYPE_REGISTER = "register"
-TASK_TYPE_ACCOUNT_CHECK = "account_check"
-TASK_TYPE_ACCOUNT_CHECK_ALL = "account_check_all"
-TASK_TYPE_PLATFORM_ACTION = "platform_action"
+TASK_TYPE_ACCOUNT_CHECK = "account_check"
+TASK_TYPE_ACCOUNT_CHECK_ALL = "account_check_all"
+TASK_TYPE_ACCOUNT_HEALTH_CHECK = "account_health_check"
+TASK_TYPE_PLATFORM_ACTION = "platform_action"
 TASK_TYPE_PHONE_BIND = "phone_bind"
 TASK_TYPE_CODEX_OAUTH = "codex_oauth"
 TASK_TYPE_GET_RT = "get_rt"
@@ -341,16 +342,19 @@ def _task_result_seed(result: dict[str, Any] | None = None) -> dict[str, Any]:
     return base
 
 
-def _task_account_keys(task_type: str, payload: dict[str, Any]) -> list[str]:
-    if task_type in {TASK_TYPE_ACCOUNT_CHECK, TASK_TYPE_PLATFORM_ACTION}:
-        account_id = int(payload.get("account_id", 0) or 0)
-        if account_id > 0:
-            return [f"account:{account_id}"]
-    if task_type in {TASK_TYPE_PHONE_BIND, TASK_TYPE_CODEX_OAUTH}:
-        ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
-        if not ids and int(payload.get("account_id") or 0) > 0:
-            ids = [int(payload.get("account_id") or 0)]
-        return [f"account:{account_id}" for account_id in ids]
+def _task_account_keys(task_type: str, payload: dict[str, Any]) -> list[str]:
+    if task_type in {TASK_TYPE_ACCOUNT_CHECK, TASK_TYPE_PLATFORM_ACTION}:
+        account_id = int(payload.get("account_id", 0) or 0)
+        if account_id > 0:
+            return [f"account:{account_id}"]
+    if task_type == TASK_TYPE_ACCOUNT_HEALTH_CHECK:
+        ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+        return [f"account:{account_id}" for account_id in ids]
+    if task_type in {TASK_TYPE_PHONE_BIND, TASK_TYPE_CODEX_OAUTH}:
+        ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+        if not ids and int(payload.get("account_id") or 0) > 0:
+            ids = [int(payload.get("account_id") or 0)]
+        return [f"account:{account_id}" for account_id in ids]
     return []
 
 
@@ -450,20 +454,37 @@ def create_account_check_task(account_id: int) -> dict[str, Any]:
     )
 
 
-def create_account_check_all_task(platform: str = "", limit: int = 50) -> dict[str, Any]:
-    return create_task(
-        task_type=TASK_TYPE_ACCOUNT_CHECK_ALL,
-        platform=platform,
-        payload={"platform": platform, "limit": int(limit or 50)},
-        progress_total=max(int(limit or 50), 1),
-    )
-
-
-def create_platform_action_task(payload: dict[str, Any]) -> dict[str, Any]:
-    return create_task(
-        task_type=TASK_TYPE_PLATFORM_ACTION,
-        platform=str(payload.get("platform", "")),
-        payload=payload,
+def create_account_check_all_task(platform: str = "", limit: int = 50) -> dict[str, Any]:
+    return create_task(
+        task_type=TASK_TYPE_ACCOUNT_CHECK_ALL,
+        platform=platform,
+        payload={"platform": platform, "limit": int(limit or 50)},
+        progress_total=max(int(limit or 50), 1),
+    )
+
+
+def create_account_health_check_task(platform: str = "", ids: list[int] | None = None) -> dict[str, Any]:
+    normalized_ids = [int(item) for item in ids or [] if int(item or 0) > 0]
+    with Session(engine) as session:
+        q = select(AccountModel)
+        if platform:
+            q = q.where(AccountModel.platform == platform)
+        if normalized_ids:
+            q = q.where(AccountModel.id.in_(normalized_ids))  # type: ignore[attr-defined]
+        total = len(session.exec(q).all())
+    return create_task(
+        task_type=TASK_TYPE_ACCOUNT_HEALTH_CHECK,
+        platform=platform,
+        payload={"platform": platform, "ids": normalized_ids},
+        progress_total=max(total, 1),
+    )
+
+
+def create_platform_action_task(payload: dict[str, Any]) -> dict[str, Any]:
+    return create_task(
+        task_type=TASK_TYPE_PLATFORM_ACTION,
+        platform=str(payload.get("platform", "")),
+        payload=payload,
         progress_total=1,
     )
 
@@ -972,15 +993,15 @@ def _build_local_sub2api_payload(account) -> dict:
     auth_info = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
     expires_at, expires_epoch = _account_expires(account, access_token)
     account_id = (
-        _normalize_string(getattr(account, "account_id", ""))
-        or _extract_credential(account, "account_id")
+        _normalize_string(auth_info.get("chatgpt_account_id") if isinstance(auth_info, dict) else "")
         or _extract_credential(account, "chatgpt_account_id")
-        or _normalize_string(auth_info.get("chatgpt_account_id") if isinstance(auth_info, dict) else "")
+        or _extract_credential(account, "account_id")
+        or _normalize_string(getattr(account, "account_id", ""))
     )
     user_id = (
-        _normalize_string(getattr(account, "user_id", ""))
-        or _normalize_string(auth_info.get("chatgpt_user_id") if isinstance(auth_info, dict) else "")
+        _normalize_string(auth_info.get("chatgpt_user_id") if isinstance(auth_info, dict) else "")
         or _normalize_string(auth_info.get("user_id") if isinstance(auth_info, dict) else "")
+        or _normalize_string(getattr(account, "user_id", ""))
     )
     workspace_id = (
         _normalize_string(getattr(account, "workspace_id", ""))
@@ -1150,10 +1171,10 @@ def _mark_outlook_mailbox_event(shared_mailbox, account, event: str, logger: Tas
             label = "Plus 开通成功"
         else:
             return
-        if applied:
-            logger.log(f"outlookEmail {label}后已打标签: {', '.join(applied)}")
+        if applied:
+            logger.log(f"邮箱 {label}后已打标签: {', '.join(applied)}")
     except Exception as exc:
-        logger.log(f"outlookEmail 自动打标签失败（忽略）: {exc}", level="warning")
+        logger.log(f"邮箱自动打标签失败（忽略）: {exc}", level="warning")
 
 
 def _maybe_wrap_email_alias_mailbox(mailbox, *, platform_name: str, extra: dict[str, Any], logger: TaskLogger):
@@ -1218,11 +1239,11 @@ def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger
     return platform
 
 
-def _run_single_account_check(account_id: int, logger: TaskLogger | None = None) -> tuple[bool, dict[str, Any]]:
-    with Session(engine) as session:
-        model = session.get(AccountModel, account_id)
-        if not model:
-            raise ValueError("账号不存在")
+def _run_single_account_check(account_id: int, logger: TaskLogger | None = None) -> tuple[bool, dict[str, Any]]:
+    with Session(engine) as session:
+        model = session.get(AccountModel, account_id)
+        if not model:
+            raise ValueError("账号不存在")
         plugin = get(model.platform)(config=RegisterConfig())
         account = build_platform_account(session, model)
 
@@ -1258,11 +1279,202 @@ def _run_single_account_check(account_id: int, logger: TaskLogger | None = None)
 
     result = {"account_id": account_id, "valid": bool(valid), "platform": account.platform, "email": account.email}
     if logger:
-        logger.log(f"{account.email}: {'有效' if valid else '失效'}")
-    return valid, result
-
-
-def execute_task(task_id: str) -> None:
+        logger.log(f"{account.email}: {'有效' if valid else '失效'}")
+    return valid, result
+
+
+def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None = None) -> dict[str, Any]:
+    with Session(engine) as session:
+        model = session.get(AccountModel, account_id)
+        if not model:
+            raise ValueError("账号不存在")
+        if model.platform != "chatgpt":
+            raise ValueError("批量测活仅支持 ChatGPT 账号")
+        account = build_platform_account(session, model)
+
+    extra = dict(account.extra or {})
+    access_token = str(extra.get("access_token") or extra.get("accessToken") or account.token or "").strip()
+    chatgpt_account_id = str(
+        extra.get("chatgpt_account_id")
+        or extra.get("chatgptAccountId")
+        or extra.get("account_id")
+        or account.user_id
+        or ""
+    ).strip()
+    if not access_token:
+        result = {
+            "account_id": account_id,
+            "email": account.email,
+            "valid": False,
+            "status_code": 0,
+            "error": "缺少 access_token，无法请求 wham/usage",
+        }
+        _persist_chatgpt_health_result(account_id, result)
+        if logger:
+            logger.log(f"{account.email}: 测活失效（缺少 access_token）", level="warning")
+        return result
+
+    proxy = None
+    try:
+        from platforms.chatgpt.plugin import _resolve_action_proxy, proxy_pool
+        proxy = _resolve_action_proxy(
+            None,
+            region=str(account.region or extra.get("region") or ""),
+            log_fn=logger.log if logger else None,
+            action_label="批量测活",
+        )
+    except Exception as exc:
+        if logger:
+            logger.log(f"{account.email}: 代理解析失败，改用直连: {exc}", level="warning")
+        proxy_pool = None
+
+    try:
+        from curl_cffi import requests as cffi_requests
+        from platforms.chatgpt.payment import WHAM_USAGE_URL, _build_proxies
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "accept": "application/json",
+            "openai-beta": "codex-1",
+            "oai-language": "zh-CN",
+            "originator": "Codex Desktop",
+            "sec-fetch-site": "none",
+            "sec-fetch-mode": "no-cors",
+            "sec-fetch-dest": "empty",
+        }
+        if chatgpt_account_id:
+            headers["Chatgpt-Account-Id"] = chatgpt_account_id
+
+        response = cffi_requests.get(
+            WHAM_USAGE_URL,
+            headers=headers,
+            proxies=_build_proxies(proxy),
+            timeout=20,
+            impersonate="chrome124",
+        )
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if 200 <= status_code < 300:
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("wham/usage 响应格式异常")
+            result = {
+                "account_id": account_id,
+                "email": account.email,
+                "valid": True,
+                "status_code": status_code,
+                "plan_type": str(data.get("plan_type") or ""),
+                "usage": data,
+            }
+            if proxy:
+                try:
+                    proxy_pool.report_success(proxy)
+                except Exception:
+                    pass
+            _persist_chatgpt_health_result(account_id, result)
+            if logger:
+                logger.log(f"{account.email}: 测活存活 HTTP {status_code}")
+            return result
+
+        body = str(getattr(response, "text", "") or "")[:240]
+        invalid = status_code in {400, 401, 403, 404}
+        result = {
+            "account_id": account_id,
+            "email": account.email,
+            "valid": False,
+            "status_code": status_code,
+            "error": f"wham/usage HTTP {status_code}: {body}".strip(),
+            "transient": not invalid,
+        }
+        if proxy:
+            try:
+                proxy_pool.report_fail(proxy)
+            except Exception:
+                pass
+        if invalid:
+            _persist_chatgpt_health_result(account_id, result)
+            if logger:
+                logger.log(f"{account.email}: 测活失效 HTTP {status_code}", level="warning")
+        elif logger:
+            logger.log(f"{account.email}: 测活错误 HTTP {status_code}，未改为失效", level="error")
+        return result
+    except Exception as exc:
+        if proxy:
+            try:
+                proxy_pool.report_fail(proxy)
+            except Exception:
+                pass
+        result = {
+            "account_id": account_id,
+            "email": account.email,
+            "valid": False,
+            "status_code": 0,
+            "error": str(exc),
+            "transient": True,
+        }
+        if logger:
+            logger.log(f"{account.email}: 测活异常 {exc}", level="error")
+        return result
+
+
+def _persist_chatgpt_health_result(account_id: int, result: dict[str, Any]) -> None:
+    with Session(engine) as session:
+        model = session.get(AccountModel, account_id)
+        if not model:
+            return
+        checked_at = _utcnow_iso()
+        valid = bool(result.get("valid"))
+        summary_updates: dict[str, Any] = {
+            "checked_at": checked_at,
+            "health_checked_at": checked_at,
+            "health_status_code": int(result.get("status_code") or 0),
+            "valid": valid,
+        }
+        lifecycle_status = None
+        if valid:
+            usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+            plan_type = str(result.get("plan_type") or usage.get("plan_type") or "").strip()
+            summary_updates.update(
+                {
+                    "validity_status": "valid",
+                    "wham_usage": usage,
+                    "chatgpt_usage": usage,
+                    "health_error": "",
+                }
+            )
+            if plan_type:
+                summary_updates["plan"] = plan_type
+                summary_updates["plan_name"] = plan_type
+                if plan_type in {"plus", "team", "pro"}:
+                    summary_updates["plan_state"] = "subscribed"
+                elif plan_type == "free":
+                    summary_updates["plan_state"] = "free"
+            current_graph = load_account_graphs(session, [account_id]).get(account_id, {})
+            merged_graph = dict(current_graph)
+            merged_overview = dict(merged_graph.get("overview") or {})
+            merged_overview.update(summary_updates)
+            merged_graph["overview"] = merged_overview
+            lifecycle_status = recover_lifecycle_status_for_valid_account(merged_graph)
+        else:
+            summary_updates.update(
+                {
+                    "validity_status": "invalid",
+                    "display_status": "invalid",
+                    "health_error": str(result.get("error") or ""),
+                }
+            )
+            lifecycle_status = AccountStatus.INVALID.value
+        patch_account_graph(
+            session,
+            model,
+            lifecycle_status=lifecycle_status,
+            summary_updates=summary_updates,
+        )
+        model.updated_at = _utcnow()
+        session.add(model)
+        session.commit()
+
+
+def execute_task(task_id: str) -> None:
     with Session(engine) as session:
         task = session.get(TaskModel, task_id)
         if not task:
@@ -1278,10 +1490,11 @@ def execute_task(task_id: str) -> None:
         return
 
     handlers: dict[str, Callable[[dict[str, Any], TaskLogger], None]] = {
-        TASK_TYPE_REGISTER: _execute_register_task,
-        TASK_TYPE_ACCOUNT_CHECK: _execute_account_check_task,
-        TASK_TYPE_ACCOUNT_CHECK_ALL: _execute_account_check_all_task,
-        TASK_TYPE_PLATFORM_ACTION: _execute_platform_action_task,
+        TASK_TYPE_REGISTER: _execute_register_task,
+        TASK_TYPE_ACCOUNT_CHECK: _execute_account_check_task,
+        TASK_TYPE_ACCOUNT_CHECK_ALL: _execute_account_check_all_task,
+        TASK_TYPE_ACCOUNT_HEALTH_CHECK: _execute_account_health_check_task,
+        TASK_TYPE_PLATFORM_ACTION: _execute_platform_action_task,
         TASK_TYPE_PHONE_BIND: _execute_phone_bind_task,
         TASK_TYPE_CODEX_OAUTH: _execute_codex_oauth_task,
         TASK_TYPE_GET_RT: _execute_get_rt_task,
@@ -4409,9 +4622,9 @@ def _execute_account_check_task(payload: dict[str, Any], logger: TaskLogger) -> 
         logger.finish(TASK_STATUS_FAILED, error=str(exc))
 
 
-def _execute_account_check_all_task(payload: dict[str, Any], logger: TaskLogger) -> None:
-    platform = str(payload.get("platform", "") or "")
-    limit = max(int(payload.get("limit", 50) or 50), 1)
+def _execute_account_check_all_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    platform = str(payload.get("platform", "") or "")
+    limit = max(int(payload.get("limit", 50) or 50), 1)
 
     with Session(engine) as session:
         q = select(AccountModel)
@@ -4445,5 +4658,75 @@ def _execute_account_check_all_task(payload: dict[str, Any], logger: TaskLogger)
             logger.log(f"{model.email}: 检测异常 {exc}", level="error")
         completed += 1
         logger.set_progress(completed, total)
-    logger.set_result_data(results)
-    logger.finish(TASK_STATUS_SUCCEEDED)
+    logger.set_result_data(results)
+    logger.finish(TASK_STATUS_SUCCEEDED)
+
+
+def _execute_account_health_check_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    platform = str(payload.get("platform", "") or "")
+    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    max_workers = max(min(int(payload.get("concurrency", 10) or 10), 20), 1)
+
+    with Session(engine) as session:
+        q = select(AccountModel)
+        if platform:
+            q = q.where(AccountModel.platform == platform)
+        if ids:
+            q = q.where(AccountModel.id.in_(ids))  # type: ignore[attr-defined]
+        q = q.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
+        accounts = session.exec(q).all()
+
+    total = len(accounts)
+    logger.set_progress(0, total)
+    if total == 0:
+        logger.set_result_data({"valid": 0, "invalid": 0, "error": 0, "items": []})
+        logger.finish(TASK_STATUS_SUCCEEDED)
+        return
+
+    account_ids = [int(model.id or 0) for model in accounts if model.id]
+    items: list[dict[str, Any] | None] = [None] * len(account_ids)
+    completed = 0
+    counts = {"valid": 0, "invalid": 0, "error": 0}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {}
+        next_index = 0
+        while next_index < len(account_ids) and len(future_map) < max_workers and not logger.is_cancel_requested():
+            future = pool.submit(_run_single_chatgpt_health_check, account_ids[next_index], logger)
+            future_map[future] = next_index
+            next_index += 1
+
+        while future_map:
+            done, _pending = wait(future_map.keys(), return_when=FIRST_COMPLETED)
+            for future in done:
+                index = future_map.pop(future)
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {"account_id": account_ids[index], "valid": False, "error": str(exc), "transient": True}
+                    logger.log(f"账号 #{account_ids[index]}: 测活异常 {exc}", level="error")
+                items[index] = item
+                if item.get("valid"):
+                    counts["valid"] += 1
+                    logger.record_success()
+                elif item.get("transient"):
+                    counts["error"] += 1
+                    logger.record_error(str(item.get("error") or "unknown error"))
+                else:
+                    counts["invalid"] += 1
+                    logger.record_success()
+                completed += 1
+                logger.set_progress(completed, total)
+
+            if logger.is_cancel_requested():
+                logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+                return
+
+            while next_index < len(account_ids) and len(future_map) < max_workers and not logger.is_cancel_requested():
+                future = pool.submit(_run_single_chatgpt_health_check, account_ids[next_index], logger)
+                future_map[future] = next_index
+                next_index += 1
+
+    result = {**counts, "total": total, "items": [item for item in items if item is not None]}
+    logger.set_result_data(result)
+    logger.finish(TASK_STATUS_SUCCEEDED if counts["error"] == 0 else TASK_STATUS_FAILED)

@@ -49,6 +49,23 @@ def _external_upload_target_label() -> str:
     return "+".join(targets)
 
 
+def _is_k12_account_graph(graph: dict[str, Any]) -> bool:
+    """K12 账号由专用流程上传，本后台普通 SUB2API 同步不再处理。"""
+    overview = graph.get("overview") if isinstance(graph, dict) else {}
+    overview = overview if isinstance(overview, dict) else {}
+    legacy_extra = overview.get("legacy_extra") if isinstance(overview.get("legacy_extra"), dict) else {}
+    if overview.get("k12_session") or legacy_extra.get("k12_session"):
+        return True
+    if str(overview.get("k12_workspace_id") or legacy_extra.get("k12_workspace_id") or "").strip():
+        return True
+    for item in graph.get("credentials") or []:
+        if not isinstance(item, dict) or item.get("scope") != "platform":
+            continue
+        if str(item.get("key") or "").strip().lower() in {"plan_type", "plantype"} and str(item.get("value") or "").strip().lower() == "k12":
+            return True
+    return False
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -419,6 +436,26 @@ def refresh_and_sync_cpa(
                     err_detail = str(check_resp.json().get("detail", ""))[:80]
                 except Exception:
                     err_detail = check_resp.text[:80]
+                if _is_k12_account_graph(graph):
+                    message = f"K12 /backend-api/me HTTP {check_resp.status_code}: {err_detail}"
+                    log(f"  ↷ {acc.email}: {message}，保留当前状态")
+                    results["error"] += 1
+                    with Session(engine) as sess:
+                        model = sess.get(AccountModel, acc.id)
+                        if model:
+                            patch_account_graph(
+                                sess,
+                                model,
+                                summary_updates={
+                                    "checked_at": _utcnow_iso(),
+                                    "check_error": message,
+                                    "k12_liveness_check_error": message,
+                                    "k12_liveness_checked_at": _utcnow_iso(),
+                                },
+                            )
+                            sess.add(model)
+                            sess.commit()
+                    continue
                 log(f"  ✗ {acc.email}: 已封禁 ({check_resp.status_code}: {err_detail})")
                 results["dead"] += 1
                 with Session(engine) as sess:
@@ -475,6 +512,11 @@ def refresh_and_sync_cpa(
 
             # 中文说明：刷新拿到新 access_token 后，同步更新 SUB2API，避免远端仍用旧 token。
             if sub2api_enabled and sub2api_url:
+                if _is_k12_account_graph(graph):
+                    results["skipped"] += 1
+                    log(f"  ↷ {acc.email}: K12 账号跳过后台 SUB2API 同步")
+                    time.sleep(0.5)
+                    continue
                 try:
                     from platforms.chatgpt.sub2api_upload import upload_to_sub2api
 
