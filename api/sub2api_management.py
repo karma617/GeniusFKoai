@@ -87,3 +87,28 @@ def relogin_sub2api_error_accounts(body: ReloginRequest):
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Sub2API 错误账号重新登录失败: {exc}") from exc
+
+
+@router.post("/relogin-errors/stream")
+def stream_relogin_sub2api_error_accounts(body: ReloginRequest):
+    try:
+        events = service.relogin_error_account_events(
+            account_ids=body.account_ids,
+            group_id=body.group_id,
+            workspace_ids=body.workspace_ids,
+            concurrency=body.concurrency,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Sub2API 错误账号重新登录失败: {exc}") from exc
+
+    def generate():
+        try:
+            for event in events:
+                yield "data: " + json.dumps(event, ensure_ascii=False, default=str) + "\n\n"
+        except Exception as exc:
+            payload = {"event": "relogin_failed", "ok": False, "message": str(exc)}
+            yield "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")

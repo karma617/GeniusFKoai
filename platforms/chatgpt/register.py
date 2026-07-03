@@ -1324,6 +1324,18 @@ class RegistrationEngine:
 
             ua = self.http_client.default_headers.get("User-Agent", "")
 
+            quickjs_payload = self._quickjs_sentinel_payload(
+                getattr(self.http_client, "session", None) or self.session,
+                did,
+                flow=flow,
+                user_agent=ua,
+                label="主注册链路",
+            )
+
+            if quickjs_payload:
+
+                return quickjs_payload
+
             generator = _SentinelTokenGenerator(did, ua)
 
             sent_p = generator.generate_requirements_token()
@@ -1438,6 +1450,113 @@ class RegistrationEngine:
 
             return None
 
+
+
+    @staticmethod
+    def _sentinel_payload_header(payload: SentinelPayload, device_id: str) -> str:
+
+        return json.dumps(
+            {
+                "p": payload.p,
+                "t": payload.t,
+                "c": payload.c,
+                "id": device_id,
+                "flow": payload.flow,
+            },
+            separators=(",", ":"),
+        )
+
+
+    def _parse_sentinel_header_payload(
+        self,
+        token: str,
+        *,
+        flow: str,
+        label: str,
+    ) -> Optional[SentinelPayload]:
+
+        try:
+
+            data = json.loads(token or "")
+
+        except Exception as exc:
+
+            self._log(f"{label} QuickJS Sentinel 返回非 JSON: {exc}", "warning")
+
+            return None
+
+        if not isinstance(data, dict):
+
+            self._log(f"{label} QuickJS Sentinel 返回结构异常", "warning")
+
+            return None
+
+        p_value = str(data.get("p") or "").strip()
+
+        c_value = str(data.get("c") or "").strip()
+
+        if not p_value or not c_value:
+
+            self._log(f"{label} QuickJS Sentinel 缺少 p/c，回退原 Sentinel VM", "warning")
+
+            return None
+
+        return SentinelPayload(
+            p=p_value,
+            t=str(data.get("t") or "").strip(),
+            c=c_value,
+            flow=str(data.get("flow") or flow).strip() or flow,
+        )
+
+
+    def _quickjs_sentinel_payload(
+        self,
+        session,
+        device_id: str,
+        *,
+        flow: str,
+        user_agent: str,
+        label: str,
+    ) -> Optional[SentinelPayload]:
+
+        """优先使用真实 OpenAI Sentinel SDK；失败时由调用方回退原 VM 逻辑。"""
+
+        if not session:
+
+            return None
+
+        import os as _os_sentinel
+
+        if _os_sentinel.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
+
+            return None
+
+        try:
+
+            from .authflow_experimental.sentinel_quickjs import get_sentinel_token_via_quickjs
+
+            token = get_sentinel_token_via_quickjs(
+                session,
+                device_id=device_id,
+                flow=flow,
+                log=lambda message: self._log(f"{label} {message}"),
+            )
+
+        except Exception as exc:
+
+            self._log(f"{label} QuickJS Sentinel 调用异常，回退原 Sentinel VM: {exc}", "warning")
+
+            return None
+
+        payload = self._parse_sentinel_header_payload(token or "", flow=flow, label=label) if token else None
+
+        if not payload:
+
+            return None
+
+        self._log(f"{label} QuickJS Sentinel 已启用: flow={payload.flow} t_len={len(payload.t)}")
+
+        return payload
 
 
     def _submit_signup_form(self, did: str, sen_payload: Optional[SentinelPayload]) -> SignupFormResult:
@@ -3259,6 +3378,18 @@ class RegistrationEngine:
 
         ua = client.default_headers.get("User-Agent", "")
 
+        quickjs_payload = self._quickjs_sentinel_payload(
+            getattr(client, "session", None),
+            device_id,
+            flow=flow,
+            user_agent=ua,
+            label="Platform 注册链路",
+        )
+
+        if quickjs_payload:
+
+            return self._sentinel_payload_header(quickjs_payload, device_id)
+
         generator = _SentinelTokenGenerator(device_id, ua)
 
         sent_p = generator.generate_requirements_token()
@@ -3487,6 +3618,12 @@ class RegistrationEngine:
         )
 
         if response.status_code == 200:
+
+            return response
+
+        if self._is_deleted_or_deactivated_account_response(response):
+
+            self._log("Platform 登录验证码校验返回账号已删除或停用，保留首次响应不重复提交 OTP", "warning")
 
             return response
 

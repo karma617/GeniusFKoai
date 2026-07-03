@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Activity, AlertTriangle, RefreshCw, RotateCw, Search } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Activity, AlertTriangle, Clipboard, RefreshCw, RotateCw, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -48,7 +48,20 @@ type CheckSummary = {
   rate_limited?: number
   skipped?: number
   marked_error?: number
+  deleted?: number
+  replaced?: number
+  phone_skipped?: number
+  free_skipped?: number
 }
+
+type InventoryCacheEntry = {
+  groups: Sub2ApiGroup[]
+  accounts: Sub2ApiAccount[]
+}
+
+const inventoryCache = new Map<string, InventoryCacheEntry>()
+const VISIBLE_LOG_LIMIT = 120
+const VISIBLE_LOG_MESSAGE_LIMIT = 800
 
 function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'secondary' {
   const value = String(status || '').toLowerCase()
@@ -63,6 +76,22 @@ function formatDate(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString()
+}
+
+function inventoryCacheKey(groupId: string, status: string, search: string) {
+  return JSON.stringify({
+    groupId: groupId || '',
+    status: status || 'all',
+    search: search.trim(),
+  })
+}
+
+function toVisibleLog(item: CheckLog): CheckLog {
+  if (item.message.length <= VISIBLE_LOG_MESSAGE_LIMIT) return item
+  return {
+    ...item,
+    message: `${item.message.slice(0, VISIBLE_LOG_MESSAGE_LIMIT)}\n... 页面展示已截断，复制日志可获取完整内容`,
+  }
 }
 
 export default function Sub2ApiManagement() {
@@ -83,20 +112,44 @@ export default function Sub2ApiManagement() {
   const [pageSize, setPageSize] = useState(10)
   const [checkLogs, setCheckLogs] = useState<CheckLog[]>([])
   const [liveSummary, setLiveSummary] = useState<CheckSummary | null>(null)
+  const [logPaused, setLogPaused] = useState(false)
+  const logPanelRef = useRef<HTMLDivElement | null>(null)
+  const logBottomRef = useRef<HTMLDivElement | null>(null)
+  const fullCheckLogsRef = useRef<CheckLog[]>([])
+  const shouldFollowLogRef = useRef(true)
 
-  const load = async () => {
-    setLoading(true)
+  const applyInventory = (entry: InventoryCacheEntry) => {
+    setGroups(entry.groups)
+    setAccounts(entry.accounts)
+    setSelectedIds(new Set())
+    setPage(1)
+  }
+
+  const load = async (options: { force?: boolean } = {}) => {
     setError('')
+    const cacheKey = inventoryCacheKey(groupId, status, search)
+    if (!options.force) {
+      const cached = inventoryCache.get(cacheKey)
+      if (cached) {
+        applyInventory(cached)
+        return
+      }
+    } else {
+      inventoryCache.clear()
+    }
+    setLoading(true)
     try {
       const params = new URLSearchParams()
       if (groupId) params.set('group_id', groupId)
       if (status && status !== 'all') params.set('status', status)
       if (search.trim()) params.set('search', search.trim())
       const data = await apiFetch(`/sub2api-management/inventory?${params}`)
-      setGroups(data.groups || [])
-      setAccounts(data.accounts || [])
-      setSelectedIds(new Set())
-      setPage(1)
+      const entry = {
+        groups: data.groups || [],
+        accounts: data.accounts || [],
+      }
+      inventoryCache.set(cacheKey, entry)
+      applyInventory(entry)
     } catch (err: any) {
       setError(err?.message || String(err))
     } finally {
@@ -107,6 +160,13 @@ export default function Sub2ApiManagement() {
   useEffect(() => {
     load()
   }, [groupId, status])
+
+  useEffect(() => {
+    if (!shouldFollowLogRef.current) return
+    requestAnimationFrame(() => {
+      logBottomRef.current?.scrollIntoView({ block: 'end' })
+    })
+  }, [checkLogs.length])
 
   const selectedOrVisibleIds = useMemo(() => {
     if (selectedIds.size > 0) return Array.from(selectedIds)
@@ -159,6 +219,35 @@ export default function Sub2ApiManagement() {
     })
   }
 
+  const resetLiveLogs = () => {
+    fullCheckLogsRef.current = []
+    shouldFollowLogRef.current = true
+    setLogPaused(false)
+    setCheckLogs([])
+  }
+
+  const appendLog = (item: CheckLog) => {
+    fullCheckLogsRef.current.push(item)
+    setCheckLogs((current) => [...current, toVisibleLog(item)].slice(-VISIBLE_LOG_LIMIT))
+  }
+
+  const handleLogScroll = () => {
+    const panel = logPanelRef.current
+    if (!panel) return
+    const distanceToBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight
+    const shouldFollow = distanceToBottom < 48
+    shouldFollowLogRef.current = shouldFollow
+    setLogPaused((current) => (current === !shouldFollow ? current : !shouldFollow))
+  }
+
+  const resumeLogFollow = () => {
+    shouldFollowLogRef.current = true
+    setLogPaused(false)
+    requestAnimationFrame(() => {
+      logBottomRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+    })
+  }
+
   const appendCheckResultLog = (event: any) => {
     const accountId = event.account_id ? String(event.account_id) : ''
     const label = accountLabelById.get(accountId) || (accountId ? `#${accountId}` : '未知账号')
@@ -186,7 +275,42 @@ export default function Sub2ApiManagement() {
       tone,
       at: new Date().toLocaleTimeString(),
     }
-    setCheckLogs((current) => [item, ...current].slice(0, 300))
+    appendLog(item)
+  }
+
+  const appendReloginLog = (event: any) => {
+    const accountId = event.account_id ? String(event.account_id) : ''
+    const label = accountLabelById.get(accountId) || (accountId ? `#${accountId}` : '未知账号')
+    const rawMessage = event.message ? String(event.message) : '重新登录处理中'
+    const message = rawMessage.includes(label) ? rawMessage : `${label} ${rawMessage}`
+    const item: CheckLog = {
+      id: Date.now() + Math.random(),
+      account_id: accountId,
+      message,
+      result: event.status || event.event,
+      tone: 'secondary',
+      at: new Date().toLocaleTimeString(),
+    }
+    appendLog(item)
+  }
+
+  const appendReloginResultLog = (event: any) => {
+    const accountId = event.account_id ? String(event.account_id) : ''
+    const label = accountLabelById.get(accountId) || (accountId ? `#${accountId}` : '未知账号')
+    const status = String(event.status || '')
+    let tone: CheckLog['tone'] = 'secondary'
+    if (status === 'replaced' || status === 'deleted' || status === 'free_skipped') tone = 'success'
+    else if (status === 'failed') tone = 'danger'
+    else if (status === 'phone_skipped') tone = 'warning'
+    const item: CheckLog = {
+      id: Date.now() + Math.random(),
+      account_id: accountId,
+      message: `${label} ${event.message || status || '重新登录完成'}`,
+      result: status,
+      tone,
+      at: new Date().toLocaleTimeString(),
+    }
+    appendLog(item)
   }
 
   const handleCheckEvent = (event: any) => {
@@ -200,17 +324,48 @@ export default function Sub2ApiManagement() {
     }
     if (event.event === 'bulk_failed') {
       setError(event.message || '批量测活失败')
-      setCheckLogs((current) => [{
+      const item: CheckLog = {
         id: Date.now() + Math.random(),
         message: event.message || '批量测活失败',
         result: 'failed',
         tone: 'danger',
         at: new Date().toLocaleTimeString(),
-      }, ...current])
+      }
+      appendLog(item)
       return
     }
     if (event.event === 'account_finished') {
       appendCheckResultLog(event)
+    }
+  }
+
+  const handleReloginEvent = (event: any) => {
+    if (!event || typeof event !== 'object') return
+    if (event.summary) setLiveSummary(event.summary)
+    if (event.event === 'relogin_log') {
+      appendReloginLog(event)
+      return
+    }
+    if (event.event === 'relogin_account_finished') {
+      appendReloginResultLog(event)
+      return
+    }
+    if (event.event === 'relogin_finished') {
+      setLastResults(event.results || [])
+      const summary = event.summary || {}
+      setMessage(`重新登录完成：K12替换 ${summary.replaced || 0}，封禁删除 ${summary.deleted || 0}，手机跳过 ${summary.phone_skipped || 0}，free跳过 ${summary.free_skipped || 0}，失败 ${summary.failed || 0}`)
+      return
+    }
+    if (event.event === 'relogin_failed') {
+      setError(event.message || '重新登录错误账号失败')
+      const item: CheckLog = {
+        id: Date.now() + Math.random(),
+        message: event.message || '重新登录错误账号失败',
+        result: 'failed',
+        tone: 'danger',
+        at: new Date().toLocaleTimeString(),
+      }
+      appendLog(item)
     }
   }
 
@@ -224,7 +379,7 @@ export default function Sub2ApiManagement() {
     setMessage('')
     setLastResults([])
     setLiveSummary(null)
-    setCheckLogs([])
+    resetLiveLogs()
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       const token = getAuthToken()
@@ -276,25 +431,66 @@ export default function Sub2ApiManagement() {
     setError('')
     setMessage('')
     setLastResults([])
+    setLiveSummary(null)
+    resetLiveLogs()
     try {
-      const data = await apiFetch('/sub2api-management/relogin-errors', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      const token = getAuthToken()
+      if (token) headers.Authorization = `Bearer ${token}`
+      const response = await fetch(`${API_BASE}/sub2api-management/relogin-errors/stream`, {
         method: 'POST',
+        headers,
         body: JSON.stringify({
           account_ids: selectedIds.size > 0 ? Array.from(selectedIds) : [],
           group_id: groupId ? Number(groupId) : null,
           workspace_ids: workspaceIds,
-          concurrency: 2,
+          concurrency: 1,
         }),
       })
-      const summary = data.summary || {}
-      setLastResults(data.results || [])
-      setMessage(`重新登录完成：K12替换 ${summary.replaced || 0}，封禁删除 ${summary.deleted || 0}，手机跳过 ${summary.phone_skipped || 0}，free跳过 ${summary.free_skipped || 0}，失败 ${summary.failed || 0}`)
+      if (!response.ok) throw new Error(await response.text())
+      if (!response.body) throw new Error('浏览器不支持流式读取重新登录日志')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop() || ''
+        for (const chunk of chunks) {
+          const data = chunk
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trim())
+            .join('\n')
+          if (!data) continue
+          handleReloginEvent(JSON.parse(data))
+        }
+      }
+      if (buffer.trim()) {
+        const data = buffer
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
+          .join('\n')
+        if (data) handleReloginEvent(JSON.parse(data))
+      }
       await load()
     } catch (err: any) {
       setError(err?.message || String(err))
     } finally {
       setRelogining(false)
     }
+  }
+
+  const copyLogs = async () => {
+    const text = fullCheckLogsRef.current
+      .map((item) => `[${item.at}] ${item.message}`)
+      .join('\n')
+    if (!text) return
+    await navigator.clipboard.writeText(text)
+    setMessage('实时日志已复制到剪贴板')
   }
 
   return (
@@ -311,7 +507,7 @@ export default function Sub2ApiManagement() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={load} disabled={loading || checking || relogining}>
+          <Button variant="outline" onClick={() => load({ force: true })} disabled={loading || checking || relogining}>
             <RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', loading && 'animate-spin')} />
             刷新
           </Button>
@@ -499,19 +695,32 @@ export default function Sub2ApiManagement() {
             <div>
               <div className="text-sm font-semibold text-[var(--text-primary)]">实时日志</div>
               <div className="text-xs text-[var(--text-muted)]">
-                {checking ? '测活进行中' : '批量测活日志会显示在这里'}
+                {checking ? '测活进行中' : relogining ? '错误账号重新登录中' : '仅展示最近日志，复制可获取完整日志'}
               </div>
             </div>
-            {liveSummary && (
-              <Badge variant="secondary">
-                正常 {liveSummary.ok || 0} / 异常 {liveSummary.failed || 0} / 限流 {liveSummary.rate_limited || 0}
-              </Badge>
-            )}
+            <div className="flex items-center gap-2">
+              {liveSummary && (
+                <Badge variant="secondary">
+                  {checking
+                    ? `正常 ${liveSummary.ok || 0} / 异常 ${liveSummary.failed || 0} / 限流 ${liveSummary.rate_limited || 0}`
+                    : `替换 ${liveSummary.replaced || 0} / 删除 ${liveSummary.deleted || 0} / 失败 ${liveSummary.failed || 0}`}
+                </Badge>
+              )}
+              <Button variant="outline" size="sm" onClick={copyLogs} disabled={checkLogs.length === 0}>
+                <Clipboard className="mr-1.5 h-3.5 w-3.5" />
+                复制日志
+              </Button>
+              {logPaused && (
+                <Button variant="outline" size="sm" onClick={resumeLogFollow}>
+                  回到底部
+                </Button>
+              )}
+            </div>
           </div>
-          <div className="max-h-[620px] space-y-2 overflow-y-auto p-3">
+          <div ref={logPanelRef} onScroll={handleLogScroll} className="max-h-[620px] space-y-2 overflow-y-auto p-3">
             {checkLogs.length === 0 && (
               <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-xs text-[var(--text-muted)]">
-                点击“批量测活”后，这里只显示每个账号的最终测活结果，避免高频日志刷新卡顿。
+                点击“批量测活”后只显示每个账号的最终测活结果；点击“重新登录错误帐号”后显示协议登录和 K12 处理日志。页面只保留最近日志用于展示，完整日志可通过复制按钮获取。
               </div>
             )}
             {checkLogs.map((item) => (
@@ -537,6 +746,7 @@ export default function Sub2ApiManagement() {
                 </div>
               </div>
             ))}
+            <div ref={logBottomRef} />
           </div>
         </aside>
         </div>

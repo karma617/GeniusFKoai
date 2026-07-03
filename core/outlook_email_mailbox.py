@@ -887,6 +887,68 @@ class OutlookEmailMailbox(BaseMailbox):
         )
         return _strip_markup(" ".join(_text(mail.get(field)) for field in fields))
 
+    @classmethod
+    def _collect_email_values(cls, value: Any) -> set[str]:
+        emails: set[str] = set()
+        if isinstance(value, dict):
+            for item in value.values():
+                emails.update(cls._collect_email_values(item))
+            return emails
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                emails.update(cls._collect_email_values(item))
+            return emails
+        text = _text(value)
+        if not text:
+            return emails
+        for match in re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text):
+            emails.add(match.lower())
+        return emails
+
+    @classmethod
+    def _message_recipient_emails(cls, mail: dict[str, Any]) -> set[str]:
+        recipients: set[str] = set()
+        for key in (
+            "to",
+            "to_address",
+            "to_addresses",
+            "to_recipients",
+            "toRecipients",
+            "recipients",
+            "recipient",
+            "delivered_to",
+            "envelope_to",
+            "original_to",
+            "x_original_to",
+        ):
+            if key in mail:
+                recipients.update(cls._collect_email_values(mail.get(key)))
+        return recipients
+
+    @staticmethod
+    def _expected_alias_recipient(account: MailboxAccount) -> str:
+        extra = dict(getattr(account, "extra", {}) or {})
+        alias = extra.get("email_alias") if isinstance(extra.get("email_alias"), dict) else {}
+        if alias:
+            value = _text(alias.get("alias_email"))
+            if value:
+                return value.lower()
+        resource = extra.get("provider_resource") if isinstance(extra.get("provider_resource"), dict) else {}
+        metadata = resource.get("metadata") if isinstance(resource.get("metadata"), dict) else {}
+        alias = metadata.get("email_alias") if isinstance(metadata.get("email_alias"), dict) else {}
+        value = _text(metadata.get("alias_email") or alias.get("alias_email"))
+        return value.lower()
+
+    @classmethod
+    def _matches_expected_recipient(cls, account: MailboxAccount, mail: dict[str, Any]) -> bool:
+        expected = cls._expected_alias_recipient(account)
+        if not expected:
+            return True
+        recipients = cls._message_recipient_emails(mail)
+        if not recipients:
+            return True
+        return expected in recipients
+
     @staticmethod
     def _message_epoch(mail: dict[str, Any]) -> float | None:
         raw_timestamp = mail.get("timestamp")
@@ -1069,16 +1131,21 @@ class OutlookEmailMailbox(BaseMailbox):
                     seen.add(mid)
                     if not self._matches_keyword(mail, keyword):
                         continue
+                    if not self._matches_expected_recipient(account, mail):
+                        continue
                     text = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", " ", self._message_text(mail))
                     match = pattern.search(text)
                     if match:
                         return match.group(1) if match.groups() else match.group(0)
                     detail = self._load_message_detail(account, mail)
                     if detail:
+                        combined = {**mail, **detail}
+                        if not self._matches_expected_recipient(account, combined):
+                            continue
                         detail_text = re.sub(
                             r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
                             " ",
-                            self._message_text({**mail, **detail}),
+                            self._message_text(combined),
                         )
                         match = pattern.search(detail_text)
                         if match:

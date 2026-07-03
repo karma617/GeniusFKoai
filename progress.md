@@ -1121,3 +1121,219 @@
   - docs/sub2api-management.md: 更新实时日志说明。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：恢复 application/sub2api_management.py 中 `bulk_check_events` 的中间事件推送；恢复 frontend/src/pages/Sub2ApiManagement.tsx 对所有测活事件的日志追加；撤销 docs/sub2api-management.md 本轮说明改动；移除 progress.md 本轮追加内容即可恢复到高频日志模式。
+
+## 2026-07-04 - Task: 主注册链路接入 QuickJS Sentinel 优先路径
+
+### What was done
+- 当前主注册链路的 Sentinel 生成优先使用实验 AuthFlow 移植出的 QuickJS/Node OpenAI Sentinel SDK，失败时自动回退原有纯 Python PoW + sentinel_vm 逻辑。
+- 默认 Platform reference 注册/登录和旧协议注册链路都接入同一个 QuickJS 优先 helper，覆盖注册邮箱、注册密码、创建账号资料、登录校验等前段授权接口。
+- 保持现有邮箱接码、K12 强入、Sub2API 上传、手机号接码后续逻辑不变；只替换 Sentinel token 生成优先级。
+- 补充回归测试，覆盖 QuickJS 优先命中、QuickJS 缺失后回退旧 Sentinel、Platform header 使用 QuickJS token。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_authflow_experimental.py -q` -> 18 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 新增 QuickJS Sentinel 优先 helper，并接入主注册链路 `_check_sentinel` 和 Platform `_build_sentinel_header_for_client`。
+  - tests/test_chatgpt_protocol_otp.py: 新增 QuickJS Sentinel 优先与旧逻辑兜底回归测试，并补齐 bare engine 的真实 fingerprint 初始化。
+  - docs/chatgpt-register-flow.md: 记录主注册链路 Sentinel 优先策略、关闭开关和不影响后续 K12/接码/Sub2API 的边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 `_quickjs_sentinel_payload`、`_parse_sentinel_header_payload`、`_sentinel_payload_header` 及两个调用点；撤销 tests/test_chatgpt_protocol_otp.py 本轮新增测试和 `_bare_engine` fingerprint 初始化；撤销 docs/chatgpt-register-flow.md 的 Sentinel 优先策略段落；移除 progress.md 本轮追加内容即可恢复到原 Sentinel VM 优先链路。
+
+## 2026-07-04 - Task: Sub2API错误账号协议重新登录与日志复制
+
+### What was done
+- Sub2API 管理的“重新登录错误帐号”改为使用批量注册同款 Platform 协议链路重新登录本地账号，默认不启动浏览器模拟。
+- 新增错误账号重新登录 SSE 流式接口，实时输出协议登录、邮箱 OTP、封禁删除、手机接码跳过、K12 exchange / join / upload 等关键日志。
+- K12 错误账号替换逻辑先直接 exchange 检查是否仍在 K12 空间；失败后才走现有强入 K12 join 逻辑，最终删除远端旧账号并上传新 K12 session。
+- 前端实时日志面板支持重新登录日志展示，并新增“复制日志”按钮。
+- 补充回归测试，覆盖协议 engine 路径、不启动浏览器、手机接码跳过、流式日志、K12 直接 exchange 不触发 join。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py tests\test_sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 9 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\k12_join.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_k12_join.py -q` -> 46 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - api/sub2api_management.py: 新增 `/relogin-errors/stream` SSE 接口。
+  - application/sub2api_management.py: 错误账号重新登录默认改为协议链路，新增流式事件，K12 替换先 exchange 再按需 join。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 重新登录按钮改读流式日志，实时日志面板新增复制日志按钮。
+  - tests/test_sub2api_management.py: 新增协议登录、不启动浏览器、手机接码跳过、流式日志和 K12 exchange 优先测试。
+  - docs/sub2api-management.md: 更新错误账号重新登录流程、流式接口和日志复制说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 api/sub2api_management.py 中 `/relogin-errors/stream`；撤销 application/sub2api_management.py 中 `relogin_error_account_events`、`_run_protocol_relogin`、K12 exchange 优先和 `_relogin_one` 日志接线，恢复原 `_run_browser_relogin` 调用；撤销 frontend/src/pages/Sub2ApiManagement.tsx 中重新登录流式读取与复制日志按钮；撤销 tests/test_sub2api_management.py 和 docs/sub2api-management.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复到原一次性返回和浏览器重新登录方式。
+
+## 2026-07-04 - Task: Sub2API错误账号重新登录日志实时细化
+
+### What was done
+- 错误账号重新登录的协议链路日志从“任务结束后批量吐出”改为执行过程中逐行实时推送，右侧日志能看到与批量注册任务类似的 IP 检查、初始化、Platform 协议、邮箱 OTP、K12 处理等步骤。
+- 重新登录日志不再重复拼接邮箱前缀，并改为按执行顺序追加显示，便于复制后排查。
+- 保持批量注册主流程和 K12 helper 不变；本轮只调整 Sub2API 管理页重新登录日志接线和展示。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py tests\test_sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 9 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_k12_join.py -q` -> 46 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 将协议重新登录 logger 直接接入 SSE 事件，执行中实时推送注册引擎日志。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 重新登录日志去重邮箱前缀，并按执行顺序追加显示。
+  - docs/sub2api-management.md: 说明重新登录日志会像批量注册任务一样逐行实时展示但不弹窗。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/sub2api_management.py 中 `_run_protocol_relogin(..., log_fn=...)` 的实时转发和 `_relogin_one` 的新增日志；撤销 frontend/src/pages/Sub2ApiManagement.tsx 中重新登录日志追加顺序及前缀处理；撤销 docs/sub2api-management.md 本轮日志说明；移除 progress.md 本轮追加内容即可恢复到原少量日志模式。
+
+## 2026-07-04 - Task: Sub2API错误账号重新登录串行与别名邮箱读码修复
+
+### What was done
+- 错误账号重新登录后端流式与非流式入口都强制改为单账号串行处理，不再按请求参数并发执行，避免多个账号同时等待 OTP 或替换远端账号。
+- 重新登录协议链路继续使用批量注册同款 RegistrationEngine，不启动浏览器；邮箱 OTP 读取从 get_rt 专用 callback 改为批量注册同款 mailbox 轮询服务。
+- 本地账号为 plus 别名邮箱时，按账号资源中的父邮箱元数据读取主邮箱收件箱；历史 `outlook_email` provider 自动兼容映射到当前 `outlook_email_api`。
+- 前端重新登录请求参数同步改为 `concurrency: 1`，与后端实际行为一致。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py tests\test_sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 11 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_k12_join.py -q` -> 46 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 重新登录流式任务强制串行，并新增批量注册 mailbox 服务构造、别名父邮箱识别和 provider 兼容映射。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 重新登录请求参数改为单账号执行。
+  - tests/test_sub2api_management.py: 新增别名邮箱读取父邮箱收件箱和重新登录串行执行回归测试。
+  - docs/sub2api-management.md: 更新错误账号重新登录串行执行、别名邮箱读码和 provider 映射说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/sub2api_management.py 中 `_build_relogin_mailbox_email_service`、`_run_protocol_relogin` 邮箱服务替换和 `relogin_error_account_events` 串行改动；撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `concurrency: 1`；撤销 tests/test_sub2api_management.py 本轮新增/调整测试；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可回到上一版并发与 get_rt callback 读码方式。
+
+## 2026-07-04 - Task: Sub2API错误账号重新登录别名邮箱父账号精确读码
+
+### What was done
+- 修复错误账号重新登录读取 plus 别名邮箱验证码时，重建 `EmailAliasMailbox` 后只从元数据恢复父邮箱导致父邮箱地址被统一转小写的问题。
+- 重新登录会优先选择带 `alias_parent_email` / `email_alias` 的完整邮箱资源；当同一账号同时保存薄的 `outlook_email_api` 资源和完整 `outlook_email` 资源时，不再误用缺少父邮箱上下文的薄资源。
+- 为重建的别名邮箱 wrapper 预置父邮箱对象，保持批量注册运行时的行为一致，读码时使用真实父邮箱对象和原始大小写邮箱地址。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py tests\test_sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 11 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_k12_join.py -q` -> 46 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 重新登录邮箱资源按别名完整度排序，并在 alias wrapper 中预置原始父邮箱对象。
+  - tests/test_sub2api_management.py: 增加薄资源排在完整资源前时仍使用原始父邮箱读码的回归覆盖。
+  - docs/sub2api-management.md: 更新别名邮箱资源选择和父邮箱原始大小写保留说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/sub2api_management.py 中 mailbox resource 排序、`metadata.email` 父邮箱优先和 `_parents_by_alias` 预置逻辑；撤销 tests/test_sub2api_management.py 本轮测试调整；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可回到上一版别名邮箱重建逻辑。
+
+## 2026-07-04 - Task: outlookEmail别名验证码按收件人过滤
+
+### What was done
+- 修复同一主邮箱下连续重新登录多个 plus 别名时，可能从父邮箱收件箱取到其他别名 OTP，导致当前登录会话校验返回 `validate_otp_http_409 invalid_state` 的问题。
+- outlookEmail 邮件数据如果包含 `to` / `to_recipients` / `delivered_to` 等收件人字段，读码时会按当前别名地址过滤；没有收件人字段时保持原行为，避免影响不提供收件人信息的 provider 响应。
+- 补充回归测试，覆盖父邮箱中同时存在别名 A 和别名 B 验证码时，别名 B 只能读取自己的验证码。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py tests\test_outlook_email_mailbox.py application\sub2api_management.py tests\test_sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py tests\test_sub2api_management.py -q` -> 35 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_k12_join.py -q` -> 46 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: 新增邮件收件人提取与别名匹配过滤，并在验证码轮询中跳过非当前别名邮件。
+  - tests/test_outlook_email_mailbox.py: 新增同一父邮箱多别名验证码过滤回归测试。
+  - docs/sub2api-management.md: 记录错误账号重新登录的别名 OTP 收件人过滤行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/outlook_email_mailbox.py 中 `_collect_email_values`、`_message_recipient_emails`、`_expected_alias_recipient`、`_matches_expected_recipient` 及 wait_for_code 调用点；撤销 tests/test_outlook_email_mailbox.py 本轮新增测试；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到不按别名收件人过滤的行为。
+
+## 2026-07-04 - Task: Sub2API实时日志自动滚动
+
+### What was done
+- Sub2API 管理页右侧实时日志面板新增自动滚动到底部逻辑，日志增加后默认展示最新日志。
+- 统一测活和重新登录日志追加方向，避免自动滚动到底部时仍显示旧日志。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 新增日志容器 ref 和日志长度变化后的自动滚动，并将测活日志改为追加到底部。
+  - docs/sub2api-management.md: 记录实时日志自动滚动到底部的页面行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `useRef`、`logPanelRef`、自动滚动 `useEffect` 和测活日志追加方向调整；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到手动滚动模式。
+
+## 2026-07-04 - Task: 保留OpenAI封禁账号OTP校验响应
+
+### What was done
+- 修复协议登录 `email-otp/validate` 首次返回账号已删除或停用时，被后续补 Sentinel 二次提交覆盖成 `invalid_state` 的问题。
+- 现在首次 validate 响应包含 `account_deactivated` 或 `deleted or deactivated` 时会直接返回该响应，让 Sub2API 错误账号重新登录流程能识别封禁并删除远端账号。
+- 补充回归测试，覆盖首次封禁响应后不会再重复提交 OTP。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_sub2api_management.py -q` -> 28 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q` -> 30 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: `_validate_platform_login_otp` 在账号删除或停用响应时保留首次响应，不再二次提交 OTP。
+  - tests/test_chatgpt_protocol_otp.py: 新增封禁响应不被 invalid_state 覆盖的回归测试。
+  - docs/sub2api-management.md: 记录协议登录保留封禁响应并交给远端删除流程处理。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/register.py 中 `_validate_platform_login_otp` 对 `_is_deleted_or_deactivated_account_response` 的提前返回；撤销 tests/test_chatgpt_protocol_otp.py 本轮新增测试；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到非 200 validate 后继续补 Sentinel 重试的行为。
+
+## 2026-07-04 - Task: Sub2API账号列表前端缓存
+
+### What was done
+- Sub2API 管理页账号列表首次加载成功后按当前筛选条件缓存在前端模块内，再次进入同一筛选范围时直接使用缓存，不重新请求远端接口。
+- 右上角 `刷新` 按钮改为强制刷新，会清空已有缓存并重新拉取当前列表。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 新增 inventory 模块级缓存、缓存命中复用逻辑，以及刷新按钮强制刷新。
+  - docs/sub2api-management.md: 记录账号列表前端缓存和手动刷新行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `InventoryCacheEntry`、`inventoryCache`、`inventoryCacheKey`、`applyInventory` 和 `load({ force })` 调整；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到每次进入自动请求远端列表。
+
+## 2026-07-04 - Task: Sub2API实时日志渲染防卡顿
+
+### What was done
+- Sub2API 管理页实时日志改为完整日志内存缓冲与页面展示分离，复制日志仍保留完整内容。
+- 页面只渲染最近 120 条日志，单条超长日志展示时截断到 800 字符并提示复制完整日志，避免大量 DOM 文本导致页面卡死。
+- 更新实时日志提示文案，让用户明确页面展示不是完整日志来源。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 新增完整日志 ref 缓冲、可见日志条数限制、单条展示截断和复制完整日志逻辑。
+  - docs/sub2api-management.md: 记录实时日志完整缓冲、页面限量展示和复制完整日志行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `VISIBLE_LOG_LIMIT`、`VISIBLE_LOG_MESSAGE_LIMIT`、`toVisibleLog`、`fullCheckLogsRef`、`resetLiveLogs`、`appendLog` 和复制日志改动；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到页面 state 直接保存并渲染全部近期日志的模式。
+
+## 2026-07-04 - Task: Sub2API实时日志底部跟随优化
+
+### What was done
+- Sub2API 管理页实时日志自动滚动改为底部哨兵跟随模式，新增日志后通过底部节点滚动到最新内容。
+- 用户手动滚离底部时暂停强制自动滚动，避免查看历史日志时被新日志打断；页面显示 `回到底部` 按钮，点击后恢复自动跟随。
+- 新任务开始时重置为跟随底部，保证批量测活和重新登录任务默认展示最新日志。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 新增底部哨兵 ref、日志滚动跟随状态、滚动暂停判断和 `回到底部` 操作。
+  - docs/sub2api-management.md: 更新实时日志自动滚动交互说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `logPaused`、`logBottomRef`、`shouldFollowLogRef`、`handleLogScroll`、`resumeLogFollow`、底部哨兵节点和 `回到底部` 按钮；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到每次日志增加都直接滚到底部的模式。

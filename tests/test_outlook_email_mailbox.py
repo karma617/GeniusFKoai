@@ -7,7 +7,7 @@ import pytest
 import requests
 
 from core import outlook_email_mailbox as outlook_module
-from core.base_mailbox import create_mailbox
+from core.base_mailbox import MailboxAccount, create_mailbox
 from core.outlook_email_mailbox import OutlookEmailMailbox
 from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
 
@@ -745,6 +745,48 @@ def test_outlook_email_plus_reads_messages_with_claim_token_when_legacy_emails_m
     assert session.calls[1]["kwargs"]["params"]["folder"] == "inbox"
     assert session.calls[1]["kwargs"]["params"]["claim_token"] == "claim-token"
     assert session.calls[2]["kwargs"]["params"]["folder"] == "junkemail"
+
+
+def test_outlook_email_filters_alias_recipient_when_parent_inbox_has_multiple_alias_codes(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "emails": [
+                            {
+                                "id": "wrong-alias",
+                                "subject": "OpenAI verification code",
+                                "content_preview": "Your code is 111111",
+                                "to_recipients": [{"email": "parent+a@outlook.com"}],
+                            },
+                            {
+                                "id": "right-alias",
+                                "subject": "OpenAI verification code",
+                                "content_preview": "Your code is 222222",
+                                "to_recipients": [{"email": "parent+b@outlook.com"}],
+                            },
+                        ]
+                    },
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        email_folder="inbox",
+    )
+    account = MailboxAccount(
+        email="parent@outlook.com",
+        account_id="parent-1",
+        extra={"email_alias": {"alias_email": "parent+b@outlook.com"}},
+    )
+
+    assert mailbox.wait_for_code(account, keyword="OpenAI", timeout=1) == "222222"
 
 
 def test_outlook_email_plus_temporary_502_keeps_polling_for_code(monkeypatch):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from platforms.chatgpt.constants import OPENAI_PAGE_TYPES
 from platforms.chatgpt import register as register_module
 from platforms.chatgpt.register import RegistrationEngine, SentinelPayload, SignupFormResult
@@ -62,12 +64,36 @@ class _InvalidStateResponse:
         }
 
 
+class _DeactivatedResponse:
+    status_code = 403
+    text = (
+        '{"error":{"code":"account_deactivated","message":"You do not have an account '
+        'because it has been deleted or deactivated."}}'
+    )
+
+    def json(self):
+        return {
+            "error": {
+                "code": "account_deactivated",
+                "message": "You do not have an account because it has been deleted or deactivated.",
+            }
+        }
+
+
 class _OtpSuccessResponse:
     status_code = 200
     text = '{"page":{"type":"about_you"}}'
 
     def json(self):
         return {"page": {"type": "about_you"}, "continue_url": "https://auth.openai.com/continue"}
+
+
+class _SentinelResponse:
+    status_code = 200
+    text = '{"token":"legacy-c","proofofwork":{"required":false}}'
+
+    def json(self):
+        return {"token": "legacy-c", "proofofwork": {"required": False}}
 
 
 class _AuthorizeResponse:
@@ -136,6 +162,7 @@ def _bare_engine() -> RegistrationEngine:
     engine._otp_continue_url = None
     engine._otp_page_type = None
     engine._email_otp_exhausted = False
+    engine.protocol_fingerprint = register_module.ProtocolFingerprint.create()
     return engine
 
 
@@ -195,6 +222,90 @@ def test_signup_form_recovers_from_invalid_state_by_reauthorizing():
     assert session.gets[0][0] == engine.oauth_start.auth_url
     assert session.cookies.cleared
     assert any("invalid_state" in message for message in engine.logs)
+
+
+def test_check_sentinel_prefers_quickjs_token(monkeypatch):
+    from platforms.chatgpt.authflow_experimental import sentinel_quickjs
+
+    engine = _bare_engine()
+
+    class FakeHTTPClient:
+        default_headers = {"User-Agent": "ua-test"}
+        session = object()
+
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("legacy sentinel should not be called")
+
+    monkeypatch.setattr(
+        sentinel_quickjs,
+        "get_sentinel_token_via_quickjs",
+        lambda *_args, **_kwargs: json.dumps(
+            {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "authorize_continue"}
+        ),
+    )
+    engine.http_client = FakeHTTPClient()
+
+    payload = engine._check_sentinel("device-id", flow="authorize_continue")
+
+    assert payload == SentinelPayload(p="quick-p", t="quick-t", c="quick-c", flow="authorize_continue")
+    assert any("QuickJS Sentinel 已启用" in message for message in engine.logs)
+
+
+def test_check_sentinel_falls_back_to_legacy_when_quickjs_missing(monkeypatch):
+    from platforms.chatgpt.authflow_experimental import sentinel_quickjs
+
+    engine = _bare_engine()
+    calls = {"legacy": 0}
+
+    class FakeHTTPClient:
+        default_headers = {"User-Agent": "ua-test"}
+        session = object()
+
+        def post(self, *_args, **_kwargs):
+            calls["legacy"] += 1
+            return _SentinelResponse()
+
+    monkeypatch.setattr(sentinel_quickjs, "get_sentinel_token_via_quickjs", lambda *_args, **_kwargs: None)
+    engine.http_client = FakeHTTPClient()
+
+    payload = engine._check_sentinel("device-id", flow="username_password_create")
+
+    assert payload is not None
+    assert payload.t == ""
+    assert payload.c == "legacy-c"
+    assert payload.flow == "username_password_create"
+    assert calls["legacy"] == 1
+
+
+def test_platform_sentinel_header_prefers_quickjs_token(monkeypatch):
+    from platforms.chatgpt.authflow_experimental import sentinel_quickjs
+
+    engine = _bare_engine()
+
+    class FakeClient:
+        default_headers = {"User-Agent": "ua-test"}
+        session = object()
+
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("legacy sentinel should not be called")
+
+    monkeypatch.setattr(
+        sentinel_quickjs,
+        "get_sentinel_token_via_quickjs",
+        lambda *_args, **_kwargs: json.dumps(
+            {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "oauth_create_account"}
+        ),
+    )
+
+    header = engine._build_sentinel_header_for_client(FakeClient(), "device-id", "oauth_create_account")
+
+    assert json.loads(header) == {
+        "p": "quick-p",
+        "t": "quick-t",
+        "c": "quick-c",
+        "id": "device-id",
+        "flow": "oauth_create_account",
+    }
 
 
 def test_protocol_email_otp_signup_sends_otp_without_password_step():
@@ -450,6 +561,30 @@ def test_validate_verification_code_recovers_from_invalid_state(monkeypatch):
     assert engine._validate_verification_code("111111") is True
     assert events == {"start": 1, "send": 1, "refresh_seen": 1}
     assert engine._otp_page_type == "about_you"
+
+
+def test_platform_login_validate_preserves_deactivated_response_without_retry():
+    engine = _bare_engine()
+
+    class Session:
+        def __init__(self):
+            self.posts = 0
+
+        def post(self, url, headers=None, data=None, **kwargs):
+            self.posts += 1
+            if self.posts == 1:
+                return _DeactivatedResponse()
+            return _InvalidStateResponse()
+
+    client = type("Client", (), {"session": Session(), "default_headers": {"User-Agent": "Mozilla/5.0 Chrome/136"}})()
+    engine._build_sentinel_header_for_client = lambda *_args, **_kwargs: "sentinel"
+
+    response = engine._validate_platform_login_otp(client, "device-id", "123456")
+
+    assert response.status_code == 403
+    assert "deleted or deactivated" in response.text
+    assert client.session.posts == 1
+    assert any("保留首次响应不重复提交 OTP" in message for message in engine.logs)
 
 
 def test_create_user_account_deletes_mailbox_when_openai_marks_email_deactivated():
