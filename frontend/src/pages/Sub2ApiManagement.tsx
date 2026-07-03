@@ -3,7 +3,7 @@ import { Activity, AlertTriangle, RefreshCw, RotateCw, Search } from 'lucide-rea
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { apiFetch, cn } from '@/lib/utils'
+import { API_BASE, apiFetch, cn, getAuthToken } from '@/lib/utils'
 
 type Sub2ApiGroup = {
   id: number
@@ -31,6 +31,23 @@ type ActionResult = {
   message?: string
   reason?: string
   marked_error?: boolean
+}
+
+type CheckLog = {
+  id: number
+  account_id?: string
+  message: string
+  result?: string
+  tone: 'success' | 'danger' | 'warning' | 'secondary'
+  at: string
+}
+
+type CheckSummary = {
+  ok?: number
+  failed?: number
+  rate_limited?: number
+  skipped?: number
+  marked_error?: number
 }
 
 function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'secondary' {
@@ -62,6 +79,10 @@ export default function Sub2ApiManagement() {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [lastResults, setLastResults] = useState<ActionResult[]>([])
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [checkLogs, setCheckLogs] = useState<CheckLog[]>([])
+  const [liveSummary, setLiveSummary] = useState<CheckSummary | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -75,6 +96,7 @@ export default function Sub2ApiManagement() {
       setGroups(data.groups || [])
       setAccounts(data.accounts || [])
       setSelectedIds(new Set())
+      setPage(1)
     } catch (err: any) {
       setError(err?.message || String(err))
     } finally {
@@ -99,6 +121,21 @@ export default function Sub2ApiManagement() {
     return { total, active, errorCount, k12 }
   }, [accounts])
 
+  const pageCount = Math.max(1, Math.ceil(accounts.length / pageSize))
+  const currentPage = Math.min(page, pageCount)
+  const pageAccounts = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return accounts.slice(start, start + pageSize)
+  }, [accounts, currentPage, pageSize])
+  const accountLabelById = useMemo(() => {
+    const labels = new Map<string, string>()
+    accounts.forEach((item) => {
+      if (!item.id) return
+      labels.set(item.id, item.email || item.name || `#${item.id}`)
+    })
+    return labels
+  }, [accounts])
+
   const toggleSelected = (accountId: string) => {
     setSelectedIds((current) => {
       const next = new Set(current)
@@ -110,9 +147,71 @@ export default function Sub2ApiManagement() {
 
   const toggleAll = () => {
     setSelectedIds((current) => {
-      if (current.size === accounts.length) return new Set()
-      return new Set(accounts.map((item) => item.id).filter(Boolean))
+      const pageIds = pageAccounts.map((item) => item.id).filter(Boolean)
+      const allPageSelected = pageIds.length > 0 && pageIds.every((id) => current.has(id))
+      const next = new Set(current)
+      if (allPageSelected) {
+        pageIds.forEach((id) => next.delete(id))
+      } else {
+        pageIds.forEach((id) => next.add(id))
+      }
+      return next
     })
+  }
+
+  const appendCheckResultLog = (event: any) => {
+    const accountId = event.account_id ? String(event.account_id) : ''
+    const label = accountLabelById.get(accountId) || (accountId ? `#${accountId}` : '未知账号')
+    const result = String(event.result || '')
+    const markedError = Boolean(event.marked_error)
+    let message = `${label} 测活跳过`
+    let tone: CheckLog['tone'] = 'secondary'
+    if (result === 'ok') {
+      message = `${label} 请求对话成功，状态正常`
+      tone = 'success'
+    } else if (result === 'dead') {
+      message = `${label} 请求对话失败，状态异常${markedError ? '，已标记错误' : '，标记错误失败'}`
+      tone = 'danger'
+    } else if (result === 'rate_limited') {
+      message = `${label} 请求对话达到额度限制，等待冷却，未标记错误`
+      tone = 'warning'
+    } else if (event.reason) {
+      message = `${label} 测活跳过：${String(event.reason)}`
+    }
+    const item: CheckLog = {
+      id: Date.now() + Math.random(),
+      account_id: accountId,
+      message,
+      result,
+      tone,
+      at: new Date().toLocaleTimeString(),
+    }
+    setCheckLogs((current) => [item, ...current].slice(0, 300))
+  }
+
+  const handleCheckEvent = (event: any) => {
+    if (!event || typeof event !== 'object') return
+    if (event.summary) setLiveSummary(event.summary)
+    if (event.event === 'bulk_finished') {
+      setLastResults(event.results || [])
+      const summary = event.summary || {}
+      setMessage(`测活完成：正常 ${summary.ok || 0}，异常 ${summary.failed || 0}，限流 ${summary.rate_limited || 0}，已标错误 ${summary.marked_error || 0}，跳过 ${summary.skipped || 0}`)
+      return
+    }
+    if (event.event === 'bulk_failed') {
+      setError(event.message || '批量测活失败')
+      setCheckLogs((current) => [{
+        id: Date.now() + Math.random(),
+        message: event.message || '批量测活失败',
+        result: 'failed',
+        tone: 'danger',
+        at: new Date().toLocaleTimeString(),
+      }, ...current])
+      return
+    }
+    if (event.event === 'account_finished') {
+      appendCheckResultLog(event)
+    }
   }
 
   const runBulkCheck = async () => {
@@ -124,14 +223,46 @@ export default function Sub2ApiManagement() {
     setError('')
     setMessage('')
     setLastResults([])
+    setLiveSummary(null)
+    setCheckLogs([])
     try {
-      const data = await apiFetch('/sub2api-management/bulk-check', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      const token = getAuthToken()
+      if (token) headers.Authorization = `Bearer ${token}`
+      const response = await fetch(`${API_BASE}/sub2api-management/bulk-check/stream`, {
         method: 'POST',
+        headers,
         body: JSON.stringify({ account_ids: selectedOrVisibleIds, concurrency: 10 }),
       })
-      const summary = data.summary || {}
-      setLastResults(data.results || [])
-      setMessage(`测活完成：正常 ${summary.ok || 0}，异常 ${summary.failed || 0}，已标错误 ${summary.marked_error || 0}，跳过 ${summary.skipped || 0}`)
+      if (!response.ok) throw new Error(await response.text())
+      if (!response.body) throw new Error('浏览器不支持流式读取测活日志')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop() || ''
+        for (const chunk of chunks) {
+          const data = chunk
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trim())
+            .join('\n')
+          if (!data) continue
+          handleCheckEvent(JSON.parse(data))
+        }
+      }
+      if (buffer.trim()) {
+        const data = buffer
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
+          .join('\n')
+        if (data) handleCheckEvent(JSON.parse(data))
+      }
       await load()
     } catch (err: any) {
       setError(err?.message || String(err))
@@ -271,6 +402,7 @@ export default function Sub2ApiManagement() {
       )}
 
       <Card className="overflow-hidden border border-[var(--border)] p-0">
+        <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_420px]">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[980px] text-sm">
             <thead className="border-b border-[var(--border)] bg-[var(--bg-pane)] text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
@@ -278,7 +410,7 @@ export default function Sub2ApiManagement() {
                 <th className="w-10 px-4 py-3">
                   <input
                     type="checkbox"
-                    checked={accounts.length > 0 && selectedIds.size === accounts.length}
+                    checked={pageAccounts.length > 0 && pageAccounts.every((item) => selectedIds.has(item.id))}
                     onChange={toggleAll}
                     className="h-4 w-4 accent-[var(--accent)]"
                   />
@@ -292,7 +424,7 @@ export default function Sub2ApiManagement() {
               </tr>
             </thead>
             <tbody>
-              {accounts.map((account) => (
+              {pageAccounts.map((account) => (
                 <tr key={account.id} className="border-b border-[var(--border-soft)] hover:bg-[var(--bg-hover)]">
                   <td className="px-4 py-3">
                     <input
@@ -330,6 +462,83 @@ export default function Sub2ApiManagement() {
               )}
             </tbody>
           </table>
+          {accounts.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] px-4 py-3 text-xs text-[var(--text-muted)]">
+              <div className="flex flex-wrap items-center gap-2">
+                <span>
+                  当前 {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, accounts.length)} / {accounts.length}
+                </span>
+                <label className="flex items-center gap-1">
+                  <span>每页</span>
+                  <select
+                    value={pageSize}
+                    onChange={(event) => {
+                      setPageSize(Number(event.target.value))
+                      setPage(1)
+                    }}
+                    className="control-surface h-8 w-20 py-0 text-xs"
+                  >
+                    {[10, 20, 50, 100].map((value) => (
+                      <option key={value} value={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setPage(1)} disabled={currentPage <= 1}>首页</Button>
+                <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={currentPage <= 1}>上一页</Button>
+                <span className="px-2">第 {currentPage} / {pageCount} 页</span>
+                <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={currentPage >= pageCount}>下一页</Button>
+                <Button variant="outline" size="sm" onClick={() => setPage(pageCount)} disabled={currentPage >= pageCount}>末页</Button>
+              </div>
+            </div>
+          )}
+        </div>
+        <aside className="border-t border-[var(--border)] bg-[var(--bg-pane)] lg:border-l lg:border-t-0">
+          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+            <div>
+              <div className="text-sm font-semibold text-[var(--text-primary)]">实时日志</div>
+              <div className="text-xs text-[var(--text-muted)]">
+                {checking ? '测活进行中' : '批量测活日志会显示在这里'}
+              </div>
+            </div>
+            {liveSummary && (
+              <Badge variant="secondary">
+                正常 {liveSummary.ok || 0} / 异常 {liveSummary.failed || 0} / 限流 {liveSummary.rate_limited || 0}
+              </Badge>
+            )}
+          </div>
+          <div className="max-h-[620px] space-y-2 overflow-y-auto p-3">
+            {checkLogs.length === 0 && (
+              <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-xs text-[var(--text-muted)]">
+                点击“批量测活”后，这里只显示每个账号的最终测活结果，避免高频日志刷新卡顿。
+              </div>
+            )}
+            {checkLogs.map((item) => (
+              <div key={item.id} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-2 text-xs">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[var(--text-muted)]">{item.at}</span>
+                  {item.result && (
+                    <Badge variant={item.tone}>
+                      {item.result}
+                    </Badge>
+                  )}
+                </div>
+                <div
+                  className={cn(
+                    'mt-1 whitespace-pre-wrap break-words font-medium',
+                    item.tone === 'success' && 'text-emerald-600 dark:text-emerald-300',
+                    item.tone === 'danger' && 'text-red-600 dark:text-red-300',
+                    item.tone === 'warning' && 'text-amber-600 dark:text-amber-300',
+                    item.tone === 'secondary' && 'text-[var(--text-primary)]',
+                  )}
+                >
+                  {item.message}
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
         </div>
       </Card>
 

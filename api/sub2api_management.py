@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from application.sub2api_management import DEFAULT_TEST_MODEL, Sub2ApiManagementService
@@ -45,6 +48,30 @@ def bulk_check_sub2api_accounts(body: BulkCheckRequest):
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Sub2API 批量测活失败: {exc}") from exc
+
+
+@router.post("/bulk-check/stream")
+def stream_bulk_check_sub2api_accounts(body: BulkCheckRequest):
+    try:
+        events = service.bulk_check_events(
+            account_ids=body.account_ids,
+            model_id=body.model_id or DEFAULT_TEST_MODEL,
+            concurrency=body.concurrency,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"Sub2API 批量测活失败: {exc}") from exc
+
+    def generate():
+        try:
+            for event in events:
+                yield "data: " + json.dumps(event, ensure_ascii=False, default=str) + "\n\n"
+        except Exception as exc:
+            payload = {"event": "bulk_failed", "ok": False, "message": str(exc)}
+            yield "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/relogin-errors")

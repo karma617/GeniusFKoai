@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,6 +53,17 @@ def _is_phone_required(value: Any) -> bool:
 def _is_error_status(value: Any) -> bool:
     text = str(value or "").strip().lower()
     return text in {"error", "errored", "failed", "invalid", "错误", "异常"}
+
+
+def _is_usage_limit_error(value: Any) -> bool:
+    text = str(value or "").lower()
+    return (
+        "usage_limit_reached" in text
+        or "usage limit has been reached" in text
+        or '"type":"usage_limit_reached"' in text
+        or "api returned 429" in text
+        or "http 429" in text
+    )
 
 
 def _account_plan_type(item: dict[str, Any]) -> str:
@@ -287,14 +299,26 @@ class Sub2ApiManagementService:
         except Exception as exc:
             return False, str(exc)
 
-    def test_account(self, ctx: Sub2ApiContext, account_id: str, *, model_id: str = DEFAULT_TEST_MODEL) -> tuple[str, str]:
+    def test_account(
+        self,
+        ctx: Sub2ApiContext,
+        account_id: str,
+        *,
+        model_id: str = DEFAULT_TEST_MODEL,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> tuple[str, str]:
         from curl_cffi import requests as cffi_requests
+
+        def emit(event: dict[str, Any]) -> None:
+            if callable(event_callback):
+                event_callback({"account_id": account_id, **event})
 
         headers = {
             "Accept": "text/event-stream, application/json",
             "Content-Type": "application/json",
             "Authorization": f"Bearer {ctx.token}",
         }
+        emit({"event": "request_started", "message": f"发起模型测活请求 model={model_id}"})
         try:
             response = cffi_requests.post(
                 f"{ctx.origin}/api/v1/admin/accounts/{account_id}/test",
@@ -302,15 +326,35 @@ class Sub2ApiManagementService:
                 data=json.dumps({"model_id": model_id}, ensure_ascii=False).encode("utf-8"),
                 timeout=60,
                 impersonate="chrome110",
+                stream=True,
             )
         except Exception as exc:
-            return "skipped", f"test request failed: {exc}"
+            reason = f"test request failed: {exc}"
+            emit({"event": "request_failed", "result": "skipped", "message": reason})
+            return "skipped", reason
 
-        if int(getattr(response, "status_code", 0) or 0) != 200:
-            return "skipped", f"HTTP {getattr(response, 'status_code', 0)}"
-        text = getattr(response, "text", "") or ""
-        for line in text.splitlines():
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if status_code != 200:
+            text = getattr(response, "text", "") or ""
+            reason = _short_error(f"HTTP {status_code}: {text}")
+            if status_code == 429 or _is_usage_limit_error(reason):
+                emit({"event": "rate_limited", "result": "rate_limited", "message": reason})
+                return "rate_limited", reason
+            emit({"event": "request_failed", "result": "skipped", "message": reason})
+            return "skipped", reason
+
+        saw_terminal = False
+        saw_line = False
+        try:
+            line_iter = response.iter_lines()
+        except Exception:
+            line_iter = []
+        for raw_line in line_iter:
+            line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else str(raw_line or "")
             line = line.strip()
+            if not line:
+                continue
+            saw_line = True
             if not line.startswith("data:"):
                 continue
             raw = line[5:].strip()
@@ -321,11 +365,88 @@ class Sub2ApiManagementService:
             except Exception:
                 continue
             event_type = str(event.get("type") or "")
+            text = _normalize_string(
+                event.get("content")
+                or event.get("text")
+                or event.get("message")
+                or event.get("delta")
+                or event.get("response")
+            )
+            if text:
+                emit({"event": "model_message", "message": _short_error(text, 500), "raw": event})
             if event_type == "test_complete":
-                return ("ok", "test completed") if event.get("success") else ("dead", _short_error(event.get("error") or event.get("text")))
+                saw_terminal = True
+                message = _short_error(event.get("error") or event.get("text") or text or "test completed", 500)
+                if event.get("success"):
+                    emit({"event": "completed", "result": "ok", "message": message})
+                    return "ok", message
+                if _is_usage_limit_error(message):
+                    emit({"event": "completed", "result": "rate_limited", "message": message})
+                    return "rate_limited", message
+                emit({"event": "completed", "result": "dead", "message": message})
+                return "dead", message
             if event_type == "error":
-                return "dead", _short_error(event.get("error") or event.get("text"))
-        return "skipped", "no terminal SSE event"
+                saw_terminal = True
+                message = _short_error(event.get("error") or event.get("text") or text, 500)
+                if _is_usage_limit_error(message):
+                    emit({"event": "completed", "result": "rate_limited", "message": message})
+                    return "rate_limited", message
+                emit({"event": "completed", "result": "dead", "message": message})
+                return "dead", message
+
+        if not saw_line:
+            text = getattr(response, "text", "") or ""
+            if text:
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(raw)
+                    except Exception:
+                        continue
+                    message = _short_error(event.get("error") or event.get("text") or event.get("message"), 500)
+                    if message:
+                        emit({"event": "model_message", "message": message, "raw": event})
+                    if str(event.get("type") or "") == "test_complete":
+                        if event.get("success"):
+                            emit({"event": "completed", "result": "ok", "message": message or "test completed"})
+                            return "ok", message or "test completed"
+                        if _is_usage_limit_error(message):
+                            emit({"event": "completed", "result": "rate_limited", "message": message})
+                            return "rate_limited", message
+                        emit({"event": "completed", "result": "dead", "message": message})
+                        return "dead", message
+                    if str(event.get("type") or "") == "error":
+                        if _is_usage_limit_error(message):
+                            emit({"event": "completed", "result": "rate_limited", "message": message})
+                            return "rate_limited", message
+                        emit({"event": "completed", "result": "dead", "message": message})
+                        return "dead", message
+        reason = "no terminal SSE event" if not saw_terminal else "missing terminal result"
+        emit({"event": "request_finished", "result": "skipped", "message": reason})
+        return "skipped", reason
+
+    @staticmethod
+    def _empty_summary() -> dict[str, int]:
+        return {"ok": 0, "failed": 0, "rate_limited": 0, "skipped": 0, "marked_error": 0}
+
+    @staticmethod
+    def _apply_check_result_to_summary(summary: dict[str, int], result: str, marked_error: bool) -> None:
+        if result == "ok":
+            summary["ok"] += 1
+        elif result == "dead":
+            summary["failed"] += 1
+        elif result == "rate_limited":
+            summary["rate_limited"] += 1
+            summary["skipped"] += 1
+        else:
+            summary["skipped"] += 1
+        if marked_error:
+            summary["marked_error"] += 1
 
     def bulk_check(
         self,
@@ -340,7 +461,7 @@ class Sub2ApiManagementService:
             raise ValueError("请选择至少一个 Sub2API 账号")
         max_workers = max(1, min(int(concurrency or 10), 50, len(unique_ids)))
         lock = threading.Lock()
-        summary = {"ok": 0, "failed": 0, "skipped": 0, "marked_error": 0}
+        summary = self._empty_summary()
         results: list[dict[str, Any]] = []
 
         def worker(account_id: str) -> dict[str, Any]:
@@ -349,14 +470,7 @@ class Sub2ApiManagementService:
             if result == "dead":
                 marked_error = self.set_account_error(ctx, account_id)
             with lock:
-                if result == "ok":
-                    summary["ok"] += 1
-                elif result == "dead":
-                    summary["failed"] += 1
-                else:
-                    summary["skipped"] += 1
-                if marked_error:
-                    summary["marked_error"] += 1
+                self._apply_check_result_to_summary(summary, result, marked_error)
             return {
                 "account_id": account_id,
                 "result": result,
@@ -369,6 +483,90 @@ class Sub2ApiManagementService:
             for future in as_completed(futures):
                 results.append(future.result())
         return {"ok": True, "summary": summary, "results": sorted(results, key=lambda item: unique_ids.index(item["account_id"]))}
+
+    def bulk_check_events(
+        self,
+        *,
+        account_ids: list[str],
+        model_id: str = DEFAULT_TEST_MODEL,
+        concurrency: int = 10,
+    ):
+        ctx = self._context()
+        unique_ids = [item for item in dict.fromkeys(_normalize_string(x) for x in account_ids) if item]
+        if not unique_ids:
+            raise ValueError("请选择至少一个 Sub2API 账号")
+        max_workers = max(1, min(int(concurrency or 10), 50, len(unique_ids)))
+        events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        lock = threading.Lock()
+        summary = self._empty_summary()
+        results: list[dict[str, Any]] = []
+        order = {account_id: index for index, account_id in enumerate(unique_ids)}
+
+        yield {
+            "event": "bulk_started",
+            "total": len(unique_ids),
+            "concurrency": max_workers,
+            "model_id": model_id,
+            "summary": dict(summary),
+        }
+
+        def emit(event: dict[str, Any]) -> None:
+            events.put(event)
+
+        def worker(account_id: str) -> None:
+            result = "skipped"
+            reason = ""
+            marked_error = False
+            try:
+                result, reason = self.test_account(
+                    ctx,
+                    account_id,
+                    model_id=model_id,
+                )
+                if result == "dead":
+                    marked_error = self.set_account_error(ctx, account_id)
+            except Exception as exc:
+                result = "skipped"
+                reason = f"worker failed: {exc}"
+            item = {
+                "account_id": account_id,
+                "result": result,
+                "reason": reason,
+                "marked_error": marked_error,
+            }
+            with lock:
+                self._apply_check_result_to_summary(summary, result, marked_error)
+                results.append(item)
+                current_summary = dict(summary)
+            emit({
+                "event": "account_finished",
+                "account_id": account_id,
+                "result": result,
+                "reason": reason,
+                "marked_error": marked_error,
+                "summary": current_summary,
+            })
+
+        def run_all() -> None:
+            try:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(worker, account_id) for account_id in unique_ids]
+                    for future in as_completed(futures):
+                        future.result()
+                ordered = sorted(results, key=lambda item: order.get(item["account_id"], 0))
+                events.put({"event": "bulk_finished", "ok": True, "summary": dict(summary), "results": ordered})
+            except Exception as exc:
+                events.put({"event": "bulk_failed", "ok": False, "message": str(exc), "summary": dict(summary)})
+            finally:
+                events.put(None)
+
+        thread = threading.Thread(target=run_all, name="sub2api-bulk-check-stream", daemon=True)
+        thread.start()
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield event
 
     def relogin_error_accounts(
         self,

@@ -84,6 +84,29 @@ def test_bulk_check_marks_failed_accounts_error(monkeypatch):
     assert marked == ["2"]
 
 
+def test_bulk_check_does_not_mark_usage_limit_as_error(monkeypatch):
+    service = Sub2ApiManagementService()
+    monkeypatch.setattr(service, "_context", lambda: Sub2ApiContext("https://sub2api.test", "token"))
+    monkeypatch.setattr(
+        service,
+        "test_account",
+        lambda _ctx, account_id, model_id: (
+            "rate_limited",
+            'API returned 429: {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}',
+        ),
+    )
+    marked = []
+    monkeypatch.setattr(service, "set_account_error", lambda _ctx, account_id: marked.append(account_id) or True)
+
+    result = service.bulk_check(account_ids=["1"], concurrency=1)
+
+    assert result["summary"]["rate_limited"] == 1
+    assert result["summary"]["skipped"] == 1
+    assert result["summary"]["marked_error"] == 0
+    assert result["results"][0]["result"] == "rate_limited"
+    assert marked == []
+
+
 def test_relogin_deactivated_error_deletes_remote_account(monkeypatch):
     local = AccountRecord(id=1, platform="chatgpt", email="dead@example.com", password="pw")
     service = Sub2ApiManagementService(

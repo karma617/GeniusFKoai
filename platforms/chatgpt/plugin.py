@@ -551,6 +551,17 @@ class ChatGPTPlatform(BasePlatform):
         )
 
     def build_protocol_mailbox_adapter(self):
+        def _use_authflow_experimental(ctx) -> bool:
+            extra = ctx.extra or {}
+            variant = str(
+                extra.get("chatgpt_protocol_variant")
+                or extra.get("protocol_variant")
+                or ""
+            ).strip().lower()
+            if variant in {"authflow_experimental", "outlook_authflow", "gpt_outlook_authflow"}:
+                return True
+            return _bool_param(extra, "chatgpt_authflow_experimental", False)
+
         def _build_worker(ctx, artifacts):
             if getattr(ctx.identity, "identity_provider", "") == "sms_oauth":
                 from platforms.chatgpt.protocol_sms_oauth import ChatGPTProtocolSmsOAuthWorker
@@ -560,6 +571,18 @@ class ChatGPTPlatform(BasePlatform):
                     proxy_url=ctx.proxy,
                     log_fn=ctx.log,
                     phone_change_limit=max(_int_param(ctx.extra or {}, "phone_change_limit", 10), 1),
+                )
+
+            if _use_authflow_experimental(ctx):
+                from platforms.chatgpt.protocol_authflow import ChatGPTAuthFlowProtocolWorker
+
+                ctx.log("启用实验 AuthFlow 协议注册链路（gpt-outlook-register 移植版）")
+                return ChatGPTAuthFlowProtocolWorker(
+                    mailbox=self.mailbox,
+                    mailbox_account=ctx.identity.mailbox_account,
+                    proxy_url=ctx.proxy,
+                    log_fn=ctx.log,
+                    metadata_extra={"protocol_variant": "authflow_experimental"},
                 )
 
             from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker

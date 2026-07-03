@@ -1027,3 +1027,97 @@
 - docs/sub2api-management.md: 新增使用与验证说明。
 - progress.md: 追加本轮任务记录。
 - 回滚点：撤销上述新增文件，并从 `main.py` 删除 `sub2api_management_router` 注册；从 `frontend/src/App.tsx` 删除 `Sub2ApiManagement` 导入、菜单项和路由；从 `frontend/src/lib/i18n.ts` 删除 `nav.sub2apiManagement` 两处文案即可恢复。
+
+## 2026-07-04 - Task: 移植 gpt-outlook-register AuthFlow 实验纯协议链路
+
+### What was done
+- 将 `D:\work\ai\gpt-outlook-register` 的纯协议核心按独立实验功能移植到 ChatGPT 平台下，包含 AuthFlow、curl_cffi HTTP 会话、Sentinel PoW/QuickJS 和 JS wrapper。
+- 新增当前项目 mailbox 适配 worker：实验链路只复用当前项目已领取的邮箱账号和 `BaseMailbox.wait_for_code()`，不直接接入外部 Outlook 号池、外部 WebUI、SMS provider 或 CF 临时邮箱。
+- ChatGPT 协议注册新增显式分流参数 `chatgpt_protocol_variant=authflow_experimental`；默认仍走原 `RegistrationEngine`，不影响现有注册/邮箱/K12 流程。
+- 账号页 ChatGPT 批量注册弹窗新增默认关闭的“实验：AuthFlow 纯协议链路”开关，仅在 protocol 执行方式下向后端传递实验分流参数。
+- 补充实验链路说明文档，记录启用方式、邮箱对接边界和当前限制。
+
+### Testing
+- `py -3 -m py_compile platforms\chatgpt\protocol_authflow.py platforms\chatgpt\plugin.py platforms\chatgpt\authflow_experimental\auth_flow.py platforms\chatgpt\authflow_experimental\config.py platforms\chatgpt\authflow_experimental\http_client.py platforms\chatgpt\authflow_experimental\sentinel.py platforms\chatgpt\authflow_experimental\sentinel_quickjs.py tests\test_chatgpt_authflow_experimental.py` -> 通过。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_authflow_experimental.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 7 passed, 1 warning。
+- `py -3 -m pytest ...` -> 未通过，系统 Python 缺少 `sqlmodel`；已改用项目 `.venv` 复跑。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_authflow_experimental.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q` -> 19 passed, 1 failed, 1 warning；失败为现有 `test_validate_verification_code_recovers_from_invalid_state` 构造的 bare `RegistrationEngine` 缺 `protocol_fingerprint`，不在本轮新增分流路径。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/authflow_experimental/__init__.py: 新增实验 AuthFlow 子包入口。
+  - platforms/chatgpt/authflow_experimental/auth_flow.py: 移植外部 AuthFlow，并改为包内相对导入和当前项目密码输入优先。
+  - platforms/chatgpt/authflow_experimental/config.py: 移植外部最小 Config。
+  - platforms/chatgpt/authflow_experimental/http_client.py: 移植外部 curl_cffi TLS 指纹会话封装。
+  - platforms/chatgpt/authflow_experimental/sentinel.py: 移植外部 Sentinel PoW，并改为包内 QuickJS 导入。
+  - platforms/chatgpt/authflow_experimental/sentinel_quickjs.py: 移植外部 QuickJS Sentinel runner。
+  - platforms/chatgpt/authflow_experimental/openai_sentinel_quickjs.js: 移植外部 Sentinel JS wrapper。
+  - platforms/chatgpt/protocol_authflow.py: 新增当前项目 mailbox 到外部 AuthFlow 的适配 worker，并将结果映射成现有 ChatGPT 注册结果。
+  - platforms/chatgpt/plugin.py: 新增 `chatgpt_protocol_variant` / `chatgpt_authflow_experimental` 显式分流，不改变默认协议注册 worker。
+  - frontend/src/pages/Accounts.tsx: ChatGPT 批量注册弹窗新增实验链路开关，仅协议模式传参。
+  - frontend/.frontend-build.stamp: 前端构建更新构建指纹；该文件本轮开始前已处于修改状态。
+  - tests/test_chatgpt_authflow_experimental.py: 新增实验 worker 邮箱适配和平台分流回归测试。
+  - docs/chatgpt-authflow-experimental.md: 新增实验链路启用方式、边界和限制说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 `platforms/chatgpt/authflow_experimental/`、`platforms/chatgpt/protocol_authflow.py`、`tests/test_chatgpt_authflow_experimental.py`、`docs/chatgpt-authflow-experimental.md`；撤销 `platforms/chatgpt/plugin.py` 中 `_use_authflow_experimental` 和对应 worker 分流；撤销 `frontend/src/pages/Accounts.tsx` 中 `authflowExperimental` 状态、传参和 UI 开关；如需恢复构建指纹，重新运行当前前端构建或按目标版本还原 `frontend/.frontend-build.stamp`；移除 progress.md 本轮追加内容即可恢复到原协议注册链路。
+
+## 2026-07-04 - Task: Sub2Api管理分页、实时测活日志和限流保护
+
+### What was done
+- Sub2Api 管理页面账号列表新增客户端分页，默认每页 50 个账号；表头全选改为只选择当前页。
+- 批量测活新增流式 SSE 接口，前端点击后立即在列表右侧显示实时日志，包括账号开始处理、发起模型请求、模型返回内容、标记错误结果和批量汇总。
+- 测活结果新增 `rate_limited` 分类：远端返回 HTTP 429 或 `usage_limit_reached` / `The usage limit has been reached` 时只计入限流/跳过，不再把账号标记为 `error`。
+- Sub2API 管理文档补充分页、流式日志和限流保护规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 5 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - api/sub2api_management.py: 新增 `/bulk-check/stream` SSE 接口，流式返回批量测活事件。
+  - application/sub2api_management.py: 测活请求改为流式读取远端 SSE，新增实时事件、限流识别、`rate_limited` 汇总和不标错保护。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 新增每页 50 条分页、右侧实时日志面板、流式测活请求解析和限流汇总展示。
+  - tests/test_sub2api_management.py: 新增 429/usage_limit 不标记 error 的回归测试。
+  - docs/sub2api-management.md: 记录分页、实时日志和限流保护行为。
+  - frontend/.frontend-build.stamp: 前端构建更新构建指纹；该文件本轮开始前已处于修改状态。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 api/sub2api_management.py 中 `/bulk-check/stream`；撤销 application/sub2api_management.py 中 `bulk_check_events`、`rate_limited` 分类和流式读取改动；撤销 frontend/src/pages/Sub2ApiManagement.tsx 中分页与实时日志面板；撤销 tests/test_sub2api_management.py 和 docs/sub2api-management.md 本轮追加内容；按目标版本恢复 `frontend/.frontend-build.stamp`；移除 progress.md 本轮追加内容即可恢复到原先一次性批量测活结果返回方式。
+
+## 2026-07-04 - Task: Sub2Api管理分页大小可选
+
+### What was done
+- 将 Sub2Api 管理页账号列表默认分页大小从 50 调整为 10。
+- 在分页栏增加每页 10 / 20 / 50 / 100 的选择器，切换后回到第一页，表头全选仍只作用于当前页。
+- 更新 Sub2API 管理文档中的分页说明。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 默认每页 10 条，并新增每页条数选择器。
+  - docs/sub2api-management.md: 更新分页默认值和可选分页大小说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `pageSize` 状态和分页选择器，恢复固定每页 50 条；撤销 docs/sub2api-management.md 本轮分页说明改动；移除 progress.md 本轮追加内容即可恢复。
+
+## 2026-07-04 - Task: Sub2Api测活日志降频
+
+### What was done
+- 批量测活流式接口不再推送账号开始、模型返回片段、标记错误开始/结束等中间事件，只推送每个账号的最终测活结果和批量完成事件。
+- Sub2Api 管理页右侧日志改为每个账号只显示一条结果：成功显示“请求对话成功，状态正常”并用绿色；失败显示异常结果并用红色；限流冷却使用黄色。
+- 更新 Sub2API 管理文档，说明测活日志只展示最终结果，避免高频刷新卡顿。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py` -> 通过。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 流式批量测活只推送最终账号结果，减少 SSE 事件数量。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 只渲染 `account_finished` 结果日志，并按成功/失败/限流分别着色。
+  - docs/sub2api-management.md: 更新实时日志说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/sub2api_management.py 中 `bulk_check_events` 的中间事件推送；恢复 frontend/src/pages/Sub2ApiManagement.tsx 对所有测活事件的日志追加；撤销 docs/sub2api-management.md 本轮说明改动；移除 progress.md 本轮追加内容即可恢复到高频日志模式。

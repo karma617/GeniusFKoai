@@ -445,6 +445,7 @@ function RegisterModal({
   const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
   const [k12Join, setK12Join] = useState(false)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
+  const [authflowExperimental, setAuthflowExperimental] = useState(false)
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   const [enableEmailAlias, setEnableEmailAlias] = useState(false)
@@ -598,6 +599,9 @@ function RegisterModal({
       if (platform === 'chatgpt' && selection.executorType !== 'protocol') {
         extra.record_har = recordHar ? 'true' : ''
         extra.phone_change_limit = Math.max(Number(registerPhoneChangeLimit || 10), 1)
+      }
+      if (platform === 'chatgpt' && selection.executorType === 'protocol' && authflowExperimental) {
+        extra.chatgpt_protocol_variant = 'authflow_experimental'
       }
       if (platform === 'chatgpt' && enableEmailAlias) {
         extra.enable_email_alias = true
@@ -928,6 +932,26 @@ function RegisterModal({
                 )}
 
                 {/* chatgpt 平台特定：注册成功后自动获取支付链接（cashier_url）写回账号 extra */}
+                {platform === 'chatgpt' && (
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                    <input
+                      type="checkbox"
+                      checked={authflowExperimental}
+                      onChange={(e) => setAuthflowExperimental(e.target.checked)}
+                      disabled={selection.executorType !== 'protocol'}
+                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        实验：AuthFlow 纯协议链路
+                      </div>
+                      <div className="mt-0.5">
+                        使用 gpt-outlook-register 移植的 curl_cffi + Sentinel QuickJS authorize 状态机。仅协议模式生效，邮箱仍使用当前项目已选 mailbox provider。
+                      </div>
+                    </div>
+                  </label>
+                )}
+
                 {platform === 'chatgpt' && (
                   <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
