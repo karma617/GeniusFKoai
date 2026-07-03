@@ -22,6 +22,7 @@ import TaskHistory from "@/pages/TaskHistory";
 import CtfGptPlus from "@/pages/CtfGptPlus";
 import GoPayGptPlus from "@/pages/GoPayGptPlus";
 import PlusManager from "@/pages/PlusManager";
+import Sub2ApiManagement from "@/pages/Sub2ApiManagement";
 import UpdateBanner from "@/components/UpdateBanner";
 import {
   ChevronRight,
@@ -56,6 +57,7 @@ const WORKBENCH_ITEMS: NavItem[] = [
   { path: "/gopay-gpt-plus", labelKey: "nav.gopayGptPlus", icon: Sparkles },
   { path: "/plus-manager", labelKey: "nav.plusManager", icon: Sparkles },
   { path: "/accounts/chatgpt", labelKey: "nav.chatgptFree", icon: Users },
+  { path: "/sub2api-management", labelKey: "nav.sub2apiManagement", icon: Sparkles },
   { path: "/history", labelKey: "nav.tasks", icon: History },
 ];
 
@@ -519,6 +521,7 @@ function Shell({
               <Route path="/ctf-gpt-plus" element={<CtfGptPlus />} />
               <Route path="/gopay-gpt-plus" element={<GoPayGptPlus />} />
               <Route path="/plus-manager" element={<PlusManager />} />
+              <Route path="/sub2api-management" element={<Sub2ApiManagement />} />
               <Route path="/history" element={<TaskHistory />} />
               <Route path="/proxies" element={<Proxies />} />
               <Route

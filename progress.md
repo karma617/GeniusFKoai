@@ -1005,3 +1005,25 @@
   - docs/gmail-oauth-fission.md: 记录并发注册时的临时占用行为。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 core/gmail_oauth_mailbox.py 中 `_CLAIM_LOCK` / `_ACTIVE_CLAIMS` / active claim 相关逻辑；撤销 tests/test_gmail_oauth_mailbox.py 和 docs/gmail-oauth-fission.md 本轮追加内容；移除 progress.md 本轮追加内容即可恢复原先只按已注册记录跳过子号的行为。
+
+## 2026-07-04 - Task: 新增 Sub2Api管理菜单与远端账号管理
+### What was done
+- 在工作台 `ChatGPT Free` 与 `任务` 之间新增 `Sub2Api管理` 菜单和页面，页面可读取远端 Sub2API 分组、账号列表，并支持按分组、状态、账号名/邮箱筛选。
+- 新增 Sub2API 管理后端服务与 API，复用设置页已有 Sub2API 后台地址、登录邮箱、密码配置；批量测活通过远端 `/api/v1/admin/accounts/{id}/test` SSE 结果判断账号是否正常，异常账号会回写远端状态为 `error`。
+- 新增错误账号重新登录处理：封禁账号按 `account_deactivated` / `deleted or deactivated` 删除远端账号；手机接码页直接跳过；free 类型跳过不处理；k12 类型用新 ChatGPT Web session 完成 join/exchange 后删除旧远端账号并重新上传 K12 session。
+- 补充 Sub2API 管理文档，说明列表、测活、重新登录和 K12 workspace 来源规则。
+### Testing
+- `.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py main.py` -> 通过。
+- `.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py tests\test_sub2api_upload.py -q` -> 10 passed，1 个 StarletteDeprecationWarning。
+- `cd frontend; npm run -s build` -> 通过；Vite 保留 chunk size warning。
+### Notes
+- api/sub2api_management.py: 新增 Sub2API 管理 API 路由，提供远端列表、批量测活、错误账号重新登录入口。
+- application/sub2api_management.py: 新增远端分组/账号读取、测活标错、封禁删除、free 跳过、K12 session 替换上传的业务服务。
+- frontend/src/App.tsx: 新增 `Sub2Api管理` 菜单项和页面路由，位置在 `ChatGPT Free` 与 `任务` 之间。
+- frontend/src/lib/i18n.ts: 新增中英文菜单文案键 `nav.sub2apiManagement`。
+- frontend/src/pages/Sub2ApiManagement.tsx: 新增远端账号管理页面，包含筛选、列表、批量测活、错误账号重新登录和操作结果展示。
+- main.py: 注册 Sub2API 管理路由。
+- tests/test_sub2api_management.py: 新增服务级回归测试，覆盖分组筛选、测活标错、封禁删除、free 跳过。
+- docs/sub2api-management.md: 新增使用与验证说明。
+- progress.md: 追加本轮任务记录。
+- 回滚点：撤销上述新增文件，并从 `main.py` 删除 `sub2api_management_router` 注册；从 `frontend/src/App.tsx` 删除 `Sub2ApiManagement` 导入、菜单项和路由；从 `frontend/src/lib/i18n.ts` 删除 `nav.sub2apiManagement` 两处文案即可恢复。

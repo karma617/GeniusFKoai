@@ -79,6 +79,7 @@ from api.proxies import router as proxies_router
 from api.sms import router as sms_router
 from api.sms_pool import router as sms_pool_router
 from api.stats import router as stats_router
+from api.sub2api_management import router as sub2api_management_router
 from api.system import router as system_router
 from api.task_commands import router as task_commands_router
 from api.task_logs import router as task_logs_router
@@ -141,6 +142,7 @@ app.include_router(proxies_router, prefix="/api")
 app.include_router(sms_router, prefix="/api")
 app.include_router(sms_pool_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
+app.include_router(sub2api_management_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 app.include_router(task_commands_router, prefix="/api")
 app.include_router(task_logs_router, prefix="/api")
