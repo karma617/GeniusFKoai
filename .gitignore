@@ -49,6 +49,7 @@ data/
 # 环境变量
 .env
 .env.local
+scripts/chatgpt_workspace_join_config.json
 
 # 文档
 docs/

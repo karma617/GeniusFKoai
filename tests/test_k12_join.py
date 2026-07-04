@@ -78,7 +78,7 @@ def test_convert_session_to_sub2api_account_shape():
     account = info['sub2api_account']
     assert account['platform'] == 'openai'
     assert account['type'] == 'oauth'
-    assert account['credentials']['chatgpt_account_id'] == 'abc123'
+    assert account['credentials']['chatgpt_account_id'] == k12.K12_SUB2API_CHATGPT_ACCOUNT_ID
     assert account['credentials']['plan_type'] == 'k12'
     assert account['extra']['source'] == 'chatgpt_web_session'
     assert info['id_token'] is not None
@@ -115,7 +115,7 @@ def test_convert_session_prefers_access_token_chatgpt_account_id():
 
     assert info['account_id'] == 'abc123'
     assert info['user_id'] == 'user-1'
-    assert info['sub2api_account']['credentials']['chatgpt_account_id'] == 'abc123'
+    assert info['sub2api_account']['credentials']['chatgpt_account_id'] == k12.K12_SUB2API_CHATGPT_ACCOUNT_ID
     assert info['sub2api_account']['credentials']['chatgpt_user_id'] == 'user-1'
 
 
@@ -181,6 +181,7 @@ def test_upload_session_to_sub2api_k12_payload_does_not_set_rate_multiplier(monk
     assert ok is True
     assert message == "SUB2API 已创建账号 #789"
     assert "rate_multiplier" not in captured["body"]
+    assert captured["body"]["credentials"]["chatgpt_account_id"] == k12.K12_SUB2API_CHATGPT_ACCOUNT_ID
     assert captured["body"]["credentials"]["plan_type"] == "k12"
 
 
@@ -209,6 +210,7 @@ def test_upload_session_to_sub2api_uses_workspace_name(monkeypatch):
     assert ok is True
     assert message == "SUB2API 已创建账号 #790"
     assert captured["body"]["name"] == "k12-farrugia73367+8zvf73lv@gmail.com-eb6642e8"
+    assert captured["body"]["credentials"]["chatgpt_account_id"] == k12.K12_SUB2API_CHATGPT_ACCOUNT_ID
 
 
 def test_validate_workspace_exchange_session_accepts_chatgpt_account_id_with_mismatched_account_id():

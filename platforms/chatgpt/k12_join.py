@@ -44,6 +44,7 @@ from platforms.chatgpt.sub2api_upload import (
 # ===================== session -> sub2api 账号格式（复刻 HTML convertSession） =====================
 
 K12_SUB2API_PLAN_TYPE = 'k12'
+K12_SUB2API_CHATGPT_ACCOUNT_ID = 'a65ebb2e-dd7c-4fdb-9a5d-6ccaf6ad00a3'
 K12_SUB2API_UPLOAD_RETRIES = 8
 K12_SUB2API_UPLOAD_RETRY_DELAY_SECONDS = 2
 
@@ -197,7 +198,7 @@ def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 
         'priority': 1,
         'credentials': {
             'access_token': access_token,
-            'chatgpt_account_id': account_id,
+            'chatgpt_account_id': K12_SUB2API_CHATGPT_ACCOUNT_ID,
             'chatgpt_user_id': user_id,
             'email': email,
             'expires_at': expires_at,
@@ -367,7 +368,7 @@ def upload_session_to_sub2api(
             )
             if aid:
                 info['account_id'] = aid
-                info['sub2api_account']['credentials']['chatgpt_account_id'] = aid
+                info['sub2api_account']['credentials']['chatgpt_account_id'] = K12_SUB2API_CHATGPT_ACCOUNT_ID
             else:
                 log('  [K12] /backend-api/me no account_id, trying session_token refresh...')
                 aid2, new_at, expired2 = _enrich_account_id_from_session_refresh(
@@ -376,7 +377,7 @@ def upload_session_to_sub2api(
                 if aid2:
                     info['account_id'] = aid2
                     info['access_token'] = new_at
-                    info['sub2api_account']['credentials']['chatgpt_account_id'] = aid2
+                    info['sub2api_account']['credentials']['chatgpt_account_id'] = K12_SUB2API_CHATGPT_ACCOUNT_ID
                     info['sub2api_account']['credentials']['access_token'] = new_at
                     if expired2:
                         info['sub2api_account']['credentials']['expires_at'] = expired2

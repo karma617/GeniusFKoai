@@ -66,11 +66,19 @@ type InventoryCacheEntry = {
   groups: Sub2ApiGroup[]
   tags: Sub2ApiTag[]
   accounts: Sub2ApiAccount[]
+  total: number
+  stats: {
+    total: number
+    active: number
+    error: number
+    k12: number
+  }
 }
 
 const inventoryCache = new Map<string, InventoryCacheEntry>()
 const VISIBLE_LOG_LIMIT = 120
 const VISIBLE_LOG_MESSAGE_LIMIT = 800
+const UNTAGGED_FILTER = '__untagged__'
 
 function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'secondary' {
   const value = String(status || '').toLowerCase()
@@ -87,12 +95,14 @@ function formatDate(value: string) {
   return date.toLocaleString()
 }
 
-function inventoryCacheKey(groupId: string, status: string, search: string, tagFilter: string) {
+function inventoryCacheKey(groupId: string, status: string, search: string, tagFilter: string, page: number, pageSize: number) {
   return JSON.stringify({
     groupId: groupId || '',
     status: status || 'all',
     search: search.trim(),
     tagFilter: tagFilter || '',
+    page,
+    pageSize,
   })
 }
 
@@ -111,8 +121,12 @@ export default function Sub2ApiManagement() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [groupId, setGroupId] = useState('')
   const [status, setStatus] = useState('all')
-  const [tagFilter, setTagFilter] = useState('')
+  const [tagFilter, setTagFilter] = useState(UNTAGGED_FILTER)
   const [search, setSearch] = useState('')
+  const [draftGroupId, setDraftGroupId] = useState('')
+  const [draftStatus, setDraftStatus] = useState('all')
+  const [draftTagFilter, setDraftTagFilter] = useState(UNTAGGED_FILTER)
+  const [draftSearch, setDraftSearch] = useState('')
   const [workspaceIds, setWorkspaceIds] = useState('')
   const [selectedTagId, setSelectedTagId] = useState('')
   const [exportTagId, setExportTagId] = useState('')
@@ -130,6 +144,8 @@ export default function Sub2ApiManagement() {
   const [lastResults, setLastResults] = useState<ActionResult[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+  const [totalAccounts, setTotalAccounts] = useState(0)
+  const [remoteStats, setRemoteStats] = useState({ total: 0, active: 0, error: 0, k12: 0 })
   const [checkLogs, setCheckLogs] = useState<CheckLog[]>([])
   const [liveSummary, setLiveSummary] = useState<CheckSummary | null>(null)
   const [logPaused, setLogPaused] = useState(false)
@@ -137,18 +153,34 @@ export default function Sub2ApiManagement() {
   const logBottomRef = useRef<HTMLDivElement | null>(null)
   const fullCheckLogsRef = useRef<CheckLog[]>([])
   const shouldFollowLogRef = useRef(true)
+  const suppressNextPageLoadRef = useRef(false)
 
   const applyInventory = (entry: InventoryCacheEntry) => {
     setGroups(entry.groups)
     setTags(entry.tags)
     setAccounts(entry.accounts)
+    setTotalAccounts(entry.total)
+    setRemoteStats(entry.stats)
     setSelectedIds(new Set())
-    setPage(1)
   }
 
-  const load = async (options: { force?: boolean } = {}) => {
+  const load = async (options: {
+    force?: boolean
+    pageOverride?: number
+    pageSizeOverride?: number
+    groupIdOverride?: string
+    statusOverride?: string
+    tagFilterOverride?: string
+    searchOverride?: string
+  } = {}) => {
     setError('')
-    const cacheKey = inventoryCacheKey(groupId, status, search, tagFilter)
+    const nextPage = options.pageOverride || page
+    const nextPageSize = options.pageSizeOverride || pageSize
+    const nextGroupId = options.groupIdOverride ?? groupId
+    const nextStatus = options.statusOverride ?? status
+    const nextTagFilter = options.tagFilterOverride ?? tagFilter
+    const nextSearch = options.searchOverride ?? search
+    const cacheKey = inventoryCacheKey(nextGroupId, nextStatus, nextSearch, nextTagFilter, nextPage, nextPageSize)
     if (!options.force) {
       const cached = inventoryCache.get(cacheKey)
       if (cached) {
@@ -161,15 +193,25 @@ export default function Sub2ApiManagement() {
     setLoading(true)
     try {
       const params = new URLSearchParams()
-      if (groupId) params.set('group_id', groupId)
-      if (status && status !== 'all') params.set('status', status)
-      if (tagFilter) params.set('tag_id', tagFilter)
-      if (search.trim()) params.set('search', search.trim())
+      if (nextGroupId) params.set('group_id', nextGroupId)
+      if (nextStatus && nextStatus !== 'all') params.set('status', nextStatus)
+      if (nextTagFilter === UNTAGGED_FILTER) params.set('untagged', '1')
+      else if (nextTagFilter) params.set('tag_id', nextTagFilter)
+      if (nextSearch.trim()) params.set('search', nextSearch.trim())
+      params.set('page', String(nextPage))
+      params.set('page_size', String(nextPageSize))
       const data = await apiFetch(`/sub2api-management/inventory?${params}`)
       const entry = {
         groups: data.groups || [],
         tags: data.tags || [],
         accounts: data.accounts || [],
+        total: Number(data.total || 0),
+        stats: {
+          total: Number(data.stats?.total || data.total || 0),
+          active: Number(data.stats?.active || 0),
+          error: Number(data.stats?.error || 0),
+          k12: Number(data.stats?.k12 || 0),
+        },
       }
       inventoryCache.set(cacheKey, entry)
       applyInventory(entry)
@@ -181,8 +223,30 @@ export default function Sub2ApiManagement() {
   }
 
   useEffect(() => {
+    if (suppressNextPageLoadRef.current) {
+      suppressNextPageLoadRef.current = false
+      return
+    }
     load()
-  }, [groupId, status, tagFilter])
+  }, [page, pageSize])
+
+  const applyFilters = () => {
+    const nextSearch = draftSearch.trim()
+    if (page !== 1) suppressNextPageLoadRef.current = true
+    setPage(1)
+    setGroupId(draftGroupId)
+    setStatus(draftStatus)
+    setTagFilter(draftTagFilter)
+    setSearch(nextSearch)
+    load({
+      force: true,
+      pageOverride: 1,
+      groupIdOverride: draftGroupId,
+      statusOverride: draftStatus,
+      tagFilterOverride: draftTagFilter,
+      searchOverride: nextSearch,
+    })
+  }
 
   useEffect(() => {
     if (!shouldFollowLogRef.current) return
@@ -205,19 +269,17 @@ export default function Sub2ApiManagement() {
   }, [accounts, selectedIds])
 
   const stats = useMemo(() => {
-    const total = accounts.length
-    const active = accounts.filter((item) => statusVariant(item.status) === 'success').length
-    const errorCount = accounts.filter((item) => statusVariant(item.status) === 'danger').length
-    const k12 = accounts.filter((item) => String(item.plan_type || '').toLowerCase() === 'k12').length
-    return { total, active, errorCount, k12 }
-  }, [accounts])
+    return {
+      total: remoteStats.total,
+      active: remoteStats.active,
+      errorCount: remoteStats.error,
+      k12: remoteStats.k12,
+    }
+  }, [remoteStats])
 
-  const pageCount = Math.max(1, Math.ceil(accounts.length / pageSize))
+  const pageCount = Math.max(1, Math.ceil(totalAccounts / pageSize))
   const currentPage = Math.min(page, pageCount)
-  const pageAccounts = useMemo(() => {
-    const start = (currentPage - 1) * pageSize
-    return accounts.slice(start, start + pageSize)
-  }, [accounts, currentPage, pageSize])
+  const pageAccounts = accounts
   const accountLabelById = useMemo(() => {
     const labels = new Map<string, string>()
     accounts.forEach((item) => {
@@ -309,6 +371,30 @@ export default function Sub2ApiManagement() {
     appendLog(item)
   }
 
+  const applyCheckResultToAccount = (event: any) => {
+    const accountId = event.account_id ? String(event.account_id) : ''
+    if (!accountId) return
+    const result = String(event.result || '')
+    const markedError = Boolean(event.marked_error)
+    let nextStatus = ''
+    if (result === 'ok') nextStatus = 'active'
+    else if (result === 'dead' && markedError) nextStatus = 'error'
+    if (!nextStatus) return
+    setAccounts((current) => current.map((item) => {
+      if (String(item.id) !== accountId) return item
+      const previousVariant = statusVariant(item.status)
+      const nextVariant = statusVariant(nextStatus)
+      if (previousVariant !== nextVariant) {
+        setRemoteStats((stats) => ({
+          ...stats,
+          active: Math.max(0, stats.active + (nextVariant === 'success' ? 1 : 0) - (previousVariant === 'success' ? 1 : 0)),
+          error: Math.max(0, stats.error + (nextVariant === 'danger' ? 1 : 0) - (previousVariant === 'danger' ? 1 : 0)),
+        }))
+      }
+      return { ...item, status: nextStatus }
+    }))
+  }
+
   const appendReloginLog = (event: any) => {
     const accountId = event.account_id ? String(event.account_id) : ''
     const label = accountLabelById.get(accountId) || (accountId ? `#${accountId}` : '未知账号')
@@ -366,6 +452,7 @@ export default function Sub2ApiManagement() {
       return
     }
     if (event.event === 'account_finished') {
+      applyCheckResultToAccount(event)
       appendCheckResultLog(event)
     }
   }
@@ -449,7 +536,7 @@ export default function Sub2ApiManagement() {
           .join('\n')
         if (data) handleCheckEvent(JSON.parse(data))
       }
-      await load()
+      await load({ force: true })
     } catch (err: any) {
       setError(err?.message || String(err))
     } finally {
@@ -619,11 +706,12 @@ export default function Sub2ApiManagement() {
       await apiFetch(`/sub2api-management/tags/${tag.id}`, { method: 'DELETE' })
       const wasFiltering = tagFilter === String(tag.id)
       if (wasFiltering) setTagFilter('')
+      if (draftTagFilter === String(tag.id)) setDraftTagFilter('')
       if (selectedTagId === String(tag.id)) setSelectedTagId('')
       if (editingTagId === tag.id) resetTagForm()
       setMessage(`标签已删除：${tag.name}`)
       inventoryCache.clear()
-      if (!wasFiltering) await load({ force: true })
+      await load({ force: true, tagFilterOverride: wasFiltering ? '' : tagFilter })
     } catch (err: any) {
       setError(err?.message || String(err))
     } finally {
@@ -682,7 +770,11 @@ export default function Sub2ApiManagement() {
             刷新
           </Button>
           <Button onClick={runBulkCheck} disabled={checking || loading || relogining || selectedOrVisibleIds.length === 0}>
-            <Activity className={cn('mr-1.5 h-3.5 w-3.5', checking && 'animate-pulse')} />
+            {checking ? (
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Activity className="mr-1.5 h-3.5 w-3.5" />
+            )}
             批量测活
           </Button>
           <Button variant="outline" onClick={openExportDialog} disabled={exporting || checking || loading || relogining || selectedIds.size === 0}>
@@ -701,7 +793,7 @@ export default function Sub2ApiManagement() {
           ['远端账号', stats.total, 'text-[var(--accent)]'],
           ['正常', stats.active, 'text-emerald-500'],
           ['错误', stats.errorCount, 'text-red-500'],
-          ['K12', stats.k12, 'text-sky-500'],
+          ['K12(本页)', stats.k12, 'text-sky-500'],
         ].map(([label, value, tone]) => (
           <Card key={String(label)} className="border border-[var(--border)]">
             <CardContent className="flex items-center justify-between">
@@ -716,10 +808,10 @@ export default function Sub2ApiManagement() {
         <CardHeader className="mb-4">
           <CardTitle>筛选与处理范围</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 lg:grid-cols-[220px_160px_220px_1fr_1fr]">
+        <CardContent className="grid gap-3 lg:grid-cols-[220px_160px_220px_minmax(260px,1fr)_1fr]">
           <select
-            value={groupId}
-            onChange={(event) => setGroupId(event.target.value)}
+            value={draftGroupId}
+            onChange={(event) => setDraftGroupId(event.target.value)}
             className="control-surface h-9"
           >
             <option value="">全部分组</option>
@@ -728,36 +820,43 @@ export default function Sub2ApiManagement() {
             ))}
           </select>
           <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
+            value={draftStatus}
+            onChange={(event) => setDraftStatus(event.target.value)}
             className="control-surface h-9"
           >
             <option value="all">全部状态</option>
-            <option value="active">active</option>
-            <option value="error">error</option>
-            <option value="inactive">inactive</option>
+            <option value="active">正常</option>
+            <option value="error">错误</option>
+            <option value="inactive">停用</option>
           </select>
           <select
-            value={tagFilter}
-            onChange={(event) => setTagFilter(event.target.value)}
+            value={draftTagFilter}
+            onChange={(event) => setDraftTagFilter(event.target.value)}
             className="control-surface h-9"
           >
             <option value="">全部标签</option>
+            <option value={UNTAGGED_FILTER}>无标签</option>
             {tags.map((tag) => (
               <option key={tag.id} value={tag.id}>{tag.name} ({tag.account_count || 0})</option>
             ))}
           </select>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') load()
-              }}
-              placeholder="搜索帐号名 / 邮箱，回车刷新"
-              className="control-surface h-9 w-full pl-9"
-            />
+          <div className="flex gap-2">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
+              <input
+                value={draftSearch}
+                onChange={(event) => setDraftSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') applyFilters()
+                }}
+                placeholder="搜索帐号名 / 邮箱"
+                className="control-surface h-9 w-full pl-9"
+              />
+            </div>
+            <Button onClick={applyFilters} disabled={loading || checking || relogining}>
+              <Search className="mr-1.5 h-3.5 w-3.5" />
+              查询
+            </Button>
           </div>
           <textarea
             value={workspaceIds}
@@ -956,11 +1055,11 @@ export default function Sub2ApiManagement() {
               )}
             </tbody>
           </table>
-          {accounts.length > 0 && (
+          {totalAccounts > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] px-4 py-3 text-xs text-[var(--text-muted)]">
               <div className="flex flex-wrap items-center gap-2">
                 <span>
-                  当前 {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, accounts.length)} / {accounts.length}
+                  当前 {((currentPage - 1) * pageSize) + 1}-{Math.min(currentPage * pageSize, totalAccounts)} / {totalAccounts}
                 </span>
                 <label className="flex items-center gap-1">
                   <span>每页</span>

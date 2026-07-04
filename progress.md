@@ -1789,3 +1789,219 @@
   - docs/chatgpt-register-flow.md: 记录批量注册日志面板展示截断、复制完整的行为。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 frontend/src/components/tasks/TaskLogPanel.tsx 中 `VISIBLE_LOG_LINE_LIMIT`、`getVisibleLine` 和 `LogLine` 展示截断逻辑；撤销 frontend/src/lib/i18n.ts 中 `taskLog.lineTruncatedHint` 中英文文案；撤销 docs/chatgpt-register-flow.md 本轮“批量注册任务日志”说明；移除 progress.md 本轮追加内容即可恢复为页面直接展示完整单条日志。
+
+## 2026-07-04 - Task: ChatGPT Workspace Join UserScript 改写为 Python
+
+### What was done
+- 新增独立 Python 脚本，复刻原 UserScript 的随机 workspace UUID 请求流程，支持 `request` / `accept` 路由、顺序扫描和并发扫描。
+- AT 改为从脚本同目录 JSON 配置读取，支持 `accessToken`、`access_token`、`at` 和 `session.accessToken` 等字段，并避免在日志中输出完整 AT。
+- 接入钉钉机器人成功通知，支持 webhook、加签 secret、手机号 @ 和 @ 全部；命中成功后发送 workspace、HTTP 状态和累计尝试次数。
+- 增加 dry-run 和占位 AT 保护，便于先验证配置和请求目标，避免示例配置误发真实请求。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\chatgpt_workspace_join_request.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py --config scripts\chatgpt_workspace_join_config.example.json --dry-run --limit 1` -> 打印配置文件、masked AT、1 条 dry-run POST 和钉钉 dry-run 通知，未发真实请求。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py --config scripts\chatgpt_workspace_join_config.example.json --dry-run --mode concurrent --limit 2 --batch-size 2` -> 打印 2 条并发 dry-run POST 和钉钉 dry-run 通知，未发真实请求。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py --config scripts\chatgpt_workspace_join_config.example.json --limit 1` -> 输出 `配置里的 accessToken 为空或仍是占位值，已停止。`，确认示例配置不会误发真实请求。
+- `git diff --check -- scripts\chatgpt_workspace_join_request.py scripts\chatgpt_workspace_join_config.example.json docs\chatgpt-workspace-join-request.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - scripts/chatgpt_workspace_join_request.py: 新增 Python 版 workspace join 扫描器、JSON AT 读取、钉钉成功通知、dry-run 和并发模式。
+  - scripts/chatgpt_workspace_join_config.example.json: 新增同目录配置示例，包含 AT、扫描参数和钉钉机器人字段。
+  - docs/chatgpt-workspace-join-request.md: 新增脚本用途、配置字段、运行命令和通知行为说明；当前仓库 `.gitignore` 忽略 `docs/`，该文档文件已在本地生成。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 scripts/chatgpt_workspace_join_request.py、scripts/chatgpt_workspace_join_config.example.json 和 docs/chatgpt-workspace-join-request.md；移除 progress.md 本轮追加内容即可恢复到没有 Python 改写脚本的状态。
+
+## 2026-07-04 - Task: Workspace Join Python 脚本配置缺失提示
+
+### What was done
+- 默认同目录配置文件不存在时，脚本不再抛出 traceback，改为输出缺失路径和复制示例配置的 PowerShell 命令。
+- 保持真实配置文件不自动创建，避免把实际 AT 或钉钉 webhook 写入仓库文件。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\chatgpt_workspace_join_request.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py --config scripts\chatgpt_workspace_join_config.example.json --dry-run --limit 1` -> 打印配置文件、masked AT、1 条 dry-run POST 和钉钉 dry-run 通知，未发真实请求。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py` -> 输出默认配置文件不存在路径，并提示复制 `chatgpt_workspace_join_config.example.json` 到 `chatgpt_workspace_join_config.json`。
+- `git diff --check -- scripts\chatgpt_workspace_join_request.py scripts\chatgpt_workspace_join_config.example.json progress.md docs\chatgpt-workspace-join-request.md` -> 无空白错误；仅提示 `progress.md` 的 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - scripts/chatgpt_workspace_join_request.py: 增加默认配置文件缺失时的可读提示和复制示例配置命令。
+  - progress.md: 追加本轮补充进度、验证和回滚说明。
+- 回滚点：撤销 scripts/chatgpt_workspace_join_request.py 中 `load_json` 外层异常处理与复制配置提示；移除 progress.md 本轮追加内容即可恢复为配置缺失时抛出原始异常。
+
+## 2026-07-04 - Task: Workspace Join 默认 100 线程并发
+
+### What was done
+- 将 Workspace Join Python 脚本默认运行模式改为并发扫描，默认并发线程数为 100。
+- 新增更直观的 `concurrency` 配置和 `--concurrency` 命令行参数，旧的 `batch_size` / `--batch-size` 保持兼容。
+- 将当前本地真实配置切到 `mode=concurrent` 和 `concurrency=100`，并把真实配置文件加入 `.gitignore`，避免 AT 和钉钉配置误提交。
+- 更新配置示例和使用文档，示例默认使用 100 并发线程。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\chatgpt_workspace_join_request.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py --config scripts\chatgpt_workspace_join_config.example.json --dry-run --limit 2` -> 输出 `mode=concurrent` 和 `concurrency=100`，打印 2 条 dry-run POST，未发真实请求。
+- `Select-String -LiteralPath scripts\chatgpt_workspace_join_config.json -Pattern '"mode"|'"concurrency"'` -> 确认真实配置为 `mode=concurrent`、`concurrency=100`，未输出 AT 或钉钉密钥。
+- `git check-ignore -v scripts\chatgpt_workspace_join_config.json docs\chatgpt-workspace-join-request.md` -> 确认真实配置文件和 docs 文档都被当前 `.gitignore` 忽略。
+
+### Notes
+- 修改文件清单
+  - scripts/chatgpt_workspace_join_request.py: 默认模式改为 concurrent，新增 `concurrency` 配置和 `--concurrency` 参数，保留 `batch_size` 兼容。
+  - scripts/chatgpt_workspace_join_config.example.json: 示例配置改为 `mode=concurrent`、`concurrency=100`，并恢复为占位 AT 与占位钉钉 webhook。
+  - scripts/chatgpt_workspace_join_config.json: 本地真实配置改为 100 线程并发运行；该文件已加入忽略，不应提交。
+  - .gitignore: 忽略 `scripts/chatgpt_workspace_join_config.json`，避免提交真实 AT 和钉钉配置。
+  - docs/chatgpt-workspace-join-request.md: 更新默认并发模式、`concurrency` 字段和 100 线程命令示例。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 scripts/chatgpt_workspace_join_request.py 中默认模式、`concurrency` 参数和兼容解析改动；撤销 scripts/chatgpt_workspace_join_config.example.json、scripts/chatgpt_workspace_join_config.json、.gitignore、docs/chatgpt-workspace-join-request.md 本轮调整；移除 progress.md 本轮追加内容即可恢复为原先需手动指定并发模式的行为。
+
+## 2026-07-04 - Task: Sub2API 测活按钮持续 loading 与统计实时更新
+
+### What was done
+- 批量测活按钮在测活请求未结束前持续显示旋转 loading 图标，避免用户误判任务已经停止。
+- 每个账号测活结束后，前端立即根据该账号结果更新列表状态，顶部正常/错误统计随账号状态同步变化。
+- 整批测活结束后强制刷新远端账号列表，避免复用页面缓存覆盖测活过程中的最新状态。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 测活 SSE 单账号完成事件同步更新账号状态，测活按钮切换为持续旋转图标，整批结束后强制刷新远端列表。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `applyCheckResultToAccount`、`handleCheckEvent` 调用、`load({ force: true })` 和批量测活按钮图标切换改动；移除 progress.md 本轮追加内容即可恢复为旧行为。
+
+## 2026-07-04 - Task: Workspace Join 并发数参数校验
+
+### What was done
+- Workspace Join Python 脚本在解析 `--concurrency` / `--batch-size` 后增加正数校验，避免传入负数线程数导致运行时报错。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\chatgpt_workspace_join_request.py` -> 无输出，编译通过。
+- `git diff --check -- .gitignore scripts\chatgpt_workspace_join_request.py scripts\chatgpt_workspace_join_config.example.json progress.md docs\chatgpt-workspace-join-request.md` -> 无空白错误；仅提示 `.gitignore` 和 `progress.md` 的 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - scripts/chatgpt_workspace_join_request.py: 增加并发线程数必须大于等于 1 的参数保护。
+  - progress.md: 追加本轮补充进度、验证和回滚说明。
+- 回滚点：撤销 scripts/chatgpt_workspace_join_request.py 中 `concurrency < 1` 参数保护；移除 progress.md 本轮追加内容即可恢复为不提前校验并发数的行为。
+
+## 2026-07-04 - Task: Workspace Join 并发请求实时日志
+
+### What was done
+- 并发扫描不再只显示批次开始和批次结束，而是在每个请求提交时立即输出 `提交 [编号] workspace_id`。
+- 每个并发请求完成时立即输出 `完成 [编号] ... HTTP/错误`，404、timeout、网络错误和成功都会逐条显示。
+- 保持原停止策略不变：成功停止、超时过半停止、批次出现非 404 结果后停止。
+- 更新脚本文档，说明并发模式会逐条打印提交和完成日志。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\chatgpt_workspace_join_request.py` -> 无输出，编译通过。
+- 通过本地 monkeypatch `send_one` 为固定 HTTP 404 的假请求运行 `run_concurrent(limit=2, concurrency=2)` -> 输出 `提交 [1]`、`提交 [2]`、`完成 [1] ... HTTP 404`、`完成 [2] ... HTTP 404`，未发真实请求。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py --config scripts\chatgpt_workspace_join_config.example.json --dry-run --limit 2` -> 输出 `mode=concurrent` 和 `concurrency=100`，打印 2 条 dry-run POST，未发真实请求。
+- `git diff --check -- scripts\chatgpt_workspace_join_request.py docs\chatgpt-workspace-join-request.md progress.md` -> 无空白错误；仅提示 `progress.md` 的 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - scripts/chatgpt_workspace_join_request.py: 并发模式增加逐请求提交日志和逐请求完成日志。
+  - docs/chatgpt-workspace-join-request.md: 记录并发模式会实时输出每个请求的提交与完成结果。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 scripts/chatgpt_workspace_join_request.py 中 `batch_items`、`future_meta`、逐请求 `提交` / `完成` 日志相关改动；撤销 docs/chatgpt-workspace-join-request.md 本轮说明；移除 progress.md 本轮追加内容即可恢复为仅显示批次级日志。
+
+## 2026-07-04 - Task: Workspace Join 网络错误重试不中断
+
+### What was done
+- 单个 Workspace Join 请求遇到 SSL EOF、连接异常或超时时，会按默认 3 次进行网络重试。
+- 网络重试仍失败时，只记录该请求失败并继续扫描，不再把 network error 或 timeout 当成批次终止条件。
+- 并发批次结束时，如果只有 404 和网络失败，会继续下一批；401/403 鉴权失败仍停止，其他非 404 HTTP 业务结果仍保留停止策略。
+- 增加 `network_retries` 和 `network_retry_delay_ms` 配置与命令行参数，并更新示例配置和文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\chatgpt_workspace_join_request.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe scripts\chatgpt_workspace_join_request.py --config scripts\chatgpt_workspace_join_config.example.json --dry-run --limit 2` -> 输出 `mode=concurrent`、`concurrency=100`、`network_retries=3`，打印 2 条 dry-run POST，未发真实请求。
+- 本地 monkeypatch `requests.post` 先抛出 2 次 `SSLError` 再返回 HTTP 404，调用 `send_one(network_retries=2)` -> 输出两次重试日志，最终 `final status=404, calls=3`。
+- 本地 monkeypatch `send_one` 固定返回 network error，运行 `run_concurrent(limit=2, concurrency=2)` -> 输出两条 network error 完成日志和 `批次 1-2 有 2 个网络失败，已重试并跳过，继续下一批`，未终止为错误。
+
+### Notes
+- 修改文件清单
+  - scripts/chatgpt_workspace_join_request.py: 增加网络错误重试，网络失败不再触发并发批次终止，并增加重试配置参数。
+  - scripts/chatgpt_workspace_join_config.example.json: 增加 `network_retries` 和 `network_retry_delay_ms` 示例字段。
+  - docs/chatgpt-workspace-join-request.md: 记录网络错误重试和不中断扫描的行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 scripts/chatgpt_workspace_join_request.py 中 `network_retries` / `network_retry_delay_ms` 参数、`send_one` 重试循环、并发网络失败不中断逻辑；撤销 scripts/chatgpt_workspace_join_config.example.json 和 docs/chatgpt-workspace-join-request.md 本轮说明；移除 progress.md 本轮追加内容即可恢复为网络错误导致批次终止的旧行为。
+
+## 2026-07-04 - Task: Sub2API 管理页远端分页与无标签筛选
+
+### What was done
+- Sub2API 管理页账号列表改为按当前页透传远端 `page` / `page_size` 分页参数，默认加载不再全量拉取账号明细。
+- 顶部总数、正常数、错误数改为通过远端账号分页总数接口获取；K12 因远端没有按 `plan_type` 聚合字段，页面明确显示为当前页 K12 数量。
+- 标签筛选增加 `无标签` 选项，用于筛选本地 DB 中未绑定任何标签的远端账号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py::test_list_inventory_uses_remote_pagination tests\test_sub2api_management.py::test_sub2api_account_tags_can_assign_and_filter -q` -> 2 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- api/sub2api_management.py application/sub2api_management.py frontend/src/pages/Sub2ApiManagement.tsx tests/test_sub2api_management.py docs/sub2api-management.md` -> 无空白错误；仅提示 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - api/sub2api_management.py: inventory 接口增加 `page`、`page_size` 和 `untagged` 查询参数并传给服务层。
+  - application/sub2api_management.py: 普通列表走远端分页；本地标签/无标签筛选保留本地过滤；增加远端分页总数统计。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 列表切换为服务端分页缓存，增加 `无标签` 筛选项，顶部统计使用后端返回统计并保留测活过程实时增减。
+  - tests/test_sub2api_management.py: 覆盖远端分页请求路径和无标签筛选。
+  - docs/sub2api-management.md: 记录远端分页、无标签筛选和 K12 当前页统计口径。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 api/sub2api_management.py 的新增查询参数；撤销 application/sub2api_management.py 中远端分页、统计和 `untagged` 过滤改动；撤销 frontend/src/pages/Sub2ApiManagement.tsx 中服务端分页缓存、`无标签` 选项和 K12 卡片文案改动；撤销 tests/test_sub2api_management.py 与 docs/sub2api-management.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复旧的全量拉取后前端分页行为。
+
+## 2026-07-05 - Task: Sub2API 筛选改为查询按钮触发
+
+### What was done
+- Sub2API 管理页筛选区新增 `查询` 按钮，分组、状态、标签和搜索输入不再在选择后立即请求。
+- 筛选控件改为草稿条件，点击 `查询` 或在搜索框回车后才应用筛选并回到第 1 页加载数据。
+- 避免当前页不是第 1 页时点击 `查询` 产生页码变更和手动加载的双请求。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- frontend/src/pages/Sub2ApiManagement.tsx docs/sub2api-management.md` -> 无空白错误；仅提示 `frontend/src/pages/Sub2ApiManagement.tsx` 的 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 增加草稿筛选状态、查询按钮和单次提交加载逻辑，筛选变更不再自动请求。
+  - docs/sub2api-management.md: 记录筛选区需要点击查询或搜索框回车后才提交请求。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `draft*` 筛选状态、`applyFilters`、查询按钮和 `useEffect` 依赖调整；撤销 docs/sub2api-management.md 本轮筛选提交说明；移除 progress.md 本轮追加内容即可恢复选择筛选项后立即请求的旧行为。
+
+## 2026-07-05 - Task: Sub2API 筛选默认无标签与中文选项
+
+### What was done
+- Sub2API 管理页标签筛选默认选中 `无标签`，首次进入页面直接按无标签账号范围加载。
+- 状态筛选下拉显示改为中文：`全部状态`、`正常`、`错误`、`停用`，请求参数仍保留原 Sub2API 状态值。
+- 更新 Sub2API 管理文档，说明筛选区默认选择 `无标签`。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- frontend/src/pages/Sub2ApiManagement.tsx docs/sub2api-management.md` -> 无空白错误；仅提示 `frontend/src/pages/Sub2ApiManagement.tsx` 的 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 将已应用标签筛选和草稿标签筛选默认值改为 `无标签`，并把状态下拉选项文案改为中文。
+  - docs/sub2api-management.md: 记录筛选区默认选择 `无标签`。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `tagFilter` / `draftTagFilter` 默认值和状态选项中文文案改动；撤销 docs/sub2api-management.md 本轮默认无标签说明；移除 progress.md 本轮追加内容即可恢复原默认筛选和英文状态选项。
+
+## 2026-07-05 - Task: K12 上传 Sub2API 固定 ChatGPT Account ID
+
+### What was done
+- K12 session 转 Sub2API payload 时，`credentials.chatgpt_account_id` 固定写为 `a65ebb2e-dd7c-4fdb-9a5d-6ccaf6ad00a3`。
+- 保留 exchange session 的原始 account/workspace 提取结果用于现有校验、本地 CPA 字段和 workspace 记录，不再让它覆盖 Sub2API 上传字段。
+- 更新 K12 流程文档，明确上传 payload 的 `chatgpt_account_id` 固定值。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\k12_join.py tests\test_k12_join.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q` -> 32 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/k12_join.py: K12 Sub2API payload 的 `credentials.chatgpt_account_id` 改为固定 UUID，并避免 fallback 分支重新写回动态 account_id。
+  - tests/test_k12_join.py: 更新并补充断言，覆盖转换与上传 payload 均使用固定 UUID。
+  - docs/k12-space-join.md: 记录 K12 Sub2API 上传字段的固定取值规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/k12_join.py 中 `K12_SUB2API_CHATGPT_ACCOUNT_ID` 常量和 `credentials.chatgpt_account_id` 固定写入；撤销 tests/test_k12_join.py 与 docs/k12-space-join.md 本轮断言/说明；移除 progress.md 本轮追加内容即可恢复为按 session/account 动态取值的旧行为。

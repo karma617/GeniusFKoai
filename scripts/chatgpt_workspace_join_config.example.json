@@ -1,0 +1,21 @@
+{
+  "accessToken": "REPLACE_WITH_CHATGPT_ACCESS_TOKEN",
+  "route": "request",
+  "mode": "concurrent",
+  "interval_ms": 500,
+  "timeout_seconds": 15,
+  "network_retries": 3,
+  "network_retry_delay_ms": 1000,
+  "max_total_attempts": 1000000,
+  "concurrency": 100,
+  "oai_language": "en-US",
+  "device_id": "",
+  "proxy": "",
+  "dingding": {
+    "webhook": "https://oapi.dingtalk.com/robot/send?access_token=REPLACE_WITH_DINGTALK_TOKEN",
+    "secret": "",
+    "at_mobiles": [],
+    "is_at_all": false,
+    "timeout_seconds": 10
+  }
+}

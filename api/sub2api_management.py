@@ -46,9 +46,25 @@ class ExportDataRequest(BaseModel):
 
 
 @router.get("/inventory")
-def list_sub2api_inventory(group_id: int | None = None, status: str = "", search: str = "", tag_id: int | None = None):
+def list_sub2api_inventory(
+    group_id: int | None = None,
+    status: str = "",
+    search: str = "",
+    tag_id: int | None = None,
+    untagged: bool = False,
+    page: int = 1,
+    page_size: int = 10,
+):
     try:
-        return service.list_inventory(group_id=group_id, status=status, search=search, tag_id=tag_id)
+        return service.list_inventory(
+            group_id=group_id,
+            status=status,
+            search=search,
+            tag_id=tag_id,
+            untagged=untagged,
+            page=page,
+            page_size=page_size,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:

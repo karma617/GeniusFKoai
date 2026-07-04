@@ -110,17 +110,57 @@ def test_sub2api_account_tags_can_assign_and_filter(monkeypatch):
     tagged = [item for item in all_result["accounts"] if item["id"] == "10"][0]
     untagged = [item for item in all_result["accounts"] if item["id"] == "11"][0]
     filtered = service.list_inventory(tag_id=tag["id"])
+    untagged_filtered = service.list_inventory(untagged=True)
 
     assert all_result["tags"][0]["name"] == "待重登"
     assert all_result["tags"][0]["account_count"] == 1
     assert tagged["tags"] == [{"id": tag["id"], "name": "待重登", "color": "red"}]
     assert untagged["tags"] == []
     assert [item["id"] for item in filtered["accounts"]] == ["10"]
+    assert [item["id"] for item in untagged_filtered["accounts"]] == ["11"]
 
     service.update_account_tags(account_ids=["10"], tag_ids=[tag["id"]], action="remove")
     removed = service.list_inventory(tag_id=tag["id"])
 
     assert removed["accounts"] == []
+
+
+def test_list_inventory_uses_remote_pagination(monkeypatch):
+    service = Sub2ApiManagementService()
+    monkeypatch.setattr(service, "_context", lambda: Sub2ApiContext("https://sub2api.test", "token"))
+    account_paths = []
+
+    def fake_request(_origin, path, **_kwargs):
+        if path == "/api/v1/admin/groups/all":
+            return [{"id": 1, "name": "codex", "platform": "openai"}]
+        if path.startswith("/api/v1/admin/accounts"):
+            account_paths.append(path)
+            return {
+                "items": [
+                    {
+                        "id": "21",
+                        "name": "page2@example.com",
+                        "status": "active",
+                        "group_ids": [1],
+                        "credentials": {"plan_type": "k12"},
+                    }
+                ],
+                "total": 31,
+                "page": 2,
+                "page_size": 10,
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(module, "_request_json", fake_request)
+
+    result = service.list_inventory(status="active", page=2, page_size=10)
+
+    assert account_paths == ["/api/v1/admin/accounts?page=2&page_size=10&status=active"]
+    assert result["total"] == 31
+    assert result["page"] == 2
+    assert result["page_size"] == 10
+    assert result["accounts"][0]["id"] == "21"
+    assert result["stats"] == {"total": 31, "active": 31, "error": 0, "k12": 1}
 
 
 def test_export_accounts_data_calls_remote_data_endpoint(monkeypatch):

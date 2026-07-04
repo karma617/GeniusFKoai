@@ -462,53 +462,202 @@ class Sub2ApiManagementService:
         status: str = "",
         search: str = "",
         tag_id: int | None = None,
+        untagged: bool = False,
+        page: int = 1,
+        page_size: int = 10,
     ) -> dict[str, Any]:
         ctx = self._context()
         groups = _normalize_groups(
             _request_json(ctx.origin, "/api/v1/admin/groups/all", token=ctx.token)
         )
         group_by_id = {int(group["id"]): group for group in groups}
+        page = max(1, int(page or 1))
+        page_size = min(1000, max(1, int(page_size or 10)))
+        use_local_tag_filter = bool(tag_id or untagged)
+        remote_status = _normalize_string(status).lower()
+        if remote_status == "all":
+            remote_status = ""
+        remote_search = _normalize_string(search)
+        if use_local_tag_filter:
+            raw_accounts = self._fetch_all_accounts(
+                ctx,
+                group_id=group_id,
+                status=remote_status,
+                search=remote_search,
+            )
+            remote_total = len(raw_accounts)
+        else:
+            raw_accounts, remote_total = self._fetch_accounts_page(
+                ctx,
+                page=page,
+                page_size=page_size,
+                group_id=group_id,
+                status=remote_status,
+                search=remote_search,
+            )
         accounts = [
             _normalize_account(item, group_by_id)
-            for item in self._fetch_all_accounts(ctx)
+            for item in raw_accounts
         ]
         tags_by_account, tags = self._load_account_tags(ctx.origin, [item["id"] for item in accounts])
         for item in accounts:
             item["tags"] = tags_by_account.get(item["id"], [])
-        if group_id:
-            accounts = [item for item in accounts if int(group_id) in item.get("group_ids", [])]
-        status_filter = _normalize_string(status).lower()
-        if status_filter and status_filter != "all":
-            accounts = [item for item in accounts if _normalize_string(item.get("status")).lower() == status_filter]
         if tag_id:
             accounts = [
                 item
                 for item in accounts
                 if any(int(tag.get("id") or 0) == int(tag_id) for tag in item.get("tags", []))
             ]
-        search_filter = _normalize_string(search).lower()
-        if search_filter:
-            accounts = [
-                item
-                for item in accounts
-                if search_filter in _normalize_string(item.get("name")).lower()
-                or search_filter in _normalize_string(item.get("email")).lower()
-            ]
+        if untagged:
+            accounts = [item for item in accounts if not item.get("tags")]
+        total = remote_total
+        stats_accounts = accounts
+        if use_local_tag_filter:
+            total = len(accounts)
+            stats_accounts = accounts
+            start = (page - 1) * page_size
+            accounts = accounts[start : start + page_size]
+        if use_local_tag_filter:
+            stats = self._build_local_inventory_stats(stats_accounts)
+        else:
+            stats = self._fetch_remote_inventory_stats(
+                ctx,
+                total=total,
+                group_id=group_id,
+                status=remote_status,
+                search=remote_search,
+                page_accounts=accounts,
+            )
         return {
             "ok": True,
             "groups": groups,
             "tags": tags,
             "accounts": accounts,
-            "total": len(accounts),
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "stats": stats,
         }
 
-    def _fetch_all_accounts(self, ctx: Sub2ApiContext, *, page_size: int = 100) -> list[dict[str, Any]]:
+    def _build_local_inventory_stats(self, accounts: list[dict[str, Any]]) -> dict[str, int]:
+        return {
+            "total": len(accounts),
+            "active": sum(1 for item in accounts if _normalize_string(item.get("status")).lower() == "active"),
+            "error": sum(1 for item in accounts if _is_error_status(item.get("status"))),
+            "k12": sum(1 for item in accounts if _normalize_string(item.get("plan_type")).lower() == "k12"),
+        }
+
+    def _fetch_remote_inventory_stats(
+        self,
+        ctx: Sub2ApiContext,
+        *,
+        total: int,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+        page_accounts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, int]:
+        if status == "active":
+            active = total
+        elif status:
+            active = 0
+        else:
+            active = self._fetch_accounts_total(ctx, group_id=group_id, status="active", search=search)
+        if status in {"error", "errored", "failed", "invalid"}:
+            error = total
+        elif status:
+            error = 0
+        else:
+            error = self._fetch_accounts_total(ctx, group_id=group_id, status="error", search=search)
+        page_items = page_accounts or []
+        return {
+            "total": int(total or 0),
+            "active": int(active or 0),
+            "error": int(error or 0),
+            "k12": sum(1 for item in page_items if _normalize_string(item.get("plan_type")).lower() == "k12"),
+        }
+
+    def _account_list_query(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+    ) -> str:
+        query: dict[str, str] = {"page": str(page), "page_size": str(page_size)}
+        if group_id:
+            query["group"] = str(group_id)
+        if status:
+            query["status"] = status
+        if search:
+            query["search"] = search
+        return f"/api/v1/admin/accounts?{urlencode(query)}"
+
+    def _fetch_accounts_page(
+        self,
+        ctx: Sub2ApiContext,
+        *,
+        page: int,
+        page_size: int,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+    ) -> tuple[list[dict[str, Any]], int]:
+        payload = _request_json(
+            ctx.origin,
+            self._account_list_query(
+                page=page,
+                page_size=page_size,
+                group_id=group_id,
+                status=status,
+                search=search,
+            ),
+            token=ctx.token,
+            timeout=45,
+        )
+        return _items_from_accounts_payload(payload)
+
+    def _fetch_accounts_total(
+        self,
+        ctx: Sub2ApiContext,
+        *,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+    ) -> int:
+        _items, total = self._fetch_accounts_page(
+            ctx,
+            page=1,
+            page_size=1,
+            group_id=group_id,
+            status=status,
+            search=search,
+        )
+        return int(total or 0)
+
+    def _fetch_all_accounts(
+        self,
+        ctx: Sub2ApiContext,
+        *,
+        page_size: int = 500,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+    ) -> list[dict[str, Any]]:
         all_items: list[dict[str, Any]] = []
         page = 1
         while True:
             payload = _request_json(
                 ctx.origin,
-                f"/api/v1/admin/accounts?page={page}&page_size={page_size}",
+                self._account_list_query(
+                    page=page,
+                    page_size=page_size,
+                    group_id=group_id,
+                    status=status,
+                    search=search,
+                ),
                 token=ctx.token,
                 timeout=45,
             )
