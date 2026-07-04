@@ -1337,3 +1337,455 @@
   - docs/sub2api-management.md: 更新实时日志自动滚动交互说明。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `logPaused`、`logBottomRef`、`shouldFollowLogRef`、`handleLogScroll`、`resumeLogFollow`、底部哨兵节点和 `回到底部` 按钮；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到每次日志增加都直接滚到底部的模式。
+
+## 2026-07-04 - Task: Sub2API选中账号打标导出
+
+### What was done
+- Sub2API 管理页新增 `导出选中` 按钮，只针对手动勾选的远端账号导出，避免误导出当前筛选范围内的所有账号。
+- 点击导出后新增确认弹窗，用户必须选择本地标签；确认后先给待导出账号写入本地标签关系，再导出一个 Sub2API 账号 data JSON 文件。
+- 后端新增下载接口，转发远端 `/api/v1/admin/accounts/data?ids=...&timezone=Asia%2FShanghai`，多选账号会打包到同一个 JSON 文件中。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py tests\test_sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 19 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - api/sub2api_management.py: 新增 `/export-data` 下载接口，确认标签后打标并返回 JSON 附件。
+  - application/sub2api_management.py: 新增远端账号 data 导出转发逻辑，按选中账号 ID 和时区请求 Sub2API。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 新增 `导出选中` 按钮、打标确认弹窗、下载触发和导出后刷新。
+  - tests/test_sub2api_management.py: 新增远端 data 导出路径回归测试。
+  - docs/sub2api-management.md: 记录导出前打标、选中账号打包 JSON 和远端接口行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 api/sub2api_management.py 中 `ExportDataRequest` 和 `/export-data`；撤销 application/sub2api_management.py 中 `export_accounts_data`；撤销 frontend/src/pages/Sub2ApiManagement.tsx 中导出状态、按钮、弹窗和下载逻辑；撤销 tests/test_sub2api_management.py 本轮新增测试；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到无账号导出入口的状态。
+
+## 2026-07-04 - Task: 批量注册失败原因固定高度
+
+### What was done
+- 统一任务日志面板里的失败原因区域改为固定高度显示，长错误内容在区域内滚动。
+- 避免 Cloudflare HTML、接口响应体或脚本片段过长时把自动注册弹窗撑高，挤压实时日志和底部操作按钮。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/tasks/TaskLogPanel.tsx: 失败原因卡片固定为 `h-36`，内容区使用内部滚动展示长错误。
+  - docs/chatgpt-register-flow.md: 记录任务失败原因区域固定高度和内部滚动行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/components/tasks/TaskLogPanel.tsx 中失败原因卡片 `h-36`、`flex` 布局和内容区 `overflow-y-auto`；撤销 docs/chatgpt-register-flow.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到失败原因按内容撑开高度的模式。
+
+## 2026-07-04 - Task: EMAIL_ALIAS_PARENT_EXHAUSTED 标记父邮箱不可用
+
+### What was done
+- 修复 OpenAI 返回 `user_already_exists` 并触发 `EMAIL_ALIAS_PARENT_EXHAUSTED` 时，只切换新父邮箱但没有优先把当前父邮箱标记为不可用的问题。
+- 邮箱别名层 `mark_parent_exhausted` 现在优先调用底层邮箱池 `mark_invalid_email(reason="user_already_exists")`，使 Gmail API接码等邮箱池后续直接跳过该主邮箱。
+- 如果底层邮箱池不支持无效标记或标记失败，仍保留原有 `mark_registration_success` 兜底逻辑。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py tests\test_email_alias_mailbox.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py -q` -> 20 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_retries_email_alias_parent_exhausted -q` -> 1 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: 父邮箱耗尽时优先转发到底层邮箱池的无效邮箱标记。
+  - tests/test_email_alias_mailbox.py: 新增父邮箱耗尽优先标记 invalid 的回归测试。
+  - docs/email-alias-mailbox.md: 记录 `EMAIL_ALIAS_PARENT_EXHAUSTED` 会把主邮箱标记为不可用并跳过。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/email_alias_mailbox.py 中 `mark_parent_exhausted` 对 `mark_invalid_email(reason="user_already_exists")` 的优先调用；撤销 tests/test_email_alias_mailbox.py 本轮新增测试；撤销 docs/email-alias-mailbox.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到只按注册成功标记父邮箱的行为。
+
+## 2026-07-04 - Task: Gmail邮箱池同步主邮箱可用状态
+
+### What was done
+- Gmail邮箱池统计接口读取 `gmail_api_code` 邮箱资源的 `registration_status` / `registration_invalid`，并合并当前进程内的无效邮箱集合。
+- 被标记为 invalid 的主邮箱在页面显示为 `不可用`，展示不可用原因，并且确认剩余和保守剩余都按 0 计算。
+- Gmail邮箱池页面新增 `不可用母邮箱` 统计卡和 `不可用` / `主邮箱已注册` 筛选项，状态列优先展示邮箱可用性，再展示 alias 容量状态。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\gmail_api_code_usage.py tests\test_gmail_api_code_usage_stats.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_usage_stats.py tests\test_gmail_api_code_mailbox.py -q` -> 8 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - application/gmail_api_code_usage.py: 统计中加入主邮箱可用状态、不可用原因、不可用/已注册计数和不可用邮箱剩余额度归零。
+  - frontend/src/pages/GmailApiCodeUsage.tsx: 增加不可用统计卡、状态筛选和不可用原因展示。
+  - tests/test_gmail_api_code_usage_stats.py: 新增 invalid 主邮箱统计为不可用且剩余额度为 0 的回归测试。
+  - docs/gmail-api-code.md: 记录 Gmail邮箱池页面同步邮箱可用状态的口径。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/gmail_api_code_usage.py 中 `email_status` / `email_status_reason` 统计和 `_runtime_invalid_emails` 合并逻辑；撤销 frontend/src/pages/GmailApiCodeUsage.tsx 中不可用统计卡、筛选项和原因展示；撤销 tests/test_gmail_api_code_usage_stats.py 本轮新增测试；撤销 docs/gmail-api-code.md 本轮说明；移除 progress.md 本轮追加内容即可恢复到只按 alias 用量展示状态。
+
+## 2026-07-04 - Task: 新增 Gmail API接码邮箱服务
+
+### What was done
+- 邮箱服务第三方服务新增 `Gmail API接码` provider，配置格式为一行一个 `邮箱----接码链接`。
+- 设置页编辑弹窗会把多行输入拆成列表预览，左侧展示 Gmail，右侧展示该邮箱接码链接。
+- 自动注册邮箱工厂接入 `gmail_api_code`，注册时使用固定 Gmail 邮箱，验证码从对应接码链接轮询；保留现有 `Gmail OAuth（别名裂变）` provider 不变，两种模式可并存。
+- 新 provider 增加进程内领取占用，避免并发任务同时拿到同一个固定 Gmail。
+
+### Testing
+- `py -3 -m py_compile core\gmail_api_code_mailbox.py core\base_mailbox.py infrastructure\provider_definitions_repository.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_gmail_oauth_mailbox.py -q` -> 6 passed, 1 warning。
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- core\gmail_api_code_mailbox.py core\base_mailbox.py infrastructure\provider_definitions_repository.py frontend\src\components\settings\ProviderCards.tsx tests\test_gmail_api_code_mailbox.py docs\gmail-api-code.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/gmail_api_code_mailbox.py: 新增 Gmail API接码邮箱驱动、固定邮箱池解析、并发领取占用和接码链接轮询取码。
+  - core/base_mailbox.py: 将 `gmail_api_code` 注册到邮箱 provider 工厂。
+  - infrastructure/provider_definitions_repository.py: 新增第三方邮箱服务 `Gmail API接码` 的内置定义和配置字段。
+  - frontend/src/components/settings/ProviderCards.tsx: 新增 `Gmail API接码` 多行输入拆分后的邮箱/链接列表预览。
+  - tests/test_gmail_api_code_mailbox.py: 新增格式解析、固定邮箱领取和跳过旧验证码的回归测试。
+  - docs/gmail-api-code.md: 记录 Gmail API接码配置格式、注册行为和与 Gmail OAuth 别名模式的兼容关系。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 core/gmail_api_code_mailbox.py；撤销 core/base_mailbox.py 中 `_create_gmail_api_code` 和 `MAILBOX_FACTORY_REGISTRY` 注册；撤销 infrastructure/provider_definitions_repository.py 中 `gmail_api_code` provider 定义；撤销 frontend/src/components/settings/ProviderCards.tsx 中 `GmailApiCodeRow`、`parseGmailApiCodeRows` 和列表预览块；删除 tests/test_gmail_api_code_mailbox.py 与 docs/gmail-api-code.md；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-04 - Task: K12 强入空间遍历全部 Workspace
+
+### What was done
+- 自动注册 ChatGPT 的 K12 强入流程不再在首个成功 workspace 后停止，改为遍历输入框中的全部 workspace ID。
+- 每个 workspace 都按 join accepted -> exchange session 校验 -> SUB2API 上传或本地 JSON 保存的闭环独立处理；当前 workspace 失败只跳过当前项，继续后续 workspace。
+- 注册结果 metadata 保留兼容字段 `k12_workspace_id` / `k12_session` 指向最后一个成功 workspace，并新增 `k12_workspace_ids` / `k12_workspace_sessions` 保存全部成功 workspace 及其 session。
+- 更新 K12 文档，明确多个 workspace 成功时会分别上传或保存。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q` -> 30 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\k12_join.py tests\test_k12_join.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_har.py tests\test_platform_action_task.py -q` -> 74 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/protocol_mailbox.py: K12 自动注册后置流程改为遍历全部 workspace，逐个 exchange 并上传/保存 session。
+  - platforms/chatgpt/plugin.py: 注册结果 extra 新增保存全部 K12 workspace session 列表。
+  - tests/test_k12_join.py: 调整回归测试，覆盖第一个 workspace exchange 失败后，后续多个 workspace 成功时均会上传。
+  - docs/k12-space-join.md: 更新 K12 多 workspace 遍历、逐个上传和 metadata 字段说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/protocol_mailbox.py 中 `successful_sessions` 循环上传和 metadata 列表字段；撤销 platforms/chatgpt/plugin.py 中 `k12_workspace_sessions` / `k12_workspace_ids` extra 写入；撤销 tests/test_k12_join.py 本轮测试断言调整；撤销 docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复到首个成功 workspace 后停止的行为。
+
+## 2026-07-04 - Task: Sub2API 重新登录错误账号限定当前筛选列表
+
+### What was done
+- 修复 Sub2API 管理页“重新登录错误帐号”未勾选账号时传空账号列表，导致后端回退处理全部错误账号的问题。
+- 现在未手动勾选时，只提交当前左侧筛选列表中状态为错误的账号 ID；手动勾选时仍只处理勾选账号。
+- 当前筛选列表没有错误账号时，按钮置灰，避免误触发全量错误账号处理。
+
+### Testing
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 新增重新登录目标账号 ID 计算，并将 relogin 请求限定为当前筛选列表内的错误账号。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `reloginTargetIds`、relogin 请求 `account_ids` 和按钮 disabled 条件调整；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-04 - Task: Sub2API 重新登录支持 Gmail 主邮箱服务匹配
+
+### What was done
+- 修复远端错误账号为 Gmail plus / 点号别名时，本地精确找不到同名账号就跳过的问题。
+- 重新登录现在会在精确匹配失败后，按本地账号绑定的 `Gmail OAuth（别名裂变）` / `Gmail API接码` 邮箱资源匹配同一 Gmail 主邮箱族。
+- Gmail 别名重登会区分登录邮箱和取码邮箱：协议登录使用远端别名邮箱，OTP 读取映射到本地 Gmail 服务配置的主邮箱，避免拿别名邮箱查接码链接或 Gmail OAuth 母号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py tests\test_sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 14 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 新增 Gmail family 归一匹配、Gmail 邮箱资源兜底查找，以及别名登录/主邮箱取码的临时账号映射。
+  - tests/test_sub2api_management.py: 覆盖 Gmail API接码、Gmail OAuth 主邮箱资源匹配，以及别名登录但主邮箱收件箱取码的回归场景。
+  - docs/sub2api-management.md: 记录 Sub2API 重新登录中 Gmail 主邮箱服务匹配和别名/主邮箱分工。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/sub2api_management.py 中 `_gmail_family_key`、`_same_gmail_family`、`_find_local_account` Gmail 兜底、`_match_gmail_mailbox_resource`、`_prepare_gmail_alias_relogin_account` 及 `_relogin_one` 调用调整；撤销 tests/test_sub2api_management.py 本轮新增测试；撤销 docs/sub2api-management.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-04 - Task: 邮箱别名上限调整为 5
+
+### What was done
+- 自动注册 ChatGPT 的邮箱别名上限默认值从 4 调整为 5。
+- 后端邮箱别名硬上限同步调整为 5，按主邮箱本身加 5 个别名计算，总成功注册额度为 6。
+- Gmail OAuth 母号池内部使用总数上限同步从 5 调整为 6，避免直接使用 Gmail OAuth provider 时仍按旧额度提前跳过母号。
+- 自动注册弹窗提示文案更新为每个主邮箱最多 5 个别名、加主邮箱本身最多 6 个成功注册账号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py core\gmail_oauth_mailbox.py tests\test_email_alias_mailbox.py tests\test_gmail_oauth_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py tests\test_gmail_oauth_mailbox.py -q` -> 13 passed, 1 warning。
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: 邮箱别名硬上限从 4 改为 5。
+  - core/gmail_oauth_mailbox.py: Gmail OAuth 母号使用总额度改为 6。
+  - frontend/src/pages/Accounts.tsx: 自动注册弹窗别名上限默认值和提交截断上限改为 5。
+  - frontend/src/lib/i18n.ts: 更新别名上限中英文说明。
+  - tests/test_email_alias_mailbox.py: 增加别名上限最多 5 的回归测试。
+  - tests/test_gmail_oauth_mailbox.py: 增加 Gmail OAuth 5 个别名加主邮箱共 6 次分配的回归测试。
+  - docs/gmail-oauth-fission.md: 更新 Gmail OAuth 母号使用总数规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 core/email_alias_mailbox.py 的 `EMAIL_ALIAS_HARD_LIMIT` 改回 4；撤销 core/gmail_oauth_mailbox.py 中 `GMAIL_OAUTH_MOTHER_USAGE_LIMIT` 相关调整并恢复 5；撤销 frontend/src/pages/Accounts.tsx、frontend/src/lib/i18n.ts、tests/test_email_alias_mailbox.py、tests/test_gmail_oauth_mailbox.py、docs/gmail-oauth-fission.md 本轮改动；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-04 - Task: Gmail API接码别名池临时占用改为软重试
+
+### What was done
+- 定位 15:53 注册日志中 35 个 Gmail API接码父邮箱已全部分配一次，后续任务在父邮箱仍被运行中任务占用时直接报 `Gmail API接码邮箱池暂未找到可用邮箱`。
+- 自动注册开启邮箱别名时，`Gmail API接码邮箱池暂未找到可用邮箱` 改为临时池空软重试：等待父邮箱释放后继续补投当前注册目标，不再计入失败账号数。
+- 邮箱别名成功统计增加当前进程内补计数；即使 K12 上传路径未把别名账号完整落到本地 provider resource，也能在当前批次内按别名上限判断父邮箱是否已满。
+- 别名父邮箱满额判断改为别名数达到 `alias_limit` 或总成功数达到 `alias_limit + 1` 任一成立即标记父邮箱已满。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py core\email_alias_mailbox.py tests\test_platform_action_task.py tests\test_email_alias_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_retries_gmail_api_code_pool_temporarily_empty tests\test_platform_action_task.py::test_chatgpt_register_does_not_retry_outlook_no_available_mailbox tests\test_platform_action_task.py::test_chatgpt_register_retries_email_alias_parent_exhausted tests\test_email_alias_mailbox.py -q` -> 14 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: Gmail API接码父邮箱池临时占满时在邮箱别名模式下软重试，不计失败。
+  - core/email_alias_mailbox.py: 增加当前进程别名成功补计数，并修正别名数满额时的父邮箱打标条件。
+  - tests/test_platform_action_task.py: 覆盖 Gmail API接码池临时为空时软重试，以及 outlook 普通无可用邮箱仍不重试。
+  - tests/test_email_alias_mailbox.py: 覆盖别名数达到上限和未落库别名成功时的父邮箱满额打标。
+  - docs/email-alias-mailbox.md: 记录 Gmail API接码临时池空软重试和别名/总数额度规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/tasks.py 中 `_is_email_alias_temporary_pool_error` 和对应软重试分支；撤销 core/email_alias_mailbox.py 中 `_local_alias_success_counts`、有效计数和满额判断调整；撤销 tests/test_platform_action_task.py、tests/test_email_alias_mailbox.py、docs/email-alias-mailbox.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-04 - Task: Gmail API接码别名父邮箱释放 active claim
+
+### What was done
+- 修复 Gmail API接码父邮箱在别名注册成功但未达到 5 个 alias 上限时，只释放本地 reservation、没有释放底层 active claim 的问题。
+- 邮箱别名包装层现在会同时兼容 `_release_local_account_reservation` 和 `_release_active_claim`，使同一个 Gmail API接码母邮箱可以在当前批次内继续分裂第 2 到第 5 个子邮箱。
+- 增加实际 `GmailApiCodeMailbox + EmailAliasMailbox` 组合回归测试，覆盖一个母邮箱连续分配多个 alias 的路径。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py core\gmail_api_code_mailbox.py tests\test_email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py -q` -> 16 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: 父邮箱释放时同时尝试释放底层 active claim，避免 Gmail API接码母邮箱未满额却长期占用。
+  - tests/test_email_alias_mailbox.py: 增加 active claim 释放回归测试。
+  - tests/test_gmail_api_code_mailbox.py: 增加 Gmail API接码母邮箱连续分配多个 alias 的组合测试。
+  - docs/email-alias-mailbox.md: 记录 Gmail API接码父邮箱未满额时会释放 claim 并继续分裂。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/email_alias_mailbox.py 中 `_release_parent` 对 `_release_active_claim` 的兼容释放；撤销 tests/test_email_alias_mailbox.py、tests/test_gmail_api_code_mailbox.py、docs/email-alias-mailbox.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-04 - Task: Gmail API接码邮箱池用量统计页面
+
+### What was done
+- 新增左侧导航 `Gmail邮箱池` 页面，按 Gmail API接码母邮箱展示 alias 使用量。
+- 页面统计每个母邮箱的已成功 alias、已分配但未成功落库 alias、确认剩余额度和保守剩余额度，支持按邮箱搜索和按状态筛选。
+- 后端新增 `/api/stats/gmail-api-code-alias-usage`，直接从本地账号邮箱资源和 Gmail API接码注册任务日志计算统计，不生成 CSV 文件。
+- 实际当前库统计结果：35 个当前池母邮箱，已成功 alias 69 个，已分配未成功落库 6 个，确认剩余 106，保守剩余 100。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\gmail_api_code_usage.py api\stats.py tests\test_gmail_api_code_usage_stats.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_usage_stats.py tests\test_gmail_api_code_mailbox.py -q` -> 5 passed, 1 warning。
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+- 使用真实 `account_manager.db` 直接调用 `gmail_api_code_alias_usage()` -> 返回 35 个当前池母邮箱，并能区分成功 alias 与未确认分配 alias。
+
+### Notes
+- 修改文件清单
+  - application/gmail_api_code_usage.py: 新增 Gmail API接码母邮箱 alias 用量统计逻辑。
+  - api/stats.py: 新增 Gmail API接码用量统计接口。
+  - frontend/src/pages/GmailApiCodeUsage.tsx: 新增 Gmail邮箱池统计页面。
+  - frontend/src/App.tsx: 新增左侧导航入口和页面路由。
+  - frontend/src/lib/i18n.ts: 新增 Gmail邮箱池导航文案。
+  - tests/test_gmail_api_code_usage_stats.py: 覆盖成功 alias 和未确认分配 alias 的统计口径。
+  - docs/gmail-api-code.md: 记录页面入口和统计口径。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 application/gmail_api_code_usage.py、frontend/src/pages/GmailApiCodeUsage.tsx、tests/test_gmail_api_code_usage_stats.py；撤销 api/stats.py、frontend/src/App.tsx、frontend/src/lib/i18n.ts、docs/gmail-api-code.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复旧界面。
+
+## 2026-07-04 - Task: 邮箱别名随机子邮箱重复保护
+
+### What was done
+- 强化邮箱别名随机子邮箱生成前的排重检查，避免批量注册中再次生成已经出现过的子邮箱账号。
+- 排重范围从当前进程占位和账号表，扩展到邮箱资源表 `provider_resources` 以及任务日志中的 `Email alias allocated` 历史分配记录。
+- 已分配但未成功落库的 alias 也会被视为已用候选，后续随机生成时会跳过。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py tests\test_email_alias_mailbox.py application\gmail_api_code_usage.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py -q` -> 18 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: alias 候选生成前新增邮箱资源表和历史分配日志排重。
+  - tests/test_email_alias_mailbox.py: 增加历史已分配 alias 被跳过的回归测试。
+  - docs/email-alias-mailbox.md: 记录 alias 多层排重规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/email_alias_mailbox.py 中 `_existing_provider_resource_alias`、`_allocated_alias_seen`、`_alias_already_used` 及 `_random_alias` 调用调整；撤销 tests/test_email_alias_mailbox.py 和 docs/email-alias-mailbox.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复旧排重逻辑。
+
+## 2026-07-04 - Task: K12 SUB2API 账号名增加 workspace 前缀
+
+### What was done
+- 调整 K12 session 转 SUB2API payload 的账号名称格式；传入 workspace ID 时，账号名改为 `k12-邮箱-空间前缀`。
+- K12 多 workspace 自动注册流程中，远端上传和本地 SUB2API JSON 保存都会把当前 workspace ID 传入转换函数，允许同一子邮箱在不同 K12 空间生成可区分的 SUB2API 账号。
+- 示例格式：`k12-farrugia73367+8zvf73lv@gmail.com-eb6642e8`。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\k12_join.py platforms\chatgpt\protocol_mailbox.py tests\test_k12_join.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py -q` -> 32 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/k12_join.py: SUB2API 转换与上传函数新增 workspace ID 参数，并按 K12 命名规则生成账号名。
+  - platforms/chatgpt/protocol_mailbox.py: K12 遍历每个 workspace 上传或本地保存时传入当前 workspace ID。
+  - tests/test_k12_join.py: 覆盖 K12 workspace 命名和多 workspace 上传参数传递。
+  - docs/k12-space-join.md: 记录 SUB2API 账号名格式。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 platforms/chatgpt/k12_join.py 中 `_k12_account_name`、`workspace_id` 参数和 extra.workspace_id 写入；撤销 platforms/chatgpt/protocol_mailbox.py 传参调整；撤销 tests/test_k12_join.py、docs/k12-space-join.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复旧账号名。
+
+## 2026-07-04 - Task: Gmail邮箱池统计卡说明文案
+
+### What was done
+- Gmail邮箱池页面顶部统计卡增加每个指标的说明文案。
+- 顶部统计卡补充 `确认剩余额度`，与 `保守剩余额度` 并列展示，避免用户只能看到保守口径。
+- 各指标说明覆盖母邮箱数、已成功别名、未确认分配、确认剩余和保守剩余的计算口径。
+
+### Testing
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/GmailApiCodeUsage.tsx: 顶部统计卡增加说明文案，并新增确认剩余额度卡片。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/GmailApiCodeUsage.tsx 中 `description` 字段、确认剩余额度卡片和统计卡布局调整；移除 progress.md 本轮追加内容即可恢复旧展示。
+
+## 2026-07-04 - Task: 新增运维管理父级菜单
+
+### What was done
+- 左侧导航新增 `运维管理` 父级菜单。
+- 将 `Sub2Api管理` 和 `Gmail邮箱池` 从 `工作台` 移入 `运维管理` 下。
+- 保持原页面路由不变，只调整导航归类。
+
+### Testing
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/App.tsx: 新增运维管理折叠菜单和子菜单项，并从工作台菜单移除对应条目。
+  - frontend/src/lib/i18n.ts: 新增 `nav.operations` 中英文文案。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/App.tsx 中 `OPERATIONS_ITEMS`、`operationsOpen`、运维管理菜单块和 WORKBENCH_ITEMS 调整；撤销 frontend/src/lib/i18n.ts 中 `nav.operations`；移除 progress.md 本轮追加内容即可恢复旧导航。
+
+## 2026-07-04 - Task: Sub2API 重登失败删除与多 Workspace 覆盖
+
+### What was done
+- 调整 `重新登录错误帐号` 失败处理：本地账号缺失、缺密码、登录未拿到 session、手机验证阻断、K12 缺 workspace、K12 替换失败和任务异常都会尝试删除远端错误账号。
+- 调整 K12 重登替换流程：页面覆盖值支持多个 workspace ID 后，后端会遍历每个空间，逐个获取 K12 session，并把每个成功空间分别上传到 Sub2API。
+- 将 `K12 Workspace ID 覆盖值` 输入框改为多行输入，提示支持换行或逗号分隔。
+- 同步更新 Sub2API 管理文档中的失败删除策略和多 workspace 覆盖说明。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py tests\test_sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 17 passed, 1 warning。
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 重登失败分支统一删除远端错误账号，并将 K12 replacement 改为多 workspace 逐个 session 上传。
+  - frontend/src/pages/Sub2ApiManagement.tsx: workspace 覆盖值输入改为多行文本框，并提示多个 ID 的分隔方式。
+  - tests/test_sub2api_management.py: 增加登录失败删除、K12 替换失败删除和多 workspace 上传回归测试。
+  - docs/sub2api-management.md: 更新错误账号重登的失败删除策略和多 workspace 覆盖说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/sub2api_management.py 中 `_delete_relogin_failed_account` 调用、K12 多 workspace 上传循环和 `_persist_k12_session` 多 workspace 写入调整；撤销 frontend/src/pages/Sub2ApiManagement.tsx 的 textarea 改动；撤销 tests/test_sub2api_management.py 本轮新增和更新的测试；撤销 docs/sub2api-management.md 本轮文案调整；移除 progress.md 本轮追加内容即可恢复旧逻辑。
+
+## 2026-07-04 - Task: Sub2API 账号本地标签管理
+
+### What was done
+- 为 Sub2API 管理页增加本地标签能力，标签数据按当前 Sub2API origin 和远端账号 ID 保存在本地 SQLite DB。
+- 后端增加标签新增、编辑、删除、批量绑定、批量解绑接口，并让库存列表返回账号标签和支持按标签筛选。
+- 前端在 Sub2API 管理页增加标签筛选、选中账号批量打标/移除、标签新增/改名/删除和列表标签展示。
+- 同步更新 Sub2API 管理文档，说明标签只保存在本地 DB，不写入远端 Sub2API。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\db.py application\sub2api_management.py api\sub2api_management.py tests\test_sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 18 passed, 1 warning。
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - core/db.py: 新增 Sub2API 标签表和账号-标签关联表。
+  - application/sub2api_management.py: 增加标签 CRUD、批量绑定/解绑、库存标签加载和标签过滤逻辑。
+  - api/sub2api_management.py: 新增标签管理和账号标签批量操作 API。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 增加标签筛选、打标操作、标签管理 UI 和列表标签列。
+  - tests/test_sub2api_management.py: 增加 Sub2API 标签创建、绑定、展示和筛选回归测试。
+  - docs/sub2api-management.md: 记录本地标签功能和接口。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/db.py 中 `Sub2ApiAccountTagModel` 和 `Sub2ApiAccountTagLinkModel`；撤销 application/sub2api_management.py、api/sub2api_management.py、frontend/src/pages/Sub2ApiManagement.tsx、tests/test_sub2api_management.py、docs/sub2api-management.md 本轮标签相关改动；移除 progress.md 本轮追加内容即可恢复到无标签管理状态。已创建的本地标签表如需清理，可在确认不再使用后从 SQLite DB 删除 `sub2api_account_tags` 和 `sub2api_account_tag_links` 两张表。
+
+## 2026-07-04 - Task: SUB2API JSON 去重脚本完成提示
+
+### What was done
+- 调整 `scripts/dedupe_sub2api_json.py` 的处理完成提示，统一显示为 `已检查完毕，共 N 个帐号，发现 M 个重复账号，已处理`。
+- 为 Windows PowerShell 输出增加 UTF-8 stdout 配置，避免中文提示乱码。
+- 同步更新 SUB2API JSON 去重脚本文档中的输出示例。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\dedupe_sub2api_json.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe scripts\dedupe_sub2api_json.py "C:\Users\karma617\.codex\attachments\83cfe998-2c9a-4644-8696-5d517cc7aa4e\pasted-text.txt" -o "$env:TEMP\sub2api-deduped-test.json" --summary "$env:TEMP\sub2api-deduped-summary.json"` -> 输出 `已检查完毕，共 10 个帐号，发现 0 个重复账号，已处理`，并生成去重 JSON 与 summary。
+
+### Notes
+- 修改文件清单
+  - scripts/dedupe_sub2api_json.py: 调整完成提示格式并强制 stdout UTF-8。
+  - docs/sub2api-json-dedupe.md: 更新控制台输出示例。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 scripts/dedupe_sub2api_json.py 中完成提示和 stdout 编码调整；撤销 docs/sub2api-json-dedupe.md 本轮示例调整；移除 progress.md 本轮追加内容即可恢复旧输出。
+
+## 2026-07-04 - Task: SUB2API JSON 去重一键 BAT
+
+### What was done
+- 新增根目录 `dedupe_sub2api_json.bat`，支持双击后输入文件路径，也支持把 JSON 文件拖到 bat 上直接执行。
+- bat 自动调用 `scripts/dedupe_sub2api_json.py`，生成去重后的 `*.deduped.json` 和重复明细 `*.dedupe-summary.json`。
+- 将 Python 脚本默认输出文件固定为 `.deduped.json`，避免输入文件是 `.txt` 时输出也变成 `.txt`。
+- 更新文档中的一键 bat 用法说明。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\dedupe_sub2api_json.py` -> 无输出，编译通过。
+- `cmd /c dedupe_sub2api_json.bat "C:\Users\karma617\.codex\attachments\83cfe998-2c9a-4644-8696-5d517cc7aa4e\pasted-text.txt"` -> 输出 `已检查完毕，共 10 个帐号，发现 0 个重复账号，已处理`，并生成 `pasted-text.deduped.json` 和 `pasted-text.dedupe-summary.json`。
+
+### Notes
+- 修改文件清单
+  - dedupe_sub2api_json.bat: 新增一键执行脚本。
+  - scripts/dedupe_sub2api_json.py: 默认输出文件固定为 `.deduped.json`。
+  - docs/sub2api-json-dedupe.md: 增加 bat 使用说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 dedupe_sub2api_json.bat；撤销 scripts/dedupe_sub2api_json.py 默认输出扩展名调整；撤销 docs/sub2api-json-dedupe.md 本轮 bat 说明；移除 progress.md 本轮追加内容即可恢复到仅 Python 命令方式。
+
+## 2026-07-04 - Task: Gmail API接码验证码三轮失败后跳过父邮箱
+
+### What was done
+- 邮箱别名包装层在验证码三轮未收到后，不再只释放父邮箱，而是把无效打标传递给底层父邮箱池。
+- Gmail API接码邮箱在 `invalid_email_no_otp` 后会记录为当前进程内无效邮箱，后续批量注册不再继续用该父邮箱分裂新别名。
+- Gmail API接码邮箱池全部为已注册或无效时返回非临时池空错误，避免被调度层当作临时占用继续软重试。
+- 同步更新邮箱别名文档，说明三轮收不到验证码后的父邮箱跳过规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py core\gmail_api_code_mailbox.py tests\test_gmail_api_code_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_email_alias_mailbox.py -q` -> 19 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_retries_gmail_api_code_pool_temporarily_empty tests\test_platform_action_task.py::test_chatgpt_register_does_not_retry_outlook_no_available_mailbox tests\test_platform_action_task.py::test_chatgpt_register_retries_email_alias_parent_exhausted -q` -> 3 passed, 1 warning。
+- `git diff --check -- core\email_alias_mailbox.py core\gmail_api_code_mailbox.py tests\test_gmail_api_code_mailbox.py docs\email-alias-mailbox.md` -> 无空白错误；仅提示 `core/email_alias_mailbox.py` 的 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: 无效邮箱打标时转发到底层父邮箱池，并在无打标能力时才退回释放父邮箱。
+  - core/gmail_api_code_mailbox.py: 增加当前进程无效邮箱集合、无效打标入口和非临时池空错误。
+  - tests/test_gmail_api_code_mailbox.py: 覆盖无效 Gmail API接码父邮箱跳过，以及单父邮箱无效后不返回临时池空。
+  - docs/email-alias-mailbox.md: 记录 Gmail API接码父邮箱三轮收不到验证码后的跳过规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/email_alias_mailbox.py 中 `mark_invalid_email` 转发底层父邮箱打标的改动；撤销 core/gmail_api_code_mailbox.py 中 `_INVALID_EMAILS`、`mark_invalid_email`、无效邮箱跳过和非临时池空错误；撤销 tests/test_gmail_api_code_mailbox.py 与 docs/email-alias-mailbox.md 本轮新增内容；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-04 - Task: 批量注册任务日志展示截断但复制完整
+
+### What was done
+- 批量注册任务日志面板改为单条日志超过 1200 字符时只在页面展示截断内容，避免 API 请求数据或响应体过长导致窗口卡顿。
+- `复制日志` 仍复制前端保存的原始任务事件文本，不复制页面截断后的文本，便于调试完整 API 请求数据。
+- 补充中英文截断提示文案，并更新 ChatGPT 注册流程文档中的日志面板说明。
+
+### Testing
+- `git diff --check -- frontend/src/components/tasks/TaskLogPanel.tsx frontend/src/lib/i18n.ts docs/chatgpt-register-flow.md` -> 无空白错误；仅提示前端文件 LF/CRLF 工作区换行警告。
+- `npm run build`（cwd: `frontend`）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/tasks/TaskLogPanel.tsx: 单条日志页面展示超过 1200 字符时截断，复制逻辑继续使用完整 `events.line`。
+  - frontend/src/lib/i18n.ts: 增加任务日志单条截断提示的中英文文案。
+  - docs/chatgpt-register-flow.md: 记录批量注册日志面板展示截断、复制完整的行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/components/tasks/TaskLogPanel.tsx 中 `VISIBLE_LOG_LINE_LIMIT`、`getVisibleLine` 和 `LogLine` 展示截断逻辑；撤销 frontend/src/lib/i18n.ts 中 `taskLog.lineTruncatedHint` 中英文文案；撤销 docs/chatgpt-register-flow.md 本轮“批量注册任务日志”说明；移除 progress.md 本轮追加内容即可恢复为页面直接展示完整单条日志。

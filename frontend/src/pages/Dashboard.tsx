@@ -70,7 +70,7 @@ export default function Dashboard() {
     <div className="space-y-2">
       <div className="px-1 text-sm font-medium text-[var(--text-primary)]">{title}</div>
       {values && Object.keys(values).length > 0 ? Object.entries(values).map(([status, count]) => (
-        <div key={status} className="flex items-center justify-between rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 px-3 py-2.5">
+        <div key={status} className="flex items-center justify-between rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/60 px-3.5 py-2.5 transition-colors duration-200 hover:border-[var(--accent-edge)]">
           <Badge variant={STATUS_VARIANT[status] || 'secondary'}>{translateAccountStatus(status, language)}</Badge>
           <span className="text-sm text-[var(--text-secondary)]">{count}</span>
         </div>
@@ -81,16 +81,16 @@ export default function Dashboard() {
   )
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {statCards.map(({ label, value, icon: Icon, color }) => (
-          <div key={label} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 px-3 py-3">
+          <div key={label} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] px-4 py-3.5 shadow-[var(--shadow-soft)] transition-all duration-200 hover:shadow-[var(--shadow-hard)] hover:border-[var(--accent-edge)]">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-[11px] tracking-[0.16em] text-[var(--text-muted)]">{label}</p>
                 <p className="mt-1 text-xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">{value}</p>
               </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border-soft)] bg-[var(--chip-bg)]">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--gradient-accent-soft)]">
                 <Icon className={`h-4.5 w-4.5 ${color} opacity-90`} />
               </div>
             </div>
@@ -112,7 +112,7 @@ export default function Dashboard() {
               const countValue = Number(count) || 0
               const ratio = totalCount > 0 ? Math.round((countValue / totalCount) * 100) : 0
               return (
-                <div key={platform} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 px-3 py-2.5">
+                <div key={platform} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/60 px-3.5 py-3 transition-colors duration-200 hover:border-[var(--accent-edge)]">
                   <div className="flex items-center justify-between gap-3">
                     <span className={`text-sm font-medium ${PLATFORM_COLORS[platform] || 'text-[var(--text-secondary)]'}`}>
                       {platform}
@@ -145,7 +145,7 @@ export default function Dashboard() {
                   ]
                 : []
               return (
-                <div key={platform} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 p-3">
+                <div key={platform} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/60 p-3.5 transition-all duration-200 hover:shadow-[var(--shadow-soft)]">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-sm font-semibold text-[var(--text-primary)]">{label}</div>

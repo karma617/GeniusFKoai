@@ -24,12 +24,18 @@ type LogGroup = {
 };
 
 const MAIN_GROUP_ID = "__main__";
+const VISIBLE_LOG_LINE_LIMIT = 1200;
 
 function classifyLine(line: string): string {
   if (line.includes("✓") || line.includes("成功")) return "text-emerald-700 dark:text-emerald-300";
   if (line.includes("✗") || line.includes("失败") || line.includes("错误"))
     return "text-red-700 dark:text-red-300";
   return "text-[var(--text-primary)]";
+}
+
+function getVisibleLine(line: string): string {
+  if (line.length <= VISIBLE_LOG_LINE_LIMIT) return line;
+  return line.slice(0, VISIBLE_LOG_LINE_LIMIT);
 }
 
 export function TaskLogPanel({
@@ -276,11 +282,13 @@ export function TaskLogPanel({
       </div>
 
       {errorText ? (
-        <div className="shrink-0 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+        <div className="flex h-36 shrink-0 flex-col rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
           <div className="mb-1 font-semibold">
             {t("taskLog.failureReason")}
           </div>
-          <div className="break-words text-red-700/90 dark:text-red-300/90">{friendlyError}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-red-700/90 dark:text-red-300/90">
+            {friendlyError}
+          </div>
         </div>
       ) : null}
 
@@ -383,17 +391,33 @@ function LogGroupView({
         <div className="px-2 py-2">
           <div className="space-y-1">
             {visible.map((ev) => (
-              <div
-                key={ev.id}
-                className={`whitespace-pre-wrap break-words rounded-md border border-[var(--border-soft)] bg-[var(--bg-base)] px-3 py-1.5 leading-5 ${classifyLine(ev.line)}`}
-              >
-                {ev.line}
-              </div>
+              <LogLine key={ev.id} event={ev} />
             ))}
             <div ref={bottomRef} />
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function LogLine({ event }: { event: LogEvent }) {
+  const { t } = useI18n();
+  const truncated = event.line.length > VISIBLE_LOG_LINE_LIMIT;
+  const visibleLine = truncated
+    ? `${getVisibleLine(event.line)}\n...`
+    : event.line;
+
+  return (
+    <div
+      className={`whitespace-pre-wrap break-words rounded-md border border-[var(--border-soft)] bg-[var(--bg-base)] px-3 py-1.5 leading-5 ${classifyLine(event.line)}`}
+    >
+      {visibleLine}
+      {truncated ? (
+        <div className="mt-1 border-t border-[var(--border-soft)] pt-1 text-[10px] font-sans text-[var(--text-secondary)]">
+          {t("taskLog.lineTruncatedHint")}
+        </div>
+      ) : null}
     </div>
   );
 }

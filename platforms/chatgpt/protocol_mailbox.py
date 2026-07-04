@@ -369,10 +369,9 @@ class ChatGPTProtocolMailboxWorker:
                 self._log("[K12] 未配置 workspace ID，跳过后续步骤")
                 return
 
-            chosen_ws = ""
-            new_session = None
+            successful_sessions = []
             for ws_id in workspace_list:
-                # join 和 exchange 必须绑定到同一个 workspace；成功后立即停止，避免一个账号加入多个 workspace。
+                # join、exchange、upload 必须绑定同一个 workspace；每个成功的 workspace 都要单独上传。
                 join_results = send_workspace_join_requests(
                     access_token=access_token,
                     cookies=cookies,
@@ -386,54 +385,70 @@ class ChatGPTProtocolMailboxWorker:
                     continue
 
                 self._log(f"[K12] workspace {ws_id[:8]}... join 请求已接受，开始校验 exchange session")
-                candidate_session = exchange_workspace_session(
+                new_session = exchange_workspace_session(
                     cookies=cookies,
                     workspace_id=ws_id,
                     access_token=access_token,
                     proxy=proxy,
                     log=self._log,
                 )
-                if candidate_session:
-                    chosen_ws = ws_id
-                    new_session = candidate_session
-                    break
-                self._log(f"[K12] workspace {ws_id[:8]}... exchange 校验失败，继续尝试下一个 workspace")
+                if not new_session:
+                    self._log(f"[K12] workspace {ws_id[:8]}... exchange 校验失败，继续尝试下一个 workspace")
+                    continue
 
-            if not new_session or not chosen_ws:
+                self._log(f"[K12] workspace {ws_id[:8]}... 已确认切换到目标 K12 workspace，开始上传 session...")
+                upload_ok = False
+                upload_msg = ""
+                local_paths = {}
+                if self.remote_upload_enabled:
+                    upload_ok, upload_msg = upload_session_to_sub2api(
+                        new_session,
+                        workspace_id=ws_id,
+                        log=self._log,
+                        proxy=proxy,
+                    )
+
+                    if upload_ok:
+                        self._log(f"[K12] workspace {ws_id[:8]}... session 上传成功: {upload_msg}")
+                    else:
+                        self._log(f"[K12] workspace {ws_id[:8]}... session 上传失败: {upload_msg}")
+                else:
+                    cpa_path, sub2api_path = save_session_to_local_upload_jsons(new_session, workspace_id=ws_id)
+                    local_paths = {"cpa_path": cpa_path, "sub2api_path": sub2api_path}
+                    if cpa_path:
+                        self._log(f"[K12] workspace {ws_id[:8]}... CPA JSON 已保存: {cpa_path}")
+                    if sub2api_path:
+                        self._log(f"[K12] workspace {ws_id[:8]}... SUB2API JSON 已保存: {sub2api_path}")
+
+                successful_sessions.append({
+                    "workspace_id": ws_id,
+                    "session": new_session,
+                    "upload_ok": upload_ok,
+                    "upload_message": upload_msg,
+                    **local_paths,
+                })
+
+            if not successful_sessions:
                 self._log("[K12] 所有 workspace 均未完成 join + exchange 校验，停止 K12 上传")
                 return
 
-            self._log("[K12] 已确认切换到目标 K12 workspace，开始上传 session...")
+            last_success = successful_sessions[-1]
+            chosen_ws = last_success["workspace_id"]
+            new_session = last_success["session"]
 
-            if self.remote_upload_enabled:
-                ok, msg = upload_session_to_sub2api(
-                    new_session,
-                    log=self._log,
-                    proxy=proxy,
-                )
-
-                if ok:
-                    self._log(f"[K12] session 上传成功: {msg}")
-                else:
-                    self._log(f"[K12] session 上传失败: {msg}")
-            else:
-                cpa_path, sub2api_path = save_session_to_local_upload_jsons(new_session)
-                if cpa_path:
-                    self._log(f"[K12] CPA JSON 已保存: {cpa_path}")
-                if sub2api_path:
-                    self._log(f"[K12] SUB2API JSON 已保存: {sub2api_path}")
-
-            # 4. 更新 result 的 access_token 为 K12 workspace session 的 token
+            # 4. 更新 result 的 access_token 为最后一个成功 K12 workspace session 的 token，兼容旧调用方。
             k12_access_token = str(new_session.get("accessToken") or new_session.get("access_token") or "")
             if k12_access_token:
                 result.access_token = k12_access_token
 
-            # 保存 K12 信息到 metadata
+            # 保存 K12 信息到 metadata；旧字段保留最后一个成功 workspace，新增列表保存全部成功 workspace。
             metadata["k12_workspace_id"] = chosen_ws
             metadata["k12_session"] = new_session
+            metadata["k12_workspace_sessions"] = successful_sessions
+            metadata["k12_workspace_ids"] = [item["workspace_id"] for item in successful_sessions]
             result.metadata = metadata
 
-            self._log("[K12] 强入 K12 空间流程完成")
+            self._log(f"[K12] 强入 K12 空间流程完成，成功 {len(successful_sessions)}/{len(workspace_list)} 个 workspace")
             self._log("=" * 60)
 
         except Exception as e:

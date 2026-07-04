@@ -24,6 +24,11 @@ type GmailMother = {
   aliases: string[]
 }
 
+type GmailApiCodeRow = {
+  email: string
+  codeUrl: string
+}
+
 function newGmailMother(): GmailMother {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -68,6 +73,22 @@ function serializeGmailPool(items: GmailMother[]): string {
     }))
     .filter(item => item.master_email || item.credentials_json || item.token_json || item.aliases.length)
   return payload.length ? JSON.stringify(payload, null, 2) : ''
+}
+
+function parseGmailApiCodeRows(value: string): GmailApiCodeRow[] {
+  const rows: GmailApiCodeRow[] = []
+  const seen = new Set<string>()
+  for (const rawLine of String(value || '').split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || !line.includes('----')) continue
+    const [emailPart, ...urlParts] = line.split('----')
+    const email = emailPart.trim().toLowerCase()
+    const codeUrl = urlParts.join('----').trim()
+    if (!email || !email.includes('@') || !/^https?:\/\//i.test(codeUrl) || seen.has(email)) continue
+    seen.add(email)
+    rows.push({ email, codeUrl })
+  }
+  return rows
 }
 
 /* ------------------------------------------------------------------ */
@@ -138,7 +159,7 @@ function SearchableSelect({ value, options, placeholder, onChange }: {
         </svg>
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-pane)] shadow-lg">
+        <div className="absolute z-50 mt-1 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] shadow-lg">
           <div className="p-2 border-b border-[var(--border)]">
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)]" />
@@ -148,7 +169,7 @@ function SearchableSelect({ value, options, placeholder, onChange }: {
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder={t('providers.searchPlaceholder')}
-                className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-base)] pl-8 pr-3 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                className="w-full rounded-md border border-[var(--border-soft)] bg-[var(--bg-base)] pl-8 pr-3 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
               />
             </div>
           </div>
@@ -214,6 +235,9 @@ function EditModal({
     if (!legacyMaster && !legacyCredentials && !legacyToken) return []
     return [{ ...newGmailMother(), master_email: legacyMaster, credentials_json: legacyCredentials, token_json: legacyToken }]
   })
+  const gmailApiCodeRows = provider.value === 'gmail_api_code'
+    ? parseGmailApiCodeRows(form.gmail_api_code_pool_text || '')
+    : []
 
   // 加载 async-select 字段的选项
   useEffect(() => {
@@ -515,8 +539,37 @@ function EditModal({
               </div>
             )
           })}
+          {provider.value === 'gmail_api_code' && (
+            <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">已识别邮箱列表</h3>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">
+                    按“邮箱----接码链接”拆分；自动注册会使用左侧 Gmail，验证码从右侧链接轮询。
+                  </p>
+                </div>
+                <span className="rounded-full border border-[var(--border-soft)] bg-[var(--bg-card)] px-2.5 py-1 text-xs text-[var(--text-muted)]">
+                  {gmailApiCodeRows.length} 个
+                </span>
+              </div>
+              {gmailApiCodeRows.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-4 text-center text-xs text-[var(--text-muted)]">
+                  暂未识别到有效记录，请按示例每行填写一个 Gmail 和接码链接。
+                </div>
+              ) : (
+                <div className="max-h-56 space-y-2 overflow-y-auto">
+                  {gmailApiCodeRows.map(row => (
+                    <div key={row.email} className="grid gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] p-3 text-xs sm:grid-cols-[220px_1fr]">
+                      <div className="font-medium text-[var(--text-primary)]">{row.email}</div>
+                      <div className="break-all text-[var(--text-muted)]">{row.codeUrl}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {provider.value === 'gmail_oauth_fission' && (
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-4">
+            <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
               <div className="mb-5 rounded-lg border border-blue-500/20 bg-blue-500/10 p-3">
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div>
@@ -529,7 +582,7 @@ function EditModal({
                     href="https://console.cloud.google.com/"
                     target="_blank"
                     rel="noreferrer"
-                    className="shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] shadow-[var(--shadow-soft)] hover:text-[var(--text-primary)]"
+                    className="shrink-0 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] shadow-[var(--shadow-soft)] hover:text-[var(--text-primary)]"
                   >
                     打开控制台
                   </a>
@@ -543,7 +596,7 @@ function EditModal({
                     '5. APIs & Services -> Credentials，Create Credentials -> OAuth client ID。',
                     '6. 应用类型选择 Desktop app，创建后点击下载 JSON。',
                   ].map(step => (
-                    <div key={step} className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 leading-5">
+                    <div key={step} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-2 leading-5">
                       {step}
                     </div>
                   ))}
@@ -575,7 +628,7 @@ function EditModal({
                   </a>
                 </div>
               </div>
-              <div className="mb-5 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3">
+              <div className="mb-5 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] p-3">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-[var(--text-primary)]">Gmail 母号池</h3>
@@ -592,7 +645,7 @@ function EditModal({
                 ) : (
                   <div className="space-y-3">
                     {gmailMothers.map((mother, index) => (
-                      <div key={mother.id} className="rounded-lg border border-[var(--border)] bg-[var(--bg-pane)] p-3">
+                      <div key={mother.id} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] p-3">
                         <div className="mb-3 flex items-center justify-between gap-3">
                           <div className="text-sm font-medium text-[var(--text-primary)]">母号 {index + 1}</div>
                           <Button type="button" variant="ghost" size="sm" onClick={() => setGmailMothers(items => items.filter(item => item.id !== mother.id))}>
@@ -612,7 +665,7 @@ function EditModal({
                             />
                           </div>
                           <div className="grid gap-2 sm:grid-cols-2">
-                            <label className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                            <label className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                               上传 credentials.json
                               <input
                                 type="file"
@@ -680,7 +733,7 @@ function EditModal({
                 </p>
               </div>
               <div className="space-y-3">
-                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-xs text-[var(--text-muted)]">
+                <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-2 text-xs text-[var(--text-muted)]">
                   当前授权母号：{gmailMothers.find(item => item.id === gmailAuthMotherId)?.master_email || '请先在上方某个母号点击“生成该母号授权链接”'}
                 </div>
                 <div>
@@ -856,7 +909,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
 
     return (
       <div key={key}>
-        <div className="flex items-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3">
+        <div className="flex items-center gap-3 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-4 py-3">
           {/* Left: name + desc + badge */}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">

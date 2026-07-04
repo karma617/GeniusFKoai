@@ -942,7 +942,7 @@ function GeneratePlusModal({
                     {t("ctfGptPlus.paymentMode")}
                   </div>
                   {isShortLink ? (
-                    <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs leading-5 text-[var(--text-muted)]">
+                    <div className="mt-3 rounded-md border border-[var(--border-soft)] bg-[var(--surface-2)] px-3 py-2 text-xs leading-5 text-[var(--text-muted)]">
                       短链模式：付款与注册<strong>共用同一个浏览器</strong>（物理复用），
                       浏览器模式跟随上方「注册模式」的选择
                       （当前：<strong>{String(payment.checkout_mode) || "—"}</strong>）。
@@ -1185,7 +1185,7 @@ function GeneratePlusModal({
                 ) : null}
 
                 {isPpBoomMode ? (
-                  <section className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg-pane)]/40 p-4">
+                  <section className="space-y-3 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/40 p-4">
                     <div className="text-sm font-semibold text-[var(--text-primary)]">
                       {PPBOOM_TEXT.configTitle}
                     </div>
@@ -1377,7 +1377,7 @@ function GeneratePlusModal({
                   </p>
                 </section>
 
-                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+                <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
                   {!reuseAccountId ? (
                     <>
                       <div>
@@ -2183,7 +2183,7 @@ export default function CtfGptPlus() {
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-[var(--text-primary)]">
+          <h1 className="text-xl font-bold text-[var(--text-primary)]">
             {t("ctfGptPlus.title")}
           </h1>
           <div className="mt-1 text-sm text-[var(--text-muted)]">

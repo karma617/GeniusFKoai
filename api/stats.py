@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter
 from sqlmodel import Session, select, func, text
 
+from application.gmail_api_code_usage import gmail_api_code_alias_usage
 from core.db import TaskLog, ProxyModel, AccountModel, AccountOverviewModel, engine
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -50,6 +51,12 @@ def stats_overview():
         "total_accounts": total_accounts,
         "account_distribution": account_distribution,
     }
+
+
+@router.get("/gmail-api-code-alias-usage")
+def stats_gmail_api_code_alias_usage():
+    """Gmail API接码母邮箱 alias 使用量统计。"""
+    return gmail_api_code_alias_usage()
 
 
 @router.get("/by-platform")

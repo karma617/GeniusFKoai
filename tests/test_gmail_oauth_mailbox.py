@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from core.base_mailbox import MailboxAccount
 from core.db import AccountModel, ProviderResourceModel, engine
 from core.gmail_oauth_mailbox import GmailOAuthMailbox
@@ -108,3 +109,16 @@ def test_gmail_oauth_claims_alias_during_allocation_to_avoid_parallel_duplicate(
     assert first.email != second.email
     assert {first.email, second.email} == {first_alias, second_alias}
     assert first.extra["provider_resource"]["metadata"]["gmail_oauth_claimed"] is True
+
+
+def test_gmail_oauth_allows_five_aliases_plus_parent_usage():
+    master = "mother@gmail.com"
+    aliases = [f"mother+alias{index}@gmail.com" for index in range(5)]
+    mailbox = GmailOAuthMailbox(pool_json=_pool_json(master, aliases), fission_enable="false")
+
+    claimed = [mailbox.get_email().email for _ in range(6)]
+
+    assert set(aliases).issubset(set(claimed))
+    assert master in claimed
+    with pytest.raises(RuntimeError, match="使用总数均达到 6"):
+        mailbox.get_email()

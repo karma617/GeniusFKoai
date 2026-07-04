@@ -195,7 +195,7 @@ export default function TaskHistory() {
     <div className="space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[var(--text-primary)]">{t('taskHistory.title')}</h1>
+        <h1 className="text-xl font-bold text-[var(--text-primary)]">{t('taskHistory.title')}</h1>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
           <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} />
           {t('common.refresh')}
@@ -207,9 +207,9 @@ export default function TaskHistory() {
         {metricCards.map(({ label, value, icon: Icon, tone }) => (
           <div
             key={label}
-            className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3"
+            className="flex items-center gap-3 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] px-4 py-3.5 shadow-[var(--shadow-soft)] transition-all duration-200 hover:shadow-[var(--shadow-hard)] hover:border-[var(--accent-edge)]"
           >
-            <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--chip-bg)] ${tone}`}>
+            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--gradient-accent-soft)] ${tone}`}>
               <Icon className="h-4 w-4" />
             </div>
             <div>
@@ -221,8 +221,8 @@ export default function TaskHistory() {
       </div>
 
       {/* Filters — inline with table header */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-[var(--border)] px-4 py-3 sm:flex-row sm:items-center sm:py-2.5">
+      <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] overflow-hidden shadow-[var(--shadow-soft)]">
+        <div className="flex flex-col gap-3 border-b border-[var(--border-soft)] bg-[var(--bg-pane)]/40 px-4 py-3 sm:flex-row sm:items-center sm:py-2.5">
           <span className="whitespace-nowrap text-sm font-medium text-[var(--text-primary)]">{t('taskHistory.recent')}</span>
           <div className="hidden flex-1 sm:block" />
           <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:items-center">
@@ -267,7 +267,7 @@ export default function TaskHistory() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-[var(--border)] bg-[var(--bg-pane)]">
+              <tr className="border-b border-[var(--border-soft)] bg-[var(--bg-pane)]/60">
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('common.date')}</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('taskHistory.taskId')}</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('common.platform')}</th>
@@ -303,7 +303,7 @@ export default function TaskHistory() {
                 return (
                   <tr
                     key={task.id}
-                    className="border-b border-[var(--border)]/50 transition-colors hover:bg-[var(--bg-hover)]"
+                    className="border-b border-[var(--border-soft)] transition-colors hover:bg-[var(--bg-hover)]"
                   >
                     <td className="whitespace-nowrap px-4 py-3 text-xs text-[var(--text-muted)]">
                       {task.created_at

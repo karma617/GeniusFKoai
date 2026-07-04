@@ -240,13 +240,13 @@ export default function Proxies() {
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {metricCards.map(({ label, value, icon: Icon, tone }) => (
-          <Card key={label} className="bg-transparent">
+          <Card key={label} className="bg-transparent transition-all duration-200 hover:shadow-[var(--shadow-hard)] hover:border-[var(--accent-edge)]">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">{label}</div>
                 <div className="mt-1.5 text-xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">{value}</div>
               </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--chip-bg)]">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--gradient-accent-soft)]">
                 <Icon className={`h-5 w-5 ${tone}`} />
               </div>
             </div>

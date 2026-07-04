@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from application.sub2api_management import DEFAULT_TEST_MODEL, Sub2ApiManagementService
@@ -26,14 +27,114 @@ class ReloginRequest(BaseModel):
     concurrency: int = 2
 
 
+class TagRequest(BaseModel):
+    name: str
+    color: str = ""
+
+
+class AccountTagRequest(BaseModel):
+    account_ids: list[str] = Field(default_factory=list)
+    tag_ids: list[int] = Field(default_factory=list)
+    action: str = "add"
+
+
+class ExportDataRequest(BaseModel):
+    account_ids: list[str] = Field(default_factory=list)
+    tag_ids: list[int] = Field(default_factory=list)
+    timezone: str = "Asia/Shanghai"
+    include_proxies: bool = True
+
+
 @router.get("/inventory")
-def list_sub2api_inventory(group_id: int | None = None, status: str = "", search: str = ""):
+def list_sub2api_inventory(group_id: int | None = None, status: str = "", search: str = "", tag_id: int | None = None):
     try:
-        return service.list_inventory(group_id=group_id, status=status, search=search)
+        return service.list_inventory(group_id=group_id, status=status, search=search, tag_id=tag_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"读取 Sub2API 远端数据失败: {exc}") from exc
+
+
+@router.get("/tags")
+def list_sub2api_tags():
+    try:
+        return service.list_tags()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"读取 Sub2API 标签失败: {exc}") from exc
+
+
+@router.post("/tags")
+def create_sub2api_tag(body: TagRequest):
+    try:
+        return service.create_tag(name=body.name, color=body.color)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"创建 Sub2API 标签失败: {exc}") from exc
+
+
+@router.put("/tags/{tag_id}")
+def update_sub2api_tag(tag_id: int, body: TagRequest):
+    try:
+        return service.update_tag(tag_id, name=body.name, color=body.color)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"更新 Sub2API 标签失败: {exc}") from exc
+
+
+@router.delete("/tags/{tag_id}")
+def delete_sub2api_tag(tag_id: int):
+    try:
+        return service.delete_tag(tag_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"删除 Sub2API 标签失败: {exc}") from exc
+
+
+@router.post("/account-tags")
+def update_sub2api_account_tags(body: AccountTagRequest):
+    try:
+        return service.update_account_tags(
+            account_ids=body.account_ids,
+            tag_ids=body.tag_ids,
+            action=body.action,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"更新 Sub2API 账号标签失败: {exc}") from exc
+
+
+@router.post("/export-data")
+def export_sub2api_account_data(body: ExportDataRequest):
+    try:
+        if not body.tag_ids:
+            raise ValueError("请选择导出标签")
+        service.update_account_tags(
+            account_ids=body.account_ids,
+            tag_ids=body.tag_ids,
+            action="add",
+        )
+        payload = service.export_accounts_data(
+            account_ids=body.account_ids,
+            timezone_name=body.timezone,
+            include_proxies=body.include_proxies,
+        )
+        content = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+        filename = f"sub2api-account-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        return Response(
+            content,
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(502, f"导出 Sub2API 账号数据失败: {exc}") from exc
 
 
 @router.post("/bulk-check")

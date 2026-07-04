@@ -107,7 +107,7 @@ function SettingsMetric({
   icon: any
 }) {
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-pane)]/58 px-3 py-2.5">
+    <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/58 px-3 py-2.5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-[11px] tracking-[0.16em] text-[var(--text-muted)]">{label}</div>
@@ -187,7 +187,7 @@ function PlatformCapsTab() {
         const identityOptions: ChoiceOption[] = p.supported_identity_mode_options || []
         const oauthOptions: ChoiceOption[] = p.supported_oauth_provider_options || []
         return (
-          <div key={p.name} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5">
+          <div key={p.name} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-5">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="text-sm font-semibold text-[var(--text-primary)]">{p.display_name}</h3>
@@ -527,7 +527,7 @@ function ProviderDetailModal({
             ) : null}
           </div>
           {item.description ? (
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+            <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2 text-xs text-[var(--text-secondary)]">
               {item.description}
             </div>
           ) : null}
@@ -635,7 +635,7 @@ function AddProviderModal({
                 ))}
               </select>
               {providers.find((provider: ProviderOption) => provider.value === selectedKey)?.description ? (
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2 text-xs text-[var(--text-secondary)]">
                   {providers.find((provider: ProviderOption) => provider.value === selectedKey)?.description}
                 </div>
               ) : null}
@@ -1266,7 +1266,7 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
           {t(PROVIDER_USAGE_KEYS[providerType])}
         </div>
         {providerType === 'captcha' && (
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5">
+          <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-5">
             <div className="mb-2">
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">{t('settings.currentPolicy')}</h3>
             </div>
@@ -1333,7 +1333,7 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
 
       {/* Horizontal tab bar — only show when not navigated via sidebar */}
       {!(embedded && defaultTab) && (
-      <div className="flex flex-wrap gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--chip-bg)] p-1">
+      <div className="flex flex-wrap gap-1.5 rounded-xl border border-[var(--border-soft)] bg-[var(--chip-bg)] p-1">
         {visibleTabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -1341,7 +1341,7 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
             className={cn(
               'inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition-all',
               activeTab === id
-                ? 'bg-[var(--accent)] text-white shadow-sm'
+                ? 'bg-[var(--gradient-accent)] text-white shadow-sm'
                 : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
             )}
           >
@@ -1364,7 +1364,7 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
               )}
               {currentProviderTab && renderProviderPanel(currentProviderTab)}
               {!currentProviderTab && sections.map(({ section, desc, items }) => (
-                <div key={section} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5">
+                <div key={section} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-5">
                   <div className="mb-4">
                     <h3 className="text-sm font-semibold text-[var(--text-primary)]">{section}</h3>
                     {desc && <p className="text-xs text-[var(--text-muted)] mt-0.5">{desc}</p>}

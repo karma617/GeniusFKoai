@@ -23,6 +23,7 @@ from core.db import AccountModel, ProviderResourceModel, engine
 
 GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 GMAIL_OAUTH_REDIRECT_URI = "http://127.0.0.1:53682/"
+GMAIL_OAUTH_MOTHER_USAGE_LIMIT = 6
 
 
 def _bool_value(value: Any) -> bool:
@@ -365,10 +366,10 @@ class GmailOAuthMailbox(BaseMailbox):
         for mother in self._mothers:
             used = self._usage_count(mother["master_email"])
             active = self._active_claim_count_locked(mother["master_email"])
-            if used + active < 5:
+            if used + active < GMAIL_OAUTH_MOTHER_USAGE_LIMIT:
                 candidates.append((mother, used))
         if not candidates:
-            raise RuntimeError("Gmail OAuth 母号池已耗尽：所有母号使用总数均达到 5")
+            raise RuntimeError(f"Gmail OAuth 母号池已耗尽：所有母号使用总数均达到 {GMAIL_OAUTH_MOTHER_USAGE_LIMIT}")
         return random.choice(candidates)
 
     def _select_email_for_mother(self, mother: dict[str, Any]) -> str:
@@ -447,7 +448,7 @@ class GmailOAuthMailbox(BaseMailbox):
                     skipped.append(str(exc))
                     continue
                 active_count = self._active_claim_count_locked(mother["master_email"])
-                if used_count + active_count >= 5:
+                if used_count + active_count >= GMAIL_OAUTH_MOTHER_USAGE_LIMIT:
                     continue
                 self._claim_email_locked(email, mother["master_email"])
                 return MailboxAccount(

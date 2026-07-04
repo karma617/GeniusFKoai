@@ -23,6 +23,7 @@ import CtfGptPlus from "@/pages/CtfGptPlus";
 import GoPayGptPlus from "@/pages/GoPayGptPlus";
 import PlusManager from "@/pages/PlusManager";
 import Sub2ApiManagement from "@/pages/Sub2ApiManagement";
+import GmailApiCodeUsage from "@/pages/GmailApiCodeUsage";
 import UpdateBanner from "@/components/UpdateBanner";
 import {
   ChevronRight,
@@ -37,6 +38,8 @@ import {
   PanelLeftClose,
   PanelLeft,
   Sparkles,
+  MailCheck,
+  Wrench,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -57,8 +60,12 @@ const WORKBENCH_ITEMS: NavItem[] = [
   { path: "/gopay-gpt-plus", labelKey: "nav.gopayGptPlus", icon: Sparkles },
   { path: "/plus-manager", labelKey: "nav.plusManager", icon: Sparkles },
   { path: "/accounts/chatgpt", labelKey: "nav.chatgptFree", icon: Users },
-  { path: "/sub2api-management", labelKey: "nav.sub2apiManagement", icon: Sparkles },
   { path: "/history", labelKey: "nav.tasks", icon: History },
+];
+
+const OPERATIONS_ITEMS: NavItem[] = [
+  { path: "/sub2api-management", labelKey: "nav.sub2apiManagement", icon: Sparkles },
+  { path: "/gmail-api-code-usage", labelKey: "nav.gmailApiCodeUsage", icon: MailCheck },
 ];
 
 function Sidebar({
@@ -83,9 +90,17 @@ function Sidebar({
     WORKBENCH_ITEMS.some(({ path, exact }) =>
       exact ? pathname === path : pathname.startsWith(path),
     );
+  const isOperationsPath = (pathname: string) =>
+    OPERATIONS_ITEMS.some(({ path, exact }) =>
+      exact ? pathname === path : pathname.startsWith(path),
+    );
   const isWorkbench = isWorkbenchPath(location.pathname);
+  const isOperations = isOperationsPath(location.pathname);
   const [workbenchOpen, setWorkbenchOpen] = useState(
     isWorkbenchPath(location.pathname),
+  );
+  const [operationsOpen, setOperationsOpen] = useState(
+    isOperationsPath(location.pathname),
   );
   const [accountsOpen, setAccountsOpen] = useState(
     location.pathname.startsWith("/accounts") && !isTopLevelChatGptAccounts,
@@ -112,6 +127,12 @@ function Sidebar({
       setWorkbenchOpen(true);
     }
   }, [isWorkbench]);
+
+  useEffect(() => {
+    if (isOperations) {
+      setOperationsOpen(true);
+    }
+  }, [isOperations]);
 
   useEffect(() => {
     if (location.pathname.startsWith("/accounts") && !isTopLevelChatGptAccounts) {
@@ -150,7 +171,7 @@ function Sidebar({
   return (
     <aside
       className={cn(
-        "flex h-screen flex-col border-r border-[var(--border-soft)] bg-[var(--bg-surface)] shadow-[var(--shadow-soft)] backdrop-blur-xl transition-[width] duration-200",
+        "glass flex h-screen flex-col border-r border-[var(--border-soft)] shadow-[var(--shadow-soft)] transition-[width] duration-300",
         collapsed ? "w-20" : "w-[260px]",
       )}
     >
@@ -163,7 +184,7 @@ function Sidebar({
       >
         {!collapsed && (
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(var(--accent-rgb),0.24)]">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--gradient-accent)] text-[13px] font-bold text-white shadow-[var(--shadow-glow)] transition-transform duration-200 hover:scale-105">
               摘星
             </div>
             <div className="min-w-0">
@@ -177,7 +198,7 @@ function Sidebar({
           </div>
         )}
         {collapsed && (
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--accent)] text-[13px] font-bold text-white shadow-[0_8px_20px_rgba(var(--accent-rgb),0.24)]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--gradient-accent)] text-[13px] font-bold text-white shadow-[var(--shadow-glow)] transition-transform duration-200 hover:scale-105">
             A
           </div>
         )}
@@ -211,7 +232,7 @@ function Sidebar({
             )}
           </button>
           {!collapsed && workbenchOpen && (
-            <div className="ml-[21px] mt-1 space-y-px border-l border-[var(--border)] pl-3">
+            <div className="ml-[21px] mt-1 space-y-0.5 border-l border-[var(--border-soft)] pl-3">
               {WORKBENCH_ITEMS.map(({ path, labelKey, label: itemLabel, exact }) => {
                 const active = exact
                   ? location.pathname === path
@@ -223,14 +244,70 @@ function Sidebar({
                     to={path}
                     end={exact}
                     className={cn(
-                      "relative block rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+                      "relative block rounded-lg px-2.5 py-1.5 text-[13px] transition-all duration-200",
                       active
                         ? "text-[var(--accent)] font-medium bg-[var(--accent-soft)]"
                         : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]",
                     )}
                   >
                     {active && (
-                      <span className="absolute -left-[13.5px] top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-[var(--accent)]" />
+                      <span className="absolute -left-[13.5px] top-1/2 h-4 w-[2.5px] -translate-y-1/2 rounded-full bg-[var(--gradient-accent)]" />
+                    )}
+                    {label}
+                  </NavLink>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Operations with sub-items */}
+        <div>
+          <button
+            onClick={() => {
+              if (collapsed) {
+                navigate("/sub2api-management");
+              } else {
+                setOperationsOpen(!operationsOpen);
+              }
+            }}
+            className={cn(navLinkClass(isOperations), "w-full")}
+            title={collapsed ? t("nav.operations") : undefined}
+          >
+            <Wrench className={iconClass(isOperations)} />
+            {!collapsed && (
+              <>
+                <span className="flex-1 text-left">{t("nav.operations")}</span>
+                <ChevronRight
+                  className={cn(
+                    "h-3 w-3 text-[var(--text-muted)] transition-transform duration-150",
+                    operationsOpen && "rotate-90",
+                  )}
+                />
+              </>
+            )}
+          </button>
+          {!collapsed && operationsOpen && (
+            <div className="ml-[21px] mt-1 space-y-0.5 border-l border-[var(--border-soft)] pl-3">
+              {OPERATIONS_ITEMS.map(({ path, labelKey, label: itemLabel, exact }) => {
+                const active = exact
+                  ? location.pathname === path
+                  : location.pathname.startsWith(path);
+                const label = itemLabel || (labelKey ? t(labelKey) : path);
+                return (
+                  <NavLink
+                    key={path}
+                    to={path}
+                    end={exact}
+                    className={cn(
+                      "relative block rounded-lg px-2.5 py-1.5 text-[13px] transition-all duration-200",
+                      active
+                        ? "text-[var(--accent)] font-medium bg-[var(--accent-soft)]"
+                        : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]",
+                    )}
+                  >
+                    {active && (
+                      <span className="absolute -left-[13.5px] top-1/2 h-4 w-[2.5px] -translate-y-1/2 rounded-full bg-[var(--gradient-accent)]" />
                     )}
                     {label}
                   </NavLink>
@@ -267,7 +344,7 @@ function Sidebar({
             )}
           </button>
           {!collapsed && accountsOpen && (
-            <div className="ml-[21px] mt-1 space-y-px border-l border-[var(--border)] pl-3">
+            <div className="ml-[21px] mt-1 space-y-0.5 border-l border-[var(--border-soft)] pl-3">
               {platforms.filter((p) => p.key !== "chatgpt").map((p) => (
                 <NavLink
                   key={p.key}
@@ -309,7 +386,7 @@ function Sidebar({
                   />
                 </button>
                 {smsPoolOpen && (
-                  <div className="ml-3 mt-1 space-y-px border-l border-[var(--border)] pl-3">
+                  <div className="ml-3 mt-1 space-y-0.5 border-l border-[var(--border-soft)] pl-3">
                     <NavLink
                       to="/accounts/sms-pool"
                       className={({ isActive }) =>
@@ -345,7 +422,7 @@ function Sidebar({
 
         {/* Divider */}
         {!collapsed && (
-          <div className="!my-4 mx-1 border-t border-[var(--border-soft)]" />
+          <div className="!my-4 mx-2 border-t border-[var(--border-soft)]" />
         )}
 
         {/* Settings with sub-items */}
@@ -365,7 +442,7 @@ function Sidebar({
             {!collapsed && <span>{t("nav.settings")}</span>}
           </button>
           {!collapsed && isSettings && (
-            <div className="ml-[21px] mt-1 space-y-px border-l border-[var(--border)] pl-3">
+            <div className="ml-[21px] mt-1 space-y-0.5 border-l border-[var(--border-soft)] pl-3">
               {[
                 { label: t("nav.settings.general"), hash: "general" },
                 { label: t("nav.settings.register"), hash: "register" },
@@ -386,7 +463,7 @@ function Sidebar({
                     key={item.hash}
                     to={`/settings?tab=${item.hash}`}
                     className={cn(
-                      "relative block rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
+                      "relative block rounded-lg px-2.5 py-1.5 text-[13px] transition-all duration-200",
                       active
                         ? "text-[var(--accent)] font-medium bg-[var(--accent-soft)]"
                         : "text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]",
@@ -407,7 +484,7 @@ function Sidebar({
       {/* Footer */}
       <div
         className={cn(
-          "flex shrink-0 border-t border-[var(--border-soft)] px-4 py-4",
+          "glass flex shrink-0 border-t border-[var(--border-soft)] px-4 py-4",
           collapsed ? "flex-col items-center gap-1" : "items-center gap-1",
         )}
       >
@@ -493,14 +570,14 @@ function Shell({
   const fullBleedContent = location.pathname.startsWith("/accounts");
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--bg-base)]">
+    <div className="flex h-screen overflow-hidden bg-[var(--bg-base)] transition-colors duration-300">
       <Sidebar
         theme={theme}
         toggleTheme={toggleTheme}
         collapsed={collapsed}
         setCollapsed={setCollapsed}
       />
-      <main className="min-w-0 flex-1 overflow-y-auto bg-[var(--bg-base)]">
+      <main className="min-w-0 flex-1 overflow-y-auto bg-transparent">
         <div
           className={cn(
             "mx-auto flex min-h-full w-full flex-col",
@@ -522,6 +599,7 @@ function Shell({
               <Route path="/gopay-gpt-plus" element={<GoPayGptPlus />} />
               <Route path="/plus-manager" element={<PlusManager />} />
               <Route path="/sub2api-management" element={<Sub2ApiManagement />} />
+              <Route path="/gmail-api-code-usage" element={<GmailApiCodeUsage />} />
               <Route path="/history" element={<TaskHistory />} />
               <Route path="/proxies" element={<Proxies />} />
               <Route
@@ -571,13 +649,13 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-[var(--bg-base)]">
+    <div className="aurora-bg flex h-screen items-center justify-center bg-[var(--bg-base)]">
       <form
         onSubmit={submit}
-        className="w-80 space-y-4 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-[var(--shadow-hard)]"
+        className="relative z-10 w-80 space-y-4 rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-7 shadow-[var(--shadow-hard)]"
       >
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--accent)] text-sm font-bold text-white">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--gradient-accent)] text-sm font-bold text-white shadow-[var(--shadow-glow)]">
             A
           </div>
           <h1 className="text-base font-semibold text-[var(--text-primary)]">
@@ -597,7 +675,7 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
         <button
           type="submit"
           disabled={loading || !pw}
-          className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-50"
+          className="w-full rounded-lg bg-[var(--gradient-accent)] px-4 py-2.5 text-sm font-medium text-white shadow-[var(--shadow-soft)] transition-all duration-200 hover:shadow-[var(--shadow-glow)] hover:brightness-105 active:scale-[0.98] disabled:opacity-50"
         >
           {loading ? t("login.checking") : t("login.submit")}
         </button>
@@ -658,7 +736,7 @@ function AppContent() {
 
   if (authState === "loading") {
     return (
-      <div className="flex h-screen items-center justify-center bg-[var(--bg-base)] text-[var(--text-muted)] text-sm">
+      <div className="aurora-bg flex h-screen items-center justify-center bg-[var(--bg-base)] text-[var(--text-muted)] text-sm">
         {t("app.loading")}
       </div>
     );

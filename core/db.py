@@ -321,6 +321,33 @@ class SmsPoolBlacklistModel(SQLModel, table=True):
     last_attempted_at: datetime = Field(default_factory=_utcnow)
 
 
+class Sub2ApiAccountTagModel(SQLModel, table=True):
+    __tablename__ = "sub2api_account_tags"
+    __table_args__ = (
+        UniqueConstraint("origin", "name", name="uq_sub2api_account_tags_origin_name"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    origin: str = Field(index=True)
+    name: str = Field(index=True)
+    color: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class Sub2ApiAccountTagLinkModel(SQLModel, table=True):
+    __tablename__ = "sub2api_account_tag_links"
+    __table_args__ = (
+        UniqueConstraint("origin", "account_id", "tag_id", name="uq_sub2api_account_tag_links_origin_account_tag"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    origin: str = Field(index=True)
+    account_id: str = Field(index=True)
+    tag_id: int = Field(index=True, foreign_key="sub2api_account_tags.id")
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 def save_account(account) -> 'AccountModel':
     """从 base_platform.Account 存入数据库（同平台同邮箱则更新）"""
     from core.account_graph import sync_platform_account_graph

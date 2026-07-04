@@ -17,11 +17,11 @@ export default function WelcomeDialog() {
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      className="dialog-backdrop fixed inset-0 z-[100] flex items-center justify-center p-4"
       onClick={close}
     >
       <div
-        className="relative w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-xl"
+        className="relative w-full max-w-sm rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-6 shadow-[var(--shadow-hard)]"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -51,7 +51,7 @@ export default function WelcomeDialog() {
           href={QQ_GROUP_URL}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-4 block w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-center text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)]"
+          className="mt-4 block w-full rounded-lg bg-[var(--gradient-accent)] px-4 py-2.5 text-center text-sm font-medium text-white shadow-[var(--shadow-soft)] transition-all duration-200 hover:shadow-[var(--shadow-glow)] hover:brightness-105 active:scale-[0.98]"
         >
           {t('welcome.join')}
         </a>

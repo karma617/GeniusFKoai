@@ -163,7 +163,7 @@ export default function BitBrowserProfiles() {
       </div>
 
       {showBulk && (
-        <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3">
+        <div className="space-y-2 rounded-md border border-[var(--border-soft)] bg-[var(--bg-card)] p-3">
           <div className="text-xs text-[var(--text-muted)]">
             {t("settings.bitbrowser.bulkHelp")}
           </div>
@@ -188,7 +188,7 @@ export default function BitBrowserProfiles() {
         </div>
       )}
 
-      <div className="rounded-md border border-[var(--border)] bg-[var(--bg-card)]">
+      <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg-card)]">
         {items.length === 0 ? (
           <div className="px-4 py-6 text-center text-xs text-[var(--text-muted)]">
             {t("settings.bitbrowser.empty")}

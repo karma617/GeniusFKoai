@@ -12,15 +12,16 @@ from typing import Any
 from sqlmodel import Session, select
 
 from core.base_mailbox import BaseMailbox, MailboxAccount
-from core.db import AccountModel, ProviderResourceModel, engine
+from core.db import AccountModel, ProviderResourceModel, TaskEventModel, engine
 
 
-EMAIL_ALIAS_HARD_LIMIT = 4
+EMAIL_ALIAS_HARD_LIMIT = 5
 EMAIL_ALIAS_SELECT_ATTEMPTS = 16
 _EMAIL_RE = re.compile(r"^([^@\s]+)@([^@\s]+\.[^@\s]+)$")
 _ALIAS_CHARS = string.ascii_lowercase + string.digits
 _ALIAS_LOCK = threading.Lock()
 _RESERVED_ALIASES: set[str] = set()
+_ALLOCATED_ALIAS_PREFIX = "Email alias allocated:"
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,59 @@ def _existing_account_email(email: str, *, platform: str = "") -> bool:
         return session.exec(statement).first() is not None
 
 
+def _metadata_has_alias(metadata: dict[str, Any], target: str) -> bool:
+    if not metadata:
+        return False
+    if _metadata_text(metadata, "alias_email", "email_alias", "email") == target:
+        return True
+    nested = metadata.get("email_alias")
+    if isinstance(nested, dict):
+        return _metadata_text(nested, "alias_email", "email") == target
+    return False
+
+
+def _existing_provider_resource_alias(email: str, *, platform: str = "") -> bool:
+    target = normalize_email_address(email)
+    if not target:
+        return False
+    with Session(engine) as session:
+        rows = session.exec(
+            select(ProviderResourceModel, AccountModel)
+            .join(AccountModel, AccountModel.id == ProviderResourceModel.account_id)
+            .where(ProviderResourceModel.provider_type == "mailbox")
+        ).all()
+        for resource, account in rows:
+            if platform and str(account.platform or "") != platform:
+                continue
+            if normalize_email_address(resource.handle) == target:
+                return True
+            if normalize_email_address(account.email) == target:
+                return True
+            if _metadata_has_alias(_resource_metadata(resource), target):
+                return True
+    return False
+
+
+def _allocated_alias_seen(email: str) -> bool:
+    target = normalize_email_address(email)
+    if not target:
+        return False
+    with Session(engine) as session:
+        return session.exec(
+            select(TaskEventModel.id)
+            .where(TaskEventModel.message.like(f"%{_ALLOCATED_ALIAS_PREFIX} {target} %"))
+            .limit(1)
+        ).first() is not None
+
+
+def _alias_already_used(email: str, *, platform: str = "") -> bool:
+    return (
+        _existing_account_email(email, platform=platform)
+        or _existing_provider_resource_alias(email, platform=platform)
+        or _allocated_alias_seen(email)
+    )
+
+
 def _random_alias(parent_email: str, *, platform: str = "") -> str:
     match = _EMAIL_RE.match(parent_email)
     if not match:
@@ -151,7 +205,7 @@ def _random_alias(parent_email: str, *, platform: str = "") -> str:
         with _ALIAS_LOCK:
             if alias in _RESERVED_ALIASES:
                 continue
-            if _existing_account_email(alias, platform=platform):
+            if _alias_already_used(alias, platform=platform):
                 continue
             _RESERVED_ALIASES.add(alias)
             return alias
@@ -213,6 +267,7 @@ class EmailAliasMailbox(BaseMailbox):
         self.platform = str(platform or "").strip()
         self._log_fn = log_fn
         self._parents_by_alias: dict[str, MailboxAccount] = {}
+        self._local_alias_success_counts: dict[str, int] = {}
 
     def _log(self, message: str) -> None:
         if not callable(self._log_fn):
@@ -225,14 +280,24 @@ class EmailAliasMailbox(BaseMailbox):
     def _release_parent(self, parent: MailboxAccount | None) -> None:
         if parent is None:
             return
+        released = False
         for target in (self.mailbox, self._resolve_wrapped_mailbox(parent)):
             release = getattr(target, "_release_local_account_reservation", None)
             if callable(release):
                 try:
                     release(parent)
-                    return
+                    released = True
                 except Exception:
-                    continue
+                    pass
+            release_claim = getattr(target, "_release_active_claim", None)
+            if callable(release_claim):
+                try:
+                    release_claim(parent.email)
+                    released = True
+                except Exception:
+                    pass
+        if released:
+            return
 
     def _mark_parent_alias_quota_exhausted(self, parent: MailboxAccount, usage: EmailAliasUsage) -> None:
         marker = getattr(self.mailbox, "mark_registration_success", None)
@@ -345,8 +410,12 @@ class EmailAliasMailbox(BaseMailbox):
             parent_email = normalize_email_address(parent.email)
             last_parent = parent_email or last_parent
             usage = get_email_alias_usage(parent_email, platform=self.platform)
+            local_alias_success_count = self._local_alias_success_counts.get(parent_email, 0)
             last_usage = usage
-            if usage.alias_success_count >= self.alias_limit or usage.total_success_count >= self.alias_limit + 1:
+            if (
+                usage.alias_success_count + local_alias_success_count >= self.alias_limit
+                or usage.total_success_count + local_alias_success_count >= self.alias_limit + 1
+            ):
                 if parent_email in seen_full:
                     break
                 seen_full.add(parent_email)
@@ -416,22 +485,40 @@ class EmailAliasMailbox(BaseMailbox):
 
     def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
         parent = self._parent_for(account)
-        self._release_parent(parent)
         _release_reserved_alias(getattr(account, "email", ""))
+        marker = getattr(self.mailbox, "mark_invalid_email", None)
+        if callable(marker):
+            try:
+                applied = list(marker(parent, reason=reason) or [])
+                if applied:
+                    return applied
+            except Exception as exc:
+                self._log(f"Email alias parent invalid mark failed: {parent.email} error={exc}")
+        self._release_parent(parent)
         return []
 
     def mark_registration_success(self, account: MailboxAccount) -> list[str]:
         parent = self._parent_for(account)
+        parent_email = normalize_email_address(parent.email)
+        alias_email = normalize_email_address(getattr(account, "email", ""))
+        if parent_email and alias_email and not _existing_account_email(alias_email, platform=self.platform):
+            self._local_alias_success_counts[parent_email] = self._local_alias_success_counts.get(parent_email, 0) + 1
         usage = get_email_alias_usage(parent.email, platform=self.platform)
+        local_alias_success_count = self._local_alias_success_counts.get(parent_email, 0)
+        effective_alias_count = usage.alias_success_count + local_alias_success_count
+        effective_total_count = usage.total_success_count + local_alias_success_count
         _release_reserved_alias(getattr(account, "email", ""))
         self._log(
             "Email alias registration success: "
             f"{getattr(account, 'email', '')} parent={parent.email} "
-            f"aliases={usage.alias_success_count}/{self.alias_limit} "
-            f"total={usage.total_success_count}/{self.alias_limit + 1}"
+            f"aliases={effective_alias_count}/{self.alias_limit} "
+            f"total={effective_total_count}/{self.alias_limit + 1}"
         )
         marker = getattr(self.mailbox, "mark_registration_success", None)
-        if callable(marker) and usage.total_success_count >= self.alias_limit + 1:
+        if callable(marker) and (
+            effective_alias_count >= self.alias_limit
+            or effective_total_count >= self.alias_limit + 1
+        ):
             return list(marker(parent) or [])
         self._release_parent(parent)
         return []
@@ -451,6 +538,14 @@ class EmailAliasMailbox(BaseMailbox):
             "Email alias parent exhausted (user_already_exists): "
             f"alias={getattr(account, 'email', '')} parent={parent.email}"
         )
+        invalid_marker = getattr(self.mailbox, "mark_invalid_email", None)
+        if callable(invalid_marker):
+            try:
+                applied = list(invalid_marker(parent, reason="user_already_exists") or [])
+                if applied:
+                    return applied
+            except Exception as exc:
+                self._log(f"Email alias parent invalid mark failed: {parent.email} error={exc}")
         marker = getattr(self.mailbox, "mark_registration_success", None)
         if callable(marker):
             try:

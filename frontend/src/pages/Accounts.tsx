@@ -449,7 +449,7 @@ function RegisterModal({
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   const [enableEmailAlias, setEnableEmailAlias] = useState(false)
-  const [emailAliasLimit, setEmailAliasLimit] = useState(4)
+  const [emailAliasLimit, setEmailAliasLimit] = useState(5)
   // GoPay 专属：PIN（6 位数字）、Hero-SMS API key、注册代理。仅当
   // platform === 'gopay' 时显示，未填时后端走环境变量回退。
   const [gopayPin, setGopayPin] = useState('147258')
@@ -605,7 +605,7 @@ function RegisterModal({
       }
       if (platform === 'chatgpt' && enableEmailAlias) {
         extra.enable_email_alias = true
-        extra.email_alias_limit = Math.min(Math.max(Number(emailAliasLimit || 4), 1), 4)
+        extra.email_alias_limit = Math.min(Math.max(Number(emailAliasLimit || 5), 1), 5)
       }
       if (selection.identityProvider === 'mailbox') {
         if (!defaultMailboxProvider?.provider_key) {
@@ -781,7 +781,7 @@ function RegisterModal({
                           ) : null}
                         </div>
                       </label>
-                      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3">
+                      <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3">
                         <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                           {t('accounts.phoneChangeLimit')}
                         </label>
@@ -819,7 +819,7 @@ function RegisterModal({
 
                 {platform === 'chatgpt' && (
                   <div className="grid gap-3 md:grid-cols-2">
-                    <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                    <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                       <input
                         type="checkbox"
                         checked={enableEmailAlias}
@@ -835,7 +835,7 @@ function RegisterModal({
                         </div>
                       </div>
                     </label>
-                    <div className={`rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 ${enableEmailAlias ? '' : 'opacity-60'}`}>
+                    <div className={`rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 ${enableEmailAlias ? '' : 'opacity-60'}`}>
                       <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                         {t('accounts.emailAliasLimit')}
                       </label>
@@ -857,7 +857,7 @@ function RegisterModal({
 
                 {/* GoPay 专属：手机号接码 + PIN + 代理（platform === 'gopay'） */}
                 {platform === 'gopay' && (
-                  <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
+                  <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
                     <div className="text-sm font-medium text-[var(--text-primary)]">GoPay 注册参数</div>
                     <div>
                       <label className="text-xs text-[var(--text-muted)] block mb-1">Hero-SMS API key（必填）</label>
@@ -910,7 +910,7 @@ function RegisterModal({
 
                 {/* chatgpt 平台特定：强入 K12 空间（注册后跳过接码，取 session 上传 sub2api + 向 workspace 发加入申请） */}
                 {platform === 'chatgpt' && (
-                  <div className='rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3'>
+                  <div className='rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3'>
                     <label className='flex items-start gap-2 cursor-pointer'>
                       <input type='checkbox' checked={k12Join} onChange={(e) => setK12Join(e.target.checked)} className='mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]' />
                       <div className='flex-1 text-xs text-[var(--text-secondary)]'>
@@ -933,7 +933,7 @@ function RegisterModal({
 
                 {/* chatgpt 平台特定：注册成功后自动获取支付链接（cashier_url）写回账号 extra */}
                 {platform === 'chatgpt' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
                       type="checkbox"
                       checked={authflowExperimental}
@@ -953,7 +953,7 @@ function RegisterModal({
                 )}
 
                 {platform === 'chatgpt' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
                       type="checkbox"
                       checked={remoteUploadEnabled}
@@ -972,7 +972,7 @@ function RegisterModal({
                 )}
 
                 {platform === 'chatgpt' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
                       type="checkbox"
                       checked={autoPaymentLink}
@@ -990,7 +990,7 @@ function RegisterModal({
                   </label>
                 )}
 
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
                   <div>{t('accounts.identitySummary')}: <span className="text-[var(--text-primary)]">{selectedRegistration?.label || '-'}</span></div>
                   <div className="mt-1">{t('accounts.executorSummary')}: <span className="text-[var(--text-primary)]">{selectedExecutor?.label || '-'}</span></div>
                   <div className="mt-1">{t('accounts.verificationSummary')}: <span className="text-[var(--text-primary)]">{getCaptchaStrategyLabel(selection.executorType, configOptions.captcha_policy, configOptions.captcha_providers, language)}</span></div>
@@ -1084,7 +1084,7 @@ function formatResultValue(value: any) {
 
 function ResultStat({ label, value }: { label: string; value: any }) {
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2">
+    <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2">
       <div className="text-[11px] uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</div>
       <div className="mt-1 text-sm font-medium text-[var(--text-primary)] break-all">{formatResultValue(value)}</div>
     </div>
@@ -1143,11 +1143,11 @@ function DisplaySections({ sections }: { sections: any[] }) {
   return (
     <div className="space-y-3">
       {sections.map((section: any) => (
-        <div key={section?.key || section?.title} className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-3">
+        <div key={section?.key || section?.title} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-3">
           <div className="text-xs font-semibold text-[var(--text-primary)]">{section?.title || '明细'}</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {(Array.isArray(section?.items) ? section.items : []).map((item: any, index: number) => (
-              <div key={`${item?.title || 'item'}-${index}`} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={`${item?.title || 'item'}-${index}`} className="rounded-lg border border-[var(--border-soft)] bg-black/20 p-3">
                 <div className="text-xs font-semibold text-[var(--text-primary)]">{item?.title || '-'}</div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
                   {(Array.isArray(item?.metrics) ? item.metrics : []).map((metric: any) => (
@@ -1214,11 +1214,11 @@ function ActionResultHighlights({ payload }: { payload: any }) {
       )}
 
       {cursorModels.length > 0 && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-4">
+        <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
           <div className="text-sm font-semibold text-[var(--text-primary)]">Cursor Usage</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {cursorModels.map(([model, info]: [string, any]) => (
-              <div key={model} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={model} className="rounded-lg border border-[var(--border-soft)] bg-black/20 p-3">
                 <div className="text-xs font-semibold text-[var(--text-primary)]">{model}</div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
                   <div>请求数: {formatResultValue(info?.num_requests)}</div>
@@ -1235,11 +1235,11 @@ function ActionResultHighlights({ payload }: { payload: any }) {
       )}
 
       {kiroBreakdowns.length > 0 && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-4">
+        <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
           <div className="text-sm font-semibold text-[var(--text-primary)]">Kiro Usage</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {kiroBreakdowns.map((item: any, index: number) => (
-              <div key={`${item.resource_type || item.display_name}-${index}`} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={`${item.resource_type || item.display_name}-${index}`} className="rounded-lg border border-[var(--border-soft)] bg-black/20 p-3">
                 <div className="text-xs font-semibold text-[var(--text-primary)]">{item.display_name || item.resource_type}</div>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
                   <div>已用: {formatResultValue(item.current_usage)}</div>
@@ -1258,11 +1258,11 @@ function ActionResultHighlights({ payload }: { payload: any }) {
       )}
 
       {kiroPlans.length > 0 && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-4">
+        <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
           <div className="text-sm font-semibold text-[var(--text-primary)]">Kiro Plans</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {kiroPlans.map((plan: any) => (
-              <div key={plan.name} className="rounded-lg border border-[var(--border)] bg-black/20 p-3">
+              <div key={plan.name} className="rounded-lg border border-[var(--border-soft)] bg-black/20 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="text-xs font-semibold text-[var(--text-primary)]">{plan.title || plan.name}</div>
                   <div className="text-xs text-emerald-400">{formatResultValue(plan.amount)} {plan.currency || ''}</div>
@@ -1558,7 +1558,7 @@ function ActionParamsModal({
                   <select
                     value={value}
                     onChange={e => setForm(current => ({ ...current, [param.key]: e.target.value }))}
-                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2 text-sm outline-none focus:border-[var(--text-accent)]"
+                    className="w-full rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2 text-sm outline-none focus:border-[var(--text-accent)]"
                   >
                     {param.options.map((option: string) => (
                       <option key={option} value={option}>{option}</option>
@@ -1575,7 +1575,7 @@ function ActionParamsModal({
                     value={value}
                     onChange={e => setForm(current => ({ ...current, [param.key]: e.target.value }))}
                     rows={3}
-                    className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2 text-sm outline-none focus:border-[var(--text-accent)]"
+                    className="w-full rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2 text-sm outline-none focus:border-[var(--text-accent)]"
                   />
                 </label>
               )
@@ -1587,7 +1587,7 @@ function ActionParamsModal({
                   type={param.type === 'number' ? 'number' : 'text'}
                   value={value}
                   onChange={e => setForm(current => ({ ...current, [param.key]: e.target.value }))}
-                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2 text-sm outline-none focus:border-[var(--text-accent)]"
+                  className="w-full rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2 text-sm outline-none focus:border-[var(--text-accent)]"
                 />
               </label>
             )
@@ -1977,7 +1977,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
         </div>
         {/* ── Scrollable Content ── */}
         <div className="px-6 py-4 space-y-3 flex-1 overflow-y-auto min-h-0">
-          <div className="relative overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--accent-soft)] p-4 shadow-[var(--shadow-soft)]">
+          <div className="relative overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--accent-soft)] p-4 shadow-[var(--shadow-soft)]">
             <div className="pointer-events-none absolute -right-16 -top-20 h-44 w-44 rounded-full bg-[var(--accent-soft)] blur-3xl" />
             <div className="relative flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -2034,7 +2034,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
                 </div>
               )}
               {verificationMailbox?.email && (
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2 text-xs text-[var(--text-secondary)]">
                   验证码邮箱: {verificationMailbox.email} · {verificationMailbox.provider || '-'} · ID {verificationMailbox.account_id || '-'}
                 </div>
               )}
@@ -2044,7 +2044,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
             <div className="space-y-2">
               <label className="text-xs text-[var(--text-muted)] block">Provider Accounts</label>
               {providerAccounts.map((item: any, index: number) => (
-                <div key={`${item.provider_name || 'provider'}-${item.login_identifier || index}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-3">
+                <div key={`${item.provider_name || 'provider'}-${item.login_identifier || index}`} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-3">
                   <div className="text-xs font-semibold text-[var(--text-primary)]">
                     {item.provider_name || item.provider_type || 'provider'}
                   </div>
@@ -2057,7 +2057,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
                         <div key={key}>
                           <div className="text-[11px] text-[var(--text-muted)]">{key}</div>
                           <div className="flex items-start gap-1">
-                            <div className="flex-1 rounded-md border border-[var(--border)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
+                            <div className="flex-1 rounded-md border border-[var(--border-soft)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
                               {String(value || '-')}
                             </div>
                             {value ? (
@@ -2078,10 +2078,10 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
             <div className="space-y-2">
               <label className="text-xs text-[var(--text-muted)] block">Platform Credentials</label>
               {platformCredentials.map((item: any) => (
-                <div key={`${item.scope}-${item.key}`} className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] p-3">
+                <div key={`${item.scope}-${item.key}`} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-3">
                   <div className="text-[11px] text-[var(--text-muted)]">{item.key}</div>
                   <div className="mt-1 flex items-start gap-1">
-                    <div className="flex-1 rounded-md border border-[var(--border)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
+                    <div className="flex-1 rounded-md border border-[var(--border-soft)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
                       {item.value}
                     </div>
                     <button onClick={() => copyText(String(item.value || ''))} className="mt-1 shrink-0 text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
@@ -2226,7 +2226,7 @@ function ExportMenu({
         {loading ? t('accounts.exporting') : hasSelection ? t('accounts.exportSelected', { count: selectedIds.length }) : t('accounts.export')}
       </Button>
       {open && (
-        <div className="absolute right-0 top-10 z-20 min-w-[148px] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] py-1 shadow-lg">
+        <div className="absolute right-0 top-10 z-20 min-w-[148px] rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] py-1 shadow-lg">
           <div className="px-3 py-1 text-[11px] text-[var(--text-muted)]">
             {hasSelection ? t('accounts.exportSelected', { count: selectedIds.length }) : t('accounts.exportCurrentResults')}
           </div>
@@ -2855,7 +2855,7 @@ export default function Accounts() {
                             <span
                               className={cn(
                                 'h-2.5 w-2.5 rounded-full border',
-                                active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--text-muted)]',
+                                active ? 'border-[var(--accent-edge)] bg-[var(--gradient-accent)]' : 'border-[var(--text-muted)]',
                               )}
                             />
                           </div>
@@ -2897,7 +2897,7 @@ export default function Accounts() {
                               <span
                                 className={cn(
                                   'h-2.5 w-2.5 shrink-0 rounded-full border',
-                                  active ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--text-muted)]',
+                                  active ? 'border-[var(--accent-edge)] bg-[var(--gradient-accent)]' : 'border-[var(--text-muted)]',
                                 )}
                               />
                             </div>
@@ -2993,7 +2993,7 @@ export default function Accounts() {
                   </div>
                 </div>
                 {getRtExecutorType !== 'protocol' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
                       type="checkbox"
                       checked={getRtRecordHar}
@@ -3016,7 +3016,7 @@ export default function Accounts() {
                   </label>
                 )}
                 {/* ── 手机号接码（可选）── */}
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
                   <div className="text-sm font-medium text-[var(--text-primary)]">手机号接码（可选，跳过则遇到 add_phone 会失败）</div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">{t('accounts.smsChannel')}</label>
@@ -3145,7 +3145,7 @@ export default function Accounts() {
                     onChange={event => setActionConcurrency(Math.max(Number(event.target.value || 1), 1))}
                     className="control-surface control-surface-compact w-full text-center" />
                 </div>
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
                   拦截 POST session/select 响应，将 phone_otp_* 替换为 consent 类型，浏览器直接跳授权同意页。
                 </div>
               </div>
@@ -3232,7 +3232,7 @@ export default function Accounts() {
               >
                 <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
               </button>
-              <div className="relative flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--accent)] text-[11px] font-bold text-white shadow-sm">
+              <div className="relative flex h-8 w-8 items-center justify-center rounded-full border border-[var(--accent-edge)] bg-[var(--gradient-accent)] text-[11px] font-bold text-white shadow-sm">
                 A
               </div>
             </div>
@@ -3505,7 +3505,7 @@ export default function Accounts() {
                           : variant === 'danger'
                             ? 'bg-red-500'
                             : variant === 'default'
-                              ? 'bg-[var(--accent)]'
+                              ? 'bg-[var(--gradient-accent)]'
                               : 'bg-[var(--text-muted)]'
 
                       return (
@@ -3655,7 +3655,7 @@ export default function Accounts() {
                 >
                   {'<'}
                 </button>
-                <span className="flex h-7 min-w-7 items-center justify-center rounded-md bg-[var(--accent)] px-2 text-[11px] font-bold text-white">
+                <span className="flex h-7 min-w-7 items-center justify-center rounded-md bg-[var(--gradient-accent)] px-2 text-[11px] font-bold text-white">
                   {page}
                 </span>
                 <span className="px-1 text-[var(--text-muted)]">/</span>
@@ -3812,13 +3812,13 @@ export default function Accounts() {
                 placeholder={t('accounts.searchPlaceholder')}
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full rounded-md border border-[var(--border)] bg-transparent py-1.5 pl-8 pr-3 text-sm text-[var(--text-primary)] transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)]"
+                className="w-full rounded-md border border-[var(--border-soft)] bg-transparent py-1.5 pl-8 pr-3 text-sm text-[var(--text-primary)] transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)]"
               />
             </div>
             <select
               value={filterStatus}
               onChange={e => setFilterStatus(e.target.value)}
-              className="rounded-md border border-[var(--border)] bg-transparent py-1.5 pl-3 pr-8 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)] appearance-none"
+              className="rounded-md border border-[var(--border-soft)] bg-transparent py-1.5 pl-3 pr-8 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)] appearance-none"
               style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundPosition: 'right 8px center', backgroundRepeat: 'no-repeat' }}
             >
               <option value="">{t('accounts.allStatuses')}</option>

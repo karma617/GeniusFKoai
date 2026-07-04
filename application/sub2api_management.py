@@ -4,10 +4,14 @@ import json
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlencode
 
+from sqlmodel import Session, select
+
+from core.db import Sub2ApiAccountTagLinkModel, Sub2ApiAccountTagModel, engine
 from domain.accounts import AccountQuery, AccountUpdateCommand
 from infrastructure.accounts_repository import AccountsRepository
 from platforms.chatgpt.sub2api_upload import (
@@ -113,6 +117,42 @@ def _account_workspace_id(item: dict[str, Any]) -> str:
         if text:
             return text
     return ""
+
+
+def _gmail_family_key(value: Any) -> str:
+    email = _normalize_string(value).lower()
+    if "@" not in email:
+        return ""
+    local_part, domain = email.split("@", 1)
+    if domain not in {"gmail.com", "googlemail.com"}:
+        return ""
+    base = local_part.split("+", 1)[0].replace(".", "")
+    return f"{base}@gmail.com" if base else ""
+
+
+def _same_gmail_family(left: Any, right: Any) -> bool:
+    left_key = _gmail_family_key(left)
+    return bool(left_key and left_key == _gmail_family_key(right))
+
+
+def _normalize_tag_name(value: Any) -> str:
+    return _normalize_string(value).strip()[:40]
+
+
+def _normalize_tag_color(value: Any) -> str:
+    text = _normalize_string(value).strip()
+    if len(text) > 32:
+        text = text[:32]
+    return text
+
+
+def _serialize_tag(tag: Sub2ApiAccountTagModel, account_count: int = 0) -> dict[str, Any]:
+    return {
+        "id": int(tag.id or 0),
+        "name": tag.name,
+        "color": tag.color,
+        "account_count": int(account_count or 0),
+    }
 
 
 def _extract_group_ids(item: dict[str, Any]) -> list[int]:
@@ -221,12 +261,207 @@ class Sub2ApiManagementService:
         )
         return Sub2ApiContext(origin=origin, token=token)
 
+    def _list_tags_for_origin(self, session: Session, origin: str) -> list[dict[str, Any]]:
+        tags = session.exec(
+            select(Sub2ApiAccountTagModel)
+            .where(Sub2ApiAccountTagModel.origin == origin)
+            .order_by(Sub2ApiAccountTagModel.name)
+        ).all()
+        links = session.exec(
+            select(Sub2ApiAccountTagLinkModel).where(Sub2ApiAccountTagLinkModel.origin == origin)
+        ).all()
+        counts: dict[int, int] = {}
+        for link in links:
+            counts[int(link.tag_id or 0)] = counts.get(int(link.tag_id or 0), 0) + 1
+        return [_serialize_tag(tag, counts.get(int(tag.id or 0), 0)) for tag in tags]
+
+    def _load_account_tags(self, origin: str, account_ids: list[str]) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+        normalized_ids = [str(item) for item in account_ids if _normalize_string(item)]
+        with Session(engine) as session:
+            tags = self._list_tags_for_origin(session, origin)
+            tag_by_id = {int(item["id"]): item for item in tags}
+            if not normalized_ids:
+                return {}, tags
+            links = session.exec(
+                select(Sub2ApiAccountTagLinkModel)
+                .where(Sub2ApiAccountTagLinkModel.origin == origin)
+                .where(Sub2ApiAccountTagLinkModel.account_id.in_(normalized_ids))
+            ).all()
+        by_account: dict[str, list[dict[str, Any]]] = {account_id: [] for account_id in normalized_ids}
+        for link in links:
+            tag = tag_by_id.get(int(link.tag_id or 0))
+            if tag:
+                by_account.setdefault(str(link.account_id), []).append({k: v for k, v in tag.items() if k != "account_count"})
+        return by_account, tags
+
+    def list_tags(self) -> dict[str, Any]:
+        ctx = self._context()
+        with Session(engine) as session:
+            tags = self._list_tags_for_origin(session, ctx.origin)
+        return {"ok": True, "tags": tags}
+
+    def create_tag(self, *, name: str, color: str = "") -> dict[str, Any]:
+        ctx = self._context()
+        tag_name = _normalize_tag_name(name)
+        if not tag_name:
+            raise ValueError("标签名称不能为空")
+        tag_color = _normalize_tag_color(color)
+        with Session(engine) as session:
+            existing = session.exec(
+                select(Sub2ApiAccountTagModel)
+                .where(Sub2ApiAccountTagModel.origin == ctx.origin)
+                .where(Sub2ApiAccountTagModel.name == tag_name)
+            ).first()
+            if existing:
+                raise ValueError(f"标签已存在: {tag_name}")
+            tag = Sub2ApiAccountTagModel(origin=ctx.origin, name=tag_name, color=tag_color)
+            session.add(tag)
+            session.commit()
+            session.refresh(tag)
+            return {"ok": True, "tag": _serialize_tag(tag)}
+
+    def update_tag(self, tag_id: int, *, name: str, color: str = "") -> dict[str, Any]:
+        ctx = self._context()
+        tag_name = _normalize_tag_name(name)
+        if not tag_name:
+            raise ValueError("标签名称不能为空")
+        tag_color = _normalize_tag_color(color)
+        with Session(engine) as session:
+            tag = session.get(Sub2ApiAccountTagModel, int(tag_id))
+            if not tag or tag.origin != ctx.origin:
+                raise ValueError("标签不存在")
+            duplicate = session.exec(
+                select(Sub2ApiAccountTagModel)
+                .where(Sub2ApiAccountTagModel.origin == ctx.origin)
+                .where(Sub2ApiAccountTagModel.name == tag_name)
+                .where(Sub2ApiAccountTagModel.id != int(tag_id))
+            ).first()
+            if duplicate:
+                raise ValueError(f"标签已存在: {tag_name}")
+            tag.name = tag_name
+            tag.color = tag_color
+            tag.updated_at = _utcnow()
+            session.add(tag)
+            session.commit()
+            session.refresh(tag)
+            return {"ok": True, "tag": _serialize_tag(tag)}
+
+    def delete_tag(self, tag_id: int) -> dict[str, Any]:
+        ctx = self._context()
+        with Session(engine) as session:
+            tag = session.get(Sub2ApiAccountTagModel, int(tag_id))
+            if not tag or tag.origin != ctx.origin:
+                raise ValueError("标签不存在")
+            links = session.exec(
+                select(Sub2ApiAccountTagLinkModel)
+                .where(Sub2ApiAccountTagLinkModel.origin == ctx.origin)
+                .where(Sub2ApiAccountTagLinkModel.tag_id == int(tag_id))
+            ).all()
+            for link in links:
+                session.delete(link)
+            session.delete(tag)
+            session.commit()
+        return {"ok": True}
+
+    def update_account_tags(
+        self,
+        *,
+        account_ids: list[str],
+        tag_ids: list[int],
+        action: str = "add",
+    ) -> dict[str, Any]:
+        ctx = self._context()
+        normalized_account_ids = [_normalize_string(item) for item in account_ids if _normalize_string(item)]
+        normalized_tag_ids: list[int] = []
+        for item in tag_ids:
+            try:
+                tag_id = int(item or 0)
+            except Exception:
+                continue
+            if tag_id > 0 and tag_id not in normalized_tag_ids:
+                normalized_tag_ids.append(tag_id)
+        normalized_tag_ids.sort()
+        if not normalized_account_ids:
+            raise ValueError("请选择账号")
+        if not normalized_tag_ids:
+            raise ValueError("请选择标签")
+        action_key = _normalize_string(action).lower() or "add"
+        if action_key not in {"add", "remove"}:
+            raise ValueError("标签操作必须是 add 或 remove")
+
+        with Session(engine) as session:
+            tags = session.exec(
+                select(Sub2ApiAccountTagModel)
+                .where(Sub2ApiAccountTagModel.origin == ctx.origin)
+                .where(Sub2ApiAccountTagModel.id.in_(normalized_tag_ids))
+            ).all()
+            found_ids = {int(tag.id or 0) for tag in tags}
+            missing = [tag_id for tag_id in normalized_tag_ids if tag_id not in found_ids]
+            if missing:
+                raise ValueError(f"标签不存在: {', '.join(str(item) for item in missing)}")
+
+            existing_links = session.exec(
+                select(Sub2ApiAccountTagLinkModel)
+                .where(Sub2ApiAccountTagLinkModel.origin == ctx.origin)
+                .where(Sub2ApiAccountTagLinkModel.account_id.in_(normalized_account_ids))
+                .where(Sub2ApiAccountTagLinkModel.tag_id.in_(normalized_tag_ids))
+            ).all()
+            existing_pairs = {(str(link.account_id), int(link.tag_id or 0)) for link in existing_links}
+            changed = 0
+            if action_key == "add":
+                for account_id in normalized_account_ids:
+                    for tag_id in normalized_tag_ids:
+                        pair = (account_id, tag_id)
+                        if pair in existing_pairs:
+                            continue
+                        session.add(Sub2ApiAccountTagLinkModel(origin=ctx.origin, account_id=account_id, tag_id=tag_id))
+                        changed += 1
+            else:
+                for link in existing_links:
+                    session.delete(link)
+                    changed += 1
+            session.commit()
+        return {"ok": True, "changed": changed}
+
+    def export_accounts_data(
+        self,
+        *,
+        account_ids: list[str],
+        timezone_name: str = "Asia/Shanghai",
+        include_proxies: bool = True,
+    ) -> dict[str, Any]:
+        ctx = self._context()
+        normalized_account_ids: list[str] = []
+        for item in account_ids:
+            account_id = _normalize_string(item)
+            if account_id and account_id not in normalized_account_ids:
+                normalized_account_ids.append(account_id)
+        if not normalized_account_ids:
+            raise ValueError("请选择要导出的账号")
+
+        query: dict[str, str] = {
+            "ids": ",".join(normalized_account_ids),
+            "timezone": _normalize_string(timezone_name) or "Asia/Shanghai",
+        }
+        if not include_proxies:
+            query["include_proxies"] = "false"
+        payload = _request_json(
+            ctx.origin,
+            f"/api/v1/admin/accounts/data?{urlencode(query, safe=',')}",
+            token=ctx.token,
+            timeout=90,
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Sub2API 导出接口返回格式无效")
+        return payload
+
     def list_inventory(
         self,
         *,
         group_id: int | None = None,
         status: str = "",
         search: str = "",
+        tag_id: int | None = None,
     ) -> dict[str, Any]:
         ctx = self._context()
         groups = _normalize_groups(
@@ -237,11 +472,20 @@ class Sub2ApiManagementService:
             _normalize_account(item, group_by_id)
             for item in self._fetch_all_accounts(ctx)
         ]
+        tags_by_account, tags = self._load_account_tags(ctx.origin, [item["id"] for item in accounts])
+        for item in accounts:
+            item["tags"] = tags_by_account.get(item["id"], [])
         if group_id:
             accounts = [item for item in accounts if int(group_id) in item.get("group_ids", [])]
         status_filter = _normalize_string(status).lower()
         if status_filter and status_filter != "all":
             accounts = [item for item in accounts if _normalize_string(item.get("status")).lower() == status_filter]
+        if tag_id:
+            accounts = [
+                item
+                for item in accounts
+                if any(int(tag.get("id") or 0) == int(tag_id) for tag in item.get("tags", []))
+            ]
         search_filter = _normalize_string(search).lower()
         if search_filter:
             accounts = [
@@ -253,6 +497,7 @@ class Sub2ApiManagementService:
         return {
             "ok": True,
             "groups": groups,
+            "tags": tags,
             "accounts": accounts,
             "total": len(accounts),
         }
@@ -604,7 +849,10 @@ class Sub2ApiManagementService:
         }
 
         def worker(remote_account: dict[str, Any]) -> dict[str, Any]:
-            result = self._relogin_one(ctx, remote_account, workspace_ids=workspace_ids)
+            try:
+                result = self._relogin_one(ctx, remote_account, workspace_ids=workspace_ids)
+            except Exception as exc:
+                result = self._delete_relogin_failed_account(ctx, remote_account["id"], f"重新登录任务异常: {exc}")
             status = str(result.get("status") or "")
             if status == "deleted":
                 summary["deleted"] += 1
@@ -691,7 +939,7 @@ class Sub2ApiManagementService:
             try:
                 result = self._relogin_one(ctx, remote_account, workspace_ids=workspace_ids, log_fn=log)
             except Exception as exc:
-                result = {"account_id": account_id, "status": "failed", "message": f"重新登录任务异常: {exc}"}
+                result = self._delete_relogin_failed_account(ctx, account_id, f"重新登录任务异常: {exc}", log_fn=log)
             with lock:
                 status = str(result.get("status") or "")
                 if status == "deleted":
@@ -747,11 +995,12 @@ class Sub2ApiManagementService:
         account_id = remote_account["id"]
         email = remote_account.get("email") or remote_account.get("name")
         log(f"开始处理错误账号 {email or account_id}")
-        local = self._find_local_account(str(email or ""))
+        local = self._find_local_account(str(email or ""), log_fn=log)
         if not local:
-            return {"account_id": account_id, "status": "skipped", "message": f"本地未找到账号 {email}"}
+            return self._delete_relogin_failed_account(ctx, account_id, f"本地未找到账号 {email}", log_fn=log)
+        local = self._prepare_gmail_alias_relogin_account(local, str(email or ""), log)
         if not local.password:
-            return {"account_id": account_id, "status": "skipped", "message": "本地账号缺少密码"}
+            return self._delete_relogin_failed_account(ctx, account_id, "本地账号缺少密码", log_fn=log)
 
         logs: list[str] = []
         log(
@@ -767,9 +1016,9 @@ class Sub2ApiManagementService:
                 "message": "账号已封禁，已删除远端账号" if ok else f"账号已封禁，但远端删除失败: {msg}",
             }
         if _is_phone_required(login_text):
-            return {"account_id": account_id, "status": "phone_skipped", "message": "登录要求手机接码，已跳过"}
+            return self._delete_relogin_failed_account(ctx, account_id, "登录要求手机接码", log_fn=log)
         if not isinstance(login_result, dict) or not login_result.get("session"):
-            return {"account_id": account_id, "status": "failed", "message": "重新登录未拿到 ChatGPT session"}
+            return self._delete_relogin_failed_account(ctx, account_id, "重新登录未拿到 ChatGPT session", log_fn=log)
 
         plan_type = _account_plan_type(remote_account.get("raw") or remote_account) or _account_plan_type(remote_account)
         if plan_type == "free":
@@ -779,15 +1028,37 @@ class Sub2ApiManagementService:
 
         workspace_text = _normalize_string(workspace_ids) or remote_account.get("workspace_id") or _normalize_string(local.overview.get("k12_workspace_id") if isinstance(local.overview, dict) else "")
         if not workspace_text:
-            return {"account_id": account_id, "status": "failed", "message": "K12 账号缺少 workspace_id，无法替换"}
+            return self._delete_relogin_failed_account(ctx, account_id, "K12 账号缺少 workspace_id，无法替换", log_fn=log)
 
         replaced = self._replace_k12_account(ctx, remote_account, login_result, workspace_text, log_fn=log)
         if replaced.get("ok"):
             self._persist_k12_session(local.id, replaced)
             return {"account_id": account_id, "status": "replaced", "message": replaced.get("message", "K12 session 已替换")}
-        return {"account_id": account_id, "status": "failed", "message": replaced.get("message", "K12 session 替换失败")}
+        message = replaced.get("message", "K12 session 替换失败")
+        if replaced.get("remote_deleted"):
+            return {"account_id": account_id, "status": "deleted", "message": message}
+        return self._delete_relogin_failed_account(ctx, account_id, message, log_fn=log)
 
-    def _find_local_account(self, email: str):
+    def _delete_relogin_failed_account(
+        self,
+        ctx: Sub2ApiContext,
+        account_id: str,
+        reason: str,
+        *,
+        log_fn: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        ok, msg = self.delete_account(ctx, account_id)
+        if ok:
+            message = f"{reason}，已删除远端账号"
+            if callable(log_fn):
+                log_fn(message)
+            return {"account_id": account_id, "status": "deleted", "message": message}
+        message = f"{reason}，远端删除失败: {msg}"
+        if callable(log_fn):
+            log_fn(message)
+        return {"account_id": account_id, "status": "failed", "message": message}
+
+    def _find_local_account(self, email: str, log_fn: Callable[[str], None] | None = None):
         normalized = _normalize_string(email).lower()
         if not normalized:
             return None
@@ -795,7 +1066,184 @@ class Sub2ApiManagementService:
         for item in items:
             if _normalize_string(item.email).lower() == normalized:
                 return item
+        if not _gmail_family_key(normalized):
+            return None
+
+        _total, items = self.repository.list(AccountQuery(platform="chatgpt", page=1, page_size=5000))
+        for item in items:
+            provider_name, mailbox_email = self._match_gmail_mailbox_resource(item, normalized)
+            if provider_name:
+                if callable(log_fn):
+                    log_fn(
+                        "通过 Gmail 邮箱服务匹配本地账号: "
+                        f"remote={normalized} local={item.email} provider={provider_name} mailbox={mailbox_email}"
+                    )
+                return item
         return None
+
+    @staticmethod
+    def _match_gmail_mailbox_resource(local_account, remote_email: str) -> tuple[str, str]:
+        def text(value: Any) -> str:
+            return str(value or "").strip()
+
+        def safe_dict(value: Any) -> dict[str, Any]:
+            return dict(value) if isinstance(value, dict) else {}
+
+        def add_email(candidates: list[str], value: Any) -> None:
+            email = text(value).lower()
+            if "@" in email:
+                candidates.append(email)
+
+        gmail_providers = {"gmail_oauth_fission", "gmail_api_code", "gmail_oauth", "gmail_api"}
+        resources = [
+            dict(item)
+            for item in list(getattr(local_account, "provider_resources", None) or [])
+            if isinstance(item, dict)
+        ]
+        mailbox = safe_dict((getattr(local_account, "overview", None) or {}).get("verification_mailbox"))
+        if mailbox:
+            resources.append(
+                {
+                    "provider_name": mailbox.get("provider"),
+                    "resource_type": "mailbox",
+                    "resource_identifier": mailbox.get("account_id"),
+                    "handle": mailbox.get("email"),
+                    "display_name": mailbox.get("email"),
+                    "metadata": {
+                        "email": mailbox.get("email"),
+                        "account_id": mailbox.get("account_id"),
+                    },
+                }
+            )
+
+        for resource in resources:
+            if text(resource.get("resource_type") or "mailbox").lower() != "mailbox":
+                continue
+            provider_name = text(resource.get("provider_name") or resource.get("provider")).lower()
+            if provider_name not in gmail_providers:
+                continue
+            metadata = safe_dict(resource.get("metadata"))
+            alias_meta = safe_dict(metadata.get("email_alias"))
+            candidates: list[str] = []
+            for value in (
+                resource.get("handle"),
+                resource.get("display_name"),
+                resource.get("resource_identifier"),
+                metadata.get("email"),
+                metadata.get("master_email"),
+                metadata.get("alias_parent_email"),
+                metadata.get("email_alias_parent"),
+                metadata.get("parent_email"),
+                alias_meta.get("alias_email"),
+                alias_meta.get("parent_email"),
+            ):
+                add_email(candidates, value)
+            for candidate in candidates:
+                if candidate == remote_email or _same_gmail_family(candidate, remote_email):
+                    return provider_name, candidate
+        return "", ""
+
+    @staticmethod
+    def _prepare_gmail_alias_relogin_account(local_account, remote_email: str, log: Callable[[str], None] | None = None):
+        remote = _normalize_string(remote_email).lower()
+        if not remote or remote == _normalize_string(getattr(local_account, "email", "")).lower():
+            return local_account
+        if not _gmail_family_key(remote):
+            return local_account
+
+        def text(value: Any) -> str:
+            return str(value or "").strip()
+
+        def safe_dict(value: Any) -> dict[str, Any]:
+            return dict(value) if isinstance(value, dict) else {}
+
+        def parent_candidate(resource: dict[str, Any]) -> str:
+            metadata = safe_dict(resource.get("metadata"))
+            alias_meta = safe_dict(metadata.get("email_alias"))
+            for value in (
+                metadata.get("master_email"),
+                metadata.get("alias_parent_email"),
+                metadata.get("email_alias_parent"),
+                metadata.get("parent_email"),
+                alias_meta.get("parent_email"),
+                metadata.get("email"),
+                resource.get("handle"),
+                resource.get("display_name"),
+                resource.get("resource_identifier"),
+            ):
+                email = text(value).lower()
+                if "@" in email and _same_gmail_family(email, remote):
+                    if "+" not in email.split("@", 1)[0]:
+                        return email
+            if "+" in remote.split("@", 1)[0]:
+                local_part, domain = remote.split("@", 1)
+                return f"{local_part.split('+', 1)[0]}@{domain}"
+            return ""
+
+        resources = [
+            dict(item)
+            for item in list(getattr(local_account, "provider_resources", None) or [])
+            if isinstance(item, dict)
+        ]
+        mailbox = safe_dict((getattr(local_account, "overview", None) or {}).get("verification_mailbox"))
+        if mailbox:
+            resources.append(
+                {
+                    "provider_name": mailbox.get("provider"),
+                    "resource_type": "mailbox",
+                    "resource_identifier": mailbox.get("account_id"),
+                    "handle": mailbox.get("email"),
+                    "display_name": mailbox.get("email"),
+                    "metadata": {
+                        "email": mailbox.get("email"),
+                        "account_id": mailbox.get("account_id"),
+                    },
+                }
+            )
+        gmail_providers = {"gmail_oauth_fission", "gmail_api_code", "gmail_oauth", "gmail_api"}
+        for index, resource in enumerate(resources):
+            if text(resource.get("resource_type") or "mailbox").lower() != "mailbox":
+                continue
+            provider_name = text(resource.get("provider_name") or resource.get("provider")).lower()
+            if provider_name not in gmail_providers:
+                continue
+            parent_email = parent_candidate(resource)
+            if not parent_email:
+                continue
+
+            metadata = safe_dict(resource.get("metadata"))
+            alias_meta = safe_dict(metadata.get("email_alias"))
+            parent_account_id = text(
+                metadata.get("alias_parent_account_id")
+                or alias_meta.get("parent_account_id")
+                or resource.get("resource_identifier")
+                or parent_email
+            )
+            metadata.update(
+                {
+                    "email": parent_email,
+                    "alias_email": remote,
+                    "alias_parent_email": parent_email,
+                    "alias_parent_account_id": parent_account_id,
+                    "email_alias": {
+                        **alias_meta,
+                        "enabled": True,
+                        "alias_email": remote,
+                        "parent_email": parent_email,
+                        "parent_account_id": parent_account_id,
+                    },
+                }
+            )
+            resource["metadata"] = metadata
+            resource["handle"] = remote
+            resource["display_name"] = remote
+            resource["resource_identifier"] = parent_account_id
+            resources[index] = resource
+            if callable(log):
+                log(f"Gmail 别名重登映射: login={remote} parent_mailbox={parent_email} provider={provider_name}")
+            return replace(local_account, email=remote, provider_resources=resources)
+
+        return local_account
 
     def _run_protocol_relogin(
         self,
@@ -1144,8 +1592,7 @@ class Sub2ApiManagementService:
         if not workspace_list:
             return {"ok": False, "message": "K12 workspace_id 为空"}
 
-        chosen_ws = ""
-        k12_session = None
+        successful_sessions: list[dict[str, Any]] = []
         log_lines: list[str] = []
         def log(message: str) -> None:
             text = str(message)
@@ -1162,14 +1609,10 @@ class Sub2ApiManagementService:
                 log=log,
             )
             if candidate:
-                chosen_ws = workspace_id
-                k12_session = candidate
+                successful_sessions.append({"workspace_id": workspace_id, "session": candidate})
                 log(f"  [K12] 账号仍可切换到空间 {workspace_id[:8]}，跳过强入 join")
-                break
+                continue
 
-        for workspace_id in workspace_list:
-            if k12_session:
-                break
             log(f"  [K12] 直接切换失败，开始重新强入空间 {workspace_id[:8]}")
             join_results = send_workspace_join_requests(
                 access_token=access_token,
@@ -1186,28 +1629,58 @@ class Sub2ApiManagementService:
                 log=log,
             )
             if candidate:
-                chosen_ws = workspace_id
-                k12_session = candidate
-                break
-        if not chosen_ws or not k12_session:
+                successful_sessions.append({"workspace_id": workspace_id, "session": candidate})
+
+        if not successful_sessions:
             return {"ok": False, "message": "K12 join/exchange 未完成，未删除远端旧账号"}
 
         delete_ok, delete_msg = self.delete_account(ctx, remote_account["id"])
         if not delete_ok:
             return {"ok": False, "message": f"K12 exchange 成功，但删除远端旧账号失败: {delete_msg}"}
-        upload_ok, upload_msg = upload_session_to_sub2api(k12_session, log=log)
-        if not upload_ok:
-            return {"ok": False, "message": f"远端旧账号已删除，但 K12 session 上传失败: {upload_msg}"}
+
+        upload_messages: list[str] = []
+        upload_failures: list[str] = []
+        for item in successful_sessions:
+            workspace_id = str(item.get("workspace_id") or "")
+            k12_session = item.get("session") if isinstance(item.get("session"), dict) else {}
+            upload_ok, upload_msg = upload_session_to_sub2api(k12_session, workspace_id=workspace_id, log=log)
+            upload_messages.append(f"{workspace_id[:8]}: {upload_msg}")
+            if not upload_ok:
+                upload_failures.append(f"{workspace_id[:8]}: {upload_msg}")
+
+        first_success = successful_sessions[0]
+        if upload_failures:
+            return {
+                "ok": False,
+                "remote_deleted": True,
+                "message": f"远端旧账号已删除，但 {len(upload_failures)}/{len(successful_sessions)} 个 K12 session 上传失败: {'; '.join(upload_failures)}",
+                "k12_workspace_id": first_success.get("workspace_id") or "",
+                "k12_session": first_success.get("session") or {},
+                "k12_sessions": successful_sessions,
+                "logs": log_lines,
+            }
         return {
             "ok": True,
-            "message": f"K12 账号已删除旧号并重新上传: {upload_msg}",
-            "k12_workspace_id": chosen_ws,
-            "k12_session": k12_session,
+            "message": f"K12 账号已删除旧号并重新上传 {len(successful_sessions)} 个空间: {'; '.join(upload_messages)}",
+            "k12_workspace_id": first_success.get("workspace_id") or "",
+            "k12_session": first_success.get("session") or {},
+            "k12_sessions": successful_sessions,
             "logs": log_lines,
         }
 
     def _persist_k12_session(self, account_id: int, replaced: dict[str, Any]) -> None:
-        k12_session = replaced.get("k12_session") if isinstance(replaced.get("k12_session"), dict) else {}
+        k12_sessions = replaced.get("k12_sessions") if isinstance(replaced.get("k12_sessions"), list) else []
+        first_entry = k12_sessions[0] if k12_sessions and isinstance(k12_sessions[0], dict) else {}
+        k12_session = first_entry.get("session") if isinstance(first_entry.get("session"), dict) else {}
+        if not k12_session:
+            k12_session = replaced.get("k12_session") if isinstance(replaced.get("k12_session"), dict) else {}
+        workspace_ids = [
+            str(item.get("workspace_id") or "")
+            for item in k12_sessions
+            if isinstance(item, dict) and item.get("workspace_id")
+        ]
+        if not workspace_ids and replaced.get("k12_workspace_id"):
+            workspace_ids = [str(replaced.get("k12_workspace_id") or "")]
         credentials = {
             "access_token": k12_session.get("accessToken") or k12_session.get("access_token") or "",
             "session_token": k12_session.get("sessionToken") or k12_session.get("session_token") or "",
@@ -1220,7 +1693,8 @@ class Sub2ApiManagementService:
                 credentials=credentials,
                 primary_token=credentials.get("access_token") or None,
                 overview={
-                    "k12_workspace_id": replaced.get("k12_workspace_id") or "",
+                    "k12_workspace_id": workspace_ids[0] if workspace_ids else "",
+                    "k12_workspace_ids": "\n".join(workspace_ids),
                     "k12_replaced_at": _utcnow_iso(),
                 },
             ),

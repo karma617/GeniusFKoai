@@ -123,7 +123,15 @@ def _synthetic_id_token(email, account_id, plan_type, user_id, expires_at) -> st
     )
 
 
-def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 'k12') -> dict:
+def _k12_account_name(email: str, source_name: str, workspace_id: str = '') -> str:
+    base = _first_non_empty(email, source_name, 'ChatGPT Account')
+    ws_prefix = str(workspace_id or '').strip()[:8]
+    if ws_prefix:
+        return f'k12-{base}-{ws_prefix}'
+    return base
+
+
+def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 'k12', workspace_id: str = '') -> dict:
     '''把 /api/auth/session 返回的 JSON 转成 sub2api 账号格式（对齐 HTML 的 sub2apiAccount）。'''
     record = session_json if isinstance(session_json, dict) else {}
     access_token = _first_non_empty(record.get('accessToken'), record.get('access_token'))
@@ -177,7 +185,7 @@ def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 
 
     exported_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     expires_in = _seconds_until(expires_at) if expires_at else None
-    name = _first_non_empty(email, source_name, 'ChatGPT Account')
+    name = _k12_account_name(email, source_name, workspace_id)
     synthetic = _synthetic_id_token(email, account_id, plan_type, user_id, expires_at) if not input_id_token else None
     id_token = _first_non_empty(input_id_token, synthetic)
 
@@ -203,6 +211,7 @@ def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 
             'email': email,
             'email_key': _email_key(email),
             'name': name,
+            'workspace_id': str(workspace_id or '').strip(),
             'auth_provider': _first_non_empty(record.get('authProvider'), record.get('auth_provider')),
             'source': 'chatgpt_web_session',
             'last_refresh': exported_at,
@@ -224,8 +233,8 @@ def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 
     }
 
 
-def save_session_to_local_upload_jsons(session_json: Any) -> tuple[str, str]:
-    info = convert_session_to_sub2api_account(session_json)
+def save_session_to_local_upload_jsons(session_json: Any, *, workspace_id: str = '') -> tuple[str, str]:
+    info = convert_session_to_sub2api_account(session_json, workspace_id=workspace_id)
     email = info.get('email') or 'k12'
     sub2api_path = _write_local_json('sub2api', email, info['sub2api_account'])
     cpa_payload = {
@@ -328,6 +337,7 @@ def _is_retryable_sub2api_upload_error(exc: Exception) -> bool:
 def upload_session_to_sub2api(
     session_json: Any,
     *,
+    workspace_id: str = '',
     api_url: str | None = None,
     email: str | None = None,
     password: str | None = None,
@@ -347,7 +357,7 @@ def upload_session_to_sub2api(
     default_proxy_name = default_proxy_name if default_proxy_name is not None else _get_config_value('sub2api_default_proxy_name')
 
     try:
-        info = convert_session_to_sub2api_account(session_json)
+        info = convert_session_to_sub2api_account(session_json, workspace_id=workspace_id)
 
         # account_id fallback: try /backend-api/me then session_token refresh
         if not info.get('account_id'):

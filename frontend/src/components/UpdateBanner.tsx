@@ -51,7 +51,7 @@ export default function UpdateBanner() {
   }
 
   return (
-    <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-[var(--accent-edge)] bg-[var(--accent-soft)] px-4 py-2.5 text-sm">
+    <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-[var(--accent-edge)] bg-[var(--gradient-accent-soft)] px-4 py-3 text-sm shadow-[var(--shadow-soft)]">
       <div className="flex items-center gap-2 min-w-0">
         <Sparkles className="h-4 w-4 text-[var(--accent)] shrink-0" />
         <span className="text-[var(--text-primary)] truncate">
@@ -61,7 +61,7 @@ export default function UpdateBanner() {
       <div className="flex items-center gap-2 shrink-0">
         <button
           onClick={open}
-          className="rounded-md bg-[var(--accent)] px-3 py-1 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+          className="rounded-lg bg-[var(--gradient-accent)] px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-all duration-200 hover:shadow-[var(--shadow-glow)] hover:brightness-105"
         >
           {t('update.download')}
         </button>

@@ -439,7 +439,7 @@ export default function SettingsPage({
 
   return (
     <div className="w-full">
-      <h1 className="mb-6 text-xl font-semibold text-[var(--text-primary)]">
+      <h1 className="mb-6 text-xl font-bold text-[var(--text-primary)]">
         {titles[tab] || t('settings.title.fallback')}
       </h1>
 

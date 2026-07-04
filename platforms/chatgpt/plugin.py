@@ -638,6 +638,8 @@ class ChatGPTPlatform(BasePlatform):
                     "session": metadata.get("session", {}),
                     "k12_session": metadata.get("k12_session", {}),
                     "k12_workspace_id": metadata.get("k12_workspace_id", ""),
+                    "k12_workspace_sessions": metadata.get("k12_workspace_sessions", []),
+                    "k12_workspace_ids": metadata.get("k12_workspace_ids", []),
                     "oauth_error": metadata.get("oauth_error", ""),
                 },
             )

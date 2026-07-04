@@ -84,6 +84,24 @@ def test_convert_session_to_sub2api_account_shape():
     assert info['id_token'] is not None
 
 
+def test_convert_session_to_sub2api_account_names_k12_workspace():
+    at = _make_access_token(int(time.time()) + 3600)
+    session = {
+        'accessToken': at,
+        'user': {'email': 'farrugia73367+8zvf73lv@gmail.com', 'id': 'user-1'},
+    }
+
+    info = k12.convert_session_to_sub2api_account(
+        session,
+        workspace_id='eb6642e8-b4a6-4652-9c18-67099f2781cc',
+    )
+
+    assert info['name'] == 'k12-farrugia73367+8zvf73lv@gmail.com-eb6642e8'
+    assert info['sub2api_account']['name'] == 'k12-farrugia73367+8zvf73lv@gmail.com-eb6642e8'
+    assert info['sub2api_account']['extra']['name'] == 'k12-farrugia73367+8zvf73lv@gmail.com-eb6642e8'
+    assert info['sub2api_account']['extra']['workspace_id'] == 'eb6642e8-b4a6-4652-9c18-67099f2781cc'
+
+
 def test_convert_session_prefers_access_token_chatgpt_account_id():
     at = _make_access_token(int(time.time()) + 3600)
     session = {
@@ -164,6 +182,33 @@ def test_upload_session_to_sub2api_k12_payload_does_not_set_rate_multiplier(monk
     assert message == "SUB2API 已创建账号 #789"
     assert "rate_multiplier" not in captured["body"]
     assert captured["body"]["credentials"]["plan_type"] == "k12"
+
+
+def test_upload_session_to_sub2api_uses_workspace_name(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(k12, "login_sub2api", lambda *args, **kwargs: ("https://sub2api.example", "token"))
+    monkeypatch.setattr(k12, "get_groups_by_names", lambda *args, **kwargs: [{"id": 12}])
+
+    def fake_request_json(*args, **kwargs):
+        captured["body"] = kwargs["body"]
+        return {"id": 790}
+
+    monkeypatch.setattr(k12, "_request_json", fake_request_json)
+
+    ok, message = k12.upload_session_to_sub2api(
+        {"accessToken": _make_access_token(int(time.time()) + 3600), "user": {"email": "farrugia73367+8zvf73lv@gmail.com"}},
+        workspace_id="eb6642e8-b4a6-4652-9c18-67099f2781cc",
+        api_url="https://sub2api.example",
+        email="admin@example.com",
+        password="password",
+        group_name="codex",
+        log=lambda _message: None,
+    )
+
+    assert ok is True
+    assert message == "SUB2API 已创建账号 #790"
+    assert captured["body"]["name"] == "k12-farrugia73367+8zvf73lv@gmail.com-eb6642e8"
 
 
 def test_validate_workspace_exchange_session_accepts_chatgpt_account_id_with_mismatched_account_id():
@@ -402,14 +447,14 @@ def test_exchange_unusable_workspace_response_does_not_retry(monkeypatch, status
     assert len(calls) == 1
 
 
-def test_k12_flow_continues_next_workspace_after_exchange_mismatch(monkeypatch):
+def test_k12_flow_uploads_every_successful_workspace_after_exchange_mismatch(monkeypatch):
     from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
 
     import platforms.chatgpt.k12_join as k12_module
 
     join_calls = []
     exchange_calls = []
-    uploaded = {}
+    uploaded = []
     logs = []
 
     def fake_join_requests(**kwargs):
@@ -422,10 +467,10 @@ def test_k12_flow_continues_next_workspace_after_exchange_mismatch(monkeypatch):
         exchange_calls.append(workspace_id)
         if workspace_id == "workspace-1":
             return None
-        return {"accessToken": "k12-access-token", "account": {"id": "workspace-2"}}
+        return {"accessToken": f"k12-access-token-{workspace_id}", "account": {"id": workspace_id}}
 
-    def fake_upload_session_to_sub2api(session, **_kwargs):
-        uploaded["session"] = session
+    def fake_upload_session_to_sub2api(session, **kwargs):
+        uploaded.append((session, kwargs.get("workspace_id")))
         return True, "uploaded"
 
     monkeypatch.setattr(k12_module, "send_workspace_join_requests", fake_join_requests)
@@ -448,11 +493,17 @@ def test_k12_flow_continues_next_workspace_after_exchange_mismatch(monkeypatch):
 
     worker._run_k12_flow(result)
 
-    assert join_calls == ["workspace-1", "workspace-2"]
-    assert exchange_calls == ["workspace-1", "workspace-2"]
-    assert uploaded["session"]["accessToken"] == "k12-access-token"
-    assert result.access_token == "k12-access-token"
-    assert result.metadata["k12_workspace_id"] == "workspace-2"
+    assert join_calls == ["workspace-1", "workspace-2", "workspace-3"]
+    assert exchange_calls == ["workspace-1", "workspace-2", "workspace-3"]
+    assert [item[0]["accessToken"] for item in uploaded] == [
+        "k12-access-token-workspace-2",
+        "k12-access-token-workspace-3",
+    ]
+    assert [item[1] for item in uploaded] == ["workspace-2", "workspace-3"]
+    assert result.access_token == "k12-access-token-workspace-3"
+    assert result.metadata["k12_workspace_id"] == "workspace-3"
+    assert result.metadata["k12_workspace_ids"] == ["workspace-2", "workspace-3"]
+    assert [item["workspace_id"] for item in result.metadata["k12_workspace_sessions"]] == ["workspace-2", "workspace-3"]
     assert any("继续尝试下一个 workspace" in message for message in logs)
 
 

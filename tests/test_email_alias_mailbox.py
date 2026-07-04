@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import pytest
+from sqlmodel import Session
 
 from application import tasks as tasks_module
 from core.base_mailbox import BaseMailbox, MailboxAccount
 from core.base_platform import Account
-from core.db import save_account
-from core.email_alias_mailbox import EmailAliasMailbox, get_email_alias_usage
+from core.db import TaskEventModel, engine, save_account
+from core.email_alias_mailbox import (
+    EmailAliasMailbox,
+    _random_alias,
+    _release_reserved_alias,
+    get_email_alias_usage,
+    normalize_email_alias_limit,
+)
 
 
 class FakeMailbox(BaseMailbox):
@@ -87,6 +94,26 @@ class SequentialMailbox(FakeMailbox):
         return account
 
 
+class ActiveClaimMailbox(FakeMailbox):
+    def __init__(self, email: str = "main@example.com"):
+        super().__init__(email)
+        self.released_claims: list[str] = []
+
+    def _release_active_claim(self, email: str) -> None:
+        self.released_claims.append(email)
+
+
+class InvalidMarkMailbox(FakeMailbox):
+    def __init__(self, email: str = "main@example.com"):
+        super().__init__(email)
+        self.invalid_marks: list[tuple[str, str]] = []
+
+    def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
+        self.invalid_marks.append((account.email, reason))
+        self._release_local_account_reservation(account)
+        return ["invalid"]
+
+
 def _mailbox_resource(email: str, *, parent_email: str = "", is_alias: bool = False) -> dict:
     metadata = {"email": email}
     if is_alias:
@@ -139,6 +166,29 @@ def test_email_alias_mailbox_generates_alias_and_reads_parent_inbox():
     assert account.extra["provider_resource"]["metadata"]["alias_parent_email"] == "main@example.com"
     assert wrapper.get_current_ids(account) == {"message-1"}
     assert mailbox.current_id_emails == ["main@example.com"]
+
+
+def test_email_alias_limit_clamps_to_five_aliases():
+    assert normalize_email_alias_limit(5) == 5
+    assert normalize_email_alias_limit(9) == 5
+
+
+def test_email_alias_generation_skips_historical_allocated_alias(monkeypatch):
+    with Session(engine) as session:
+        session.add(
+            TaskEventModel(
+                task_id="task-1",
+                message="Email alias allocated: main+dupdupdu@example.com parent=main@example.com aliases=0/5 total=0/6",
+            )
+        )
+        session.commit()
+    choices = iter("dupdupdufresh123")
+    monkeypatch.setattr("core.email_alias_mailbox.secrets.choice", lambda _chars: next(choices))
+
+    alias = _random_alias("main@example.com", platform="chatgpt")
+
+    assert alias == "main+fresh123@example.com"
+    _release_reserved_alias(alias)
 
 
 def test_email_alias_usage_counts_saved_main_and_alias_accounts():
@@ -222,6 +272,17 @@ def test_email_alias_success_releases_parent_until_total_limit():
     assert mailbox.released == ["main@example.com"]
 
 
+def test_email_alias_success_releases_parent_active_claim_until_limit():
+    mailbox = ActiveClaimMailbox()
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt")
+    account = wrapper.get_email()
+
+    assert wrapper.mark_registration_success(account) == []
+    assert mailbox.marked_success == []
+    assert mailbox.released == ["main@example.com"]
+    assert mailbox.released_claims == ["main@example.com"]
+
+
 def test_email_alias_success_marks_parent_when_total_limit_reached():
     _save_registered("main@example.com")
     mailbox = FakeMailbox()
@@ -231,6 +292,36 @@ def test_email_alias_success_marks_parent_when_total_limit_reached():
 
     assert wrapper.mark_registration_success(account) == ["registered"]
     assert mailbox.marked_success == ["main@example.com"]
+
+
+def test_email_alias_success_marks_parent_when_alias_limit_reached_without_main():
+    mailbox = FakeMailbox()
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=1, platform="chatgpt")
+    account = wrapper.get_email()
+    _save_registered(account.email, parent_email="main@example.com", is_alias=True)
+
+    assert wrapper.mark_registration_success(account) == ["registered"]
+    assert mailbox.marked_success == ["main@example.com"]
+
+
+def test_email_alias_success_counts_unpersisted_alias_for_current_task_limit():
+    mailbox = FakeMailbox()
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=1, platform="chatgpt")
+    account = wrapper.get_email()
+
+    assert wrapper.mark_registration_success(account) == ["registered"]
+    assert mailbox.marked_success == ["main@example.com"]
+
+
+def test_email_alias_parent_exhausted_marks_parent_invalid_before_success():
+    mailbox = InvalidMarkMailbox()
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt")
+    account = wrapper.get_email()
+
+    assert wrapper.mark_parent_exhausted(account) == ["invalid"]
+    assert mailbox.invalid_marks == [("main@example.com", "user_already_exists")]
+    assert mailbox.marked_success == []
+    assert mailbox.released == ["main@example.com"]
 
 
 def test_build_platform_instance_wraps_mailbox_when_email_alias_enabled(monkeypatch):

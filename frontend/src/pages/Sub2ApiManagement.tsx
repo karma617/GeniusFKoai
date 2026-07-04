@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, AlertTriangle, Clipboard, RefreshCw, RotateCw, Search } from 'lucide-react'
+import { Activity, AlertTriangle, Clipboard, Download, Pencil, Plus, RefreshCw, RotateCw, Search, Tag, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { API_BASE, apiFetch, cn, getAuthToken } from '@/lib/utils'
+import { API_BASE, apiDownload, apiFetch, cn, getAuthToken, triggerBrowserDownload } from '@/lib/utils'
 
 type Sub2ApiGroup = {
   id: number
   name: string
   platform: string
+}
+
+type Sub2ApiTag = {
+  id: number
+  name: string
+  color: string
+  account_count?: number
 }
 
 type Sub2ApiAccount = {
@@ -22,6 +29,7 @@ type Sub2ApiAccount = {
   group_ids: number[]
   groups: Sub2ApiGroup[]
   workspace_id: string
+  tags: Sub2ApiTag[]
 }
 
 type ActionResult = {
@@ -56,6 +64,7 @@ type CheckSummary = {
 
 type InventoryCacheEntry = {
   groups: Sub2ApiGroup[]
+  tags: Sub2ApiTag[]
   accounts: Sub2ApiAccount[]
 }
 
@@ -78,11 +87,12 @@ function formatDate(value: string) {
   return date.toLocaleString()
 }
 
-function inventoryCacheKey(groupId: string, status: string, search: string) {
+function inventoryCacheKey(groupId: string, status: string, search: string, tagFilter: string) {
   return JSON.stringify({
     groupId: groupId || '',
     status: status || 'all',
     search: search.trim(),
+    tagFilter: tagFilter || '',
   })
 }
 
@@ -96,12 +106,22 @@ function toVisibleLog(item: CheckLog): CheckLog {
 
 export default function Sub2ApiManagement() {
   const [groups, setGroups] = useState<Sub2ApiGroup[]>([])
+  const [tags, setTags] = useState<Sub2ApiTag[]>([])
   const [accounts, setAccounts] = useState<Sub2ApiAccount[]>([])
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [groupId, setGroupId] = useState('')
   const [status, setStatus] = useState('all')
+  const [tagFilter, setTagFilter] = useState('')
   const [search, setSearch] = useState('')
   const [workspaceIds, setWorkspaceIds] = useState('')
+  const [selectedTagId, setSelectedTagId] = useState('')
+  const [exportTagId, setExportTagId] = useState('')
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [tagFormName, setTagFormName] = useState('')
+  const [tagFormColor, setTagFormColor] = useState('')
+  const [editingTagId, setEditingTagId] = useState<number | null>(null)
+  const [tagBusy, setTagBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(false)
   const [relogining, setRelogining] = useState(false)
@@ -120,6 +140,7 @@ export default function Sub2ApiManagement() {
 
   const applyInventory = (entry: InventoryCacheEntry) => {
     setGroups(entry.groups)
+    setTags(entry.tags)
     setAccounts(entry.accounts)
     setSelectedIds(new Set())
     setPage(1)
@@ -127,7 +148,7 @@ export default function Sub2ApiManagement() {
 
   const load = async (options: { force?: boolean } = {}) => {
     setError('')
-    const cacheKey = inventoryCacheKey(groupId, status, search)
+    const cacheKey = inventoryCacheKey(groupId, status, search, tagFilter)
     if (!options.force) {
       const cached = inventoryCache.get(cacheKey)
       if (cached) {
@@ -142,10 +163,12 @@ export default function Sub2ApiManagement() {
       const params = new URLSearchParams()
       if (groupId) params.set('group_id', groupId)
       if (status && status !== 'all') params.set('status', status)
+      if (tagFilter) params.set('tag_id', tagFilter)
       if (search.trim()) params.set('search', search.trim())
       const data = await apiFetch(`/sub2api-management/inventory?${params}`)
       const entry = {
         groups: data.groups || [],
+        tags: data.tags || [],
         accounts: data.accounts || [],
       }
       inventoryCache.set(cacheKey, entry)
@@ -159,7 +182,7 @@ export default function Sub2ApiManagement() {
 
   useEffect(() => {
     load()
-  }, [groupId, status])
+  }, [groupId, status, tagFilter])
 
   useEffect(() => {
     if (!shouldFollowLogRef.current) return
@@ -171,6 +194,14 @@ export default function Sub2ApiManagement() {
   const selectedOrVisibleIds = useMemo(() => {
     if (selectedIds.size > 0) return Array.from(selectedIds)
     return accounts.map((item) => item.id).filter(Boolean)
+  }, [accounts, selectedIds])
+
+  const reloginTargetIds = useMemo(() => {
+    if (selectedIds.size > 0) return Array.from(selectedIds)
+    return accounts
+      .filter((item) => statusVariant(item.status) === 'danger')
+      .map((item) => item.id)
+      .filter(Boolean)
   }, [accounts, selectedIds])
 
   const stats = useMemo(() => {
@@ -441,7 +472,7 @@ export default function Sub2ApiManagement() {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          account_ids: selectedIds.size > 0 ? Array.from(selectedIds) : [],
+          account_ids: reloginTargetIds,
           group_id: groupId ? Number(groupId) : null,
           workspace_ids: workspaceIds,
           concurrency: 1,
@@ -493,6 +524,145 @@ export default function Sub2ApiManagement() {
     setMessage('实时日志已复制到剪贴板')
   }
 
+  const openExportDialog = () => {
+    if (selectedIds.size === 0) {
+      setError('请先勾选要导出的账号')
+      return
+    }
+    setError('')
+    setMessage('')
+    setExportTagId(selectedTagId || '')
+    setExportDialogOpen(true)
+  }
+
+  const exportSelectedAccounts = async () => {
+    if (selectedIds.size === 0) {
+      setError('请先勾选要导出的账号')
+      return
+    }
+    if (!exportTagId) {
+      setError('请选择导出标签')
+      return
+    }
+    setExporting(true)
+    setError('')
+    setMessage('')
+    try {
+      const tag = tags.find((item) => String(item.id) === exportTagId)
+      const { blob, filename } = await apiDownload('/sub2api-management/export-data', {
+        method: 'POST',
+        body: JSON.stringify({
+          account_ids: Array.from(selectedIds),
+          tag_ids: [Number(exportTagId)],
+          timezone: 'Asia/Shanghai',
+          include_proxies: true,
+        }),
+      })
+      triggerBrowserDownload(blob, filename)
+      setMessage(`已导出 ${selectedIds.size} 个账号，并打标签：${tag?.name || exportTagId}`)
+      setExportDialogOpen(false)
+      inventoryCache.clear()
+      await load({ force: true })
+    } catch (err: any) {
+      setError(err?.message || String(err))
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const resetTagForm = () => {
+    setEditingTagId(null)
+    setTagFormName('')
+    setTagFormColor('')
+  }
+
+  const editTag = (tag: Sub2ApiTag) => {
+    setEditingTagId(tag.id)
+    setTagFormName(tag.name)
+    setTagFormColor(tag.color || '')
+  }
+
+  const saveTag = async () => {
+    const name = tagFormName.trim()
+    if (!name) {
+      setError('标签名称不能为空')
+      return
+    }
+    setTagBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const body = JSON.stringify({ name, color: tagFormColor.trim() })
+      if (editingTagId) {
+        await apiFetch(`/sub2api-management/tags/${editingTagId}`, { method: 'PUT', body })
+        setMessage(`标签已更新：${name}`)
+      } else {
+        await apiFetch('/sub2api-management/tags', { method: 'POST', body })
+        setMessage(`标签已创建：${name}`)
+      }
+      resetTagForm()
+      inventoryCache.clear()
+      await load({ force: true })
+    } catch (err: any) {
+      setError(err?.message || String(err))
+    } finally {
+      setTagBusy(false)
+    }
+  }
+
+  const deleteTag = async (tag: Sub2ApiTag) => {
+    if (!window.confirm(`确认删除标签“${tag.name}”？已打标账号会同时移除该标签。`)) return
+    setTagBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      await apiFetch(`/sub2api-management/tags/${tag.id}`, { method: 'DELETE' })
+      const wasFiltering = tagFilter === String(tag.id)
+      if (wasFiltering) setTagFilter('')
+      if (selectedTagId === String(tag.id)) setSelectedTagId('')
+      if (editingTagId === tag.id) resetTagForm()
+      setMessage(`标签已删除：${tag.name}`)
+      inventoryCache.clear()
+      if (!wasFiltering) await load({ force: true })
+    } catch (err: any) {
+      setError(err?.message || String(err))
+    } finally {
+      setTagBusy(false)
+    }
+  }
+
+  const updateSelectedAccountTags = async (action: 'add' | 'remove') => {
+    if (selectedIds.size === 0) {
+      setError('请先勾选要打标的账号')
+      return
+    }
+    if (!selectedTagId) {
+      setError('请先选择标签')
+      return
+    }
+    setTagBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const data = await apiFetch('/sub2api-management/account-tags', {
+        method: 'POST',
+        body: JSON.stringify({
+          account_ids: Array.from(selectedIds),
+          tag_ids: [Number(selectedTagId)],
+          action,
+        }),
+      })
+      const tag = tags.find((item) => String(item.id) === selectedTagId)
+      setMessage(`${action === 'add' ? '已添加' : '已移除'}标签：${tag?.name || selectedTagId}，影响 ${data.changed || 0} 条关系`)
+      inventoryCache.clear()
+      await load({ force: true })
+    } catch (err: any) {
+      setError(err?.message || String(err))
+    } finally {
+      setTagBusy(false)
+    }
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -501,7 +671,7 @@ export default function Sub2ApiManagement() {
             <Activity className="h-3.5 w-3.5" />
             Sub2API 远端仓管
           </div>
-          <h1 className="text-xl font-semibold text-[var(--text-primary)]">Sub2Api管理</h1>
+          <h1 className="text-xl font-bold text-[var(--text-primary)]">Sub2Api管理</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
             使用设置页的 Sub2API 后台信息读取远端分组和账号，支持按分组筛选、批量测活和错误账号处理。
           </p>
@@ -515,7 +685,11 @@ export default function Sub2ApiManagement() {
             <Activity className={cn('mr-1.5 h-3.5 w-3.5', checking && 'animate-pulse')} />
             批量测活
           </Button>
-          <Button variant="outline" onClick={runReloginErrors} disabled={relogining || loading || checking}>
+          <Button variant="outline" onClick={openExportDialog} disabled={exporting || checking || loading || relogining || selectedIds.size === 0}>
+            <Download className={cn('mr-1.5 h-3.5 w-3.5', exporting && 'animate-pulse')} />
+            导出选中
+          </Button>
+          <Button variant="outline" onClick={runReloginErrors} disabled={relogining || loading || checking || reloginTargetIds.length === 0}>
             <RotateCw className={cn('mr-1.5 h-3.5 w-3.5', relogining && 'animate-spin')} />
             重新登录错误帐号
           </Button>
@@ -542,7 +716,7 @@ export default function Sub2ApiManagement() {
         <CardHeader className="mb-4">
           <CardTitle>筛选与处理范围</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 lg:grid-cols-[220px_160px_1fr_1fr]">
+        <CardContent className="grid gap-3 lg:grid-cols-[220px_160px_220px_1fr_1fr]">
           <select
             value={groupId}
             onChange={(event) => setGroupId(event.target.value)}
@@ -563,6 +737,16 @@ export default function Sub2ApiManagement() {
             <option value="error">error</option>
             <option value="inactive">inactive</option>
           </select>
+          <select
+            value={tagFilter}
+            onChange={(event) => setTagFilter(event.target.value)}
+            className="control-surface h-9"
+          >
+            <option value="">全部标签</option>
+            {tags.map((tag) => (
+              <option key={tag.id} value={tag.id}>{tag.name} ({tag.account_count || 0})</option>
+            ))}
+          </select>
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
             <input
@@ -575,12 +759,113 @@ export default function Sub2ApiManagement() {
               className="control-surface h-9 w-full pl-9"
             />
           </div>
-          <input
+          <textarea
             value={workspaceIds}
             onChange={(event) => setWorkspaceIds(event.target.value)}
-            placeholder="K12 Workspace ID 覆盖值（可选）"
-            className="control-surface h-9 w-full"
+            placeholder="K12 Workspace ID 覆盖值（可选，多个用换行或逗号分隔）"
+            className="control-surface min-h-20 w-full resize-y"
           />
+        </CardContent>
+      </Card>
+
+      <Card className="border border-[var(--border)]">
+        <CardHeader className="mb-4">
+          <CardTitle>标签管理</CardTitle>
+          <p className="text-xs text-[var(--text-muted)]">
+            标签只保存在本地 DB；先勾选账号，再选择标签进行批量添加或移除。
+          </p>
+        </CardHeader>
+        <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={selectedTagId}
+                onChange={(event) => setSelectedTagId(event.target.value)}
+                className="control-surface h-9 min-w-[220px]"
+              >
+                <option value="">选择要操作的标签</option>
+                {tags.map((tag) => (
+                  <option key={tag.id} value={tag.id}>{tag.name}</option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                onClick={() => updateSelectedAccountTags('add')}
+                disabled={tagBusy || selectedIds.size === 0 || !selectedTagId}
+              >
+                <Tag className="mr-1.5 h-3.5 w-3.5" />
+                给已选账号打标签
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => updateSelectedAccountTags('remove')}
+                disabled={tagBusy || selectedIds.size === 0 || !selectedTagId}
+              >
+                移除已选账号标签
+              </Button>
+              <Badge variant="secondary">已选 {selectedIds.size}</Badge>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {tags.length > 0 ? tags.map((tag) => (
+                <Badge key={tag.id} variant="secondary" className="gap-1">
+                  {tag.color && <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color }} />}
+                  {tag.name}
+                  <span className="text-[var(--text-muted)]">({tag.account_count || 0})</span>
+                </Badge>
+              )) : (
+                <span className="text-xs text-[var(--text-muted)]">暂无标签，先在右侧创建。</span>
+              )}
+            </div>
+          </div>
+          <div className="space-y-3 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)] p-3">
+            <div className="grid gap-2 sm:grid-cols-[1fr_120px_auto]">
+              <input
+                value={tagFormName}
+                onChange={(event) => setTagFormName(event.target.value)}
+                placeholder="标签名称"
+                className="control-surface h-9 w-full"
+              />
+              <input
+                value={tagFormColor}
+                onChange={(event) => setTagFormColor(event.target.value)}
+                placeholder="颜色，可选"
+                className="control-surface h-9 w-full"
+              />
+              <Button onClick={saveTag} disabled={tagBusy || !tagFormName.trim()}>
+                {editingTagId ? <Pencil className="mr-1.5 h-3.5 w-3.5" /> : <Plus className="mr-1.5 h-3.5 w-3.5" />}
+                {editingTagId ? '保存' : '新增'}
+              </Button>
+            </div>
+            {editingTagId && (
+              <Button variant="ghost" size="sm" onClick={resetTagForm} disabled={tagBusy}>
+                取消编辑
+              </Button>
+            )}
+            <div className="max-h-40 space-y-2 overflow-y-auto">
+              {tags.map((tag) => (
+                <div key={tag.id} className="flex items-center justify-between gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-2 text-sm">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {tag.color && <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: tag.color }} />}
+                    <span className="truncate font-medium text-[var(--text-primary)]">{tag.name}</span>
+                    <span className="text-xs text-[var(--text-muted)]">{tag.account_count || 0} 个账号</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button variant="ghost" size="sm" onClick={() => editTag(tag)} disabled={tagBusy}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => deleteTag(tag)} disabled={tagBusy}>
+                      <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              {tags.length === 0 && (
+                <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
+                  暂无标签
+                </div>
+              )}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
@@ -600,7 +885,7 @@ export default function Sub2ApiManagement() {
       <Card className="overflow-hidden border border-[var(--border)] p-0">
         <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_420px]">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] text-sm">
+          <table className="w-full min-w-[1120px] text-sm">
             <thead className="border-b border-[var(--border)] bg-[var(--bg-pane)] text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
               <tr>
                 <th className="w-10 px-4 py-3">
@@ -614,6 +899,7 @@ export default function Sub2ApiManagement() {
                 <th className="px-4 py-3">帐号名</th>
                 <th className="px-4 py-3">当前状态</th>
                 <th className="px-4 py-3">类型</th>
+                <th className="px-4 py-3">标签</th>
                 <th className="px-4 py-3">分组</th>
                 <th className="px-4 py-3">创建时间</th>
                 <th className="px-4 py-3">最近使用时间</th>
@@ -639,6 +925,18 @@ export default function Sub2ApiManagement() {
                   </td>
                   <td className="px-4 py-3 text-[var(--text-secondary)]">{account.plan_type || '-'}</td>
                   <td className="px-4 py-3">
+                    <div className="flex max-w-[220px] flex-wrap gap-1">
+                      {(account.tags || []).length > 0
+                        ? account.tags.map((tag) => (
+                          <Badge key={tag.id} variant="secondary" className="gap-1">
+                            {tag.color && <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color }} />}
+                            {tag.name}
+                          </Badge>
+                        ))
+                        : <span className="text-[var(--text-muted)]">-</span>}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
                     <div className="flex max-w-[240px] flex-wrap gap-1">
                       {(account.groups || []).length > 0
                         ? account.groups.map((group) => <Badge key={group.id} variant="secondary">{group.name}</Badge>)
@@ -651,7 +949,7 @@ export default function Sub2ApiManagement() {
               ))}
               {accounts.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-[var(--text-muted)]">
+                  <td colSpan={8} className="px-4 py-12 text-center text-[var(--text-muted)]">
                     {loading ? '加载中...' : '暂无远端 Sub2API 账号'}
                   </td>
                 </tr>
@@ -770,6 +1068,47 @@ export default function Sub2ApiManagement() {
             ))}
           </CardContent>
         </Card>
+      )}
+
+      {exportDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-2xl">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-[var(--text-primary)]">导出 Sub2API JSON</h2>
+              <p className="mt-1 text-sm text-[var(--text-muted)]">
+                将 {selectedIds.size} 个已选账号打上标签后，导出为一个 Sub2API JSON 文件。
+              </p>
+            </div>
+            <label className="mb-2 block text-sm font-medium text-[var(--text-secondary)]">导出标签</label>
+            <select
+              value={exportTagId}
+              onChange={(event) => setExportTagId(event.target.value)}
+              className="control-surface h-10 w-full"
+            >
+              <option value="">选择标签</option>
+              {tags.map((tag) => (
+                <option key={tag.id} value={tag.id}>{tag.name}</option>
+              ))}
+            </select>
+            {tags.length === 0 && (
+              <p className="mt-2 text-xs text-amber-600 dark:text-amber-300">
+                暂无可选标签，请先在页面的“标签管理”里创建标签。
+              </p>
+            )}
+            <p className="mt-3 text-xs text-[var(--text-muted)]">
+              导出会调用远端 Sub2API 的账号 data 接口，多个已选账号会打包进同一个 JSON 文件。
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setExportDialogOpen(false)} disabled={exporting}>
+                取消
+              </Button>
+              <Button onClick={exportSelectedAccounts} disabled={exporting || !exportTagId}>
+                <Download className={cn('mr-1.5 h-3.5 w-3.5', exporting && 'animate-pulse')} />
+                {exporting ? '导出中...' : '确定导出'}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

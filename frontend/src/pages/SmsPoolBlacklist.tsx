@@ -178,14 +178,14 @@ export default function SmsPoolBlacklist() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <Card className="overflow-hidden border border-[var(--border-soft)] bg-[var(--bg-card)] p-0">
         <div className="relative overflow-hidden px-5 py-4">
           <div className="absolute inset-y-0 right-0 w-1/3 bg-[radial-gradient(circle_at_top_right,rgba(var(--accent-rgb),0.18),transparent_60%)]" />
           <div className="relative flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border-soft)] bg-[var(--chip-bg)] text-[var(--accent)]">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--gradient-accent-soft)] text-[var(--accent)]">
                   <Activity className="h-4 w-4" />
                 </div>
                 <div className="text-base font-semibold text-[var(--text-primary)]">
