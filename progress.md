@@ -2155,3 +2155,26 @@
   - docs/gmail-api-code.md: 记录 Gmail API接码不会自动串到 Outlook 等其它邮箱 provider。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 core/base_mailbox.py 中 ordered_keys 组装规则调整；撤销 frontend/src/components/settings/ProviderCards.tsx 中 handleToggle、defaultKey、isEnabled 的本轮调整；撤销 frontend/src/pages/Register.tsx 中 enabled provider 过滤和默认值修正；删除 tests/test_base_mailbox_factory.py；撤销 README.md 与 docs/gmail-api-code.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-05 - Task: 自动注册邮箱别名默认开启并扩容到 6
+
+### What was done
+- 自动注册 ChatGPT 弹窗的邮箱别名开关改为默认开启，别名上限默认值和输入上限统一为 6。
+- 邮箱别名额度改为只按成功注册的子号数量计算，母邮箱只用于收信，不作为注册邮箱提交，也不占用注册额度。
+- 更新邮箱别名说明文档，明确一个母邮箱最多生成 6 个成功注册子号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py -q` -> 14 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py` -> 无输出，编译通过。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- core\email_alias_mailbox.py tests\test_email_alias_mailbox.py frontend\src\pages\Accounts.tsx frontend\src\lib\i18n.ts docs\email-alias-mailbox.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: 别名硬上限改为 6，并移除母邮箱注册记录对别名额度的影响。
+  - frontend/src/pages/Accounts.tsx: 邮箱别名默认勾选，别名上限默认和最大值改为 6。
+  - frontend/src/lib/i18n.ts: 更新邮箱别名上限提示文案。
+  - tests/test_email_alias_mailbox.py: 更新别名上限和母邮箱不占额度的回归测试。
+  - docs/email-alias-mailbox.md: 记录母邮箱只收信、子号注册和 6 个别名额度规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/email_alias_mailbox.py 中 `EMAIL_ALIAS_HARD_LIMIT` 和额度判断调整；撤销 frontend/src/pages/Accounts.tsx 中邮箱别名默认值、默认上限和输入最大值调整；撤销 frontend/src/lib/i18n.ts 与 docs/email-alias-mailbox.md 本轮文案说明；撤销 tests/test_email_alias_mailbox.py 本轮测试调整；移除 progress.md 本轮追加内容即可恢复旧行为。

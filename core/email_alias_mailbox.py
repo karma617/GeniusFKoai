@@ -15,7 +15,7 @@ from core.base_mailbox import BaseMailbox, MailboxAccount
 from core.db import AccountModel, ProviderResourceModel, TaskEventModel, engine
 
 
-EMAIL_ALIAS_HARD_LIMIT = 5
+EMAIL_ALIAS_HARD_LIMIT = 6
 EMAIL_ALIAS_SELECT_ATTEMPTS = 16
 _EMAIL_RE = re.compile(r"^([^@\s]+)@([^@\s]+\.[^@\s]+)$")
 _ALIAS_CHARS = string.ascii_lowercase + string.digits
@@ -307,7 +307,7 @@ class EmailAliasMailbox(BaseMailbox):
                 self._log(
                     "Email alias parent quota exhausted; marked parent as used: "
                     f"{parent.email} aliases={usage.alias_success_count}/{self.alias_limit} "
-                    f"total={usage.total_success_count}/{self.alias_limit + 1}"
+                    f"total={usage.total_success_count}"
                 )
                 return
             except Exception as exc:
@@ -414,7 +414,6 @@ class EmailAliasMailbox(BaseMailbox):
             last_usage = usage
             if (
                 usage.alias_success_count + local_alias_success_count >= self.alias_limit
-                or usage.total_success_count + local_alias_success_count >= self.alias_limit + 1
             ):
                 if parent_email in seen_full:
                     break
@@ -429,7 +428,7 @@ class EmailAliasMailbox(BaseMailbox):
                 "Email alias allocated: "
                 f"{alias_email} parent={parent_email} "
                 f"aliases={usage.alias_success_count}/{self.alias_limit} "
-                f"total={usage.total_success_count}/{self.alias_limit + 1}"
+                f"total={usage.total_success_count}"
             )
             return alias_account
 
@@ -437,7 +436,7 @@ class EmailAliasMailbox(BaseMailbox):
         if last_usage:
             detail = (
                 f" aliases={last_usage.alias_success_count}/{self.alias_limit}"
-                f" total={last_usage.total_success_count}/{self.alias_limit + 1}"
+                f" total={last_usage.total_success_count}"
             )
         raise RuntimeError(f"Email alias quota exhausted for parent mailbox {last_parent or 'unknown'}{detail}")
 
@@ -512,13 +511,10 @@ class EmailAliasMailbox(BaseMailbox):
             "Email alias registration success: "
             f"{getattr(account, 'email', '')} parent={parent.email} "
             f"aliases={effective_alias_count}/{self.alias_limit} "
-            f"total={effective_total_count}/{self.alias_limit + 1}"
+            f"total={effective_total_count}"
         )
         marker = getattr(self.mailbox, "mark_registration_success", None)
-        if callable(marker) and (
-            effective_alias_count >= self.alias_limit
-            or effective_total_count >= self.alias_limit + 1
-        ):
+        if callable(marker) and effective_alias_count >= self.alias_limit:
             return list(marker(parent) or [])
         self._release_parent(parent)
         return []

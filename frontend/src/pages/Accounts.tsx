@@ -448,8 +448,8 @@ function RegisterModal({
   const [authflowExperimental, setAuthflowExperimental] = useState(false)
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
-  const [enableEmailAlias, setEnableEmailAlias] = useState(false)
-  const [emailAliasLimit, setEmailAliasLimit] = useState(5)
+  const [enableEmailAlias, setEnableEmailAlias] = useState(true)
+  const [emailAliasLimit, setEmailAliasLimit] = useState(6)
   // GoPay 专属：PIN（6 位数字）、Hero-SMS API key、注册代理。仅当
   // platform === 'gopay' 时显示，未填时后端走环境变量回退。
   const [gopayPin, setGopayPin] = useState('147258')
@@ -605,7 +605,7 @@ function RegisterModal({
       }
       if (platform === 'chatgpt' && enableEmailAlias) {
         extra.enable_email_alias = true
-        extra.email_alias_limit = Math.min(Math.max(Number(emailAliasLimit || 5), 1), 5)
+        extra.email_alias_limit = Math.min(Math.max(Number(emailAliasLimit || 6), 1), 6)
       }
       if (selection.identityProvider === 'mailbox') {
         if (!defaultMailboxProvider?.provider_key) {
@@ -842,10 +842,10 @@ function RegisterModal({
                       <input
                         type="number"
                         min={1}
-                        max={4}
+                        max={6}
                         disabled={!enableEmailAlias}
                         value={emailAliasLimit}
-                        onChange={(e) => setEmailAliasLimit(Math.min(Math.max(Number(e.target.value || 4), 1), 4))}
+                        onChange={(e) => setEmailAliasLimit(Math.min(Math.max(Number(e.target.value || 6), 1), 6))}
                         className="control-surface control-surface-compact w-full text-center"
                       />
                       <div className="mt-1 help-text-xs">
