@@ -811,7 +811,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
 
   const settingsMap: Record<string, ProviderSetting> = {}
   for (const s of settings) settingsMap[s.provider_key] = s
-  const defaultKey = settings.find(s => s.is_default)?.provider_key || ''
+  const defaultKey = settings.find(s => s.enabled && s.is_default)?.provider_key || ''
 
   const grouped: Record<string, ProviderOption[]> = {}
   for (const p of catalog) {
@@ -836,8 +836,16 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
           enabled: true, is_default: settings.length === 0, config: {}, auth: {}, metadata: {},
         }),
       })
-    } else if (!enable && setting) {
-      await apiFetch(`/provider-settings/${setting.id}`, { method: 'DELETE' })
+    } else if (setting) {
+      await apiFetch('/provider-settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          id: setting.id, provider_type: providerType, provider_key: provider.value,
+          display_name: setting.display_name || provider.label,
+          auth_mode: setting.auth_mode || provider.default_auth_mode || '',
+          enabled: enable, is_default: setting.is_default, config: setting.config || {}, auth: setting.auth || {}, metadata: setting.metadata || {},
+        }),
+      })
     }
     invalidateConfigOptionsCache()
     await onReload()
@@ -903,7 +911,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
   const renderCard = (provider: ProviderOption, allowDelete = false) => {
     const key = provider.value
     const setting = settingsMap[key]
-    const isEnabled = !!setting
+    const isEnabled = !!setting?.enabled
     const isDefault = key === defaultKey
     const hasFields = (provider.fields || []).length > 0
 

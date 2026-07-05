@@ -41,7 +41,8 @@ function getProviderMergedValues(setting: ProviderSetting | null) {
 }
 
 function getDefaultProviderKey(settings: ProviderSetting[] = []) {
-  return settings.find(item => item.is_default)?.provider_key || settings[0]?.provider_key || ''
+  const enabled = settings.filter(item => item.enabled)
+  return enabled.find(item => item.is_default)?.provider_key || enabled[0]?.provider_key || ''
 }
 
 export default function Register() {
@@ -145,11 +146,15 @@ export default function Register() {
     currentPlatform?.supported_executor_options || [],
     language,
   )
-  const mailboxProviderOptions = getProviderSelectOptions(configOptions.mailbox_providers || [])
-  const currentMailboxProvider = (configOptions.mailbox_providers || []).find(provider => provider.value === form.mail_provider) || null
+  const enabledMailboxKeys = new Set((configOptions.mailbox_settings || []).filter(item => item.enabled).map(item => item.provider_key))
+  const mailboxProviders = (configOptions.mailbox_providers || []).filter(provider => enabledMailboxKeys.has(provider.value))
+  const mailboxProviderOptions = getProviderSelectOptions(mailboxProviders)
+  const currentMailboxProvider = mailboxProviders.find(provider => provider.value === form.mail_provider) || null
   const currentMailboxSetting = getProviderSetting(configOptions.mailbox_settings || [], form.mail_provider)
-  const smsProviderOptions = getProviderSelectOptions(configOptions.sms_providers || [])
-  const currentSmsProvider = (configOptions.sms_providers || []).find(provider => provider.value === form.sms_provider) || null
+  const enabledSmsKeys = new Set((configOptions.sms_settings || []).filter(item => item.enabled).map(item => item.provider_key))
+  const smsProviders = (configOptions.sms_providers || []).filter(provider => enabledSmsKeys.has(provider.value))
+  const smsProviderOptions = getProviderSelectOptions(smsProviders)
+  const currentSmsProvider = smsProviders.find(provider => provider.value === form.sms_provider) || null
   const currentSmsSetting = getProviderSetting(configOptions.sms_settings || [], form.sms_provider)
   const allProviderFieldKeys = listProviderFieldKeys([
     ...(configOptions.mailbox_providers || []),
@@ -159,7 +164,8 @@ export default function Register() {
 
   useEffect(() => {
     const defaultProviderKey = getDefaultProviderKey(configOptions.mailbox_settings || [])
-    if (form.identity_provider === 'mailbox' && !form.mail_provider && defaultProviderKey) {
+    const currentEnabled = (configOptions.mailbox_settings || []).some(item => item.enabled && item.provider_key === form.mail_provider)
+    if (form.identity_provider === 'mailbox' && defaultProviderKey && (!form.mail_provider || !currentEnabled)) {
       set('mail_provider', defaultProviderKey)
     }
   }, [form.identity_provider, form.mail_provider, configOptions.mailbox_settings])
@@ -185,7 +191,8 @@ export default function Register() {
 
   useEffect(() => {
     const defaultProviderKey = getDefaultProviderKey(configOptions.sms_settings || [])
-    if (!form.sms_provider && defaultProviderKey) {
+    const currentEnabled = (configOptions.sms_settings || []).some(item => item.enabled && item.provider_key === form.sms_provider)
+    if (defaultProviderKey && (!form.sms_provider || !currentEnabled)) {
       set('sms_provider', defaultProviderKey)
     }
   }, [form.sms_provider, configOptions.sms_settings])

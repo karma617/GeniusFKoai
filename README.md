@@ -341,6 +341,8 @@ docker compose down         # 停止
 
 注册时需要选择一种邮箱服务用于接收验证码。邮箱、验证码和接码配置都由后端 provider catalog 驱动，前端「全局配置」页采用列表式 CRUD：左侧显示已添加的 provider，右侧统一编辑名称、认证方式和字段；「新增 Provider」下拉框只展示后端已接入但尚未加入的 provider。
 
+邮箱服务开关只控制该 provider 是否参与注册页选择和默认解析；关闭不会删除已填写的 API Key、邮箱池、Token 等配置，重新开启后继续复用原配置。注册任务默认只使用当前选择或默认邮箱 provider，不会因为其他邮箱 provider 也处于启用状态而自动串到其它邮箱服务；只有任务参数显式传入 `mail_provider_fallbacks` 时才会按指定顺序回退。
+
 ### MoeMail（推荐）
 
 基于开源项目 [cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email) 自建的临时邮箱服务，无需配置任何参数，系统自动注册临时账号并生成邮箱。在注册页选择 **MoeMail**，填写你部署的实例地址（默认使用公共实例）。
@@ -395,7 +397,7 @@ docker compose down         # 停止
 | 参数              | 说明                                                                                         |
 | ----------------- | -------------------------------------------------------------------------------------------- |
 | 服务地址          | outlookEmail 站点根地址，如 `https://outlook-email.example.com`，不要追加 `/api`             |
-| API Key           | outlookEmail「对外 API Key」，用于调用 `/api/external/accounts` 和 `/api/external/emails`    |
+| API Key           | outlookEmail「对外 API Key」，用于调用 `/api/external/accounts`、`/api/external/messages` 和兼容邮件接口 |
 | 管理员密码        | 可选；当前收码流程只需要 API Key，该字段不会写入注册账号凭证                                 |
 | 固定邮箱          | 可选；填写后始终使用该邮箱，留空则从账号列表选择第一个可用邮箱                               |
 | 分组 / 标签参数   | 可选；对应账号列表接口的 `group_id`、`tag_ids`、`include_untagged`                           |
@@ -408,8 +410,9 @@ docker compose down         # 停止
 
 1. 注册任务需要邮箱时，若配置了固定邮箱则直接使用该邮箱。
 2. 未配置固定邮箱时，系统调用 `/api/external/accounts`，按配置的分组、标签、排序参数拉取账号列表，并选择第一个可用且不带跳过标签的邮箱。
-3. 发送验证码前会先调用 `/api/external/emails` 记录当前邮件 ID；等待验证码时继续轮询邮件列表，跳过旧 ID，只从新邮件的主题、预览和正文摘要里提取 6 位验证码。
-4. 如果配置了完成后打标签，注册成功会打「注册成功后打标签」；奥特曼 Plus 自动支付或 GoPay Plus 付款成功后会打「Plus 开通后打标签」。
+3. 动态领取邮箱后会先调用 `/api/external/messages` 做轻量读信预检；账号不存在、授权失效、凭据解密失败等账号级不可读问题会给该邮箱打 `无效邮箱` 标签并继续取下一个，API Key、5xx、超时等全局问题不会误标邮箱。
+4. 发送验证码前会先读取当前邮件 ID；等待验证码时继续轮询邮件列表，跳过旧 ID，只从新邮件的主题、预览和正文摘要里提取 6 位验证码。
+5. 如果配置了完成后打标签，注册成功会打「注册成功后打标签」；奥特曼 Plus 自动支付或 GoPay Plus 付款成功后会打「Plus 开通后打标签」。
 
 跳过标签只依赖 `/api/external/accounts` 返回的 `tags` 字段，使用 API Key 即可。完成后自动打标签属于 outlookEmail 管理端写操作，需要填写管理员密码；系统会临时登录管理端、获取 CSRF Token、必要时创建标签，再调用 `/api/accounts/tags` 给对应邮箱账号打标签。打标签失败只会记录 warning，不会把已成功的注册或付款反向判失败。
 

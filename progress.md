@@ -2005,3 +2005,153 @@
   - docs/k12-space-join.md: 记录 K12 Sub2API 上传字段的固定取值规则。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 platforms/chatgpt/k12_join.py 中 `K12_SUB2API_CHATGPT_ACCOUNT_ID` 常量和 `credentials.chatgpt_account_id` 固定写入；撤销 tests/test_k12_join.py 与 docs/k12-space-join.md 本轮断言/说明；移除 progress.md 本轮追加内容即可恢复为按 session/account 动态取值的旧行为。
+
+## 2026-07-05 - Task: Outlook 邮箱 OpenAI 验证码解析修复
+
+### What was done
+- outlookEmail 邮件正文解析支持嵌套 HTML 正文字段，能从 OpenAI `Enter this temporary verification code to continue` 邮件详情中提取 6 位验证码。
+- 保留按 OTP 发送时间放行基线内新邮件的逻辑，避免邮件在基线读取时已经到达导致后续一直等待。
+- 补充 Outlook OTP 解析说明，明确摘要、详情正文、嵌套 HTML 和基线时间放行规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests/test_outlook_email_mailbox.py -q` -> 25 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- core/outlook_email_mailbox.py tests/test_outlook_email_mailbox.py progress.md` -> 无空白错误；仅提示 Python 文件和 progress.md 的 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: 递归提取已知邮件正文字段中的嵌套文本，并按 OTP 发送时间放行基线内新邮件。
+  - tests/test_outlook_email_mailbox.py: 新增 OpenAI 嵌套 HTML 验证码邮件回归测试，覆盖 `038818` 这类正文结构。
+  - docs/email-alias-mailbox.md: 记录 Outlook OTP 解析和基线时间放行规则；该目录被 .gitignore 忽略，作为本地文档更新保留。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/outlook_email_mailbox.py 中 `_collect_text_parts`、`_message_text` 递归正文提取和 `baseline_ids` 放行逻辑；撤销 tests/test_outlook_email_mailbox.py 新增回归测试；撤销 docs/email-alias-mailbox.md 的 Outlook OTP parsing 小节；移除 progress.md 本轮追加内容即可恢复旧的 Outlook 邮件解析行为。
+
+## 2026-07-05 - Task: Sub2API 批量测活未勾选时按筛选范围全量执行
+
+### What was done
+- Sub2API 批量测活保留已勾选账号优先逻辑；未勾选账号时改为按当前已提交的分组、状态、搜索、标签或无标签筛选条件全量解析账号后执行。
+- 前端批量测活不再把当前页账号当作未勾选时的处理范围，按钮可用性改为依据当前筛选总数。
+- 补充回归测试，覆盖未传账号 ID 时后端按筛选条件和本地标签范围解析测活账号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 21 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- application\sub2api_management.py api\sub2api_management.py frontend\src\pages\Sub2ApiManagement.tsx tests\test_sub2api_management.py docs\sub2api-management.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 增加批量测活筛选范围账号解析，并让普通和流式批量测活入口在未传账号 ID 时使用该范围。
+  - api/sub2api_management.py: 批量测活请求体新增分组、状态、搜索、标签和无标签筛选字段并传入服务层。
+  - frontend/src/pages/Sub2ApiManagement.tsx: 未勾选时提交当前筛选条件，不再提交当前页账号 ID。
+  - tests/test_sub2api_management.py: 新增未勾选批量测活筛选范围回归测试，并修正分组筛选测试桩以匹配远端接口语义。
+  - docs/sub2api-management.md: 记录未勾选批量测活按当前筛选条件全量执行；该文件未被 Git 跟踪，作为本地文档更新保留。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/sub2api_management.py 中 `_resolve_bulk_check_account_ids` 及批量测活筛选参数接入；撤销 api/sub2api_management.py 的 `BulkCheckRequest` 筛选字段和传参；撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `bulkCheckTargetCount` / `bulkCheckRequestBody` 和按钮禁用逻辑调整；撤销 tests/test_sub2api_management.py 本轮测试改动；撤销 docs/sub2api-management.md 本轮批量测活说明；移除 progress.md 本轮追加内容即可恢复未勾选时只测当前页账号的旧行为。
+
+## 2026-07-05 - Task: outlookEmail 动态邮箱读信预检与无效打标
+
+### What was done
+- outlookEmail 动态领取邮箱后新增轻量读信预检，确认候选邮箱能通过 `/api/external/messages` 读取邮件后才进入注册流程。
+- 对账号不存在、授权失效、凭据解密失败、Graph/IMAP 均读取失败等账号级不可读问题，自动给候选邮箱打 `无效邮箱` 标签并继续尝试下一个邮箱。
+- API Key 认证失败、Cloudflare/5xx、连接超时等全局或临时故障不标记单个邮箱无效，直接中断取邮箱流程，避免误伤正常邮箱。
+- 更新 outlookEmail 文档说明，明确预检、跳过和打标边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py tests\test_outlook_email_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py -q` -> 27 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- core\outlook_email_mailbox.py tests\test_outlook_email_mailbox.py README.md docs\email-alias-mailbox.md progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: 动态取邮箱后增加单次读信预检、账号级不可读错误分类、坏邮箱打标后继续选择下一个候选。
+  - tests/test_outlook_email_mailbox.py: 更新动态取邮箱测试契约，并新增账号级预检失败打无效标签、API Key 失败不误标邮箱的回归测试。
+  - README.md: 更新 outlookEmail API 与工作流程说明，记录读信预检和打标边界。
+  - docs/email-alias-mailbox.md: 补充 Outlook mailbox selection 的读信预检规则；该文件未被 Git 跟踪，作为本地文档更新保留。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/outlook_email_mailbox.py 中 `_is_account_readability_error`、`_precheck_account_readable`、`_select_account(rejected_keys=...)` 和 `get_email` 预检循环改动；撤销 tests/test_outlook_email_mailbox.py 本轮预检响应和新增测试；撤销 README.md 与 docs/email-alias-mailbox.md 本轮 outlookEmail 预检说明；移除 progress.md 本轮追加内容即可恢复旧的取邮箱后直接注册行为。
+
+## 2026-07-05 - Task: Sub2API 未选账号批量测活剩余拦截修复
+
+### What was done
+- Sub2API 批量测活在未手动勾选账号时，改为直接使用筛选控件当前值发起全量测活，不再依赖是否先点击 `查询`。
+- 移除前端基于当前页或旧总数的空范围拦截，避免有筛选条件但未选账号时提前阻止请求。
+- 后端空范围提示改为“当前筛选条件下没有可测活的 Sub2API 账号”，不再误导用户必须手动选择账号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 22 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- application\sub2api_management.py frontend\src\pages\Sub2ApiManagement.tsx tests\test_sub2api_management.py docs\sub2api-management.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Sub2ApiManagement.tsx: 未选账号时用当前筛选控件值提交批量测活请求，并取消旧总数空范围按钮禁用。
+  - application/sub2api_management.py: 将未解析到测活账号时的错误文案改为筛选范围为空。
+  - tests/test_sub2api_management.py: 新增空筛选范围错误文案回归测试。
+  - docs/sub2api-management.md: 明确未选账号测活使用筛选控件当前值，不要求先点击查询。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/pages/Sub2ApiManagement.tsx 中 `bulkCheckRequestBody` 使用 draft 筛选值和按钮禁用调整；撤销 application/sub2api_management.py 中空范围错误文案调整；撤销 tests/test_sub2api_management.py 新增空范围文案测试；撤销 docs/sub2api-management.md 本轮批量测活说明；移除 progress.md 本轮追加内容即可恢复本轮改动前行为。
+
+## 2026-07-05 - Task: Gmail API接码邮箱池过滤非 Gmail 噪声记录
+
+### What was done
+- Gmail API接码邮箱池统计只接受 `gmail.com` / `googlemail.com` 主邮箱，跳过历史 provider resource 或任务日志里误写成数字 ID、Outlook 邮箱的 parent。
+- 保留正常 Gmail alias 成功数、未确认分配、无效邮箱状态统计，不影响注册和邮箱领取流程。
+- 用当前本地数据库抽样确认返回列表不再包含纯数字或 Outlook parent。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\gmail_api_code_usage.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_usage_stats.py -q` -> 3 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- 本地统计抽样脚本 `gmail_api_code_alias_usage()` -> `noise_count 0`，前 10 条 parent 均为 Gmail。
+- `git diff --check -- application\gmail_api_code_usage.py tests\test_gmail_api_code_usage_stats.py docs\gmail-api-code.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - application/gmail_api_code_usage.py: 新增 Gmail parent 归一与校验，资源和任务日志统计入口都跳过非 Gmail parent。
+  - tests/test_gmail_api_code_usage_stats.py: 新增误标为 `gmail_api_code` 的数字/Outlook 噪声记录回归测试。
+  - docs/gmail-api-code.md: 记录统计页只接受 Gmail parent，历史噪声记录会被跳过。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/gmail_api_code_usage.py 中 `_resolve_gmail_parent` 及统计入口过滤调整；撤销 tests/test_gmail_api_code_usage_stats.py 新增噪声过滤测试；撤销 docs/gmail-api-code.md 本轮统计过滤说明；移除 progress.md 本轮追加内容即可恢复旧统计行为。
+
+## 2026-07-05 - Task: Sub2API 导出文件名增加账号数量
+
+### What was done
+- Sub2API `导出选中` 下载文件名末尾追加本次导出的去重账号数量，例如 `sub2api-account-20260705-214254-100.json`。
+- 保持导出内容、打标签和远端 data 接口调用不变，只调整附件文件名。
+- 更新 Sub2API 管理文档，说明导出文件名中的数量含义。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile api\sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 23 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- api\sub2api_management.py tests\test_sub2api_management.py docs\sub2api-management.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - api/sub2api_management.py: 导出响应文件名追加账号数量，并按请求账号 ID 去重计数。
+  - tests/test_sub2api_management.py: 新增导出账号数量去重计数测试。
+  - docs/sub2api-management.md: 记录导出文件名带账号数量的示例。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 api/sub2api_management.py 中 `_export_account_count` 和导出文件名数量后缀；撤销 tests/test_sub2api_management.py 新增计数测试；撤销 docs/sub2api-management.md 本轮导出文件名说明；移除 progress.md 本轮追加内容即可恢复旧文件名。
+
+## 2026-07-05 - Task: 邮箱服务默认选择与开关保留配置
+
+### What was done
+- 邮箱 provider 创建逻辑改为只使用当前选择或显式 fallback，不再把所有已启用邮箱服务自动拼成隐式 fallback，避免默认 Gmail API接码串到 Outlook。
+- 设置页邮箱/验证码/接码 provider 开关改为更新 enabled 状态，关闭时保留原有 config/auth/metadata，重新开启后继续使用之前配置。
+- 注册页默认邮箱和接码 provider 只从 enabled setting 中选择；已关闭的 provider 不再出现在注册下拉候选中，也不会作为默认值残留。
+- 更新邮箱服务文档，说明关闭开关不清空配置，以及跨 provider 回退必须显式配置。
+
+### Testing
+- `python -m pytest tests/test_base_mailbox_factory.py tests/test_gmail_api_code_mailbox.py tests/test_email_alias_mailbox.py -q` -> 22 passed。
+- `npm run build`（frontend）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - core/base_mailbox.py: 移除自动追加所有 enabled mailbox provider 的隐式 fallback，仅保留当前 provider 和显式 `mail_provider_fallbacks`。
+  - frontend/src/components/settings/ProviderCards.tsx: provider 开关改为保存 enabled 状态并保留已有配置，列表启用状态按 setting.enabled 判断。
+  - frontend/src/pages/Register.tsx: 注册页邮箱和接码 provider 候选、默认值只使用 enabled setting，关闭后不再残留旧选择。
+  - tests/test_base_mailbox_factory.py: 新增邮箱工厂不会隐式 fallback 到其它已启用 provider、显式 fallback 仍可用的回归测试。
+  - README.md: 记录邮箱服务开关保留配置，以及默认不跨 provider 自动回退。
+  - docs/gmail-api-code.md: 记录 Gmail API接码不会自动串到 Outlook 等其它邮箱 provider。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/base_mailbox.py 中 ordered_keys 组装规则调整；撤销 frontend/src/components/settings/ProviderCards.tsx 中 handleToggle、defaultKey、isEnabled 的本轮调整；撤销 frontend/src/pages/Register.tsx 中 enabled provider 过滤和默认值修正；删除 tests/test_base_mailbox_factory.py；撤销 README.md 与 docs/gmail-api-code.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧行为。

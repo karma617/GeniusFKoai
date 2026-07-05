@@ -39,6 +39,14 @@ def _gmail_parent(email: str) -> str:
     return f"{local.split('+', 1)[0]}@gmail.com"
 
 
+def _resolve_gmail_parent(*values: Any) -> str:
+    for value in values:
+        parent = _gmail_parent(_normalize_email(value))
+        if parent:
+            return parent
+    return ""
+
+
 def _metadata_text(metadata: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = metadata.get(key)
@@ -56,7 +64,7 @@ def _metadata_text(metadata: dict[str, Any], *keys: str) -> str:
 def _configured_parent_emails() -> tuple[set[str], bool]:
     settings = ProviderSettingsRepository().resolve_runtime_settings("mailbox", "gmail_api_code", {})
     pool_text = str(settings.get("gmail_api_code_pool_text") or "")
-    parents = {_normalize_email(item.email) for item in parse_gmail_api_code_entries(pool_text)}
+    parents = {_resolve_gmail_parent(item.email) for item in parse_gmail_api_code_entries(pool_text)}
     return {item for item in parents if item}, bool(pool_text.strip())
 
 
@@ -114,6 +122,9 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
         for parent in configured_parents
     }
     for parent in _runtime_invalid_emails():
+        parent = _resolve_gmail_parent(parent)
+        if not parent:
+            continue
         item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
         _mark_email_status(item, "unusable", "runtime_invalid")
     successful_aliases_by_parent: dict[str, set[str]] = defaultdict(set)
@@ -128,12 +139,12 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
         for resource in mailbox_resources:
             metadata = _safe_json(resource.metadata_json)
             resource_email = _normalize_email(resource.handle or metadata.get("email"))
-            parent = (
+            raw_parent = (
                 _metadata_text(metadata, "alias_parent_email", "email_alias_parent", "parent_email", "main_email")
                 or _metadata_text(metadata, "account_id", "parent_account_id")
-                or _gmail_parent(resource_email)
+                or resource_email
             )
-            parent = _normalize_email(parent)
+            parent = _resolve_gmail_parent(raw_parent)
             if not parent:
                 continue
             item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
@@ -170,12 +181,12 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                 or _normalize_email(resource.handle)
                 or _normalize_email(account.email)
             )
-            parent = (
+            raw_parent = (
                 _metadata_text(metadata, "alias_parent_email", "email_alias_parent", "parent_email", "main_email")
                 or _metadata_text(metadata, "account_id", "parent_account_id")
-                or _gmail_parent(alias_email)
+                or alias_email
             )
-            parent = _normalize_email(parent)
+            parent = _resolve_gmail_parent(raw_parent)
             if not parent:
                 continue
             item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
@@ -205,8 +216,10 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
             if not match:
                 continue
             alias_email = _normalize_email(match.group(1))
-            parent = _normalize_email(match.group(2))
+            parent = _resolve_gmail_parent(match.group(2))
             if not parent:
+                continue
+            if _gmail_parent(alias_email) != parent:
                 continue
             item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
             allocated_aliases_by_parent[parent].add(alias_email)

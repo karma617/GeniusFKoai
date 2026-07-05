@@ -18,6 +18,11 @@ class BulkCheckRequest(BaseModel):
     account_ids: list[str] = Field(default_factory=list)
     model_id: str = DEFAULT_TEST_MODEL
     concurrency: int = 10
+    group_id: int | None = None
+    status: str = ""
+    search: str = ""
+    tag_id: int | None = None
+    untagged: bool = False
 
 
 class ReloginRequest(BaseModel):
@@ -43,6 +48,10 @@ class ExportDataRequest(BaseModel):
     tag_ids: list[int] = Field(default_factory=list)
     timezone: str = "Asia/Shanghai"
     include_proxies: bool = True
+
+
+def _export_account_count(account_ids: list[str]) -> int:
+    return len([item for item in dict.fromkeys(str(value or "").strip() for value in account_ids) if item])
 
 
 @router.get("/inventory")
@@ -141,7 +150,8 @@ def export_sub2api_account_data(body: ExportDataRequest):
             include_proxies=body.include_proxies,
         )
         content = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
-        filename = f"sub2api-account-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        account_count = _export_account_count(body.account_ids)
+        filename = f"sub2api-account-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{account_count}.json"
         return Response(
             content,
             media_type="application/json",
@@ -160,6 +170,11 @@ def bulk_check_sub2api_accounts(body: BulkCheckRequest):
             account_ids=body.account_ids,
             model_id=body.model_id or DEFAULT_TEST_MODEL,
             concurrency=body.concurrency,
+            group_id=body.group_id,
+            status=body.status,
+            search=body.search,
+            tag_id=body.tag_id,
+            untagged=body.untagged,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -174,6 +189,11 @@ def stream_bulk_check_sub2api_accounts(body: BulkCheckRequest):
             account_ids=body.account_ids,
             model_id=body.model_id or DEFAULT_TEST_MODEL,
             concurrency=body.concurrency,
+            group_id=body.group_id,
+            status=body.status,
+            search=body.search,
+            tag_id=body.tag_id,
+            untagged=body.untagged,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

@@ -670,6 +670,46 @@ class Sub2ApiManagementService:
             page += 1
         return all_items
 
+    def _resolve_bulk_check_account_ids(
+        self,
+        ctx: Sub2ApiContext,
+        *,
+        account_ids: list[str] | None = None,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+        tag_id: int | None = None,
+        untagged: bool = False,
+    ) -> list[str]:
+        unique_ids = [item for item in dict.fromkeys(_normalize_string(x) for x in (account_ids or [])) if item]
+        if unique_ids:
+            return unique_ids
+
+        remote_status = _normalize_string(status).lower()
+        if remote_status == "all":
+            remote_status = ""
+        raw_accounts = self._fetch_all_accounts(
+            ctx,
+            group_id=group_id,
+            status=remote_status,
+            search=_normalize_string(search),
+        )
+        resolved_ids = [_normalize_string(item.get("id")) for item in raw_accounts]
+        resolved_ids = [item for item in resolved_ids if item]
+
+        if tag_id or untagged:
+            tags_by_account, _tags = self._load_account_tags(ctx.origin, resolved_ids)
+            if tag_id:
+                resolved_ids = [
+                    account_id
+                    for account_id in resolved_ids
+                    if any(int(tag.get("id") or 0) == int(tag_id) for tag in tags_by_account.get(account_id, []))
+                ]
+            if untagged:
+                resolved_ids = [account_id for account_id in resolved_ids if not tags_by_account.get(account_id)]
+
+        return resolved_ids
+
     def set_account_error(self, ctx: Sub2ApiContext, account_id: str) -> bool:
         return self._update_account_status(ctx, account_id, ERROR_STATUS)
 
@@ -845,14 +885,27 @@ class Sub2ApiManagementService:
     def bulk_check(
         self,
         *,
-        account_ids: list[str],
+        account_ids: list[str] | None = None,
         model_id: str = DEFAULT_TEST_MODEL,
         concurrency: int = 10,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+        tag_id: int | None = None,
+        untagged: bool = False,
     ) -> dict[str, Any]:
         ctx = self._context()
-        unique_ids = [item for item in dict.fromkeys(_normalize_string(x) for x in account_ids) if item]
+        unique_ids = self._resolve_bulk_check_account_ids(
+            ctx,
+            account_ids=account_ids,
+            group_id=group_id,
+            status=status,
+            search=search,
+            tag_id=tag_id,
+            untagged=untagged,
+        )
         if not unique_ids:
-            raise ValueError("请选择至少一个 Sub2API 账号")
+            raise ValueError("当前筛选条件下没有可测活的 Sub2API 账号")
         max_workers = max(1, min(int(concurrency or 10), 50, len(unique_ids)))
         lock = threading.Lock()
         summary = self._empty_summary()
@@ -881,14 +934,27 @@ class Sub2ApiManagementService:
     def bulk_check_events(
         self,
         *,
-        account_ids: list[str],
+        account_ids: list[str] | None = None,
         model_id: str = DEFAULT_TEST_MODEL,
         concurrency: int = 10,
+        group_id: int | None = None,
+        status: str = "",
+        search: str = "",
+        tag_id: int | None = None,
+        untagged: bool = False,
     ):
         ctx = self._context()
-        unique_ids = [item for item in dict.fromkeys(_normalize_string(x) for x in account_ids) if item]
+        unique_ids = self._resolve_bulk_check_account_ids(
+            ctx,
+            account_ids=account_ids,
+            group_id=group_id,
+            status=status,
+            search=search,
+            tag_id=tag_id,
+            untagged=untagged,
+        )
         if not unique_ids:
-            raise ValueError("请选择至少一个 Sub2API 账号")
+            raise ValueError("当前筛选条件下没有可测活的 Sub2API 账号")
         max_workers = max(1, min(int(concurrency or 10), 50, len(unique_ids)))
         events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         lock = threading.Lock()

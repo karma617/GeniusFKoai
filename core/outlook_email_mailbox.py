@@ -109,6 +109,21 @@ def _strip_markup(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _collect_text_parts(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for item in value.values():
+            parts.extend(_collect_text_parts(item))
+        return parts
+    if isinstance(value, (list, tuple, set)):
+        parts: list[str] = []
+        for item in value:
+            parts.extend(_collect_text_parts(item))
+        return parts
+    text = _text(value)
+    return [text] if text else []
+
+
 class OutlookEmailEndpointNotFound(RuntimeError):
     """outlookEmail 旧版端点不存在，用于触发 outlookEmailPlus 兼容回退。"""
 
@@ -734,8 +749,52 @@ class OutlookEmailMailbox(BaseMailbox):
         with _OUTLOOK_EMAIL_RESERVATION_LOCK:
             _OUTLOOK_EMAIL_RESERVED_ACCOUNTS.pop(key, None)
 
-    def _select_account(self) -> dict[str, Any]:
+    @staticmethod
+    def _is_account_readability_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        if not text:
+            return False
+        global_error_markers = (
+            "api key",
+            "认证失败",
+            "unauthorized",
+            "http 401",
+            "http 403",
+            "http 502",
+            "http 503",
+            "http 504",
+            "bad gateway",
+            "cloudflare",
+            "temporarily unavailable",
+            "connection reset",
+            "timed out",
+            "timeout",
+        )
+        if any(marker in text for marker in global_error_markers):
+            return False
+        account_error_markers = (
+            "account_not_found",
+            "account_auth_expired",
+            "account_credential_decrypt_failed",
+            "account import failed",
+            "账号不存在",
+            "账号授权已失效",
+            "授权已失效",
+            "重新授权",
+            "凭据解密失败",
+            "oauth 导入",
+            "oauth import",
+            "basic auth",
+            "graph/imap",
+            "均读取失败",
+        )
+        return any(marker in text for marker in account_error_markers)
+
+    def _select_account(self, rejected_keys: set[str] | None = None) -> dict[str, Any]:
+        rejected_keys = set(rejected_keys or set())
         saw_candidate = False
+        saw_unrejected = False
+        saw_reserved_blocked = False
         try:
             account_pages = self._iter_account_pages_for_selection()
             for accounts in account_pages:
@@ -745,8 +804,12 @@ class OutlookEmailMailbox(BaseMailbox):
                 if usable:
                     saw_candidate = True
                 for item in usable:
+                    if self._reservation_key_for_item(item) in rejected_keys:
+                        continue
+                    saw_unrejected = True
                     if self._reserve_local_account(item):
                         return item
+                    saw_reserved_blocked = True
         except OutlookEmailEndpointNotFound:
             return self._claim_pool_account()
         if not saw_candidate:
@@ -759,6 +822,10 @@ class OutlookEmailMailbox(BaseMailbox):
             )
             suffix = f"（筛选条件：{detail}）" if detail else ""
             raise RuntimeError(f"outlookEmail 账号列表中没有可用邮箱{suffix}")
+        if rejected_keys and not saw_unrejected:
+            raise RuntimeError("outlookEmail 账号列表中没有通过读信预检的可用邮箱")
+        if rejected_keys and not saw_reserved_blocked:
+            raise RuntimeError("outlookEmail 账号列表中没有通过读信预检的可用邮箱")
         raise RuntimeError("outlookEmail 当前可用邮箱都已被本机其他任务占用，请稍后重试或降低并发")
 
     def _build_account(self, *, email: str, account_id: str = "", source: str, raw: dict[str, Any] | None = None) -> MailboxAccount:
@@ -821,11 +888,31 @@ class OutlookEmailMailbox(BaseMailbox):
             self._assert_fixed_email_not_skipped()
             return self._build_account(email=self.fixed_email, account_id=self.fixed_email, source="fixed")
 
-        item = self._select_account()
-        email = self._account_email(item)
-        account_id = _text(item.get("id") or item.get("account_id"))
-        source = "outlook_email_plus_pool" if item.get("claim_token") else "account_list"
-        return self._build_account(email=email, account_id=account_id, source=source, raw=item)
+        rejected_keys: set[str] = set()
+        last_readability_error: Exception | None = None
+        while True:
+            item = self._select_account(rejected_keys=rejected_keys)
+            email = self._account_email(item)
+            account_id = _text(item.get("id") or item.get("account_id"))
+            source = "outlook_email_plus_pool" if item.get("claim_token") else "account_list"
+            account = self._build_account(email=email, account_id=account_id, source=source, raw=item)
+            try:
+                self._precheck_account_readable(account)
+                return account
+            except Exception as exc:
+                if not self._is_account_readability_error(exc):
+                    self._release_local_account_reservation(account)
+                    if item.get("claim_token"):
+                        self._release_pool_claim(item, reason="readability precheck failed")
+                    raise
+                last_readability_error = exc
+                rejected_keys.add(self._reservation_key_for_item(item))
+                try:
+                    self.mark_invalid_email(account, reason="mailbox_readability_precheck_failed")
+                except Exception:
+                    self._release_local_account_reservation(account)
+                if len(rejected_keys) >= OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT:
+                    raise RuntimeError("outlookEmail 账号读信预检失败过多，已停止取邮箱") from last_readability_error
 
     def peek_email(self) -> str:
         if self.fixed_email:
@@ -885,7 +972,10 @@ class OutlookEmailMailbox(BaseMailbox):
             "from",
             "from_address",
         )
-        return _strip_markup(" ".join(_text(mail.get(field)) for field in fields))
+        parts: list[str] = []
+        for field in fields:
+            parts.extend(_collect_text_parts(mail.get(field)))
+        return _strip_markup(" ".join(parts))
 
     @classmethod
     def _collect_email_values(cls, value: Any) -> set[str]:
@@ -1093,6 +1183,25 @@ class OutlookEmailMailbox(BaseMailbox):
             raise OutlookEmailTemporaryUnavailable(str(last_error)) from last_error
         return items
 
+    def _precheck_account_readable(self, account: MailboxAccount) -> None:
+        folder = self._message_folders()[0]
+        params = {
+            **self._message_scope_params(account, folder=folder),
+            "top": 1,
+            "skip": 0,
+        }
+        try:
+            self._get_json("/api/external/messages", params)
+        except OutlookEmailEndpointNotFound:
+            self._get_json(
+                "/api/external/emails",
+                {
+                    "email": account.email,
+                    "folder": folder,
+                    "top": 1,
+                },
+            )
+
     def get_current_ids(self, account: MailboxAccount) -> set:
         try:
             return {self._message_id(mail) for mail in self._list_emails(account) if self._message_id(mail)}
@@ -1115,7 +1224,7 @@ class OutlookEmailMailbox(BaseMailbox):
         code_pattern: str = None,
         otp_sent_at: float | None = None,
     ) -> str:
-        seen = set(before_ids or [])
+        baseline_ids = set(before_ids or [])
         pattern = re.compile(code_pattern or DEFAULT_CODE_PATTERN)
         started = time.time()
         last_error: Exception | None = None
@@ -1126,9 +1235,8 @@ class OutlookEmailMailbox(BaseMailbox):
                     mid = self._message_id(mail)
                     if not mid:
                         continue
-                    if mid in seen and not self._is_after_otp_sent(mail, otp_sent_at):
+                    if mid in baseline_ids and not self._is_after_otp_sent(mail, otp_sent_at):
                         continue
-                    seen.add(mid)
                     if not self._matches_keyword(mail, keyword):
                         continue
                     if not self._matches_expected_recipient(account, mail):

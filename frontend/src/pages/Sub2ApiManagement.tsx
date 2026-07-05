@@ -255,10 +255,21 @@ export default function Sub2ApiManagement() {
     })
   }, [checkLogs.length])
 
-  const selectedOrVisibleIds = useMemo(() => {
-    if (selectedIds.size > 0) return Array.from(selectedIds)
-    return accounts.map((item) => item.id).filter(Boolean)
-  }, [accounts, selectedIds])
+  const bulkCheckRequestBody = () => {
+    const nextSearch = draftSearch.trim()
+    const body: Record<string, unknown> = {
+      account_ids: selectedIds.size > 0 ? Array.from(selectedIds) : [],
+      concurrency: 10,
+    }
+    if (selectedIds.size === 0) {
+      if (draftGroupId) body.group_id = Number(draftGroupId)
+      if (draftStatus && draftStatus !== 'all') body.status = draftStatus
+      if (draftTagFilter === UNTAGGED_FILTER) body.untagged = true
+      else if (draftTagFilter) body.tag_id = Number(draftTagFilter)
+      if (nextSearch) body.search = nextSearch
+    }
+    return body
+  }
 
   const reloginTargetIds = useMemo(() => {
     if (selectedIds.size > 0) return Array.from(selectedIds)
@@ -488,10 +499,6 @@ export default function Sub2ApiManagement() {
   }
 
   const runBulkCheck = async () => {
-    if (selectedOrVisibleIds.length === 0) {
-      setError('没有可测活的 Sub2API 账号')
-      return
-    }
     setChecking(true)
     setError('')
     setMessage('')
@@ -505,7 +512,7 @@ export default function Sub2ApiManagement() {
       const response = await fetch(`${API_BASE}/sub2api-management/bulk-check/stream`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ account_ids: selectedOrVisibleIds, concurrency: 10 }),
+        body: JSON.stringify(bulkCheckRequestBody()),
       })
       if (!response.ok) throw new Error(await response.text())
       if (!response.body) throw new Error('浏览器不支持流式读取测活日志')
@@ -769,7 +776,7 @@ export default function Sub2ApiManagement() {
             <RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', loading && 'animate-spin')} />
             刷新
           </Button>
-          <Button onClick={runBulkCheck} disabled={checking || loading || relogining || selectedOrVisibleIds.length === 0}>
+          <Button onClick={runBulkCheck} disabled={checking || loading || relogining}>
             {checking ? (
               <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
             ) : (

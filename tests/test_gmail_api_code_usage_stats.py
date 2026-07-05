@@ -92,3 +92,47 @@ def test_gmail_api_code_alias_usage_marks_invalid_parent_unusable():
     assert item["confirmed_remaining"] == 0
     assert item["conservative_remaining"] == 0
     assert data["summary"]["unusable_parent_count"] >= 1
+
+
+def test_gmail_api_code_alias_usage_ignores_non_gmail_parent_noise():
+    with Session(engine) as session:
+        account = AccountModel(
+            platform="chatgpt",
+            email="noise-parent+alias@outlook.com",
+            password="Secret123!",
+            user_id="noise-parent+alias@outlook.com",
+        )
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        resource = ProviderResourceModel(
+            account_id=account.id or 0,
+            provider_type="mailbox",
+            provider_name="gmail_api_code",
+            resource_type="mailbox",
+            resource_identifier="noise-parent-9676",
+            handle="noise-parent+alias@outlook.com",
+            display_name="noise-parent+alias@outlook.com",
+        )
+        resource.set_metadata({"account_id": "noise-parent-9676", "email": "noise-parent+alias@outlook.com"})
+        session.add(resource)
+        task = TaskModel(type="register", platform="chatgpt")
+        task.id = "noise-task-9676"
+        task.set_payload({"extra": {"mail_provider": "gmail_api_code"}})
+        session.add(task)
+        session.add(
+            TaskEventModel(
+                task_id="noise-task-9676",
+                message=(
+                    "Email alias allocated: noise-parent+pending@outlook.com "
+                    "parent=noise-parent-9676 aliases=0/5 total=0/6"
+                ),
+            )
+        )
+        session.commit()
+
+    data = gmail_api_code_alias_usage()
+    parent_emails = {item["parent_email"] for item in data["items"]}
+
+    assert "noise-parent-9676" not in parent_emails
+    assert "noise-parent@outlook.com" not in parent_emails

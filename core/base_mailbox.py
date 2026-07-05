@@ -397,16 +397,10 @@ def create_mailbox(provider: str, extra: dict = None, proxy: str = None) -> 'Bas
     elif isinstance(raw_fallbacks, (list, tuple, set)):
         explicit_fallbacks = [str(item or "").strip() for item in raw_fallbacks if str(item or "").strip()]
 
-    enabled_items = settings_repo.list_enabled("mailbox")
-    enabled_keys = [str(item.provider_key or "").strip() for item in enabled_items if str(item.provider_key or "").strip()]
     ordered_keys: list[str] = [provider_key]
     for key in explicit_fallbacks:
         if key not in ordered_keys:
             ordered_keys.append(key)
-    for key in enabled_keys:
-        if key == provider_key or key == "laoudo" or key in ordered_keys:
-            continue
-        ordered_keys.append(key)
 
     providers: list[tuple[str, BaseMailbox]] = []
     for key in ordered_keys:

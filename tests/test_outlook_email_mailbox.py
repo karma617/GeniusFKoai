@@ -94,7 +94,8 @@ def test_outlook_email_selects_first_usable_account_from_external_accounts(monke
                         },
                     ],
                 }
-            )
+            ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -170,7 +171,14 @@ def test_outlook_email_reserves_selected_account_locally(monkeypatch):
             {"id": 2, "email": "second@hotmail.com", "status": "active", "group_id": 7},
         ],
     }
-    session = FakeSession([FakeResponse(accounts_payload), FakeResponse(accounts_payload)])
+    session = FakeSession(
+        [
+            FakeResponse(accounts_payload),
+            FakeResponse({"success": True, "data": {"emails": []}}),
+            FakeResponse(accounts_payload),
+            FakeResponse({"success": True, "data": {"emails": []}}),
+        ]
+    )
     monkeypatch.setattr("requests.Session", lambda: session)
 
     mailbox = OutlookEmailMailbox(
@@ -222,6 +230,7 @@ def test_outlook_email_scans_next_page_when_first_page_has_only_skip_tags(monkey
                     ],
                 }
             ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -264,6 +273,7 @@ def test_outlook_email_plus_claims_pool_when_legacy_accounts_endpoint_missing(mo
                     },
                 }
             ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -324,6 +334,7 @@ def test_outlook_email_plus_uses_admin_accounts_when_password_is_configured(monk
                     ],
                 }
             ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -352,6 +363,7 @@ def test_outlook_email_external_accounts_502_falls_back_to_admin_accounts(monkey
     responses = [
         [
             FakeResponse({"error": {"message": "Bad Gateway"}}, status_code=502),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ],
         [
             FakeResponse({"success": True, "message": "ok"}),
@@ -364,6 +376,7 @@ def test_outlook_email_external_accounts_502_falls_back_to_admin_accounts(monkey
                     ],
                 }
             ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ],
     ]
 
@@ -395,7 +408,12 @@ def test_outlook_email_request_exception_rebuilds_session_before_retry(monkeypat
 
     class BrokenThenOkSession(FakeSession):
         def __init__(self, *, broken: bool):
-            super().__init__([FakeResponse({"success": True, "accounts": [{"id": 7, "email": "ok@outlook.com", "status": "active"}]})])
+            super().__init__(
+                [
+                    FakeResponse({"success": True, "accounts": [{"id": 7, "email": "ok@outlook.com", "status": "active"}]}),
+                    FakeResponse({"success": True, "data": {"emails": []}}),
+                ]
+            )
             self.broken = broken
             self.closed = False
 
@@ -432,6 +450,7 @@ def test_outlook_email_external_accounts_feature_disabled_falls_back_to_admin_ac
     responses = [
         [
             FakeResponse({"error": {"code": "FEATURE_DISABLED", "message": "Feature disabled"}}, status_code=403),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ],
         [
             FakeResponse({"success": True, "message": "ok"}),
@@ -444,6 +463,7 @@ def test_outlook_email_external_accounts_feature_disabled_falls_back_to_admin_ac
                     ],
                 }
             ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ],
     ]
 
@@ -487,7 +507,8 @@ def test_outlook_email_skips_accounts_with_custom_tag(monkeypatch):
                         },
                     ],
                 }
-            )
+            ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -522,7 +543,8 @@ def test_outlook_email_skips_invalid_email_tag_by_default(monkeypatch):
                         },
                     ],
                 }
-            )
+            ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -533,6 +555,87 @@ def test_outlook_email_skips_invalid_email_tag_by_default(monkeypatch):
     )
 
     assert mailbox.get_email().email == "fresh@outlook.com"
+
+
+def test_outlook_email_precheck_marks_unreadable_account_invalid_and_skips(monkeypatch):
+    accounts_payload = {
+        "success": True,
+        "accounts": [
+            {"id": 1, "email": "expired@outlook.com", "status": "active"},
+            {"id": 2, "email": "fresh@outlook.com", "status": "active"},
+        ],
+    }
+    session = FakeSession(
+        [
+            FakeResponse(accounts_payload),
+            FakeResponse(
+                {
+                    "success": False,
+                    "code": "ACCOUNT_AUTH_EXPIRED",
+                    "message": "账号授权已失效，请重新授权",
+                },
+                status_code=400,
+            ),
+            FakeResponse({"success": True, "message": "ok"}),
+            FakeResponse({"csrf_token": "csrf-token"}),
+            FakeResponse({"success": True, "tags": []}),
+            FakeResponse({"success": True, "tag": {"id": 9, "name": "无效邮箱", "color": "#1a1a1a"}}),
+            FakeResponse({"success": True, "message": "成功处理 1 个账号"}),
+            FakeResponse(accounts_payload),
+            FakeResponse({"success": True, "data": {"emails": []}}),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        admin_password="fake-admin-password",
+    )
+
+    account = mailbox.get_email()
+
+    assert account.email == "fresh@outlook.com"
+    assert session.calls[1]["url"] == "https://mail.example.test/api/external/messages"
+    assert session.calls[6]["url"] == "https://mail.example.test/api/accounts/tags"
+    assert session.calls[6]["kwargs"]["json"] == {"account_ids": [1], "tag_id": 9, "action": "add"}
+    assert session.calls[8]["kwargs"]["params"]["email"] == "fresh@outlook.com"
+
+
+def test_outlook_email_precheck_api_key_failure_does_not_mark_invalid(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {"id": 1, "email": "fresh@outlook.com", "status": "active"},
+                    ],
+                }
+            ),
+            FakeResponse(
+                {
+                    "success": False,
+                    "code": "UNAUTHORIZED",
+                    "message": "API Key 缺失或无效",
+                },
+                status_code=401,
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="bad-api-key",
+        admin_password="fake-admin-password",
+    )
+
+    with pytest.raises(RuntimeError, match="API Key 认证失败"):
+        mailbox.get_email()
+
+    assert len(session.calls) == 2
+    assert all(call.get("method") != "POST" for call in session.calls)
 
 
 def test_outlook_email_filters_before_ids_and_extracts_code(monkeypatch):
@@ -662,6 +765,56 @@ def test_outlook_email_reads_junk_detail_when_summary_has_no_code(monkeypatch):
         "folder": "junkemail",
         "email": "user@outlook.com",
     }
+
+
+def test_outlook_email_extracts_openai_code_from_nested_html_detail(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "emails": [
+                        {
+                            "id": "openai-html",
+                            "subject": "OpenAI verification code",
+                            "content_preview": "Enter this temporary verification code to continue:",
+                            "folder": "inbox",
+                        }
+                    ],
+                }
+            ),
+            FakeResponse(
+                {
+                    "success": True,
+                    "email": {
+                        "id": "openai-html",
+                        "subject": "OpenAI verification code",
+                        "body": {
+                            "contentType": "html",
+                            "content": (
+                                '<td align="center"><p>Enter this temporary verification code to continue: </p>'
+                                '<p style="font-family:Menlo">038818 </p>'
+                                "<p>Please ignore this email if this wasn't you trying to create a OpenAI account.</p></td>"
+                            ),
+                        },
+                        "folder": "inbox",
+                    },
+                }
+            ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        fixed_email="user@outlook.com",
+        email_folder="inbox",
+    )
+    account = mailbox.get_email()
+
+    assert mailbox.wait_for_code(account, timeout=1) == "038818"
 
 
 def test_outlook_email_does_not_skip_seen_message_after_otp_sent(monkeypatch):

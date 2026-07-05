@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from domain.accounts import AccountQuery, AccountRecord
 
+from api.sub2api_management import _export_account_count
 from application import sub2api_management as module
 from application.sub2api_management import Sub2ApiContext, Sub2ApiManagementService
 
@@ -37,24 +40,27 @@ def test_list_inventory_filters_accounts_by_group(monkeypatch):
                 {"id": 2, "name": "k12", "platform": "openai"},
             ]
         if path.startswith("/api/v1/admin/accounts"):
+            items = [
+                {
+                    "id": 10,
+                    "name": "a@example.com",
+                    "status": "active",
+                    "group_ids": [1],
+                    "credentials": {"plan_type": "free"},
+                },
+                {
+                    "id": 11,
+                    "name": "b@example.com",
+                    "status": "error",
+                    "group_ids": [2],
+                    "credentials": {"plan_type": "k12", "organization_id": "workspace-1"},
+                },
+            ]
+            if "group=2" in path:
+                items = [item for item in items if 2 in item["group_ids"]]
             return {
-                "items": [
-                    {
-                        "id": 10,
-                        "name": "a@example.com",
-                        "status": "active",
-                        "group_ids": [1],
-                        "credentials": {"plan_type": "free"},
-                    },
-                    {
-                        "id": 11,
-                        "name": "b@example.com",
-                        "status": "error",
-                        "group_ids": [2],
-                        "credentials": {"plan_type": "k12", "organization_id": "workspace-1"},
-                    },
-                ],
-                "total": 2,
+                "items": items,
+                "total": len(items),
             }
         raise AssertionError(path)
 
@@ -186,6 +192,10 @@ def test_export_accounts_data_calls_remote_data_endpoint(monkeypatch):
     assert result["accounts"] == [{"name": "a"}]
 
 
+def test_export_account_count_deduplicates_selected_ids():
+    assert _export_account_count(["4916", "4915", "4916", "", "  "]) == 2
+
+
 def test_bulk_check_marks_failed_accounts_error(monkeypatch):
     service = Sub2ApiManagementService()
     monkeypatch.setattr(service, "_context", lambda: Sub2ApiContext("https://sub2api.test", "token"))
@@ -222,6 +232,47 @@ def test_bulk_check_does_not_mark_usage_limit_as_error(monkeypatch):
     assert result["summary"]["marked_error"] == 0
     assert result["results"][0]["result"] == "rate_limited"
     assert marked == []
+
+
+def test_bulk_check_without_ids_uses_filter_scope(monkeypatch):
+    service = Sub2ApiManagementService()
+    monkeypatch.setattr(service, "_context", lambda: Sub2ApiContext("https://sub2api.test", "token"))
+    fetch_args = {}
+    monkeypatch.setattr(
+        service,
+        "_fetch_all_accounts",
+        lambda _ctx, **kwargs: fetch_args.update(kwargs) or [
+            {"id": "10", "name": "a@example.com"},
+            {"id": "11", "name": "b@example.com"},
+        ],
+    )
+    tag = service.create_tag(name="待测活", color="red")["tag"]
+    service.update_account_tags(account_ids=["11"], tag_ids=[tag["id"]], action="add")
+    tested = []
+    monkeypatch.setattr(service, "test_account", lambda _ctx, account_id, model_id: tested.append(account_id) or ("ok", "done"))
+    monkeypatch.setattr(service, "set_account_error", lambda _ctx, account_id: False)
+
+    result = service.bulk_check(
+        account_ids=[],
+        group_id=2,
+        status="active",
+        search="example.com",
+        tag_id=tag["id"],
+        concurrency=1,
+    )
+
+    assert fetch_args == {"group_id": 2, "status": "active", "search": "example.com"}
+    assert tested == ["11"]
+    assert [item["account_id"] for item in result["results"]] == ["11"]
+
+
+def test_bulk_check_without_ids_reports_empty_filter_scope(monkeypatch):
+    service = Sub2ApiManagementService()
+    monkeypatch.setattr(service, "_context", lambda: Sub2ApiContext("https://sub2api.test", "token"))
+    monkeypatch.setattr(service, "_fetch_all_accounts", lambda _ctx, **_kwargs: [])
+
+    with pytest.raises(ValueError, match="当前筛选条件下没有可测活的 Sub2API 账号"):
+        service.bulk_check(account_ids=[], concurrency=1)
 
 
 def test_relogin_deactivated_error_deletes_remote_account(monkeypatch):
