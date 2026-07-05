@@ -97,6 +97,22 @@ def test_filter_accounts_by_platform(client):
     assert data["items"][0]["platform"] == "cursor"
 
 
+def test_list_accounts_paginates_before_serializing_current_page(client):
+    first = _create_account(client, platform="chatgpt", email="first@test.com").json()
+    second = _create_account(client, platform="chatgpt", email="second@test.com").json()
+    third = _create_account(client, platform="chatgpt", email="third@test.com").json()
+
+    resp = client.get(
+        "/api/accounts",
+        params={"platform": "chatgpt", "page": 2, "page_size": 1},
+    )
+
+    data = resp.json()
+    assert data["total"] == 3
+    assert [item["id"] for item in data["items"]] == [second["id"]]
+    assert third["id"] > second["id"] > first["id"]
+
+
 def test_account_stats(client):
     _create_account(client)
     resp = client.get("/api/accounts/stats")

@@ -4,6 +4,7 @@ import csv
 import io
 from datetime import datetime, timezone
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from core.datetime_utils import serialize_datetime
@@ -172,11 +173,19 @@ class AccountsRepository:
         page_size = max(query.page_size, 1)
         with Session(engine) as session:
             statement = select(AccountModel)
+            count_statement = select(func.count()).select_from(AccountModel)
             if query.platform:
                 statement = statement.where(AccountModel.platform == query.platform)
+                count_statement = count_statement.where(AccountModel.platform == query.platform)
             if query.email:
                 statement = statement.where(AccountModel.email.contains(query.email))
+                count_statement = count_statement.where(AccountModel.email.contains(query.email))
             statement = statement.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
+            if not query.status:
+                total = int(session.exec(count_statement).one() or 0)
+                start = (page - 1) * page_size
+                models = session.exec(statement.offset(start).limit(page_size)).all()
+                return total, self._load_records(session, models)
             models = session.exec(statement).all()
             records = self._load_records(session, models)
             if query.status:

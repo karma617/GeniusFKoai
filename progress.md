@@ -2178,3 +2178,24 @@
   - docs/email-alias-mailbox.md: 记录母邮箱只收信、子号注册和 6 个别名额度规则。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 core/email_alias_mailbox.py 中 `EMAIL_ALIAS_HARD_LIMIT` 和额度判断调整；撤销 frontend/src/pages/Accounts.tsx 中邮箱别名默认值、默认上限和输入最大值调整；撤销 frontend/src/lib/i18n.ts 与 docs/email-alias-mailbox.md 本轮文案说明；撤销 tests/test_email_alias_mailbox.py 本轮测试调整；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-06 - Task: 账号列表接口数据库分页优化
+
+### What was done
+- `/api/accounts` 在没有状态筛选时改为数据库层先统计总数、再按 `page/page_size` 只加载当前页账号，避免每次请求全量加载并序列化所有 ChatGPT 账号。
+- 保留状态筛选的旧路径不变，避免改变既有图谱状态兼容逻辑。
+- 新增账号列表分页回归测试，确认总数仍为全量、当前页只返回对应分页项。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile infrastructure\accounts_repository.py application\accounts.py api\accounts.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_accounts.py -q` -> 32 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- 本地生产库直接调用 `AccountsService.list_accounts(AccountQuery(platform='chatgpt', page=1, page_size=10))` -> `total=2828`、`items=10`、服务层约 `64.3ms`、JSON 序列化约 `3.9ms`。
+- 运行中的 `http://127.0.0.1:8000/api/accounts?platform=chatgpt&page=1&page_size=10` 仍约 `8693ms`，说明当前 8000 后端进程尚未加载新代码，需要重启后端后生效。
+- `git diff --check -- infrastructure\accounts_repository.py tests\test_api_accounts.py` -> 无空白错误；仅提示文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - infrastructure/accounts_repository.py: 无状态筛选的账号列表改为数据库 `count + limit/offset` 分页，只加载当前页图谱。
+  - tests/test_api_accounts.py: 新增账号列表分页测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 infrastructure/accounts_repository.py 中 `func.count()`、`count_statement` 和无状态筛选提前分页返回逻辑；撤销 tests/test_api_accounts.py 新增分页测试；移除 progress.md 本轮追加内容即可恢复旧全量加载行为。
