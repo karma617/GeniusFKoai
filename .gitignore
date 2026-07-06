@@ -73,6 +73,10 @@ docs/REFACTOR-PLAN.md
 # 敏感文件
 *.har
 
+# Annimail 订单数据（含真实邮箱凭证，禁止入库）
+scripts/annimail_orders/
+scripts/annimail_orders - bak/
+
 # Frida release/devkit binaries are too large for normal Git history.
 gopay-auto-protocol/**/frida-core-devkit-*/
 gopay-auto-protocol/**/frida-server-*
