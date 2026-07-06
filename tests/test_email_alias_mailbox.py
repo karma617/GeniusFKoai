@@ -36,6 +36,7 @@ class FakeMailbox(BaseMailbox):
         self.current_id_emails: list[str] = []
         self.released: list[str] = []
         self.marked_success: list[str] = []
+        self._log_fn = None
 
     def get_email(self) -> MailboxAccount:
         return self.account
@@ -314,6 +315,19 @@ def test_email_alias_success_counts_unpersisted_alias_for_current_task_limit():
     assert mailbox.marked_success == ["main@example.com"]
 
 
+def test_email_alias_logs_parent_selection_and_allocation():
+    logs: list[str] = []
+    mailbox = FakeMailbox()
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt", log_fn=logs.append)
+
+    account = wrapper.get_email()
+
+    assert account.email.startswith("main+")
+    assert "Email alias selecting parent mailbox..." in logs
+    assert "Email alias parent selected: main@example.com" in logs
+    assert any(item.startswith("Email alias allocated: ") for item in logs)
+
+
 def test_email_alias_parent_exhausted_marks_parent_invalid_before_success():
     mailbox = InvalidMarkMailbox()
     wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt")
@@ -338,6 +352,7 @@ def test_build_platform_instance_wraps_mailbox_when_email_alias_enabled(monkeypa
         def log(self, *_args, **_kwargs):
             return None
 
+    fake_logger = FakeLogger()
     fake_mailbox = FakeMailbox()
     monkeypatch.setattr("core.base_mailbox.create_mailbox", lambda **_kwargs: fake_mailbox)
     monkeypatch.setattr(tasks_module, "get", lambda _platform_name: FakePlatform)
@@ -353,8 +368,9 @@ def test_build_platform_instance_wraps_mailbox_when_email_alias_enabled(monkeypa
                 "email_alias_limit": 3,
             },
         },
-        FakeLogger(),
+        fake_logger,
     )
 
     assert isinstance(platform.mailbox, EmailAliasMailbox)
     assert platform.mailbox.alias_limit == 3
+    assert fake_mailbox._log_fn.__self__ is fake_logger

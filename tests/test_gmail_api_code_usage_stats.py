@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from sqlmodel import Session
 
+import application.gmail_api_code_usage as usage_module
 from application.gmail_api_code_usage import gmail_api_code_alias_usage
 from core.db import AccountModel, ProviderResourceModel, TaskEventModel, TaskModel, engine
 
 
-def test_gmail_api_code_alias_usage_counts_success_and_unconfirmed_allocations():
+def test_gmail_api_code_alias_usage_counts_success_and_unconfirmed_allocations(monkeypatch):
+    monkeypatch.setattr(usage_module, "_configured_parent_emails", lambda: ({"main@gmail.com"}, True))
+
     with Session(engine) as session:
         account = AccountModel(
             platform="chatgpt",
@@ -51,9 +54,13 @@ def test_gmail_api_code_alias_usage_counts_success_and_unconfirmed_allocations()
     assert item["allocated_only_aliases"] == ["main+pending@gmail.com"]
     assert data["summary"]["successful_alias_count"] == 1
     assert data["summary"]["allocated_only_count"] == 1
+    assert data["summary"]["parent_count"] == 1
+    assert data["summary"]["configured_parent_count"] == 1
 
 
-def test_gmail_api_code_alias_usage_marks_invalid_parent_unusable():
+def test_gmail_api_code_alias_usage_marks_invalid_parent_unusable(monkeypatch):
+    monkeypatch.setattr(usage_module, "_configured_parent_emails", lambda: ({"invalid@gmail.com"}, True))
+
     with Session(engine) as session:
         account = AccountModel(
             platform="chatgpt",
@@ -92,9 +99,12 @@ def test_gmail_api_code_alias_usage_marks_invalid_parent_unusable():
     assert item["confirmed_remaining"] == 0
     assert item["conservative_remaining"] == 0
     assert data["summary"]["unusable_parent_count"] >= 1
+    assert data["summary"]["parent_count"] == 1
 
 
-def test_gmail_api_code_alias_usage_ignores_non_gmail_parent_noise():
+def test_gmail_api_code_alias_usage_ignores_non_gmail_parent_noise(monkeypatch):
+    monkeypatch.setattr(usage_module, "_configured_parent_emails", lambda: ({"main@gmail.com"}, True))
+
     with Session(engine) as session:
         account = AccountModel(
             platform="chatgpt",
@@ -136,3 +146,50 @@ def test_gmail_api_code_alias_usage_ignores_non_gmail_parent_noise():
 
     assert "noise-parent-9676" not in parent_emails
     assert "noise-parent@outlook.com" not in parent_emails
+
+
+def test_gmail_api_code_alias_usage_ignores_gmail_parent_not_in_current_pool(monkeypatch):
+    monkeypatch.setattr(usage_module, "_configured_parent_emails", lambda: ({"current@gmail.com"}, True))
+
+    with Session(engine) as session:
+        account = AccountModel(
+            platform="chatgpt",
+            email="old+done@gmail.com",
+            password="Secret123!",
+            user_id="old+done@gmail.com",
+        )
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        resource = ProviderResourceModel(
+            account_id=account.id or 0,
+            provider_type="mailbox",
+            provider_name="gmail_api_code",
+            resource_type="mailbox",
+            resource_identifier="old@gmail.com",
+            handle="old+done@gmail.com",
+            display_name="old+done@gmail.com",
+        )
+        resource.set_metadata({"account_id": "old@gmail.com", "email": "old+done@gmail.com"})
+        session.add(resource)
+        task = TaskModel(type="register", platform="chatgpt")
+        task.id = "old-pool-task"
+        task.set_payload({"extra": {"mail_provider": "gmail_api_code"}})
+        session.add(task)
+        session.add(
+            TaskEventModel(
+                task_id="old-pool-task",
+                message="Email alias allocated: old+pending@gmail.com parent=old@gmail.com aliases=1/5 total=1/6",
+            )
+        )
+        session.commit()
+
+    data = gmail_api_code_alias_usage()
+    parent_emails = {item["parent_email"] for item in data["items"]}
+
+    assert parent_emails == {"current@gmail.com"}
+    assert data["summary"]["parent_count"] == 1
+    assert data["summary"]["successful_alias_count"] == 0
+    assert data["summary"]["allocated_only_count"] == 0
+    assert data["summary"]["confirmed_remaining"] == usage_module.ALIAS_LIMIT
+    assert data["summary"]["conservative_remaining"] == usage_module.ALIAS_LIMIT

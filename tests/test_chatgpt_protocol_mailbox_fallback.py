@@ -50,6 +50,42 @@ class _Mailbox:
 
 
 
+def test_protocol_mailbox_delivery_delay_does_not_extend_short_timeout(monkeypatch):
+
+    import time
+
+    import platforms.chatgpt.protocol_mailbox as protocol_mailbox
+
+    seen = {}
+
+    class Mailbox(_Mailbox):
+
+        def wait_for_code(self, account, keyword="", timeout=600, code_pattern=None, before_ids=None):
+
+            seen["timeout"] = timeout
+
+            return "123456"
+
+    monkeypatch.setattr(time, "time", lambda: 101.0)
+    monkeypatch.setattr(time, "sleep", lambda seconds: seen.setdefault("sleep", seconds))
+
+    service = protocol_mailbox._MailboxEmailService(
+
+        mailbox=Mailbox(),
+
+        mailbox_account=_MailboxAccount(),
+
+        provider="cfworker_admin_api",
+
+        log_fn=lambda message: None,
+
+    )
+
+    assert service.get_verification_code(timeout=20, otp_sent_at=100.0) == "123456"
+    assert seen["sleep"] == 1.0
+    assert seen["timeout"] == 19
+
+
 def test_protocol_mailbox_raises_on_otp_timeout(monkeypatch):
 
     import platforms.chatgpt.protocol_mailbox as protocol_mailbox

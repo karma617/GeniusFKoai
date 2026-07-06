@@ -1048,6 +1048,65 @@ def _build_local_sub2api_payload(account) -> dict:
     return _strip_empty(payload)
 
 
+def _collect_k12_deferred_sub2api_paths(account) -> list[str]:
+    extra = dict(getattr(account, "extra", {}) or {})
+    if not _bool_config(extra.get("k12_deferred_sub2api_upload_enabled"), False):
+        return []
+
+    paths: list[str] = []
+    for path in extra.get("k12_sub2api_paths") or []:
+        path_text = str(path or "").strip()
+        if path_text:
+            paths.append(path_text)
+
+    for item in extra.get("k12_workspace_sessions") or []:
+        if not isinstance(item, dict):
+            continue
+        path_text = str(item.get("sub2api_path") or "").strip()
+        if path_text:
+            paths.append(path_text)
+
+    seen: set[str] = set()
+    unique_paths: list[str] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_paths.append(path)
+    return unique_paths
+
+
+def _finalize_k12_deferred_sub2api_uploads(paths: list[str], task_logger: TaskLogger) -> None:
+    seen: set[str] = set()
+    unique_paths: list[str] = []
+    for path in paths:
+        path_text = str(path or "").strip()
+        if not path_text or path_text in seen:
+            continue
+        seen.add(path_text)
+        unique_paths.append(path_text)
+    if not unique_paths:
+        return
+
+    try:
+        from platforms.chatgpt.k12_join import (
+            merge_sub2api_export_files,
+            upload_sub2api_export_accounts,
+        )
+
+        task_logger.log(f"[K12] 注册子任务已结束，开始合并 {len(unique_paths)} 个 SUB2API JSON")
+        merged_path, payload = merge_sub2api_export_files(unique_paths)
+        accounts = payload.get("accounts") if isinstance(payload, dict) else []
+        task_logger.log(f"[K12] SUB2API 总 JSON 已保存: {Path(merged_path).resolve()}")
+        ok, message = upload_sub2api_export_accounts(
+            accounts if isinstance(accounts, list) else [],
+            log=task_logger.log,
+        )
+        task_logger.log(f"[K12] {message}", level=None if ok else "warning")
+    except Exception as exc:
+        task_logger.log(f"[K12] SUB2API 统一上传异常: {exc}", level="warning")
+
+
 def _mark_get_rt_upload_status(
     account_id: int,
     *,
@@ -1185,6 +1244,7 @@ def _mark_outlook_mailbox_event(shared_mailbox, account, event: str, logger: Tas
 def _maybe_wrap_email_alias_mailbox(mailbox, *, platform_name: str, extra: dict[str, Any], logger: TaskLogger):
     if mailbox is None:
         return None
+    _attach_mailbox_logger(mailbox, logger.log)
     if getattr(mailbox, "email_alias_enabled", False):
         return mailbox
     if not _bool_config(
@@ -1200,6 +1260,16 @@ def _maybe_wrap_email_alias_mailbox(mailbox, *, platform_name: str, extra: dict[
         platform=platform_name,
         log_fn=logger.log,
     )
+
+
+def _attach_mailbox_logger(mailbox, log_fn) -> None:
+    if mailbox is None:
+        return
+    if hasattr(mailbox, "_log_fn"):
+        try:
+            setattr(mailbox, "_log_fn", log_fn)
+        except Exception:
+            pass
 
 
 def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger: TaskLogger, resolved_proxy: str | None = None, shared_mailbox=None):
@@ -2628,13 +2698,45 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     target_success = count
     max_success = count + hero_extra_max if herosms_enabled and hero_reuse_to_max else count
     progress_total = max_success if herosms_enabled else count
-    registration_base_proxy = _resolve_registration_proxy_for_platform(
-        platform_name,
-        explicit_proxy=proxy,
-        proxy_getter=lambda: None,
-    )
-
-    logger.set_progress(0, progress_total)
+    registration_base_proxy = _resolve_registration_proxy_for_platform(
+        platform_name,
+        explicit_proxy=proxy,
+        proxy_getter=lambda: None,
+    )
+
+    prepared_registration_proxies: list[str] = []
+    prepared_registration_proxy_index = 0
+    prepared_registration_proxy_lock = threading.Lock()
+    prepared_registration_proxy_slots: "queue.Queue[int]" = queue.Queue()
+    if not str(proxy or "").strip():
+        try:
+            from core.proxy_providers import prepare_dynamic_proxy_for_task
+
+            prepared_registration_proxies = prepare_dynamic_proxy_for_task(concurrency, extra=extra)
+            if prepared_registration_proxies:
+                for proxy_slot_index in range(len(prepared_registration_proxies)):
+                    prepared_registration_proxy_slots.put(proxy_slot_index)
+                logger.log(
+                    "动态代理已按并发预热："
+                    f"{len(prepared_registration_proxies)} 个独立入口"
+                )
+        except Exception as exc:
+            logger.log(f"动态代理任务级准备失败: {exc}", level="error")
+            logger.finish(TASK_STATUS_FAILED, error=f"动态代理任务级准备失败: {exc}")
+            return
+
+    def _registration_proxy_getter() -> str | None:
+        nonlocal prepared_registration_proxy_index
+        if prepared_registration_proxies:
+            with prepared_registration_proxy_lock:
+                proxy_value = prepared_registration_proxies[
+                    prepared_registration_proxy_index % len(prepared_registration_proxies)
+                ]
+                prepared_registration_proxy_index += 1
+                return proxy_value
+        return proxy_pool.get_next()
+
+    logger.set_progress(0, progress_total)
     if herosms_enabled:
         logger.log(
             f"HeroSMS 模式: 成功目标 {target_success}，失败自动补尝试，"
@@ -2648,8 +2750,10 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         logger.finish(TASK_STATUS_FAILED, error=str(exc))
         return
 
-    success = 0
-    errors: list[str] = []
+    success = 0
+    errors: list[str] = []
+    k12_deferred_sub2api_paths: list[str] = []
+    k12_deferred_sub2api_lock = threading.Lock()
 
     # Pre-create a shared mailbox instance for the entire task to avoid
     # concurrent initialization issues (e.g. MoeMail auto-registering
@@ -2680,10 +2784,21 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         logger.finish(TASK_STATUS_FAILED, error=f"邮箱初始化失败: {exc}")
         return
 
-    def _do_one(index: int) -> bool | str:
-        if logger.is_cancel_requested():
-            return "__cancel_requested__"
-        # 占用一个 SMS 槽位（如果配了 sms_pool_slots）。每个并发线程独占
+    def _do_one(index: int) -> bool | str:
+        if logger.is_cancel_requested():
+            return "__cancel_requested__"
+        proxy_slot_id: int | None = None
+        proxy_slot_value = ""
+        if prepared_registration_proxies:
+            proxy_slot_id = prepared_registration_proxy_slots.get()
+            proxy_slot_value = prepared_registration_proxies[proxy_slot_id]
+
+        def _current_registration_proxy_getter() -> str | None:
+            if proxy_slot_id is not None:
+                return proxy_slot_value
+            return _registration_proxy_getter()
+
+        # 占用一个 SMS 槽位（如果配了 sms_pool_slots）。每个并发线程独占
         # 一条号；跑完归还供下一批任务复用。slot_queue 大小 = concurrency，
         # 启动前已校验过；这里只在配了池时阻塞 acquire。
         sms_slot_id: int | None = None
@@ -2745,12 +2860,12 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             )
             return next_entry
 
-        resolved_proxy = _resolve_chatgpt_reachable_proxy(
-            platform_name=platform_name,
-            explicit_proxy=proxy,
-            proxy_getter=proxy_pool.get_next,
-            logger=logger,
-        )
+        resolved_proxy = _resolve_chatgpt_reachable_proxy(
+            platform_name=platform_name,
+            explicit_proxy=proxy,
+            proxy_getter=_current_registration_proxy_getter,
+            logger=logger,
+        )
         # 短链物理复用（CtfGptPlus / PayPal）：注册和打开短链必须同一浏览器。
         # 把 post_register 回调 + backend_config 注入 config.extra，让注册器在
         # 注册完、浏览器还开着时，在同一 page 上生成短链 → 跑 PayPal checkout。
@@ -2905,13 +3020,22 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             logger.record_success()
             logger.log(f"✓ 注册成功: {account.email}")
             _save_task_log(platform_name, account.email, "success")
+            account_extra = dict(account.extra or {})
+            collected_k12_paths = _collect_k12_deferred_sub2api_paths(account)
+            if collected_k12_paths:
+                with k12_deferred_sub2api_lock:
+                    k12_deferred_sub2api_paths.extend(collected_k12_paths)
             if _bool_config(extra.get("remote_upload_enabled"), False):
-                _auto_upload_cpa(logger, account)
+                if collected_k12_paths:
+                    logger.log("  [K12] 已保存待统一上传的 SUB2API JSON，跳过当前账号即时远端上传")
+                elif _bool_config(account_extra.get("k12_remote_upload_handled"), False):
+                    logger.log("  [K12] SUB2API 远端上传已在 K12 流程中处理，跳过通用远端上传")
+                else:
+                    _auto_upload_cpa(logger, account)
             else:
                 _save_local_upload_jsons(logger, account)
             _auto_push_any2api(logger, account)
-            account_extra = dict(account.extra or {})
-            overview = dict(account_extra.get("account_overview") or {})
+            overview = dict(account_extra.get("account_overview") or {})
             cashier_url = str(account_extra.get("cashier_url") or overview.get("cashier_url") or "")
             if cashier_url:
                 logger.log(f"  [升级链接] {cashier_url}")
@@ -2982,7 +3106,19 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                             sms_pool_exhausted.set()
                     else:
                         sms_pool_exhausted.set()
-            # 解除 thread-local subtask 绑定，避免 ThreadPool 复用线程时
+            if proxy_slot_id is not None:
+                try:
+                    from core.proxy_providers import refresh_dynamic_proxy
+
+                    refreshed_proxy = refresh_dynamic_proxy(proxy_slot_value, extra=extra)
+                    if refreshed_proxy:
+                        prepared_registration_proxies[proxy_slot_id] = refreshed_proxy
+                except Exception as exc:
+                    logger.log(f"动态代理槽 {proxy_slot_id + 1} 刷新失败，继续复用原入口: {exc}", level="warning")
+                finally:
+                    prepared_registration_proxy_slots.put(proxy_slot_id)
+
+            # 解除 thread-local subtask 绑定，避免 ThreadPool 复用线程时
             # 把上一个任务的标签泄露到下一个任务。
             logger.clear_subtask()
             # 短链复用从 BitBrowser 池 acquire 的 profile，跑完归还计数。
@@ -3155,11 +3291,14 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     ):
         errors.append("Email alias quota exhausted: no available parent mailbox after retry")
 
+    if logger.is_cancel_requested():
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+        return
+
+    _finalize_k12_deferred_sub2api_uploads(k12_deferred_sub2api_paths, logger)
+
     summary = f"完成: 成功 {success} 个, 失败 {len(errors)} 个"
-    logger.log(summary, event_type="summary")
-    if logger.is_cancel_requested():
-        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
-        return
+    logger.log(summary, event_type="summary")
     final_status = TASK_STATUS_FAILED if errors and success == 0 else TASK_STATUS_SUCCEEDED
     if final_status == TASK_STATUS_SUCCEEDED:
         final_error = ""

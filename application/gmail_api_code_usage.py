@@ -123,9 +123,9 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
     }
     for parent in _runtime_invalid_emails():
         parent = _resolve_gmail_parent(parent)
-        if not parent:
+        if not parent or parent not in configured_parents:
             continue
-        item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
+        item = parents[parent]
         _mark_email_status(item, "unusable", "runtime_invalid")
     successful_aliases_by_parent: dict[str, set[str]] = defaultdict(set)
     allocated_aliases_by_parent: dict[str, set[str]] = defaultdict(set)
@@ -145,9 +145,9 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                 or resource_email
             )
             parent = _resolve_gmail_parent(raw_parent)
-            if not parent:
+            if not parent or parent not in configured_parents:
                 continue
-            item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
+            item = parents[parent]
             _add_seen(item, resource.created_at)
             _add_seen(item, resource.updated_at)
             registration_status = str(metadata.get("registration_status") or "").strip().lower()
@@ -187,9 +187,9 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                 or alias_email
             )
             parent = _resolve_gmail_parent(raw_parent)
-            if not parent:
+            if not parent or parent not in configured_parents:
                 continue
-            item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
+            item = parents[parent]
             _add_seen(item, resource.created_at)
             _add_seen(item, account.created_at)
             if alias_email == parent:
@@ -217,11 +217,11 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                 continue
             alias_email = _normalize_email(match.group(1))
             parent = _resolve_gmail_parent(match.group(2))
-            if not parent:
+            if not parent or parent not in configured_parents:
                 continue
             if _gmail_parent(alias_email) != parent:
                 continue
-            item = parents.setdefault(parent, _empty_parent(parent, parent in configured_parents))
+            item = parents[parent]
             allocated_aliases_by_parent[parent].add(alias_email)
             _add_seen(item, event.created_at)
 

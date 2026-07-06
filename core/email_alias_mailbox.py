@@ -402,8 +402,11 @@ class EmailAliasMailbox(BaseMailbox):
         last_parent = ""
         for _ in range(EMAIL_ALIAS_SELECT_ATTEMPTS):
             try:
+                self._log("Email alias selecting parent mailbox...")
                 parent = self.mailbox.get_email()
-            except Exception:
+                self._log(f"Email alias parent selected: {normalize_email_address(parent.email)}")
+            except Exception as exc:
+                self._log(f"Email alias parent selection failed: {exc}")
                 if seen_full and last_usage is not None:
                     break
                 raise

@@ -126,6 +126,65 @@ def test_convert_session_requires_access_token():
         k12.convert_session_to_sub2api_account({'user': {'email': 'x@y.com'}})
 
 
+def test_save_session_to_local_upload_jsons_writes_sub2api_export_shape(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    at = _make_access_token(int(time.time()) + 3600)
+
+    _cpa_path, sub2api_path = k12.save_session_to_local_upload_jsons(
+        {
+            "accessToken": at,
+            "user": {"email": "tester@example.com", "id": "user-1"},
+        },
+        workspace_id="workspace-1",
+    )
+
+    payload = json.loads((tmp_path / sub2api_path).read_text(encoding="utf-8"))
+    assert set(payload) == {"exported_at", "proxies", "accounts"}
+    assert payload["proxies"] == []
+    assert len(payload["accounts"]) == 1
+    assert payload["accounts"][0]["platform"] == "openai"
+    assert payload["accounts"][0]["type"] == "oauth"
+
+
+def test_upload_sub2api_export_accounts_logs_in_once(monkeypatch):
+    login_calls = []
+    group_calls = []
+    created = []
+
+    monkeypatch.setattr(k12, "login_sub2api", lambda *args, **kwargs: login_calls.append((args, kwargs)) or ("https://sub2api.example", "token"))
+    monkeypatch.setattr(k12, "get_groups_by_names", lambda *args, **kwargs: group_calls.append((args, kwargs)) or [{"id": 12}])
+
+    def fake_request_json(*args, **kwargs):
+        created.append(kwargs["body"])
+        return {"id": len(created)}
+
+    monkeypatch.setattr(k12, "_request_json", fake_request_json)
+
+    accounts = [
+        k12.convert_session_to_sub2api_account(
+            {"accessToken": _make_access_token(int(time.time()) + 3600), "user": {"email": f"tester{i}@example.com"}},
+            workspace_id=f"workspace-{i}",
+        )["sub2api_account"]
+        for i in range(2)
+    ]
+    ok, message = k12.upload_sub2api_export_accounts(
+        accounts,
+        api_url="https://sub2api.example",
+        email="admin@example.com",
+        password="password",
+        group_name="codex",
+        log=lambda _message: None,
+    )
+
+    assert ok is True
+    assert message == "SUB2API 批量上传完成：成功 2/2"
+    assert len(login_calls) == 1
+    assert len(group_calls) == 1
+    assert len(created) == 2
+    assert created[0]["group_ids"] == [12]
+    assert created[1]["group_ids"] == [12]
+
+
 def test_upload_session_to_sub2api_retries_request_error(monkeypatch):
     calls = []
     sleeps = []
@@ -449,14 +508,14 @@ def test_exchange_unusable_workspace_response_does_not_retry(monkeypatch, status
     assert len(calls) == 1
 
 
-def test_k12_flow_uploads_every_successful_workspace_after_exchange_mismatch(monkeypatch):
+def test_k12_flow_defers_every_successful_workspace_after_exchange_mismatch(monkeypatch):
     from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
 
     import platforms.chatgpt.k12_join as k12_module
 
     join_calls = []
     exchange_calls = []
-    uploaded = []
+    saved = []
     logs = []
 
     def fake_join_requests(**kwargs):
@@ -471,13 +530,14 @@ def test_k12_flow_uploads_every_successful_workspace_after_exchange_mismatch(mon
             return None
         return {"accessToken": f"k12-access-token-{workspace_id}", "account": {"id": workspace_id}}
 
-    def fake_upload_session_to_sub2api(session, **kwargs):
-        uploaded.append((session, kwargs.get("workspace_id")))
-        return True, "uploaded"
+    def fake_save_session_to_local_upload_jsons(session, **kwargs):
+        workspace_id = kwargs.get("workspace_id")
+        saved.append((session, workspace_id))
+        return f"data/cpa/{workspace_id}.json", f"data/sub2api/{workspace_id}.json"
 
     monkeypatch.setattr(k12_module, "send_workspace_join_requests", fake_join_requests)
     monkeypatch.setattr(k12_module, "exchange_workspace_session", fake_exchange_workspace_session)
-    monkeypatch.setattr(k12_module, "upload_session_to_sub2api", fake_upload_session_to_sub2api)
+    monkeypatch.setattr(k12_module, "save_session_to_local_upload_jsons", fake_save_session_to_local_upload_jsons)
 
     worker = ChatGPTProtocolMailboxWorker.__new__(ChatGPTProtocolMailboxWorker)
     worker.log_fn = logs.append
@@ -497,15 +557,20 @@ def test_k12_flow_uploads_every_successful_workspace_after_exchange_mismatch(mon
 
     assert join_calls == ["workspace-1", "workspace-2", "workspace-3"]
     assert exchange_calls == ["workspace-1", "workspace-2", "workspace-3"]
-    assert [item[0]["accessToken"] for item in uploaded] == [
+    assert [item[0]["accessToken"] for item in saved] == [
         "k12-access-token-workspace-2",
         "k12-access-token-workspace-3",
     ]
-    assert [item[1] for item in uploaded] == ["workspace-2", "workspace-3"]
+    assert [item[1] for item in saved] == ["workspace-2", "workspace-3"]
     assert result.access_token == "k12-access-token-workspace-3"
     assert result.metadata["k12_workspace_id"] == "workspace-3"
     assert result.metadata["k12_workspace_ids"] == ["workspace-2", "workspace-3"]
     assert [item["workspace_id"] for item in result.metadata["k12_workspace_sessions"]] == ["workspace-2", "workspace-3"]
+    assert result.metadata["k12_sub2api_paths"] == [
+        "data/sub2api/workspace-2.json",
+        "data/sub2api/workspace-3.json",
+    ]
+    assert result.metadata["k12_deferred_sub2api_upload_enabled"] is True
     assert any("继续尝试下一个 workspace" in message for message in logs)
 
 
@@ -558,7 +623,7 @@ def test_k12_flow_default_saves_local_json_instead_of_remote_upload(monkeypatch)
     assert any("SUB2API JSON 已保存" in message for message in logs)
 
 
-def test_k12_flow_remote_upload_checkbox_keeps_remote_upload(monkeypatch):
+def test_k12_flow_remote_upload_checkbox_defers_remote_upload(monkeypatch):
     from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
 
     import platforms.chatgpt.k12_join as k12_module
@@ -602,7 +667,63 @@ def test_k12_flow_remote_upload_checkbox_keeps_remote_upload(monkeypatch):
 
     worker._run_k12_flow(result)
 
+    assert calls == {"upload": 0, "local": 1}
+    assert result.metadata["k12_deferred_sub2api_upload_enabled"] is True
+    assert result.metadata["k12_remote_upload_handled"] is True
+    assert result.metadata["k12_sub2api_paths"] == ["data/sub2api/a.json"]
+
+
+def test_k12_flow_remote_upload_without_batch_uploads_immediately(monkeypatch):
+    from platforms.chatgpt.protocol_mailbox import ChatGPTProtocolMailboxWorker
+
+    import platforms.chatgpt.k12_join as k12_module
+
+    calls = {"upload": 0, "local": 0}
+    logs = []
+
+    monkeypatch.setattr(
+        k12_module,
+        "send_workspace_join_requests",
+        lambda **kwargs: [{"workspace_id": kwargs["workspace_ids"], "ok": True, "message": "ok"}],
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "exchange_workspace_session",
+        lambda **_kwargs: {"accessToken": "k12-access-token", "user": {"email": "k12@example.com"}},
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "upload_session_to_sub2api",
+        lambda *args, **kwargs: calls.__setitem__("upload", calls["upload"] + 1) or (True, "uploaded"),
+    )
+    monkeypatch.setattr(
+        k12_module,
+        "save_session_to_local_upload_jsons",
+        lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1) or ("data/cpa/a.json", "data/sub2api/a.json"),
+    )
+
+    worker = ChatGPTProtocolMailboxWorker.__new__(ChatGPTProtocolMailboxWorker)
+    worker.log_fn = logs.append
+    worker.k12_workspace_ids = "workspace-1"
+    worker.proxy_url = None
+    worker.remote_upload_enabled = True
+    worker.k12_batch_upload_enabled = False
+    result = SimpleNamespace(
+        access_token="registration-token",
+        session_token="session-token",
+        metadata={
+            "session": {"accessToken": "registration-token", "sessionToken": "session-token"},
+            "cookies": "oai-did=device-1",
+        },
+    )
+
+    worker._run_k12_flow(result)
+
     assert calls == {"upload": 1, "local": 0}
+    assert result.metadata["k12_deferred_sub2api_upload_enabled"] is False
+    assert result.metadata["k12_remote_upload_handled"] is True
+    assert result.metadata["k12_sub2api_paths"] == []
+    assert any("开始逐个上传 session" in message for message in logs)
 
 
 def test_k12_flow_skips_workspace_when_chatgpt_web_session_missing(monkeypatch):

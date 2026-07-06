@@ -119,7 +119,7 @@ export default function GmailApiCodeUsage() {
     {
       label: '母邮箱数',
       value: summary?.parent_count ?? '-',
-      description: '当前邮箱池和历史记录里出现过的 Gmail 主邮箱总数。',
+      description: '当前 Gmail API接码邮箱池里配置的 Gmail 主邮箱总数。',
       icon: MailCheck,
       tone: 'text-[var(--accent)]',
     },
@@ -166,7 +166,7 @@ export default function GmailApiCodeUsage() {
         <div>
           <h1 className="text-xl font-bold text-[var(--text-primary)]">Gmail API接码邮箱池</h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            按母邮箱统计已成功注册的 alias、任务日志中已分配但未成功落库的 alias，以及剩余额度。
+            只按当前 Gmail API接码邮箱池里的母邮箱统计已成功 alias、未成功落库 alias，以及剩余额度。
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
@@ -177,7 +177,7 @@ export default function GmailApiCodeUsage() {
 
       {data && !data.config_pool_recorded && (
         <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-          当前 Gmail API接码邮箱池配置文本没有在配置表里记录；页面仍会基于历史账号和任务日志展示已出现过的母邮箱。
+          当前 Gmail API接码邮箱池配置文本没有在配置表里记录；请先在邮箱服务配置 Gmail API接码邮箱池。
         </div>
       )}
       {error && (
@@ -256,7 +256,7 @@ export default function GmailApiCodeUsage() {
                     <td className="px-3 py-3">
                       <div className="font-mono text-sm font-semibold text-[var(--text-primary)]">{item.parent_email}</div>
                       <div className="mt-1 flex gap-1.5">
-                        {item.configured ? <Badge variant="default">当前池</Badge> : <Badge variant="secondary">历史记录</Badge>}
+                        <Badge variant="default">当前池</Badge>
                         {item.main_registered && <Badge variant="warning">母邮箱已注册</Badge>}
                       </div>
                     </td>

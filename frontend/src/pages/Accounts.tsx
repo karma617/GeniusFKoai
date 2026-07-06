@@ -443,9 +443,10 @@ function RegisterModal({
   // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
   const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
+  const [k12BatchUploadEnabled, setK12BatchUploadEnabled] = useState(true)
   const [k12Join, setK12Join] = useState(false)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
-  const [authflowExperimental, setAuthflowExperimental] = useState(false)
+  const [authflowExperimental] = useState(false)
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   const [enableEmailAlias, setEnableEmailAlias] = useState(true)
@@ -651,6 +652,7 @@ function RegisterModal({
       }
       if (platform === 'chatgpt') {
         extra.remote_upload_enabled = remoteUploadEnabled
+        extra.k12_batch_upload_enabled = k12BatchUploadEnabled
       }
       const res = await apiFetch('/tasks/register', {
         method: 'POST',
@@ -931,22 +933,20 @@ function RegisterModal({
                   </div>
                 )}
 
-                {/* chatgpt 平台特定：注册成功后自动获取支付链接（cashier_url）写回账号 extra */}
                 {platform === 'chatgpt' && (
                   <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
                       type="checkbox"
-                      checked={authflowExperimental}
-                      onChange={(e) => setAuthflowExperimental(e.target.checked)}
-                      disabled={selection.executorType !== 'protocol'}
-                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                      checked={k12BatchUploadEnabled}
+                      onChange={(e) => setK12BatchUploadEnabled(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
                     />
                     <div className="flex-1 text-xs text-[var(--text-secondary)]">
                       <div className="text-sm font-medium text-[var(--text-primary)]">
-                        实验：AuthFlow 纯协议链路
+                        是否打包上传
                       </div>
                       <div className="mt-0.5">
-                        使用 gpt-outlook-register 移植的 curl_cffi + Sentinel QuickJS authorize 状态机。仅协议模式生效，邮箱仍使用当前项目已选 mailbox provider。
+                        勾选后按当前流程在任务结束后合并 SUB2API JSON 并统一上传；未勾选则恢复为每个账号成功后逐个上传。仅在强入K12空间并启用远端上传时生效。
                       </div>
                     </div>
                   </label>

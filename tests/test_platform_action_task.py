@@ -258,6 +258,188 @@ def test_chatgpt_register_remote_upload_checkbox_keeps_remote_upload(monkeypatch
     assert calls == {"remote": 1, "local": 0}
 
 
+def test_chatgpt_register_prepares_dynamic_proxy_by_concurrency(monkeypatch):
+    from core import proxy_providers
+
+    used_proxies = []
+    prepared_calls = []
+    refreshed_proxies = []
+
+    class FakePlatform:
+        def __init__(self, resolved_proxy):
+            self.resolved_proxy = resolved_proxy
+
+        def register(self, email=None, password=None):
+            used_proxies.append(self.resolved_proxy)
+            return Account(
+                platform="chatgpt",
+                email=f"registered{len(used_proxies)}@example.com",
+                password=password or "Secret123!",
+                user_id=f"acct_{len(used_proxies)}",
+                extra={"access_token": "access-token", "refresh_token": "refresh-token"},
+            )
+
+    def fake_prepare(concurrency, extra=None):
+        prepared_calls.append((concurrency, dict(extra or {})))
+        return ["http://127.0.0.1:7891", "http://127.0.0.1:7892"]
+
+    def fake_refresh(proxy, extra=None):
+        refreshed_proxies.append(proxy)
+        return proxy
+
+    monkeypatch.setattr(proxy_providers, "prepare_dynamic_proxy_for_task", fake_prepare)
+    monkeypatch.setattr(proxy_providers, "refresh_dynamic_proxy", fake_refresh)
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda _platform_name, *, explicit_proxy, proxy_getter: explicit_proxy or proxy_getter(),
+    )
+    monkeypatch.setattr(tasks_module, "_chatgpt_proxy_preflight", lambda _proxy: (True, "ok"))
+    monkeypatch.setattr(
+        tasks_module,
+        "_build_platform_instance",
+        lambda *args, resolved_proxy=None, **kwargs: FakePlatform(resolved_proxy),
+    )
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: None)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 2,
+            "concurrency": 2,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {"identity_provider": "oauth_browser"},
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert prepared_calls[0][0] == 2
+    assert sorted(used_proxies) == ["http://127.0.0.1:7891", "http://127.0.0.1:7892"]
+    assert sorted(refreshed_proxies) == ["http://127.0.0.1:7891", "http://127.0.0.1:7892"]
+
+
+def test_chatgpt_register_k12_remote_upload_runs_after_all_workers(monkeypatch):
+    from platforms.chatgpt import k12_join as k12_module
+
+    calls = {"remote": 0, "local": 0, "merge": 0, "upload": 0}
+    uploaded = {}
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "k12_deferred_sub2api_upload_enabled": True,
+                    "k12_sub2api_paths": ["data/sub2api/k12-one.json"],
+                },
+            )
+
+    def fake_merge(paths):
+        calls["merge"] += 1
+        uploaded["paths"] = list(paths)
+        return "data/sub2api/k12-batch.json", {"accounts": [{"name": "k12-one"}]}
+
+    def fake_upload(accounts, **kwargs):
+        calls["upload"] += 1
+        uploaded["accounts"] = list(accounts)
+        return True, "SUB2API 批量上传完成：成功 1/1"
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: calls.__setitem__("remote", calls["remote"] + 1))
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1))
+    monkeypatch.setattr(k12_module, "merge_sub2api_export_files", fake_merge)
+    monkeypatch.setattr(k12_module, "upload_sub2api_export_accounts", fake_upload)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "oauth_browser",
+                "remote_upload_enabled": True,
+                "k12_join": True,
+            },
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert calls == {"remote": 0, "local": 0, "merge": 1, "upload": 1}
+    assert uploaded["paths"] == ["data/sub2api/k12-one.json"]
+    assert uploaded["accounts"] == [{"name": "k12-one"}]
+    expected_path = str(tasks_module.Path("data/sub2api/k12-batch.json").resolve())
+    assert any(
+        isinstance(message, str) and f"SUB2API 总 JSON 已保存: {expected_path}" in message
+        for _, message, _ in logger.events
+    )
+
+
+def test_chatgpt_register_k12_immediate_remote_upload_skips_generic_upload(monkeypatch):
+    calls = {"remote": 0, "local": 0}
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "k12_remote_upload_handled": True,
+                },
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: calls.__setitem__("remote", calls["remote"] + 1))
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1))
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "oauth_browser",
+                "remote_upload_enabled": True,
+                "k12_join": True,
+                "k12_batch_upload_enabled": False,
+            },
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert calls == {"remote": 0, "local": 0}
+
+
 def test_local_sub2api_json_allows_registered_account_without_refresh_token():
     account = Account(
         platform="chatgpt",

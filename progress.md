@@ -2199,3 +2199,370 @@
   - tests/test_api_accounts.py: 新增账号列表分页测试。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：撤销 infrastructure/accounts_repository.py 中 `func.count()`、`count_statement` 和无状态筛选提前分页返回逻辑；撤销 tests/test_api_accounts.py 新增分页测试；移除 progress.md 本轮追加内容即可恢复旧全量加载行为。
+
+## 2026-07-06 - Task: Outlook Plus 高并发取件优化
+
+### What was done
+- Outlook Plus mailbox HTTP session 改为按线程隔离，避免批量注册共享 mailbox 对象时多个注册线程共用同一个 `requests.Session`。
+- Plus 池账号在已知 `otp_sent_at` 时优先使用 `outlookEmailPlus` 异步 `wait-message` probe 等待验证码，减少同步 `/api/external/messages` 长轮询对邮箱服务 HTTP worker 的占用。
+- 保留兼容回退：非 Plus 池账号、没有 `otp_sent_at`、或旧版邮箱服务不支持 async probe 时继续走原同步轮询，避免改变 `before_ids` 防漏信语义。
+- 补充 Outlook Plus 高并发取件说明，记录异步 probe 的适用条件和线程隔离行为。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py -q` -> 28 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- core\outlook_email_mailbox.py tests\test_outlook_email_mailbox.py docs\chatgpt-register-flow.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: HTTP session 按线程隔离，并为 Plus 池账号新增 async probe 验证码等待路径和旧服务降级回退。
+  - tests/test_outlook_email_mailbox.py: 新增 Plus 池账号使用 async probe 等待验证码的回归测试。
+  - docs/chatgpt-register-flow.md: 记录 Outlook Plus 高并发取件策略；该目录当前被 `.gitignore` 忽略，仅作为本地协作文档。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/outlook_email_mailbox.py 中线程本地 session、async probe 等待和降级判断；撤销 tests/test_outlook_email_mailbox.py 新增 async probe 测试；撤销 docs/chatgpt-register-flow.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧同步取件行为。
+
+## 2026-07-06 - Task: Outlook Plus 冷却坏号自动跳过
+
+### What was done
+- 将 `outlookEmailPlus` 返回的“账号授权已进入短期冷却，跳过重复上游取件”归类为单个 Outlook 邮箱不可读错误。
+- 注册取邮箱预检遇到该错误时，按既有坏邮箱流程标记无效并继续选择下一个邮箱，避免整个注册任务直接失败。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py -q` -> 29 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: 账号可读性错误识别新增“短期冷却”和“跳过重复上游取件”标记。
+  - tests/test_outlook_email_mailbox.py: 新增冷却坏号被标记并跳过到下一个邮箱的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/outlook_email_mailbox.py 中 `_is_account_readability_error` 的两个冷却标记；撤销 tests/test_outlook_email_mailbox.py 新增冷却坏号测试；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-06 - Task: Outlook Plus 坏号同步删除邮箱账号
+
+### What was done
+- Outlook 取邮箱预检确认账号不可读时，处理方式从给邮箱账号打“无效邮箱”标签改为调用 `outlookEmailPlus` 管理接口删除对应邮箱账号。
+- 保留既有跳过逻辑：删除后继续选下一个邮箱；删除接口异常时释放本地占用，避免卡住注册任务。
+- 更新回归测试，确认授权失效和短期冷却坏号都会触发 `DELETE /api/accounts/{id}` 后继续选择可用邮箱。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py -q` -> 29 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- core\outlook_email_mailbox.py tests\test_outlook_email_mailbox.py progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: 预检坏邮箱分支改为调用 `delete_account()` 删除邮箱账号。
+  - tests/test_outlook_email_mailbox.py: 更新预检坏号测试，从标签断言改为删除接口断言。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 core/outlook_email_mailbox.py 中预检坏邮箱分支的 `delete_account()` 改回 `mark_invalid_email()`；恢复 tests/test_outlook_email_mailbox.py 对 `/api/accounts/tags` 的断言；移除 progress.md 本轮追加内容即可恢复旧打标签行为。
+
+## 2026-07-06 - Task: Gmail API接码配置弹窗宽度调整
+
+### What was done
+- Gmail API接码 provider 的配置弹窗改为使用 80vw 宽度，增加邮箱和接码链接列表的横向展示空间。
+- 保留其它 provider 弹窗宽度不变，Gmail OAuth 分裂弹窗继续使用原有 50vw 设置。
+
+### Testing
+- `npm run build`（frontend）-> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: 为 `gmail_api_code` 编辑弹窗增加 80vw 宽度覆盖。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 frontend/src/components/settings/ProviderCards.tsx 中 `gmail_api_code` 的 `width/maxWidth: 80vw` 分支；移除 progress.md 本轮追加内容即可恢复旧弹窗宽度。
+
+## 2026-07-06 - Task: Outlook alias 取邮箱阶段日志补充
+
+### What was done
+- 在 Outlook 母邮箱选择、候选账号命中、读信预检通过、读信预检失败、坏邮箱删除成功或失败时追加任务日志。
+- 在 Email alias 分配前增加父邮箱选择开始、父邮箱选择完成、父邮箱选择失败日志，用于解释“使用代理”和“Email alias allocated”之间的等待时间。
+- 注册任务创建 mailbox 后把现有任务日志回调注入到底层 mailbox，保证这些阶段日志进入任务事件流。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py core\email_alias_mailbox.py application\tasks.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py tests\test_email_alias_mailbox.py -q` -> 44 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- core\outlook_email_mailbox.py core\email_alias_mailbox.py application\tasks.py tests\test_outlook_email_mailbox.py tests\test_email_alias_mailbox.py progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: 增加可选日志回调，并在取邮箱候选选择、读信预检和坏邮箱删除分支输出任务日志。
+  - core/email_alias_mailbox.py: 在父邮箱选择开始、成功和失败时输出任务日志。
+  - application/tasks.py: 创建或包装邮箱时把任务日志回调注入底层 mailbox。
+  - tests/test_outlook_email_mailbox.py: 增加 Outlook 取邮箱预检阶段日志断言。
+  - tests/test_email_alias_mailbox.py: 增加 Email alias 父邮箱选择和日志注入断言。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/outlook_email_mailbox.py 中 `log_fn`、`_log()` 和 `get_email()` 日志调用；撤销 core/email_alias_mailbox.py 中父邮箱选择日志；撤销 application/tasks.py 中 `_attach_mailbox_logger()` 及调用；撤销两处测试文件的日志断言；移除 progress.md 本轮追加内容即可恢复旧日志行为。
+
+## 2026-07-06 - Task: Clash 动态代理 Provider 接入注册流程
+
+### What was done
+- 新增 `proxy/clash` 动态代理 Provider，通过 Clash 外部控制接口读取策略组、轮询选择节点、切换节点后返回本机代理入口。
+- 代理资源页增加“动态代理 Provider”配置区，可配置 Clash 控制接口、Secret、本机代理地址、策略组、节点过滤和出口检测 URL，并支持在线测试。
+- 后端 `/config/options` 和 `/provider-settings/test` 支持 proxy Provider；当前本机已写入并启用一条 Clash 配置，注册入口 `proxy_pool.get_next()` 已能走该配置。
+- 补充使用文档，明确单 Clash 入口只能做到领取前轮换节点，不能严格保证高并发线程长期独占不同出口。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\proxy_providers.py providers\proxy\clash.py infrastructure\provider_definitions_repository.py application\config.py api\provider_settings.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_proxy_providers.py tests\test_chatgpt_proxy_preflight.py -q` -> 21 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm run build`（frontend）-> 通过；Vite 保留 chunk size warning。
+- Clash 实机检测：`GET /proxies` 成功，`GLOBAL` 策略组可切换节点数 72，`PUT /proxies/GLOBAL` 切换成功，经 `http://127.0.0.1:7897` 出口检测成功获取公网 IP。
+- Provider 代码路径检测：`ClashProxyProvider.test_connection(check_exit=True)` 成功，返回 `selector=GLOBAL`、`node_count=72`、`proxy=http://127.0.0.1:7897` 并通过出口检测。
+- 注册入口路径检测：`.\.venv\Scripts\python.exe -c "from core.proxy_pool import proxy_pool; print(proxy_pool.get_next())"` -> `http://127.0.0.1:7897`。
+- `.\.venv\Scripts\python.exe -c "from application.config import ConfigService; opts=ConfigService().get_options(); print({'proxy_providers':[p['value'] for p in opts.get('proxy_providers',[])], 'proxy_settings':[s['provider_key'] for s in opts.get('proxy_settings',[])]})"` -> `{'proxy_providers': ['clash'], 'proxy_settings': ['clash']}`。
+- `git diff --check -- core\proxy_providers.py providers\proxy\clash.py infrastructure\provider_definitions_repository.py application\config.py api\provider_settings.py frontend\src\lib\config-options.ts frontend\src\pages\Proxies.tsx tests\test_proxy_providers.py docs\clash-proxy-provider.md progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - providers/proxy/clash.py: 新增 Clash Provider，实现策略组读取、节点过滤、轮询切换、出口检测和本机代理返回。
+  - core/proxy_providers.py: 注册 `clash` Provider 工厂和懒加载映射。
+  - infrastructure/provider_definitions_repository.py: 增加内置 `proxy/clash` 配置定义和字段。
+  - application/config.py: `/config/options` 返回 proxy providers、drivers 和 settings。
+  - api/provider_settings.py: `/provider-settings/test` 增加 proxy Provider 测试路径。
+  - frontend/src/lib/config-options.ts: 补充 proxy Provider 配置类型。
+  - frontend/src/pages/Proxies.tsx: 在代理资源页增加动态代理 Provider 配置区域。
+  - tests/test_proxy_providers.py: 增加 Clash Provider 节点切换、过滤和工厂创建测试。
+  - docs/clash-proxy-provider.md: 记录配置、验证方式和并发限制。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 providers/proxy/clash.py；撤销 core/proxy_providers.py、infrastructure/provider_definitions_repository.py、application/config.py、api/provider_settings.py、frontend/src/lib/config-options.ts、frontend/src/pages/Proxies.tsx、tests/test_proxy_providers.py 的本轮 Clash/proxy Provider 改动；删除 docs/clash-proxy-provider.md；移除数据库中的 `proxy/clash` provider setting；移除 progress.md 本轮追加内容即可恢复旧代理池行为。
+
+## 2026-07-06 - Task: OTP 发送后轮询等待缩短
+
+### What was done
+- 将 ChatGPT mailbox OTP 发送后的投递缓冲等待从 8 秒缩短为 2 秒，让任务更早开始轮询邮箱验证码。
+- 保持后续验证码轮询、超时扣减和日志格式不变。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_mailbox.py` -> 无输出，编译通过。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/protocol_mailbox.py: 将 `delivery_delay` 从 8 改为 2。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 platforms/chatgpt/protocol_mailbox.py 中 `delivery_delay = 2` 改回 `delivery_delay = 8`；移除 progress.md 本轮追加内容即可恢复旧等待行为。
+
+## 2026-07-06 - Task: 临时移除 Outlook 前置邮箱测活
+
+### What was done
+- Outlook 动态领取邮箱后不再前置调用 `/api/external/messages` 做读信测活，候选邮箱选中后直接进入注册流程。
+- 保留真正等待验证码时的取件逻辑，避免影响 OTP 邮件轮询和验证码提取。
+- README 和邮箱 alias 文档同步说明该前置测活当前已临时关闭。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py -q` -> 29 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- core\outlook_email_mailbox.py tests\test_outlook_email_mailbox.py README.md docs\email-alias-mailbox.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - core/outlook_email_mailbox.py: `get_email()` 选中候选邮箱后直接返回，并记录前置读信预检已跳过。
+  - tests/test_outlook_email_mailbox.py: 更新回归测试，确认领取邮箱阶段不再调用读信测活接口、不再提前删除冷却或不可读邮箱。
+  - README.md: 更新 outlookEmail 工作流程说明，标明前置读信预检已临时关闭。
+  - docs/email-alias-mailbox.md: 更新 Email alias 使用 Outlook mailbox 的预检说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/outlook_email_mailbox.py 中 `get_email()` 的 `_precheck_account_readable()` 调用和坏邮箱跳过逻辑；恢复 tests/test_outlook_email_mailbox.py 中前置预检相关断言；恢复 README.md 与 docs/email-alias-mailbox.md 的前置读信预检说明；移除 progress.md 本轮追加内容即可恢复旧测活行为。
+
+## 2026-07-06 - Task: K12 SUB2API 上传改为任务结束后统一提交
+
+### What was done
+- K12 exchange 校验成功后不再在单个注册线程内立即上传 SUB2API，改为先保存当前账号的 CPA JSON 和 SUB2API 导出 JSON。
+- SUB2API 单账号导出 JSON 改为 `exported_at` / `proxies` / `accounts` 顶层结构，和手工导出的 sub2api 文件格式一致。
+- 注册任务会收集成功账号保存的 K12 SUB2API JSON；全部子任务结束后，合并成本批次总 JSON，并统一进入 SUB2API 上传阶段。
+- K12 成功保存待上传 JSON 后，跳过当前账号的即时远端 CPA 上传，避免单个注册线程继续阻塞在远端上传上。
+- 统一上传阶段复用一次 SUB2API 登录、分组解析和代理解析，再逐个创建本批次账号，避免每个注册线程阻塞在远端上传。
+- K12 文档同步更新为“先本地保存，任务末尾合并上传”的流程说明。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\k12_join.py platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\plugin.py application\tasks.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py tests\test_platform_action_task.py -q` -> 104 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- platforms\chatgpt\k12_join.py platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\plugin.py application\tasks.py tests\test_k12_join.py tests\test_platform_action_task.py docs\k12-space-join.md progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/k12_join.py: 增加 SUB2API 导出 JSON 构造、批次合并和统一上传函数，并让本地 SUB2API JSON 使用示例文件的导出结构。
+  - platforms/chatgpt/protocol_mailbox.py: K12 exchange 成功后改为保存待上传 JSON，并把待上传路径写入 metadata。
+  - platforms/chatgpt/plugin.py: 将 K12 待上传 SUB2API 路径和延期上传标记透传到账号 extra。
+  - application/tasks.py: 注册成功后收集 K12 待上传 JSON 路径，跳过该账号即时远端上传，并在全部注册子任务结束后合并、统一上传。
+  - tests/test_k12_join.py: 更新 K12 流程断言，增加 SUB2API 导出结构和统一上传函数回归测试。
+  - tests/test_platform_action_task.py: 增加注册任务结束后才触发 K12 SUB2API 合并上传的回归测试。
+  - docs/k12-space-join.md: 更新 K12 SUB2API 保存、合并和统一上传说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 k12_join.py 中 build_sub2api_export_payload、merge_sub2api_export_files、upload_sub2api_export_accounts 及 save_session_to_local_upload_jsons 的导出结构调整；恢复 protocol_mailbox.py 中 exchange 成功后直接调用 upload_session_to_sub2api 的逻辑；撤销 plugin.py 的 k12_sub2api_paths / k12_deferred_sub2api_upload_enabled 透传；撤销 application/tasks.py 中 K12 待上传路径收集、即时远端上传跳过与任务末尾统一上传；撤销对应测试和 docs/progress 本轮追加内容即可恢复旧逐号上传行为。
+
+## 2026-07-06 - Task: Clash 节点过滤改为排除并优化多入口分配
+
+### What was done
+- Clash Provider 的“节点过滤”语义改为排除关键字：节点名称包含任一配置关键字时不再参与轮询。
+- 多入口模式准备节点时不再按延迟排序后固定从头取，改为对可用候选节点随机打散后再分配到独立端口，减少连续任务抽到同一地区节点的概率。
+- 注册任务开始后会按并发数调用动态代理任务级准备；多入口模式会一次准备对应数量的独立端口，注册子线程从这些端口轮询领取代理。
+- 多入口任务级准备会强制刷新旧端口和节点，避免后续任务一直复用上一批任务的节点；同一任务内某个注册线程结束后，会刷新它刚释放的端口再放回下一轮使用。
+- 代理资源页配置字段文案改为“节点排除关键字”，并同步更新 Clash Provider 文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile providers\proxy\clash.py core\proxy_providers.py application\tasks.py infrastructure\provider_definitions_repository.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_proxy_providers.py tests\test_platform_action_task.py -q` -> 90 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- providers\proxy\clash.py core\proxy_providers.py application\tasks.py infrastructure\provider_definitions_repository.py tests\test_proxy_providers.py tests\test_platform_action_task.py docs\clash-proxy-provider.md progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - providers/proxy/clash.py: 节点过滤改为排除匹配，多入口候选节点随机打散，并支持任务级 refresh 重建独立端口和单端口释放后刷新。
+  - core/proxy_providers.py: 动态代理任务级准备优先调用 `prepare_for_concurrency(..., refresh=True)`，并新增已准备代理入口刷新函数。
+  - application/tasks.py: 注册任务启动时按并发数预热动态代理入口，并让注册子线程独占领取、释放后刷新对应入口。
+  - infrastructure/provider_definitions_repository.py: Clash 节点过滤字段改为排除关键字文案和提示。
+  - tests/test_proxy_providers.py: 更新 Clash 排除过滤测试，并增加多入口随机候选分配测试。
+  - tests/test_platform_action_task.py: 增加注册任务按并发数预热动态代理入口的回归测试。
+  - docs/clash-proxy-provider.md: 更新节点排除语义和多入口并发说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 providers/proxy/clash.py 中 `_filter_nodes()` 的包含匹配逻辑、移除 `refresh` 参数、随机打散和 `refresh_prepared_proxy()`；恢复 core/proxy_providers.py 中普通 `prepare(concurrency)` 调用并移除 `refresh_dynamic_proxy()`；撤销 application/tasks.py 中任务级动态代理预热、槽位独占领取和释放刷新逻辑；恢复 infrastructure/provider_definitions_repository.py 与 docs/clash-proxy-provider.md 的旧文案；撤销两处测试新增/调整；移除 progress.md 本轮追加内容即可恢复旧节点轮询行为。
+
+## 2026-07-06 - Task: 前端弹窗宽度统一为 60vw
+
+### What was done
+- 将公共 `dialog-panel` 弹窗宽度统一为 `60vw`，并让 sm/md/lg 三种弹窗尺寸类不再覆盖为不同最大宽度。
+- 将未使用公共 `dialog-panel` 的欢迎弹窗、任务历史日志弹窗、GoPay 日志弹窗、Sub2API 导出弹窗同步改为 `60vw`。
+- 保留现有弹窗高度、滚动、遮罩、圆角和内容布局逻辑不变。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+- `git diff --check -- frontend\src\index.css frontend\src\components\WelcomeDialog.tsx frontend\src\pages\TaskHistory.tsx frontend\src\pages\GoPayGptPlus.tsx frontend\src\pages\Sub2ApiManagement.tsx progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - frontend/src/index.css: 公共 `.dialog-panel` 及 sm/md/lg 弹窗尺寸统一为 60vw。
+  - frontend/src/components/WelcomeDialog.tsx: 欢迎弹窗宽度改为 60vw。
+  - frontend/src/pages/TaskHistory.tsx: 任务日志弹窗宽度改为 60vw。
+  - frontend/src/pages/GoPayGptPlus.tsx: GoPay 任务日志弹窗宽度改为 60vw。
+  - frontend/src/pages/Sub2ApiManagement.tsx: Sub2API 导出弹窗宽度改为 60vw。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/index.css 中 `.dialog-panel`、`.dialog-panel-sm`、`.dialog-panel-md`、`.dialog-panel-lg` 的旧宽度/最大宽度；恢复上述四个直接写宽度弹窗的原 `max-w-*` 或 `w-[800px] max-w-[95vw]` 类名；移除 progress.md 本轮追加内容即可恢复旧弹窗宽度。
+
+## 2026-07-06 - Task: 根据日志统计缩短 ChatGPT 邮箱 OTP 等待超时
+
+### What was done
+- 根据本批日志中成功获取验证码耗时样本，确认成功验证码集中在 5-13 秒，平均约 7 秒。
+- 将 ChatGPT 邮箱 OTP 单轮默认等待从 60 秒调整为 20 秒，保留最多 3 轮重发兜底。
+- 将邮箱 OTP 超时下限从 30 秒调整为 10 秒，避免默认 20 秒被内部下限重新抬高。
+- 修正邮箱适配层投递预等待后的有效轮询时间计算，避免先等 2 秒后又把短超时强制扩到 30 秒。
+- 文档补充默认 20 秒和 `CHATGPT_OTP_TIMEOUT_SECONDS` 覆盖方式。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 24 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py docs\chatgpt-register-flow.md progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 将三个邮箱 OTP 等待入口的默认单轮超时统一改为 20 秒，并保留环境变量覆盖。
+  - platforms/chatgpt/protocol_mailbox.py: 投递预等待后按剩余时间继续轮询，不再把 20 秒短超时扩成 30 秒。
+  - tests/test_chatgpt_protocol_otp.py: 增加默认 20 秒超时回归测试。
+  - tests/test_chatgpt_protocol_mailbox_fallback.py: 增加投递预等待不扩展短超时的回归测试。
+  - docs/chatgpt-register-flow.md: 补充邮箱 OTP 默认 20 秒和环境变量覆盖说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 platforms/chatgpt/register.py 中 OTP 默认值 60 秒和 30 秒下限；恢复 platforms/chatgpt/protocol_mailbox.py 中 `effective_timeout = max(30, timeout - int(wait_remaining))`；删除两处新增测试；删除 docs/chatgpt-register-flow.md 中本轮新增的 OTP 超时说明；移除 progress.md 本轮追加内容即可恢复旧 60 秒等待行为。
+
+## 2026-07-06 - Task: K12 SUB2API 上传增加打包上传开关
+
+### What was done
+- 自动注册 ChatGPT 弹窗隐藏 AuthFlow 实验开关，并在同位置新增“是否打包上传”复选框，默认勾选。
+- “是否启用上传到远端”仍决定是否上传；“是否打包上传”只决定 K12 SUB2API 上传方式：勾选时沿用当前任务结束后合并上传，未勾选时恢复为 workspace 成功后逐个上传。
+- K12 后端流程新增打包上传参数；非打包模式下 exchange 成功后立即调用原单账号 SUB2API 上传流程。
+- 任务层新增 K12 远端上传已处理标记，避免非打包逐个上传后再触发通用远端上传造成重复写入。
+- K12 文档同步补充两个上传开关的组合语义。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\plugin.py application\tasks.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py tests\test_platform_action_task.py -q` -> 107 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 隐藏 AuthFlow 实验开关，在原位置新增“是否打包上传”开关，并把 `k12_batch_upload_enabled` 传给注册任务。
+  - platforms/chatgpt/protocol_mailbox.py: K12 流程按 `k12_batch_upload_enabled` 在打包保存与逐个上传之间切换，并写入 K12 上传处理标记。
+  - platforms/chatgpt/plugin.py: 将 `k12_batch_upload_enabled` 传入协议邮箱 worker，并把 K12 上传处理标记映射到账户 extra。
+  - application/tasks.py: 远端上传阶段识别 K12 已处理标记，跳过通用远端上传。
+  - tests/test_k12_join.py: 增加非打包模式立即逐个上传的回归测试，并补充打包模式标记断言。
+  - tests/test_platform_action_task.py: 增加 K12 非打包上传后跳过通用远端上传的回归测试。
+  - docs/k12-space-join.md: 更新 K12 远端上传与打包上传开关说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 Accounts.tsx 中 AuthFlow 实验开关显示并移除 `k12_batch_upload_enabled`；撤销 protocol_mailbox.py 中 `k12_batch_upload_enabled` 分支、即时 `upload_session_to_sub2api` 调用和 `k12_remote_upload_handled` 标记；撤销 plugin.py 的参数透传和 extra 标记映射；撤销 application/tasks.py 对 `k12_remote_upload_handled` 的跳过逻辑；删除本轮新增测试断言与 docs/progress 本轮追加内容即可恢复只按当前打包流程上传。
+
+## 2026-07-06 - Task: 打包上传完成日志输出总 JSON 绝对路径
+
+### What was done
+- K12 打包上传模式在注册子任务结束并合并 SUB2API JSON 后，日志输出合并后的总 JSON 文件绝对路径。
+- 更新注册任务回归测试，确认打包上传日志包含总 JSON 的绝对路径。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_k12_remote_upload_runs_after_all_workers -q` -> 1 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -q` -> 72 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- application\tasks.py tests\test_platform_action_task.py progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: K12 打包上传合并完成后，`SUB2API 总 JSON 已保存` 日志改为输出绝对路径。
+  - tests/test_platform_action_task.py: 增加打包上传日志包含绝对路径的断言。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/tasks.py 中 `SUB2API 总 JSON 已保存` 日志为原始 `merged_path`；删除 tests/test_platform_action_task.py 中绝对路径日志断言；移除 progress.md 本轮追加内容即可恢复旧日志。
+
+## 2026-07-06 - Task: Gmail API接码邮箱池只统计当前配置母邮箱
+
+### What was done
+- Gmail API接码邮箱池统计口径改为只以当前 `Gmail API接码邮箱` 配置里的 Gmail 主邮箱为母邮箱集合。
+- 历史账号、历史 provider resource 或任务日志里出现过，但当前 Gmail API接码配置中已经不存在的主邮箱，不再进入列表、母邮箱数、成功别名、未确认分配和剩余额度计算。
+- Gmail 邮箱池页面文案同步改为“只按当前池统计”，不再提示历史记录参与母邮箱总数。
+- 本地 Gmail API接码文档同步记录当前统计口径。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\gmail_api_code_usage.py tests\test_gmail_api_code_usage_stats.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_usage_stats.py tests\test_gmail_api_code_mailbox.py -q` -> 10 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - application/gmail_api_code_usage.py: 统计资源、成功 alias、未确认分配和 runtime invalid 时，跳过不在当前配置池里的 Gmail 主邮箱。
+  - frontend/src/pages/GmailApiCodeUsage.tsx: 更新母邮箱数、页面说明、无配置提示和状态标签文案。
+  - tests/test_gmail_api_code_usage_stats.py: 明确模拟当前配置池，并新增旧 Gmail 主邮箱不参与统计的回归测试。
+  - docs/gmail-api-code.md: 记录母邮箱数和额度只按当前 Gmail API接码配置统计。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/gmail_api_code_usage.py 中对历史 provider resource / 任务日志 parent 的 `setdefault` 纳入统计逻辑；恢复 GmailApiCodeUsage.tsx 的旧文案和历史记录标签；删除 tests/test_gmail_api_code_usage_stats.py 本轮新增/调整断言；移除 docs/gmail-api-code.md 与 progress.md 本轮追加内容即可恢复旧口径。
+
+## 2026-07-06 - Task: SUB2API 导入文件 account_id 随机化脚本
+
+### What was done
+- 新增独立脚本，用于把 SUB2API JSON 中精确键名为 `account_id` 的字符串值替换为随机 UUID。
+- 脚本按字节读取和写回文件，不重新序列化 JSON，避免改动字段顺序、缩进、换行、token 或 `chatgpt_account_id`。
+- 支持 `--dry-run` 只统计命中数量，也支持 `--output` 写到新文件；默认直接覆盖输入文件。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile .\scripts\randomize_sub2api_account_ids.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe .\scripts\randomize_sub2api_account_ids.py 'C:\Users\karma617\Desktop\sub2api-import (1).json' --dry-run` -> 命中 50 个 `account_id` 字段，未写文件。
+- 在临时副本 `C:\Users\karma617\AppData\Local\Temp\sub2api-import-randomize-test.json` 上实跑脚本后做字节级对比 -> 仅 50 个 `account_id` 值发生变化，新值均为合法 UUID，JSON 仍可解析。
+
+### Notes
+- 修改文件清单
+  - scripts/randomize_sub2api_account_ids.py: 新增 SUB2API JSON `account_id` 随机 UUID 替换脚本。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 `scripts/randomize_sub2api_account_ids.py`，并移除 progress.md 本轮追加内容即可撤销本轮仓库改动；如果已对业务 JSON 实跑，需要从运行前备份或源文件恢复。
+
+## 2026-07-06 - Task: 从注册日志合并成功账号 SUB2API JSON
+
+### What was done
+- 新增脚本，可从注册任务日志中提取最终 `注册成功` 的邮箱，并只合并这些邮箱对应的 `SUB2API JSON 已保存` 本地文件。
+- 脚本输出标准 SUB2API 导入 JSON，默认写入 `data/sub2api/log-success-sub2api-*.json`，可选输出 summary。
+- 使用本批日志实际生成合并文件，避免把日志里中途保存但最终未成功的账号混入结果。
+- 新增文档说明脚本用途、命令和过滤规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile .\scripts\merge_sub2api_from_register_log.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe .\scripts\merge_sub2api_from_register_log.py "C:\Users\karma617\.codex\attachments\3c93e417-b37d-46aa-8bd5-4617eec7dcfa\pasted-text.txt" --summary .\data\sub2api\log-success-sub2api-summary.json` -> 成功邮箱 47 个，使用 JSON 184 个，合并账号 184 个；`garciabrian544032+91gn6w2h@gmail.com` 成功但日志中未找到对应 SUB2API JSON。
+- `.\.venv\Scripts\python.exe -c "import json; from pathlib import Path; path=Path(r'D:\work\ai\GeniusFKoai\data\sub2api\log-success-sub2api-20260706T031148Z-16fd7bd6.json'); payload=json.loads(path.read_text(encoding='utf-8')); print(payload.get('type'), payload.get('version'), len(payload.get('accounts', [])))"` -> `sub2api-data 1 184`，输出 JSON 可解析。
+
+### Notes
+- 修改文件清单
+  - scripts/merge_sub2api_from_register_log.py: 新增从注册日志过滤成功邮箱并合并 SUB2API JSON 的脚本。
+  - docs/sub2api-log-merge.md: 新增脚本使用说明和合并规则。
+  - data/sub2api/log-success-sub2api-20260706T031148Z-16fd7bd6.json: 本批日志生成的合并 SUB2API 导入文件。
+  - data/sub2api/log-success-sub2api-summary.json: 本批日志生成的合并摘要，记录使用文件和缺失邮箱。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 `scripts/merge_sub2api_from_register_log.py`、`docs/sub2api-log-merge.md`、本轮生成的 `data/sub2api/log-success-sub2api-20260706T031148Z-16fd7bd6.json` 和 `data/sub2api/log-success-sub2api-summary.json`，并移除 progress.md 本轮追加内容即可撤销本轮改动。

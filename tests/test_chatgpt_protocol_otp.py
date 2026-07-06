@@ -478,6 +478,24 @@ def test_get_verification_code_resends_after_each_60s_timeout(monkeypatch):
     assert any("重新发送验证码 (2/3)" in message for message in engine.logs)
 
 
+def test_get_verification_code_defaults_to_20s_timeout(monkeypatch):
+    engine = _bare_engine()
+    engine._otp_sent_at = 1000.0
+    waits = []
+
+    class EmailService:
+        def get_verification_code(self, **kwargs):
+            waits.append(kwargs)
+            return "654321"
+
+    engine.email_service = EmailService()
+    monkeypatch.delenv("CHATGPT_OTP_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("CHATGPT_EMAIL_OTP_MAX_ATTEMPTS", raising=False)
+
+    assert engine._get_verification_code() == "654321"
+    assert [item["timeout"] for item in waits] == [20]
+
+
 def test_get_verification_code_marks_invalid_email_after_three_timeouts(monkeypatch):
     engine = _bare_engine()
     engine._otp_sent_at = 1000.0

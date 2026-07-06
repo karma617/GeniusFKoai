@@ -81,6 +81,10 @@ from .constants import (
 
 
 
+CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 20
+CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS = 10
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -2168,7 +2172,7 @@ class RegistrationEngine:
 
     def _get_verification_code(self, *, mark_invalid_on_timeout: bool = True) -> Optional[str]:
 
-        """获取验证码；每轮等 60 秒，未收到则重发，默认共 3 轮。"""
+        """获取验证码；每轮等 20 秒，未收到则重发，默认共 3 轮。"""
 
         try:
 
@@ -2178,11 +2182,16 @@ class RegistrationEngine:
 
             try:
 
-                otp_timeout = int((_os_otp_timeout.environ.get("CHATGPT_OTP_TIMEOUT_SECONDS", "") or "60").strip())
+                otp_timeout = int(
+                    (
+                        _os_otp_timeout.environ.get("CHATGPT_OTP_TIMEOUT_SECONDS", "")
+                        or str(CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS)
+                    ).strip()
+                )
 
             except Exception:
 
-                otp_timeout = 60
+                otp_timeout = CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS
 
             try:
 
@@ -2192,9 +2201,9 @@ class RegistrationEngine:
 
                 max_attempts = 3
 
-            if otp_timeout < 30:
+            if otp_timeout < CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS:
 
-                otp_timeout = 30
+                otp_timeout = CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS
 
             max_attempts = max(1, min(max_attempts, 5))
 
@@ -3518,17 +3527,22 @@ class RegistrationEngine:
 
     def _wait_platform_login_code(self, client: OpenAIHTTPClient) -> Optional[str]:
 
-        """等待独立 Platform 登录邮箱 OTP；60 秒未到则重发，最多 3 轮。"""
+        """等待独立 Platform 登录邮箱 OTP；20 秒未到则重发，最多 3 轮。"""
 
         import os as _os_otp_timeout
 
         try:
 
-            otp_timeout = int((_os_otp_timeout.environ.get("CHATGPT_OTP_TIMEOUT_SECONDS", "") or "60").strip())
+            otp_timeout = int(
+                (
+                    _os_otp_timeout.environ.get("CHATGPT_OTP_TIMEOUT_SECONDS", "")
+                    or str(CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS)
+                ).strip()
+            )
 
         except Exception:
 
-            otp_timeout = 60
+            otp_timeout = CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS
 
         try:
 
@@ -3538,7 +3552,7 @@ class RegistrationEngine:
 
             max_attempts = 3
 
-        otp_timeout = max(30, otp_timeout)
+        otp_timeout = max(CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS, otp_timeout)
 
         max_attempts = max(1, min(max_attempts, 5))
 
@@ -4098,17 +4112,22 @@ class RegistrationEngine:
 
     def _wait_platform_reference_register_code(self, client: OpenAIHTTPClient) -> Optional[str]:
 
-        """等待 platform 注册验证码；沿用本项目三轮 60s 规则，重发仍走参照 send_otp。"""
+        """等待 platform 注册验证码；沿用本项目三轮 20s 规则，重发仍走参照 send_otp。"""
 
         import os as _os_otp_timeout
 
         try:
 
-            otp_timeout = int((_os_otp_timeout.environ.get("CHATGPT_OTP_TIMEOUT_SECONDS", "") or "60").strip())
+            otp_timeout = int(
+                (
+                    _os_otp_timeout.environ.get("CHATGPT_OTP_TIMEOUT_SECONDS", "")
+                    or str(CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS)
+                ).strip()
+            )
 
         except Exception:
 
-            otp_timeout = 60
+            otp_timeout = CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS
 
         try:
 
@@ -4118,7 +4137,7 @@ class RegistrationEngine:
 
             max_attempts = 3
 
-        otp_timeout = max(30, otp_timeout)
+        otp_timeout = max(CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS, otp_timeout)
 
         max_attempts = max(1, min(max_attempts, 5))
 

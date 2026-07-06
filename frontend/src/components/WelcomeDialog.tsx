@@ -21,7 +21,7 @@ export default function WelcomeDialog() {
       onClick={close}
     >
       <div
-        className="relative w-full max-w-sm rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-6 shadow-[var(--shadow-hard)]"
+        className="relative w-[60vw] rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-6 shadow-[var(--shadow-hard)]"
         onClick={(e) => e.stopPropagation()}
       >
         <button

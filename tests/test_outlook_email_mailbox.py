@@ -174,9 +174,7 @@ def test_outlook_email_reserves_selected_account_locally(monkeypatch):
     session = FakeSession(
         [
             FakeResponse(accounts_payload),
-            FakeResponse({"success": True, "data": {"emails": []}}),
             FakeResponse(accounts_payload),
-            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -557,7 +555,8 @@ def test_outlook_email_skips_invalid_email_tag_by_default(monkeypatch):
     assert mailbox.get_email().email == "fresh@outlook.com"
 
 
-def test_outlook_email_precheck_marks_unreadable_account_invalid_and_skips(monkeypatch):
+def test_outlook_email_get_email_skips_readability_precheck(monkeypatch):
+    logs: list[str] = []
     accounts_payload = {
         "success": True,
         "accounts": [
@@ -568,21 +567,68 @@ def test_outlook_email_precheck_marks_unreadable_account_invalid_and_skips(monke
     session = FakeSession(
         [
             FakeResponse(accounts_payload),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        admin_password="fake-admin-password",
+        log_fn=logs.append,
+    )
+
+    account = mailbox.get_email()
+
+    assert account.email == "expired@outlook.com"
+    assert len(session.calls) == 1
+    assert all("/api/external/messages" not in call["url"] for call in session.calls)
+    assert all(call.get("method") != "DELETE" for call in session.calls)
+    assert "outlookEmail selecting mailbox candidate..." in logs
+    assert any("outlookEmail candidate selected: expired@outlook.com" in item for item in logs)
+    assert not any("readability precheck failed" in item for item in logs)
+    assert not any("unreadable mailbox deleted" in item for item in logs)
+
+
+def test_outlook_email_get_email_does_not_call_precheck_api(monkeypatch):
+    session = FakeSession(
+        [
             FakeResponse(
                 {
-                    "success": False,
-                    "code": "ACCOUNT_AUTH_EXPIRED",
-                    "message": "账号授权已失效，请重新授权",
-                },
-                status_code=400,
+                    "success": True,
+                    "accounts": [
+                        {"id": 1, "email": "fresh@outlook.com", "status": "active"},
+                    ],
+                }
             ),
-            FakeResponse({"success": True, "message": "ok"}),
-            FakeResponse({"csrf_token": "csrf-token"}),
-            FakeResponse({"success": True, "tags": []}),
-            FakeResponse({"success": True, "tag": {"id": 9, "name": "无效邮箱", "color": "#1a1a1a"}}),
-            FakeResponse({"success": True, "message": "成功处理 1 个账号"}),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="bad-api-key",
+        admin_password="fake-admin-password",
+    )
+
+    assert mailbox.get_email().email == "fresh@outlook.com"
+
+    assert len(session.calls) == 1
+    assert all(call.get("method") != "POST" for call in session.calls)
+    assert all("/api/external/messages" not in call["url"] for call in session.calls)
+
+
+def test_outlook_email_get_email_does_not_delete_cooldown_account_before_otp(monkeypatch):
+    accounts_payload = {
+        "success": True,
+        "accounts": [
+            {"id": 11, "email": "cooldown@outlook.com", "status": "active"},
+            {"id": 12, "email": "fresh@outlook.com", "status": "active"},
+        ],
+    }
+    session = FakeSession(
+        [
             FakeResponse(accounts_payload),
-            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -595,47 +641,10 @@ def test_outlook_email_precheck_marks_unreadable_account_invalid_and_skips(monke
 
     account = mailbox.get_email()
 
-    assert account.email == "fresh@outlook.com"
-    assert session.calls[1]["url"] == "https://mail.example.test/api/external/messages"
-    assert session.calls[6]["url"] == "https://mail.example.test/api/accounts/tags"
-    assert session.calls[6]["kwargs"]["json"] == {"account_ids": [1], "tag_id": 9, "action": "add"}
-    assert session.calls[8]["kwargs"]["params"]["email"] == "fresh@outlook.com"
-
-
-def test_outlook_email_precheck_api_key_failure_does_not_mark_invalid(monkeypatch):
-    session = FakeSession(
-        [
-            FakeResponse(
-                {
-                    "success": True,
-                    "accounts": [
-                        {"id": 1, "email": "fresh@outlook.com", "status": "active"},
-                    ],
-                }
-            ),
-            FakeResponse(
-                {
-                    "success": False,
-                    "code": "UNAUTHORIZED",
-                    "message": "API Key 缺失或无效",
-                },
-                status_code=401,
-            ),
-        ]
-    )
-    monkeypatch.setattr("requests.Session", lambda: session)
-
-    mailbox = OutlookEmailMailbox(
-        api_url="https://mail.example.test",
-        api_key="bad-api-key",
-        admin_password="fake-admin-password",
-    )
-
-    with pytest.raises(RuntimeError, match="API Key 认证失败"):
-        mailbox.get_email()
-
-    assert len(session.calls) == 2
-    assert all(call.get("method") != "POST" for call in session.calls)
+    assert account.email == "cooldown@outlook.com"
+    assert len(session.calls) == 1
+    assert all("/api/external/messages" not in call["url"] for call in session.calls)
+    assert all(call.get("method") != "DELETE" for call in session.calls)
 
 
 def test_outlook_email_filters_before_ids_and_extracts_code(monkeypatch):
@@ -898,6 +907,68 @@ def test_outlook_email_plus_reads_messages_with_claim_token_when_legacy_emails_m
     assert session.calls[1]["kwargs"]["params"]["folder"] == "inbox"
     assert session.calls[1]["kwargs"]["params"]["claim_token"] == "claim-token"
     assert session.calls[2]["kwargs"]["params"]["folder"] == "junkemail"
+
+
+def test_outlook_email_plus_wait_for_code_prefers_async_probe_when_otp_time_known(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "probe_id": "probe-1",
+                        "status": "pending",
+                    },
+                },
+                status_code=202,
+            ),
+            FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "probe_id": "probe-1",
+                        "status": "matched",
+                        "message": {
+                            "id": "new-code",
+                            "subject": "OpenAI verification code",
+                            "content_preview": "Your verification code is 445566",
+                            "folder": "inbox",
+                            "timestamp": 1_781_255_640,
+                        },
+                    },
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        email_folder="inbox",
+        poll_interval=1,
+    )
+    account = mailbox._build_account(
+        email="pool@outlook.com",
+        account_id="12",
+        source="outlook_email_plus_pool",
+        raw={"account_id": 12, "email": "pool@outlook.com", "claim_token": "claim-token"},
+    )
+
+    code = mailbox.wait_for_code(
+        account,
+        keyword="OpenAI",
+        before_ids={"old-code"},
+        timeout=10,
+        otp_sent_at=1_781_255_630.0,
+    )
+
+    assert code == "445566"
+    assert session.calls[0]["url"] == "https://mail.example.test/api/external/wait-message"
+    assert session.calls[0]["kwargs"]["params"]["mode"] == "async"
+    assert session.calls[0]["kwargs"]["params"]["claim_token"] == "claim-token"
+    assert session.calls[0]["kwargs"]["params"]["baseline_timestamp"] == 1_781_255_600
+    assert session.calls[1]["url"] == "https://mail.example.test/api/external/probe/probe-1"
 
 
 def test_outlook_email_filters_alias_recipient_when_parent_inbox_has_multiple_alias_codes(monkeypatch):

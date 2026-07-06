@@ -917,7 +917,7 @@ export default function GoPayGptPlus() {
           onClick={(e) => e.target === e.currentTarget && closeTask()}
         >
           <div
-            className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col w-[800px] max-w-[95vw]"
+            className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col w-[60vw]"
             style={{ maxHeight: "85vh" }}
           >
             <div className="px-5 py-3 border-b border-[var(--border)] flex items-center justify-between">

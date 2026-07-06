@@ -234,8 +234,39 @@ def test_provider(body: ProviderTestRequest):
         if (definition.driver_type or body.provider_key) == "codex_sms_pool":
             return _test_codex_sms_pool(extra)
         return {"ok": True, "message": "接码服务暂不支持在线测试，请在注册任务中验证"}
+    elif body.provider_type == "proxy":
+        return _test_proxy(definition.driver_type or body.provider_key, extra)
     else:
         return {"ok": False, "error": f"不支持测试的 provider 类型: {body.provider_type}"}
+
+
+def _test_proxy(driver_type: str, extra: dict) -> dict:
+    import traceback
+
+    try:
+        from core.proxy_providers import create_proxy_provider
+
+        provider = create_proxy_provider(driver_type, extra)
+        if hasattr(provider, "test_connection"):
+            result = provider.test_connection(check_exit=True)
+            message = (
+                f"测试成功！策略组 {result.get('selector')} 已切换到 {result.get('selected_node')}，"
+                f"可用节点 {result.get('node_count')} 个"
+            )
+            if result.get("exit_check"):
+                message += "，出口检测已通过"
+            return {"ok": True, "message": message, **result}
+
+        proxy = provider.get_proxy()
+        if not proxy:
+            return {"ok": False, "error": "未获取到可用代理"}
+        return {"ok": True, "message": f"测试成功！获取代理: {proxy}", "proxy": proxy}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"测试失败: {str(exc)}",
+            "detail": traceback.format_exc()[-500:],
+        }
 
 
 def _test_codex_sms_pool(extra: dict) -> dict:

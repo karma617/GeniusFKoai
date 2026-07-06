@@ -25,6 +25,7 @@ OUTLOOK_EMAIL_RETRY_STATUS_CODES = {502, 503, 504}
 OUTLOOK_EMAIL_RETRY_ATTEMPTS = 3
 OUTLOOK_EMAIL_RETRY_DELAY_SECONDS = 0.6
 OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT = 10000
+OUTLOOK_EMAIL_ASYNC_PROBE_POLL_SECONDS = 1
 
 _OUTLOOK_EMAIL_RESERVATION_LOCK = threading.Lock()
 _OUTLOOK_EMAIL_RESERVED_ACCOUNTS: dict[str, float] = {}
@@ -160,6 +161,7 @@ class OutlookEmailMailbox(BaseMailbox):
         plus_success_tag_names: str | list[str] = "",
         invalid_email_tag_names: str | list[str] = "",
         proxy: str | None = None,
+        log_fn=None,
     ):
         self.api = _normalize_base_url(api_url)
         self.api_key = _text(api_key)
@@ -190,8 +192,11 @@ class OutlookEmailMailbox(BaseMailbox):
         )
         self._session: requests.Session | None = None
         self._admin_session: requests.Session | None = None
+        self._session_local = threading.local()
+        self._admin_session_local = threading.local()
         self._csrf_token: str = ""
         self._api_variant = ""
+        self._log_fn = log_fn
 
         self._assert_ready()
 
@@ -226,8 +231,17 @@ class OutlookEmailMailbox(BaseMailbox):
         if not self.api_key:
             raise RuntimeError("outlookEmail 未配置 API Key")
 
+    def _log(self, message: str) -> None:
+        if not callable(self._log_fn):
+            return
+        try:
+            self._log_fn(message)
+        except Exception:
+            return
+
     def _get_session(self) -> requests.Session:
-        if self._session is None:
+        session = getattr(self._session_local, "session", None)
+        if session is None:
             session = requests.Session()
             session.trust_env = False
             session.proxies = self.proxy or {}
@@ -239,8 +253,21 @@ class OutlookEmailMailbox(BaseMailbox):
                     "accept": "application/json",
                 }
             )
+            self._session_local.session = session
             self._session = session
-        return self._session
+        return session
+
+    def _reset_thread_session_if_current(self, session: requests.Session) -> bool:
+        if getattr(self._session_local, "session", None) is not session:
+            return False
+        try:
+            session.close()
+        except Exception:
+            pass
+        self._session_local.session = None
+        if self._session is session:
+            self._session = None
+        return True
 
     def _request_with_retries(
         self,
@@ -262,12 +289,7 @@ class OutlookEmailMailbox(BaseMailbox):
                     response = request_fn(url, timeout=15, **kwargs)
             except requests.RequestException as exc:
                 if attempt < OUTLOOK_EMAIL_RETRY_ATTEMPTS - 1:
-                    if active_session is self._session:
-                        try:
-                            active_session.close()
-                        except Exception:
-                            pass
-                        self._session = None
+                    if self._reset_thread_session_if_current(active_session):
                         active_session = self._get_session()
                     time.sleep(OUTLOOK_EMAIL_RETRY_DELAY_SECONDS * (attempt + 1))
                     continue
@@ -397,8 +419,9 @@ class OutlookEmailMailbox(BaseMailbox):
         return payload if isinstance(payload, dict) else {"items": payload}
 
     def _get_admin_session(self) -> requests.Session:
-        if self._admin_session is not None:
-            return self._admin_session
+        admin_session = getattr(self._admin_session_local, "session", None)
+        if admin_session is not None:
+            return admin_session
         if not self.admin_password:
             raise RuntimeError("outlookEmail 未配置管理员密码，无法执行管理操作")
 
@@ -426,6 +449,7 @@ class OutlookEmailMailbox(BaseMailbox):
         self._csrf_token = _text(csrf_payload.get("csrf_token"))
         if self._csrf_token:
             session.headers.update({"X-CSRFToken": self._csrf_token})
+        self._admin_session_local.session = session
         self._admin_session = session
         return session
 
@@ -787,6 +811,8 @@ class OutlookEmailMailbox(BaseMailbox):
             "basic auth",
             "graph/imap",
             "均读取失败",
+            "短期冷却",
+            "跳过重复上游取件",
         )
         return any(marker in text for marker in account_error_markers)
 
@@ -886,33 +912,17 @@ class OutlookEmailMailbox(BaseMailbox):
     def get_email(self) -> MailboxAccount:
         if self.fixed_email:
             self._assert_fixed_email_not_skipped()
+            self._log(f"outlookEmail using fixed mailbox: {self.fixed_email}")
             return self._build_account(email=self.fixed_email, account_id=self.fixed_email, source="fixed")
 
-        rejected_keys: set[str] = set()
-        last_readability_error: Exception | None = None
-        while True:
-            item = self._select_account(rejected_keys=rejected_keys)
-            email = self._account_email(item)
-            account_id = _text(item.get("id") or item.get("account_id"))
-            source = "outlook_email_plus_pool" if item.get("claim_token") else "account_list"
-            account = self._build_account(email=email, account_id=account_id, source=source, raw=item)
-            try:
-                self._precheck_account_readable(account)
-                return account
-            except Exception as exc:
-                if not self._is_account_readability_error(exc):
-                    self._release_local_account_reservation(account)
-                    if item.get("claim_token"):
-                        self._release_pool_claim(item, reason="readability precheck failed")
-                    raise
-                last_readability_error = exc
-                rejected_keys.add(self._reservation_key_for_item(item))
-                try:
-                    self.mark_invalid_email(account, reason="mailbox_readability_precheck_failed")
-                except Exception:
-                    self._release_local_account_reservation(account)
-                if len(rejected_keys) >= OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT:
-                    raise RuntimeError("outlookEmail 账号读信预检失败过多，已停止取邮箱") from last_readability_error
+        self._log("outlookEmail selecting mailbox candidate...")
+        item = self._select_account()
+        email = self._account_email(item)
+        account_id = _text(item.get("id") or item.get("account_id"))
+        source = "outlook_email_plus_pool" if item.get("claim_token") else "account_list"
+        account = self._build_account(email=email, account_id=account_id, source=source, raw=item)
+        self._log(f"outlookEmail candidate selected: {email} source={source}; readability precheck skipped")
+        return account
 
     def peek_email(self) -> str:
         if self.fixed_email:
@@ -1152,6 +1162,126 @@ class OutlookEmailMailbox(BaseMailbox):
                 continue
         return None
 
+    def _async_probe_supported_for_account(self, account: MailboxAccount, otp_sent_at: float | None) -> bool:
+        metadata = (account.extra.get("provider_account") or {}).get("metadata") or {}
+        return bool(_text(metadata.get("claim_token")) and otp_sent_at)
+
+    @staticmethod
+    def _is_async_probe_unavailable_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        if "api key" in text or "\u8ba4\u8bc1\u5931\u8d25" in text:
+            return False
+        return "404" in text or "not found" in text or "\u7aef\u70b9\u4e0d\u5b58\u5728" in text
+
+    def _code_from_message(
+        self,
+        account: MailboxAccount,
+        mail: dict[str, Any],
+        *,
+        keyword: str,
+        pattern: re.Pattern,
+        baseline_ids: set,
+        otp_sent_at: float | None,
+    ) -> str | None:
+        mid = self._message_id(mail)
+        if not mid:
+            return None
+        if mid in baseline_ids and not self._is_after_otp_sent(mail, otp_sent_at):
+            return None
+        if not self._matches_keyword(mail, keyword):
+            return None
+        if not self._matches_expected_recipient(account, mail):
+            return None
+        text = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", " ", self._message_text(mail))
+        match = pattern.search(text)
+        if match:
+            return match.group(1) if match.groups() else match.group(0)
+        detail = self._load_message_detail(account, mail)
+        if not detail:
+            return None
+        combined = {**mail, **detail}
+        if not self._matches_expected_recipient(account, combined):
+            return None
+        detail_text = re.sub(
+            r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+            " ",
+            self._message_text(combined),
+        )
+        match = pattern.search(detail_text)
+        if match:
+            return match.group(1) if match.groups() else match.group(0)
+        return None
+
+    def _wait_for_code_via_async_probe(
+        self,
+        account: MailboxAccount,
+        *,
+        keyword: str,
+        timeout: int,
+        pattern: re.Pattern,
+        baseline_ids: set,
+        otp_sent_at: float | None,
+    ) -> str | None:
+        if not self._async_probe_supported_for_account(account, otp_sent_at):
+            return None
+        folder = self._message_folders()[0]
+        params = {
+            **self._message_scope_params(account, folder=folder),
+            "mode": "async",
+            "timeout_seconds": max(int(timeout or 1), 1),
+            "poll_interval": max(min(self.poll_interval, int(timeout or 1)), 1),
+            "baseline_timestamp": max(int(float(otp_sent_at or 0)) - 30, 0),
+        }
+        if self.email_subject_contains:
+            params["subject_contains"] = self.email_subject_contains
+        if self.email_from_contains:
+            params["from_contains"] = self.email_from_contains
+        try:
+            payload = self._get_json("/api/external/wait-message", params)
+        except OutlookEmailEndpointNotFound:
+            return None
+        except Exception as exc:
+            if self._is_async_probe_unavailable_error(exc):
+                return None
+            raise OutlookEmailTemporaryUnavailable(str(exc)) from exc
+        data = self._data_payload(payload)
+        probe_id = _text(data.get("probe_id"))
+        if not probe_id:
+            return None
+
+        encoded_probe_id = quote(probe_id, safe="")
+        deadline = time.time() + max(int(timeout or 1), 1)
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                status_payload = self._get_json(f"/api/external/probe/{encoded_probe_id}")
+                status_data = self._data_payload(status_payload)
+            except Exception as exc:
+                last_error = exc
+                break
+            status = _text(status_data.get("status")).lower()
+            if status == "matched":
+                message = status_data.get("message")
+                if isinstance(message, dict):
+                    code = self._code_from_message(
+                        account,
+                        message,
+                        keyword=keyword,
+                        pattern=pattern,
+                        baseline_ids=baseline_ids,
+                        otp_sent_at=otp_sent_at,
+                    )
+                    if code:
+                        return code
+                return None
+            if status in {"timeout", "error", "cancelled"}:
+                last_error = RuntimeError(status_data.get("error_message") or status)
+                break
+            time.sleep(min(OUTLOOK_EMAIL_ASYNC_PROBE_POLL_SECONDS, max(deadline - time.time(), 0)))
+        if last_error is not None:
+            raise OutlookEmailTemporaryUnavailable(str(last_error)) from last_error
+        return None
+
     def _list_plus_messages(self, account: MailboxAccount) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         last_error: Exception | None = None
@@ -1229,35 +1359,33 @@ class OutlookEmailMailbox(BaseMailbox):
         started = time.time()
         last_error: Exception | None = None
 
+        try:
+            async_code = self._wait_for_code_via_async_probe(
+                account,
+                keyword=keyword,
+                timeout=timeout,
+                pattern=pattern,
+                baseline_ids=baseline_ids,
+                otp_sent_at=otp_sent_at,
+            )
+            if async_code:
+                return async_code
+        except OutlookEmailTemporaryUnavailable as exc:
+            last_error = exc
+
         while time.time() - started < timeout:
             try:
                 for mail in self._list_emails(account, runtime_keyword=keyword):
-                    mid = self._message_id(mail)
-                    if not mid:
-                        continue
-                    if mid in baseline_ids and not self._is_after_otp_sent(mail, otp_sent_at):
-                        continue
-                    if not self._matches_keyword(mail, keyword):
-                        continue
-                    if not self._matches_expected_recipient(account, mail):
-                        continue
-                    text = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", " ", self._message_text(mail))
-                    match = pattern.search(text)
-                    if match:
-                        return match.group(1) if match.groups() else match.group(0)
-                    detail = self._load_message_detail(account, mail)
-                    if detail:
-                        combined = {**mail, **detail}
-                        if not self._matches_expected_recipient(account, combined):
-                            continue
-                        detail_text = re.sub(
-                            r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
-                            " ",
-                            self._message_text(combined),
-                        )
-                        match = pattern.search(detail_text)
-                        if match:
-                            return match.group(1) if match.groups() else match.group(0)
+                    code = self._code_from_message(
+                        account,
+                        mail,
+                        keyword=keyword,
+                        pattern=pattern,
+                        baseline_ids=baseline_ids,
+                        otp_sent_at=otp_sent_at,
+                    )
+                    if code:
+                        return code
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
             time.sleep(self.poll_interval)

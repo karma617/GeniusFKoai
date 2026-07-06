@@ -142,7 +142,7 @@ class _MailboxEmailService:
 
             elapsed = _time.time() - otp_sent_at
 
-            delivery_delay = 8
+            delivery_delay = 2
 
             if elapsed < delivery_delay:
 
@@ -152,7 +152,7 @@ class _MailboxEmailService:
 
                 _time.sleep(wait_remaining)
 
-                effective_timeout = max(30, timeout - int(wait_remaining))
+                effective_timeout = max(1, int(timeout - wait_remaining))
 
 
 
@@ -257,6 +257,7 @@ class ChatGPTProtocolMailboxWorker:
         skip_post_register_oauth: bool = False,
         k12_workspace_ids: str = "",
         remote_upload_enabled: bool = False,
+        k12_batch_upload_enabled: bool = True,
     ):
 
         if not mailbox or not mailbox_account:
@@ -273,6 +274,7 @@ class ChatGPTProtocolMailboxWorker:
         self.skip_post_register_oauth = skip_post_register_oauth
         self.k12_workspace_ids = k12_workspace_ids
         self.remote_upload_enabled = remote_upload_enabled
+        self.k12_batch_upload_enabled = k12_batch_upload_enabled
 
         email_service = _MailboxEmailService(
 
@@ -329,7 +331,7 @@ class ChatGPTProtocolMailboxWorker:
         return result
 
     def _run_k12_flow(self, result):
-        """K12 强入空间流程：注册成功后跳过接码/支付，直接向 workspace 发加入申请并上传 session。"""
+        """K12 强入空间流程：注册成功后跳过接码/支付，加入 workspace 后先导出 session。"""
         try:
             from platforms.chatgpt.k12_join import (
                 send_workspace_join_requests,
@@ -354,6 +356,7 @@ class ChatGPTProtocolMailboxWorker:
             cookies = ensure_chatgpt_session_cookie(metadata.get("cookies", "") or "", session_token)
             workspace_ids = self.k12_workspace_ids or ""
             proxy = self.proxy_url
+            batch_upload_enabled = bool(getattr(self, "k12_batch_upload_enabled", True))
 
             self._log("=" * 60)
             self._log("[K12] 开始强入 K12 空间流程...")
@@ -371,7 +374,7 @@ class ChatGPTProtocolMailboxWorker:
 
             successful_sessions = []
             for ws_id in workspace_list:
-                # join、exchange、upload 必须绑定同一个 workspace；每个成功的 workspace 都要单独上传。
+                # join、exchange、上传必须绑定同一个 workspace；打包模式才延后到任务收尾统一处理。
                 join_results = send_workspace_join_requests(
                     access_token=access_token,
                     cookies=cookies,
@@ -396,35 +399,40 @@ class ChatGPTProtocolMailboxWorker:
                     self._log(f"[K12] workspace {ws_id[:8]}... exchange 校验失败，继续尝试下一个 workspace")
                     continue
 
-                self._log(f"[K12] workspace {ws_id[:8]}... 已确认切换到目标 K12 workspace，开始上传 session...")
                 upload_ok = False
-                upload_msg = ""
+                upload_msg = "local_only"
                 local_paths = {}
-                if self.remote_upload_enabled:
+                if self.remote_upload_enabled and not batch_upload_enabled:
+                    self._log(f"[K12] workspace {ws_id[:8]}... 已确认切换到目标 K12 workspace，开始逐个上传 session...")
                     upload_ok, upload_msg = upload_session_to_sub2api(
                         new_session,
                         workspace_id=ws_id,
                         log=self._log,
                         proxy=proxy,
                     )
-
                     if upload_ok:
                         self._log(f"[K12] workspace {ws_id[:8]}... session 上传成功: {upload_msg}")
                     else:
                         self._log(f"[K12] workspace {ws_id[:8]}... session 上传失败: {upload_msg}")
                 else:
+                    self._log(f"[K12] workspace {ws_id[:8]}... 已确认切换到目标 K12 workspace，开始保存待上传 JSON...")
                     cpa_path, sub2api_path = save_session_to_local_upload_jsons(new_session, workspace_id=ws_id)
                     local_paths = {"cpa_path": cpa_path, "sub2api_path": sub2api_path}
                     if cpa_path:
                         self._log(f"[K12] workspace {ws_id[:8]}... CPA JSON 已保存: {cpa_path}")
                     if sub2api_path:
-                        self._log(f"[K12] workspace {ws_id[:8]}... SUB2API JSON 已保存: {sub2api_path}")
+                        if self.remote_upload_enabled:
+                            self._log(f"[K12] workspace {ws_id[:8]}... SUB2API JSON 已保存，任务结束后统一上传: {sub2api_path}")
+                            upload_msg = "deferred"
+                        else:
+                            self._log(f"[K12] workspace {ws_id[:8]}... SUB2API JSON 已保存: {sub2api_path}")
 
                 successful_sessions.append({
                     "workspace_id": ws_id,
                     "session": new_session,
                     "upload_ok": upload_ok,
                     "upload_message": upload_msg,
+                    "sub2api_deferred_upload": bool(self.remote_upload_enabled and batch_upload_enabled),
                     **local_paths,
                 })
 
@@ -446,6 +454,9 @@ class ChatGPTProtocolMailboxWorker:
             metadata["k12_session"] = new_session
             metadata["k12_workspace_sessions"] = successful_sessions
             metadata["k12_workspace_ids"] = [item["workspace_id"] for item in successful_sessions]
+            metadata["k12_sub2api_paths"] = [item["sub2api_path"] for item in successful_sessions if item.get("sub2api_path")]
+            metadata["k12_deferred_sub2api_upload_enabled"] = bool(self.remote_upload_enabled and batch_upload_enabled)
+            metadata["k12_remote_upload_handled"] = bool(self.remote_upload_enabled)
             result.metadata = metadata
 
             self._log(f"[K12] 强入 K12 空间流程完成，成功 {len(successful_sessions)}/{len(workspace_list)} 个 workspace")

@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 from core.proxy_providers import (
     ApiExtractProvider,
+    ClashProxyProvider,
     RotatingProxyProvider,
     create_proxy_provider,
 )
@@ -112,6 +113,111 @@ class TestRotatingProxyProvider:
         assert provider.get_proxy() is None
 
 
+class TestClashProxyProvider:
+    def test_switches_next_leaf_node_and_returns_local_proxy(self):
+        provider = ClashProxyProvider(
+            api_url="http://clash.test",
+            secret="secret",
+            proxy_url="http://127.0.0.1:7897",
+            selector="GLOBAL",
+        )
+        payload = {
+            "proxies": {
+                "GLOBAL": {"type": "Selector", "now": "node-old", "all": ["DIRECT", "node-a", "node-b"]},
+                "node-a": {"type": "Shadowsocks"},
+                "node-b": {"type": "Vmess"},
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = lambda: None
+        mock_put = MagicMock()
+        mock_put.raise_for_status = lambda: None
+
+        with patch("providers.proxy.clash.requests.get", return_value=mock_resp), patch(
+            "providers.proxy.clash.requests.put",
+            return_value=mock_put,
+        ) as put:
+            proxy = provider.get_proxy()
+
+        assert proxy == "http://127.0.0.1:7897"
+        assert provider.last_node == "node-a"
+        put.assert_called_once()
+        assert put.call_args.kwargs["json"] == {"name": "node-a"}
+        assert put.call_args.kwargs["headers"] == {"Authorization": "Bearer secret"}
+
+    def test_excludes_nodes_by_name_filter(self):
+        provider = ClashProxyProvider(
+            api_url="http://clash-filter.test",
+            proxy_url="127.0.0.1:7897",
+            selector="GLOBAL",
+            node_filter="JP",
+        )
+        payload = {
+            "proxies": {
+                "GLOBAL": {"type": "Selector", "now": "", "all": ["US-1", "JP-1"]},
+                "US-1": {"type": "Trojan"},
+                "JP-1": {"type": "Trojan"},
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = lambda: None
+        mock_put = MagicMock()
+        mock_put.raise_for_status = lambda: None
+
+        with patch("providers.proxy.clash.requests.get", return_value=mock_resp), patch(
+            "providers.proxy.clash.requests.put",
+            return_value=mock_put,
+        ):
+            proxy = provider.get_proxy()
+
+        assert proxy == "http://127.0.0.1:7897"
+        assert provider.last_node == "US-1"
+
+    def test_multi_port_preparation_shuffles_nodes(self, tmp_path, monkeypatch):
+        provider = ClashProxyProvider(
+            api_url="http://clash-multi.test",
+            proxy_url="127.0.0.1:7897",
+            selector="GLOBAL",
+            allocation_mode="multi_port",
+            multi_port_start=7891,
+            multi_port_controller_start=9191,
+            multi_port_runtime_dir=str(tmp_path),
+        )
+        selected_nodes = []
+
+        class FakeProcess:
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+        monkeypatch.setattr(provider, "list_nodes", lambda: ("GLOBAL", ["US-1", "TH-1", "JP-1"]))
+        monkeypatch.setattr("providers.proxy.clash.random.shuffle", lambda values: values.reverse())
+        monkeypatch.setattr(provider, "_resolve_source_config", lambda: tmp_path / "source.yaml")
+        monkeypatch.setattr(provider, "_resolve_runtime_dir", lambda: tmp_path)
+        monkeypatch.setattr(provider, "_resolve_core_path", lambda: tmp_path / "mihomo.exe")
+        monkeypatch.setattr(provider, "_is_port_open", lambda _port: False)
+        monkeypatch.setattr(provider, "_wait_port", lambda _port: None)
+        monkeypatch.setattr(provider, "_wait_port_closed", lambda _port: None)
+        monkeypatch.setattr(provider, "_check_proxy_exit", lambda _proxy: "{}")
+        monkeypatch.setattr(provider, "_write_multi_port_config", lambda _runtime, index, _config: tmp_path / f"{index}.yaml")
+
+        def fake_build_config(_source, node, _port, _controller_port):
+            selected_nodes.append(node)
+            return {"node": node}
+
+        monkeypatch.setattr(provider, "_build_multi_port_config", fake_build_config)
+        monkeypatch.setattr(provider, "_start_multi_port_instance", lambda *_args: FakeProcess())
+
+        proxies = provider.prepare_for_concurrency(2, refresh=True)
+
+        assert proxies == ["http://127.0.0.1:7891", "http://127.0.0.1:7892"]
+        assert selected_nodes == ["JP-1", "TH-1"]
+
+
 class TestCreateProxyProvider:
     def test_api_extract(self):
         provider = create_proxy_provider("api_extract", {"proxy_api_url": "http://api.test/get"})
@@ -121,6 +227,10 @@ class TestCreateProxyProvider:
         provider = create_proxy_provider("rotating_gateway", {"proxy_gateway_url": "http://gate:8080"})
         assert isinstance(provider, RotatingProxyProvider)
 
+    def test_clash(self):
+        provider = create_proxy_provider("clash", {"clash_api_url": "http://127.0.0.1:9097"})
+        assert isinstance(provider, ClashProxyProvider)
+
     def test_api_extract_missing_url(self):
         with pytest.raises(RuntimeError, match="未配置"):
             create_proxy_provider("api_extract", {})
@@ -128,6 +238,10 @@ class TestCreateProxyProvider:
     def test_rotating_missing_gateway(self):
         with pytest.raises(RuntimeError, match="未配置"):
             create_proxy_provider("rotating_gateway", {})
+
+    def test_clash_missing_api_url(self):
+        with pytest.raises(RuntimeError, match="未配置"):
+            create_proxy_provider("clash", {})
 
     def test_unknown_provider(self):
         with pytest.raises(RuntimeError, match="未知"):

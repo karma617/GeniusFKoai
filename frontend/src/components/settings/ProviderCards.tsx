@@ -462,7 +462,13 @@ function EditModal({
     <div className="dialog-backdrop" onClick={onClose}>
       <div
         className="dialog-panel dialog-panel-sm flex flex-col"
-        style={provider.value === 'gmail_oauth_fission' ? { width: '50vw', maxWidth: '50vw' } : undefined}
+        style={
+          provider.value === 'gmail_api_code'
+            ? { width: '80vw', maxWidth: '80vw' }
+            : provider.value === 'gmail_oauth_fission'
+              ? { width: '50vw', maxWidth: '50vw' }
+              : undefined
+        }
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">

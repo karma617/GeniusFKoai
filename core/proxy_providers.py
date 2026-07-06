@@ -34,6 +34,7 @@ class BaseProxyProvider(ABC):
 _LAZY_IMPORTS = {
     "ApiExtractProvider": "providers.proxy.api_extract",
     "RotatingProxyProvider": "providers.proxy.rotating_gateway",
+    "ClashProxyProvider": "providers.proxy.clash",
 }
 
 
@@ -71,6 +72,10 @@ def create_proxy_provider(provider_key: str, config: dict) -> BaseProxyProvider:
         provider_cls = __getattr__("RotatingProxyProvider")
         return provider_cls(gateway_url=gateway)
 
+    if provider_key == "clash":
+        provider_cls = __getattr__("ClashProxyProvider")
+        return provider_cls.from_config(config)
+
     raise RuntimeError(f"未知的代理 provider: {provider_key}")
 
 
@@ -100,3 +105,59 @@ def get_dynamic_proxy(extra: dict | None = None) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def prepare_dynamic_proxy_for_task(concurrency: int, extra: dict | None = None) -> list[str]:
+    """让已启用的动态代理 provider 做任务级准备。"""
+    try:
+        from infrastructure.provider_settings_repository import ProviderSettingsRepository
+        repo = ProviderSettingsRepository()
+        settings = repo.list_enabled("proxy")
+        for setting in settings:
+            config = setting.get_config()
+            auth = setting.get_auth()
+            merged = {**config, **auth, **(extra or {})}
+            try:
+                provider = create_proxy_provider(setting.provider_key, merged)
+                prepare = getattr(provider, "prepare_for_concurrency", None)
+                if callable(prepare):
+                    try:
+                        prepared = list(prepare(concurrency, refresh=True) or [])
+                    except TypeError:
+                        prepared = list(prepare(concurrency) or [])
+                    if prepared:
+                        return prepared
+            except Exception as exc:
+                logger.debug(f"[ProxyProvider] {setting.provider_key} 任务级准备失败: {exc}")
+                raise
+    except Exception:
+        raise
+    return []
+
+
+def refresh_dynamic_proxy(proxy: str, extra: dict | None = None) -> str:
+    """刷新已准备的动态代理入口，返回刷新后的代理地址。"""
+    proxy_value = str(proxy or "").strip()
+    if not proxy_value:
+        return ""
+    try:
+        from infrastructure.provider_settings_repository import ProviderSettingsRepository
+        repo = ProviderSettingsRepository()
+        settings = repo.list_enabled("proxy")
+        for setting in settings:
+            config = setting.get_config()
+            auth = setting.get_auth()
+            merged = {**config, **auth, **(extra or {})}
+            try:
+                provider = create_proxy_provider(setting.provider_key, merged)
+                refresh = getattr(provider, "refresh_prepared_proxy", None)
+                if callable(refresh):
+                    refreshed = str(refresh(proxy_value) or "").strip()
+                    if refreshed:
+                        return refreshed
+            except Exception as exc:
+                logger.debug(f"[ProxyProvider] {setting.provider_key} 刷新代理失败: {exc}")
+                raise
+    except Exception:
+        raise
+    return proxy_value

@@ -64,6 +64,26 @@ def _write_local_json(target_dir: str, email: Any, payload: Any) -> str:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
 
+
+def _write_named_local_json(target_dir: str, filename: str, payload: Any) -> str:
+    directory = Path("data") / target_dir
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _exported_at() -> str:
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def build_sub2api_export_payload(accounts: list[dict]) -> dict:
+    return {
+        'exported_at': _exported_at(),
+        'proxies': [],
+        'accounts': [account for account in accounts if isinstance(account, dict)],
+    }
+
 def _first_non_empty(*values: Any) -> str | None:
     for value in values:
         if isinstance(value, str) and value.strip():
@@ -237,7 +257,11 @@ def convert_session_to_sub2api_account(session_json: Any, *, source_name: str = 
 def save_session_to_local_upload_jsons(session_json: Any, *, workspace_id: str = '') -> tuple[str, str]:
     info = convert_session_to_sub2api_account(session_json, workspace_id=workspace_id)
     email = info.get('email') or 'k12'
-    sub2api_path = _write_local_json('sub2api', email, info['sub2api_account'])
+    sub2api_path = _write_local_json(
+        'sub2api',
+        email,
+        build_sub2api_export_payload([info['sub2api_account']]),
+    )
     cpa_payload = {
         'access_token': info.get('access_token') or '',
         'account_id': info.get('account_id') or '',
@@ -250,6 +274,29 @@ def save_session_to_local_upload_jsons(session_json: Any, *, workspace_id: str =
     }
     cpa_path = _write_local_json('cpa', email, cpa_payload)
     return cpa_path, sub2api_path
+
+
+def merge_sub2api_export_files(paths: list[str]) -> tuple[str, dict]:
+    accounts: list[dict] = []
+    for raw_path in paths:
+        raw_text = str(raw_path or '').strip()
+        if not raw_text:
+            continue
+        path = Path(raw_text)
+        data = json.loads(path.read_text(encoding='utf-8'))
+        if isinstance(data, dict) and isinstance(data.get('accounts'), list):
+            accounts.extend(item for item in data['accounts'] if isinstance(item, dict))
+        elif isinstance(data, dict) and data.get('credentials'):
+            accounts.append(data)
+
+    payload = build_sub2api_export_payload(accounts)
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    path = _write_named_local_json(
+        'sub2api',
+        f'k12-sub2api-batch-{timestamp}-{uuid.uuid4().hex[:8]}.json',
+        payload,
+    )
+    return path, payload
 
 
 # ===================== account_id 兜底提取（参考 FrciblyK12/cpa_upload.py） =====================
@@ -430,6 +477,90 @@ def upload_session_to_sub2api(
                 log(f'  [K12] SUB2API 上传失败，将重试 {attempt}/{max_upload_retries}: {last_error}')
                 time.sleep(K12_SUB2API_UPLOAD_RETRY_DELAY_SECONDS)
         return False, last_error or 'SUB2API 上传失败'
+    except Exception as exc:
+        return False, str(exc)
+
+
+def upload_sub2api_export_accounts(
+    accounts: list[dict],
+    *,
+    api_url: str | None = None,
+    email: str | None = None,
+    password: str | None = None,
+    group_name: str | None = None,
+    account_priority: Any = None,
+    default_proxy_name: str | None = None,
+    timeout: int = 30,
+    log: Any = print,
+    max_upload_retries: int = K12_SUB2API_UPLOAD_RETRIES,
+) -> tuple[bool, str]:
+    '''把已导出的 sub2api accounts 统一上传；登录、分组、代理只解析一次。'''
+    valid_accounts = [account for account in accounts if isinstance(account, dict)]
+    if not valid_accounts:
+        return False, '没有可上传的 SUB2API 账号'
+
+    api_url = api_url or _get_config_value('sub2api_url')
+    email = email or _get_config_value('sub2api_email')
+    password = password if password not in (None, '') else _get_config_value('sub2api_password')
+    group_name = group_name or _get_config_value('sub2api_group_name') or DEFAULT_SUB2API_GROUP_NAME
+    default_proxy_name = default_proxy_name if default_proxy_name is not None else _get_config_value('sub2api_default_proxy_name')
+
+    try:
+        origin, token = login_sub2api(api_url, email or '', password or '', timeout=timeout, retries=0)
+        groups = get_groups_by_names(origin, token, group_name, timeout=timeout, retries=0)
+        group_ids = [_normalize_proxy_id(g.get('id')) for g in groups]
+        group_ids = [i for i in group_ids if i]
+        if not group_ids:
+            return False, 'SUB2API 返回的目标分组 ID 无效'
+
+        proxy_id = None
+        if _normalize_string(default_proxy_name):
+            sub2api_proxy = resolve_sub2api_proxy(origin, token, default_proxy_name or '', timeout=timeout, retries=0)
+            proxy_id = _normalize_proxy_id((sub2api_proxy or {}).get('id'))
+
+        priority = _account_priority(account_priority)
+        success = 0
+        failures: list[str] = []
+        total_attempts = max(1, int(max_upload_retries) + 1)
+        for account in valid_accounts:
+            last_error = ''
+            for attempt in range(1, total_attempts + 1):
+                try:
+                    payload = dict(account)
+                    payload.update({
+                        'priority': priority,
+                        'group_ids': group_ids,
+                        'auto_pause_on_expired': True,
+                    })
+                    credentials = payload.get('credentials') if isinstance(payload.get('credentials'), dict) else {}
+                    expires_epoch = _epoch_seconds(payload.get('expires_at')) or _epoch_seconds(credentials.get('expires_at'))
+                    if expires_epoch:
+                        payload['expires_at'] = expires_epoch
+                    if proxy_id:
+                        payload['proxy_id'] = proxy_id
+
+                    _request_json(
+                        origin,
+                        '/api/v1/admin/accounts',
+                        method='POST',
+                        token=token,
+                        body=payload,
+                        timeout=timeout,
+                        retries=0,
+                    )
+                    success += 1
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+                    if attempt >= total_attempts or not _is_retryable_sub2api_upload_error(exc):
+                        failures.append(last_error)
+                        break
+                    log(f'  [K12] SUB2API 批量上传失败，将重试 {attempt}/{max_upload_retries}: {last_error}')
+                    time.sleep(K12_SUB2API_UPLOAD_RETRY_DELAY_SECONDS)
+
+        if failures:
+            return False, f'SUB2API 批量上传完成：成功 {success}/{len(valid_accounts)}，失败 {len(failures)}，首个错误: {failures[0]}'
+        return True, f'SUB2API 批量上传完成：成功 {success}/{len(valid_accounts)}'
     except Exception as exc:
         return False, str(exc)
 

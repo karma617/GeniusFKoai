@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from '@/lib/utils'
+import { getConfigOptions } from '@/lib/app-data'
+import type { ProviderOption, ProviderSetting } from '@/lib/config-options'
 import { useI18n } from '@/lib/i18n-context'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import ProviderCards from '@/components/settings/ProviderCards'
 import { Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Globe2, ShieldCheck, CircleOff, Activity, Save, DownloadCloud, SearchCheck, Database } from 'lucide-react'
 
 const DEFAULT_FALLBACK_PROXY_URL = 'http://127.0.0.1:7897'
@@ -53,16 +56,26 @@ export default function Proxies() {
   const [freeBusy, setFreeBusy] = useState('')
   const [freeNotice, setFreeNotice] = useState('')
   const [freeError, setFreeError] = useState('')
+  const [proxyCatalog, setProxyCatalog] = useState<ProviderOption[]>([])
+  const [proxyProviderSettings, setProxyProviderSettings] = useState<ProviderSetting[]>([])
+  const [proxyProviderError, setProxyProviderError] = useState('')
 
   const load = async () => {
-    const [proxyItems, config, freeCaps] = await Promise.all([
+    const [proxyItems, config, freeCaps, options] = await Promise.all([
       apiFetch('/proxies'),
       apiFetch('/config'),
       apiFetch('/proxies/free/capabilities').catch(() => null),
+      getConfigOptions({ force: true }).catch((error: any) => {
+        setProxyProviderError(error?.message || '动态代理配置加载失败')
+        return null
+      }),
     ])
     setProxies(proxyItems)
     setProxyStrategy(config.proxy_strategy || 'pool_then_default')
     setFallbackProxyUrl(config.proxy_fallback_url || DEFAULT_FALLBACK_PROXY_URL)
+    setProxyCatalog(options?.proxy_providers || [])
+    setProxyProviderSettings(options?.proxy_settings || [])
+    if (options) setProxyProviderError('')
     const sources = (freeCaps?.sources || []) as FreeProxySource[]
     setFreeFetchAvailable(Boolean(freeCaps?.available))
     setFreeSources([{ id: 'all', name: FREE_PROXY_TEXT.allSources }, ...sources])
@@ -285,6 +298,33 @@ export default function Proxies() {
                 <Save className="h-4 w-4 mr-1.5" />
                 {proxyConfigSaved ? '已保存' : (savingProxyConfig ? '保存中...' : '保存代理策略')}
               </Button>
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-elevated)]/45 p-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">动态代理 Provider</div>
+                <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">Clash 节点切换</div>
+                <div className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+                  启用后注册任务从代理池取代理时，会优先通过 Clash 控制接口切换节点。
+                </div>
+              </div>
+              {proxyProviderError && (
+                <div className="rounded-md border border-red-400/25 bg-red-400/10 px-3 py-2 text-xs leading-5 text-red-400">
+                  {proxyProviderError}
+                </div>
+              )}
+              {proxyCatalog.length > 0 ? (
+                <ProviderCards
+                  providerType="proxy"
+                  catalog={proxyCatalog}
+                  settings={proxyProviderSettings}
+                  onReload={load}
+                />
+              ) : (
+                <div className="rounded-md border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 px-3 py-2 text-xs text-[var(--text-muted)]">
+                  暂无动态代理 Provider 配置项。
+                </div>
+              )}
             </div>
 
             <div className="space-y-3 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-elevated)]/45 p-3">

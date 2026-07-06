@@ -344,7 +344,7 @@ body {
 
 .dialog-panel {
   position: relative;
-  width: 100%;
+  width: 60vw;
   max-height: calc(100dvh - 32px);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -354,9 +354,11 @@ body {
   animation: scaleIn 0.28s var(--ease-spring);
 }
 
-.dialog-panel-sm { max-width: 520px; }
-.dialog-panel-md { max-width: 720px; }
-.dialog-panel-lg { max-width: 1024px; }
+.dialog-panel-sm,
+.dialog-panel-md,
+.dialog-panel-lg {
+  max-width: 60vw;
+}
 
 /* ================================================================
    Form controls

@@ -1178,7 +1178,7 @@ export default function Sub2ApiManagement() {
 
       {exportDialogOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-2xl">
+          <div className="w-[60vw] rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-2xl">
             <div className="mb-4">
               <h2 className="text-lg font-semibold text-[var(--text-primary)]">导出 Sub2API JSON</h2>
               <p className="mt-1 text-sm text-[var(--text-muted)]">
