@@ -22,6 +22,15 @@ def test_parse_gmail_api_code_entries_splits_email_and_url():
     assert entries[0].code_url == "https://gapi.mailsapi.com/api/code/fetch?token=abc&uid=def"
 
 
+def test_parse_gmail_api_code_entries_skips_deleted_rows():
+    entries = parse_gmail_api_code_entries(
+        "# deleted first@gmail.com----https://example.test/first\n"
+        "second@gmail.com----https://example.test/second"
+    )
+
+    assert [entry.email for entry in entries] == ["second@gmail.com"]
+
+
 def test_gmail_api_code_get_email_claims_fixed_gmail():
     mailbox = GmailApiCodeMailbox(
         pool_text=(
@@ -64,7 +73,7 @@ def test_gmail_api_code_invalid_parent_is_skipped_for_next_email():
     tags = wrapper.mark_invalid_email(first, reason="invalid_email_no_otp")
     second = wrapper.get_email()
 
-    assert tags == ["Gmail API接码邮箱已标记无效"]
+    assert tags == ["主号邮箱 first@gmail.com 已标记无效: Gmail API接码邮箱已标记无效"]
     assert first.extra["email_alias"]["parent_email"] == "first@gmail.com"
     assert second.extra["email_alias"]["parent_email"] == "second@gmail.com"
 
@@ -104,3 +113,57 @@ def test_gmail_api_code_wait_for_code_skips_before_id(monkeypatch):
 
     assert before_ids == {"code:111111"}
     assert mailbox.wait_for_code(account, timeout=3, before_ids=before_ids) == "222222"
+
+
+def test_gmail_api_code_status_602_keeps_polling(monkeypatch):
+    calls = {"count": 0}
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, text: str):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return Response('{"status":602,"message":"未收到验证码"}')
+        return Response('{"status":200,"code":"333444"}')
+
+    monkeypatch.setattr("core.gmail_api_code_mailbox.requests.get", fake_get)
+    monkeypatch.setattr("core.gmail_api_code_mailbox.time.sleep", lambda _seconds: None)
+
+    mailbox = GmailApiCodeMailbox(
+        pool_text="user@gmail.com----https://example.test/fetch",
+        poll_interval="1",
+    )
+    account = mailbox.get_email()
+
+    assert mailbox.wait_for_code(account, timeout=3) == "333444"
+
+
+def test_gmail_api_code_status_502_marks_email_invalid(monkeypatch):
+    class Response:
+        status_code = 200
+        text = '{"status":502,"message":"邮箱已下架"}'
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("core.gmail_api_code_mailbox.requests.get", lambda *_args, **_kwargs: Response())
+
+    mailbox = GmailApiCodeMailbox(
+        pool_text=(
+            "first@gmail.com----https://example.test/first\n"
+            "second@gmail.com----https://example.test/second"
+        )
+    )
+    account = mailbox.get_email()
+
+    with pytest.raises(RuntimeError, match="不可用|下架"):
+        mailbox.wait_for_code(account, timeout=3)
+
+    assert mailbox.get_email().email == "second@gmail.com"

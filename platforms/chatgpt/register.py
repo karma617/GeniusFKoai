@@ -81,7 +81,7 @@ from .constants import (
 
 
 
-CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 20
+CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 10
 CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS = 10
 
 
@@ -2172,7 +2172,7 @@ class RegistrationEngine:
 
     def _get_verification_code(self, *, mark_invalid_on_timeout: bool = True) -> Optional[str]:
 
-        """获取验证码；每轮等 20 秒，未收到则重发，默认共 3 轮。"""
+        """获取验证码；每轮等 10 秒，未收到则重发，默认共 3 轮。"""
 
         try:
 
@@ -2383,7 +2383,7 @@ class RegistrationEngine:
         try:
             applied = list(marker(reason=reason) or [])
             if applied:
-                self._log(f"已给邮箱 {self.email} 打标: {', '.join(applied)}", "warning")
+                self._log(f"邮箱无效打标完成: 当前邮箱 {self.email}; {', '.join(applied)}", "warning")
             else:
                 self._log(f"邮箱无效打标未返回标签: {self.email}", "warning")
             return applied
@@ -3527,7 +3527,7 @@ class RegistrationEngine:
 
     def _wait_platform_login_code(self, client: OpenAIHTTPClient) -> Optional[str]:
 
-        """等待独立 Platform 登录邮箱 OTP；20 秒未到则重发，最多 3 轮。"""
+        """等待独立 Platform 登录邮箱 OTP；10 秒未到则重发，最多 3 轮。"""
 
         import os as _os_otp_timeout
 
@@ -4112,7 +4112,7 @@ class RegistrationEngine:
 
     def _wait_platform_reference_register_code(self, client: OpenAIHTTPClient) -> Optional[str]:
 
-        """等待 platform 注册验证码；沿用本项目三轮 20s 规则，重发仍走参照 send_otp。"""
+        """等待 platform 注册验证码；沿用本项目三轮 10s 规则，重发仍走参照 send_otp。"""
 
         import os as _os_otp_timeout
 
@@ -5052,12 +5052,33 @@ class RegistrationEngine:
         if not self.session:
             return {}, ""
         try:
-            if not self._start_oauth():
-                self._log("Platform reference: ChatGPT NextAuth OAuth URL 获取失败", "warning")
-                return {}, _cookies_to_header(self.session.cookies)
-            auth_url = str(getattr(self.oauth_start, "auth_url", "") or "").strip()
+            auth_url = ""
+            max_oauth_attempts = 3
+            for attempt in range(1, max_oauth_attempts + 1):
+                if self._start_oauth():
+                    auth_url = str(getattr(self.oauth_start, "auth_url", "") or "").strip()
+                    if auth_url:
+                        break
+                    self._log(
+                        "Platform reference: ChatGPT NextAuth OAuth URL 为空 "
+                        f"({attempt}/{max_oauth_attempts})",
+                        "warning",
+                    )
+                else:
+                    self._log(
+                        "Platform reference: ChatGPT NextAuth OAuth URL 获取失败 "
+                        f"({attempt}/{max_oauth_attempts})",
+                        "warning",
+                    )
+                if attempt < max_oauth_attempts:
+                    self._log(
+                        "Platform reference: ChatGPT NextAuth OAuth URL 获取失败，"
+                        f"2s 后重试 ({attempt + 1}/{max_oauth_attempts})",
+                        "warning",
+                    )
+                    time.sleep(2)
             if not auth_url:
-                self._log("Platform reference: ChatGPT NextAuth OAuth URL 为空", "warning")
+                self._log("Platform reference: ChatGPT NextAuth OAuth URL 获取失败，已达到最大重试次数", "warning")
                 return {}, _cookies_to_header(self.session.cookies)
             auth_url = self._add_login_hint_to_auth_url(auth_url)
 

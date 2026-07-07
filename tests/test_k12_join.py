@@ -992,6 +992,73 @@ def test_platform_reference_nextauth_rejects_signin_csrf_fallback():
     assert "callbackUrl=https%3A%2F%2Fchatgpt.com%2F" in signin_kwargs["data"]
 
 
+def test_platform_reference_nextauth_retries_oauth_url(monkeypatch):
+    from platforms.chatgpt.register import RegistrationEngine
+
+    calls = {"oauth": 0, "gets": []}
+    sleeps = []
+    logs = []
+
+    class FakeCookies(dict):
+        pass
+
+    class FakeResponse:
+        def __init__(self, status_code=200, *, url="", data=None):
+            self.status_code = status_code
+            self.url = url
+            self._data = data
+            self.text = ""
+            self.headers = {}
+
+        def json(self):
+            if self._data is None:
+                raise ValueError("no json")
+            return self._data
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = FakeCookies()
+
+        def get(self, url, **_kwargs):
+            calls["gets"].append(url)
+            if url == "https://chatgpt.com/":
+                return FakeResponse(200, url=url, data={})
+            if url == "https://chatgpt.com/api/auth/session":
+                return FakeResponse(
+                    200,
+                    url=url,
+                    data={"accessToken": "chatgpt-access", "sessionToken": "session-token"},
+                )
+            if url.startswith("https://chatgpt.com/api/auth/callback/openai"):
+                return FakeResponse(200, url=url, data={})
+            raise AssertionError(f"unexpected GET {url}")
+
+    service = SimpleNamespace(service_type=SimpleNamespace(value="test"))
+    engine = RegistrationEngine(email_service=service, callback_logger=logs.append)
+    engine.session = FakeSession()
+    engine.email = "user@example.com"
+
+    def fake_start_oauth():
+        calls["oauth"] += 1
+        if calls["oauth"] < 3:
+            return False
+        engine.oauth_start = SimpleNamespace(
+            auth_url="https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1"
+        )
+        return True
+
+    engine._start_oauth = fake_start_oauth
+    monkeypatch.setattr("platforms.chatgpt.register.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    session_data, _cookies = engine._establish_chatgpt_web_session_for_platform_reference()
+
+    assert calls["oauth"] == 3
+    assert sleeps == [2, 2]
+    assert session_data["accessToken"] == "chatgpt-access"
+    assert any("2s 后重试 (2/3)" in message for message in logs)
+    assert any("2s 后重试 (3/3)" in message for message in logs)
+
+
 def test_platform_reference_existing_k12_login_skips_platform_oauth(monkeypatch):
     from platforms.chatgpt import register as register_module
 

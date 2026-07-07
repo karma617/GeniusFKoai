@@ -478,7 +478,7 @@ def test_get_verification_code_resends_after_each_60s_timeout(monkeypatch):
     assert any("重新发送验证码 (2/3)" in message for message in engine.logs)
 
 
-def test_get_verification_code_defaults_to_20s_timeout(monkeypatch):
+def test_get_verification_code_defaults_to_10s_timeout(monkeypatch):
     engine = _bare_engine()
     engine._otp_sent_at = 1000.0
     waits = []
@@ -493,7 +493,7 @@ def test_get_verification_code_defaults_to_20s_timeout(monkeypatch):
     monkeypatch.delenv("CHATGPT_EMAIL_OTP_MAX_ATTEMPTS", raising=False)
 
     assert engine._get_verification_code() == "654321"
-    assert [item["timeout"] for item in waits] == [20]
+    assert [item["timeout"] for item in waits] == [10]
 
 
 def test_get_verification_code_marks_invalid_email_after_three_timeouts(monkeypatch):
@@ -516,7 +516,7 @@ def test_get_verification_code_marks_invalid_email_after_three_timeouts(monkeypa
 
     assert engine._get_verification_code() is None
     assert marks == ["invalid_email_no_otp"]
-    assert any("已给邮箱 new@example.com 打标: 无效邮箱" in message for message in engine.logs)
+    assert any("邮箱无效打标完成: 当前邮箱 new@example.com; 无效邮箱" in message for message in engine.logs)
 
 
 def test_get_verification_code_can_skip_invalid_mark_for_token_subflows(monkeypatch):

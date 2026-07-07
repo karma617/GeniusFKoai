@@ -642,6 +642,62 @@ def test_chatgpt_register_retries_gmail_api_code_pool_temporarily_empty(monkeypa
     assert any("父邮箱池当前都在使用中" in str(event[1]) for event in logger.events)
 
 
+def test_chatgpt_register_retries_gmail_api_code_dead_parent(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("Gmail API接码邮箱不可用或已下架 (api_status=502)")
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token"},
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_build_platform_instance",
+        lambda *args, **kwargs: FakePlatform(),
+    )
+    monkeypatch.setattr(tasks_module, "save_account", lambda account: account)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "oauth_browser",
+                "enable_email_alias": True,
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == [1, 1]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert not any(event[0] == "error" for event in logger.events)
+    assert any("父邮箱不可用或已下架" in str(event[1]) for event in logger.events)
+
+
 def test_chatgpt_sms_oauth_register_falls_back_to_next_sms_provider(monkeypatch):
     attempts = []
 

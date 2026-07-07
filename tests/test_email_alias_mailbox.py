@@ -339,6 +339,23 @@ def test_email_alias_parent_exhausted_marks_parent_invalid_before_success():
     assert mailbox.released == ["main@example.com"]
 
 
+def test_email_alias_invalid_mark_reports_parent_email():
+    logs: list[str] = []
+    mailbox = InvalidMarkMailbox()
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt", log_fn=logs.append)
+    account = wrapper.get_email()
+
+    assert wrapper.mark_invalid_email(account, reason="invalid_email_no_otp") == [
+        "主号邮箱 main@example.com 已标记无效: invalid"
+    ]
+    assert mailbox.invalid_marks == [("main@example.com", "invalid_email_no_otp")]
+    assert any(
+        item.startswith("Email alias parent marked invalid: alias=main+")
+        and " parent=main@example.com " in item
+        for item in logs
+    )
+
+
 def test_build_platform_instance_wraps_mailbox_when_email_alias_enabled(monkeypatch):
     class FakePlatform:
         def __init__(self, *, config, mailbox=None):

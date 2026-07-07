@@ -13,7 +13,7 @@ from core.gmail_api_code_mailbox import GmailApiCodeMailbox, parse_gmail_api_cod
 from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
 
-ALIAS_LIMIT = 5
+ALIAS_LIMIT = 6
 _ALLOCATED_RE = re.compile(r"Email alias allocated:\s+([^\s]+)\s+parent=([^\s]+)")
 
 

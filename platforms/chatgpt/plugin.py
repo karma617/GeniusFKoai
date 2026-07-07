@@ -1065,6 +1065,8 @@ class ChatGPTPlatform(BasePlatform):
             api_mode = _text((metadata or {}).get("api_mode")).lower()
             if raw in {"cloud_mail", "cfworker"} or api_mode in {"cloud_mail", "cfworker"}:
                 return "cfworker_admin_api"
+            if raw == "outlook_email":
+                return "outlook_email_api"
             return raw
 
         def _apply_provider_compat_settings(provider_key: str, runtime_extra: dict, metadata: dict) -> None:
@@ -1081,6 +1083,37 @@ class ChatGPTPlatform(BasePlatform):
                 )
                 if token and not runtime_extra.get("cfworker_admin_token"):
                     runtime_extra["cfworker_admin_token"] = token
+
+        def _alias_parent_from(metadata: dict, mailbox_email: str) -> tuple[str, str, bool]:
+            alias_meta = _safe_dict(metadata.get("email_alias"))
+            metadata_email = _text(metadata.get("email"))
+            metadata_email_lc = metadata_email.lower()
+            mailbox_email_lc = mailbox_email.lower()
+            metadata_email_is_parent = (
+                "@" in metadata_email
+                and metadata_email_lc != mailbox_email_lc
+                and "+" not in metadata_email.split("@", 1)[0]
+            )
+            parent_email = _text(
+                (metadata_email if metadata_email_is_parent else "")
+                or metadata.get("alias_parent_email")
+                or metadata.get("email_alias_parent")
+                or metadata.get("parent_email")
+                or alias_meta.get("parent_email")
+                or alias_meta.get("alias_parent_email")
+            )
+            parent_account_id = _text(
+                metadata.get("alias_parent_account_id")
+                or alias_meta.get("parent_account_id")
+                or alias_meta.get("alias_parent_account_id")
+            )
+            is_alias = bool(parent_email or parent_account_id or alias_meta.get("enabled"))
+            if not parent_email and "+" in mailbox_email and "@" in mailbox_email:
+                local_part, domain = mailbox_email.split("@", 1)
+                parent_email = f"{local_part.split('+', 1)[0]}@{domain}"
+                is_alias = True
+                log_fn(f"  获取rt: 检测到 plus 别名邮箱但缺少父邮箱元数据，按邮箱地址推断父邮箱={parent_email}")
+            return parent_email, parent_account_id, is_alias
 
         extra = _safe_dict(account.extra)
         resources = [dict(item) for item in _safe_list(extra.get("provider_resources")) if isinstance(item, dict)]
@@ -1146,12 +1179,17 @@ class ChatGPTPlatform(BasePlatform):
             accepted_providers = {provider_name, raw_provider_name}
             if provider_name == "cfworker_admin_api":
                 accepted_providers.update({"cloud_mail", "cfworker"})
+            if provider_name == "outlook_email_api":
+                accepted_providers.add("outlook_email")
             accepted_providers = {item for item in accepted_providers if item}
 
             same_provider_account = None
             matched_provider_account = None
-            email_lc = mailbox_email.lower()
-            account_id_lc = account_id.lower()
+            parent_email, parent_account_id, is_alias = _alias_parent_from(metadata, mailbox_email)
+            email_candidates = {mailbox_email.lower(), parent_email.lower()}
+            id_candidates = {account_id.lower(), parent_account_id.lower()}
+            email_candidates.discard("")
+            id_candidates.discard("")
             for item in provider_accounts:
                 item_provider = _mailbox_provider_key(
                     _text(item.get("provider_name") or item.get("provider")),
@@ -1173,22 +1211,51 @@ class ChatGPTPlatform(BasePlatform):
                     _text(item_credentials.get("login_account")).lower(),
                     _text(item.get("id")).lower(),
                 }
-                if email_lc in candidates or (account_id_lc and account_id_lc in candidates):
+                if (email_candidates & candidates) or (id_candidates & candidates):
                     matched_provider_account = item
                     break
 
             provider_account = matched_provider_account or same_provider_account
             runtime_extra = dict(metadata)
             _apply_provider_compat_settings(provider_name, runtime_extra, metadata)
-            runtime_extra["provider_resource"] = mailbox_resource
+            runtime_resource = dict(mailbox_resource)
+            runtime_metadata = dict(metadata)
+            if is_alias:
+                if not parent_email:
+                    last_error = f"别名邮箱 {mailbox_email} 缺少父邮箱，无法读取 OTP"
+                    continue
+                parent_account_id = parent_account_id or account_id or parent_email
+                runtime_metadata["alias_parent_email"] = parent_email
+                runtime_metadata["alias_parent_account_id"] = parent_account_id
+                runtime_metadata["email_alias"] = {
+                    **_safe_dict(runtime_metadata.get("email_alias")),
+                    "enabled": True,
+                    "alias_email": mailbox_email,
+                    "parent_email": parent_email,
+                    "parent_account_id": parent_account_id,
+                }
+                runtime_resource["metadata"] = runtime_metadata
+                runtime_resource["handle"] = mailbox_email
+                runtime_resource["display_name"] = mailbox_email
+                runtime_resource["resource_identifier"] = parent_account_id
+                runtime_extra = dict(runtime_metadata)
+                _apply_provider_compat_settings(provider_name, runtime_extra, runtime_metadata)
+            runtime_extra["provider_resource"] = runtime_resource
             if provider_account:
                 runtime_extra["provider_account"] = provider_account
 
             mailbox_account_extra = dict(runtime_extra)
             mailbox_account_extra["mailbox_provider_key"] = provider_name
+            if is_alias:
+                mailbox_account_extra["email_alias"] = {
+                    "enabled": True,
+                    "alias_email": mailbox_email,
+                    "parent_email": parent_email,
+                    "parent_account_id": parent_account_id or account_id or parent_email,
+                }
             mailbox_account = MailboxAccount(
-                email=mailbox_email,
-                account_id=account_id,
+                email=parent_email if is_alias else mailbox_email,
+                account_id=(parent_account_id or account_id or parent_email) if is_alias else account_id,
                 extra=mailbox_account_extra,
             )
             try:
@@ -1203,6 +1270,8 @@ class ChatGPTPlatform(BasePlatform):
             selected_mailbox_email = mailbox_email
             if raw_provider_name and raw_provider_name != provider_name:
                 log_fn(f"  获取rt: 邮箱 provider 兼容映射 {raw_provider_name} -> {provider_name}")
+            if is_alias:
+                log_fn(f"  获取rt: 检测到别名邮箱 alias={mailbox_email} parent={parent_email}")
             break
 
         if mailbox is None or mailbox_account is None:

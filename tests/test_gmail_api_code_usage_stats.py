@@ -48,8 +48,8 @@ def test_gmail_api_code_alias_usage_counts_success_and_unconfirmed_allocations(m
 
     assert item["successful_alias_count"] == 1
     assert item["allocated_only_count"] == 1
-    assert item["confirmed_remaining"] == 4
-    assert item["conservative_remaining"] == 3
+    assert item["confirmed_remaining"] == 5
+    assert item["conservative_remaining"] == 4
     assert item["successful_aliases"] == ["main+done@gmail.com"]
     assert item["allocated_only_aliases"] == ["main+pending@gmail.com"]
     assert data["summary"]["successful_alias_count"] == 1

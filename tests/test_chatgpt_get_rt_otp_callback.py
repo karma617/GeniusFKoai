@@ -166,3 +166,83 @@ def test_get_rt_mailbox_otp_callback_maps_cloud_mail_to_cfworker(monkeypatch):
     assert captured["extra"]["provider_account"]["provider_name"] == "cfworker_admin_api"
     assert callback() == "123456"
     assert captured["wait_account"].extra["mailbox_provider_key"] == "cfworker_admin_api"
+
+
+def test_get_rt_mailbox_otp_callback_reads_alias_parent_mailbox(monkeypatch):
+    captured = {"accounts": [], "logs": []}
+
+    class FakeMailbox:
+        def get_current_ids(self, account):
+            captured["accounts"].append(("baseline", account.email, account.account_id))
+            return {"old-message"}
+
+        def wait_for_code(self, account, keyword="", timeout=120, before_ids=None, code_pattern=None):
+            captured["accounts"].append(("wait", account.email, account.account_id))
+            captured["wait_before_ids"] = before_ids
+            captured["wait_alias"] = account.extra["email_alias"]["alias_email"]
+            return "998877"
+
+    def fake_create_mailbox(provider, extra=None, proxy=None):
+        captured["provider"] = provider
+        captured["extra"] = extra
+        return FakeMailbox()
+
+    import core.base_mailbox as base_mailbox
+
+    monkeypatch.setattr(base_mailbox, "create_mailbox", fake_create_mailbox)
+
+    account = Account(
+        platform="chatgpt",
+        email="marchioritisa074+2axe1v3x@outlook.com",
+        password="chatgpt-password",
+        extra={
+            "provider_resources": [
+                {
+                    "provider_type": "mailbox",
+                    "provider_name": "outlook_email",
+                    "resource_type": "mailbox",
+                    "resource_identifier": "parent-3431",
+                    "handle": "marchioritisa074+2axe1v3x@outlook.com",
+                    "display_name": "marchioritisa074+2axe1v3x@outlook.com",
+                    "metadata": {
+                        "email": "marchioritisa074+2axe1v3x@outlook.com",
+                        "alias_parent_email": "marchioritisa074@outlook.com",
+                        "alias_parent_account_id": "parent-3431",
+                    },
+                }
+            ],
+            "provider_accounts": [
+                {
+                    "provider_type": "mailbox",
+                    "provider_name": "outlook_email_api",
+                    "login_identifier": "marchioritisa074@outlook.com",
+                    "display_name": "marchioritisa074@outlook.com",
+                    "credentials": {"email": "marchioritisa074@outlook.com"},
+                    "metadata": {"account_id": "parent-3431"},
+                }
+            ],
+        },
+    )
+    platform = ChatGPTPlatform(RegisterConfig())
+
+    callback, error = platform._build_get_rt_mailbox_otp_callback(
+        account,
+        captured["logs"].append,
+        proxy=None,
+    )
+
+    assert error == ""
+    assert callback is not None
+    assert captured["provider"] == "outlook_email_api"
+    assert captured["extra"]["provider_resource"]["metadata"]["alias_parent_email"] == "marchioritisa074@outlook.com"
+    assert captured["extra"]["provider_resource"]["handle"] == "marchioritisa074+2axe1v3x@outlook.com"
+    assert captured["extra"]["provider_account"]["login_identifier"] == "marchioritisa074@outlook.com"
+    assert callback() == "998877"
+    assert captured["accounts"] == [
+        ("baseline", "marchioritisa074@outlook.com", "parent-3431"),
+        ("wait", "marchioritisa074@outlook.com", "parent-3431"),
+    ]
+    assert captured["wait_before_ids"] == {"old-message"}
+    assert captured["wait_alias"] == "marchioritisa074+2axe1v3x@outlook.com"
+    assert any("outlook_email -> outlook_email_api" in item for item in captured["logs"])
+    assert any("检测到别名邮箱" in item and "parent=marchioritisa074@outlook.com" in item for item in captured["logs"])

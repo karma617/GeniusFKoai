@@ -27,7 +27,22 @@ type GmailMother = {
 type GmailApiCodeRow = {
   email: string
   codeUrl: string
+  deleted: boolean
 }
+
+type GmailApiCodeUsageItem = {
+  parent_email: string
+  successful_alias_count: number
+  allocated_only_count: number
+  confirmed_remaining: number
+  conservative_remaining: number
+  email_status: string
+  email_status_reason: string
+  status: string
+}
+
+const GMAIL_API_CODE_ALIAS_LIMIT = 6
+const GMAIL_API_CODE_DELETED_PREFIX = '# deleted '
 
 function newGmailMother(): GmailMother {
   return {
@@ -79,16 +94,31 @@ function parseGmailApiCodeRows(value: string): GmailApiCodeRow[] {
   const rows: GmailApiCodeRow[] = []
   const seen = new Set<string>()
   for (const rawLine of String(value || '').split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('#') || !line.includes('----')) continue
+    let line = rawLine.trim()
+    if (!line) continue
+    const deleted = /^#\s*deleted\s+/i.test(line)
+    if (deleted) line = line.replace(/^#\s*deleted\s+/i, '').trim()
+    if (!deleted && line.startsWith('#')) continue
+    if (!line.includes('----')) continue
     const [emailPart, ...urlParts] = line.split('----')
     const email = emailPart.trim().toLowerCase()
     const codeUrl = urlParts.join('----').trim()
     if (!email || !email.includes('@') || !/^https?:\/\//i.test(codeUrl) || seen.has(email)) continue
     seen.add(email)
-    rows.push({ email, codeUrl })
+    rows.push({ email, codeUrl, deleted })
   }
   return rows
+}
+
+function gmailApiCodeFailureRate(item?: GmailApiCodeUsageItem) {
+  const success = Number(item?.successful_alias_count || 0)
+  const failed = Number(item?.allocated_only_count || 0)
+  const total = success + failed
+  return total > 0 ? failed / total : 0
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(value * 100)}%`
 }
 
 /* ------------------------------------------------------------------ */
@@ -226,6 +256,7 @@ function EditModal({
   const [gmailCallbackSessionId, setGmailCallbackSessionId] = useState('')
   const [gmailOauthLoading, setGmailOauthLoading] = useState(false)
   const [gmailOauthResult, setGmailOauthResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
+  const [gmailApiCodeUsage, setGmailApiCodeUsage] = useState<Record<string, GmailApiCodeUsageItem>>({})
   const [gmailMothers, setGmailMothers] = useState<GmailMother[]>(() => {
     const parsed = parseGmailPool((setting?.auth?.gmail_oauth_pool_json || '') || (setting?.config?.gmail_oauth_pool_json || ''))
     if (parsed.length > 0) return parsed
@@ -237,6 +268,15 @@ function EditModal({
   })
   const gmailApiCodeRows = provider.value === 'gmail_api_code'
     ? parseGmailApiCodeRows(form.gmail_api_code_pool_text || '')
+    : []
+  const gmailApiCodeRowsSorted = provider.value === 'gmail_api_code'
+    ? [...gmailApiCodeRows].sort((left, right) => {
+      if (left.deleted !== right.deleted) return left.deleted ? 1 : -1
+      const leftRate = gmailApiCodeFailureRate(gmailApiCodeUsage[left.email])
+      const rightRate = gmailApiCodeFailureRate(gmailApiCodeUsage[right.email])
+      if (leftRate !== rightRate) return leftRate - rightRate
+      return left.email.localeCompare(right.email)
+    })
     : []
 
   // 加载 async-select 字段的选项
@@ -270,6 +310,25 @@ function EditModal({
       }
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (provider.value !== 'gmail_api_code') return
+    let active = true
+    apiFetch('/stats/gmail-api-code-alias-usage')
+      .then((data: any) => {
+        if (!active) return
+        const byEmail: Record<string, GmailApiCodeUsageItem> = {}
+        for (const item of Array.isArray(data?.items) ? data.items : []) {
+          const email = String(item?.parent_email || '').trim().toLowerCase()
+          if (email) byEmail[email] = item
+        }
+        setGmailApiCodeUsage(byEmail)
+      })
+      .catch(() => {
+        if (active) setGmailApiCodeUsage({})
+      })
+    return () => { active = false }
+  }, [provider.value])
 
   const handleSave = async () => {
     const config: Record<string, string> = {}
@@ -336,6 +395,24 @@ function EditModal({
     } finally {
       setTesting(false)
     }
+  }
+
+  const handleDeleteGmailApiCodeRow = (email: string) => {
+    const target = email.trim().toLowerCase()
+    if (!target) return
+    setForm(current => {
+      const lines = String(current.gmail_api_code_pool_text || '').split(/\r?\n/)
+      const nextLines = lines.map(line => {
+        const trimmed = line.trim()
+        if (!trimmed || /^#\s*deleted\s+/i.test(trimmed) || trimmed.startsWith('#') || !trimmed.includes('----')) {
+          return line
+        }
+        const [emailPart] = trimmed.split('----')
+        if (emailPart.trim().toLowerCase() !== target) return line
+        return `${GMAIL_API_CODE_DELETED_PREFIX}${trimmed}`
+      })
+      return { ...current, gmail_api_code_pool_text: nextLines.join('\n') }
+    })
   }
 
   const handleGmailExchangeCode = async () => {
@@ -555,7 +632,7 @@ function EditModal({
                   </p>
                 </div>
                 <span className="rounded-full border border-[var(--border-soft)] bg-[var(--bg-card)] px-2.5 py-1 text-xs text-[var(--text-muted)]">
-                  {gmailApiCodeRows.length} 个
+                  {gmailApiCodeRows.filter(row => !row.deleted).length}/{gmailApiCodeRows.length} 个可用
                 </span>
               </div>
               {gmailApiCodeRows.length === 0 ? (
@@ -563,13 +640,77 @@ function EditModal({
                   暂未识别到有效记录，请按示例每行填写一个 Gmail 和接码链接。
                 </div>
               ) : (
-                <div className="max-h-56 space-y-2 overflow-y-auto">
-                  {gmailApiCodeRows.map(row => (
-                    <div key={row.email} className="grid gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] p-3 text-xs sm:grid-cols-[220px_1fr]">
-                      <div className="font-medium text-[var(--text-primary)]">{row.email}</div>
-                      <div className="break-all text-[var(--text-muted)]">{row.codeUrl}</div>
-                    </div>
-                  ))}
+                <div className="max-h-56 overflow-auto rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)]">
+                  <table className="w-full min-w-[980px] text-left text-xs">
+                    <thead className="sticky top-0 bg-[var(--bg-card)] text-[var(--text-muted)] shadow-[0_1px_0_var(--border-soft)]">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">邮箱</th>
+                        <th className="px-3 py-2 font-medium">剩余别名</th>
+                        <th className="px-3 py-2 font-medium">接码失败率</th>
+                        <th className="px-3 py-2 font-medium">状态</th>
+                        <th className="px-3 py-2 font-medium">接码链接</th>
+                        <th className="px-3 py-2 font-medium">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[var(--border-soft)]">
+                      {gmailApiCodeRowsSorted.map(row => {
+                        const usage = gmailApiCodeUsage[row.email]
+                        const success = Number(usage?.successful_alias_count || 0)
+                        const failed = Number(usage?.allocated_only_count || 0)
+                        const failureRate = gmailApiCodeFailureRate(usage)
+                        const remaining = row.deleted ? 0 : Math.max(0, GMAIL_API_CODE_ALIAS_LIMIT - success)
+                        const statusLabel = row.deleted
+                          ? '已删除'
+                          : usage?.email_status === 'unusable'
+                            ? '不可用'
+                            : usage?.email_status === 'registered'
+                              ? '已注册'
+                              : remaining <= 0
+                                ? '已满'
+                                : '可用'
+                        const statusVariant = row.deleted
+                          ? 'secondary'
+                          : usage?.email_status === 'unusable' || remaining <= 0
+                            ? 'danger'
+                            : usage?.email_status === 'registered'
+                              ? 'warning'
+                              : 'success'
+                        return (
+                          <tr key={`${row.deleted ? 'deleted' : 'active'}-${row.email}`} className={row.deleted ? 'opacity-60' : ''}>
+                            <td className="px-3 py-2 font-medium text-[var(--text-primary)]">{row.email}</td>
+                            <td className="px-3 py-2 text-[var(--text-secondary)]">
+                              {remaining}/{GMAIL_API_CODE_ALIAS_LIMIT}
+                              <span className="ml-1 text-[var(--text-muted)]">成功 {success}</span>
+                            </td>
+                            <td className="px-3 py-2 text-[var(--text-secondary)]">
+                              {formatPercent(failureRate)}
+                              <span className="ml-1 text-[var(--text-muted)]">({failed}/{success + failed || 0})</span>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="space-y-1">
+                                <Badge variant={statusVariant as any}>{statusLabel}</Badge>
+                                {!row.deleted && usage?.email_status_reason && usage.email_status !== 'usable' && (
+                                  <div className="max-w-32 break-words text-[11px] text-[var(--text-muted)]">{usage.email_status_reason}</div>
+                                )}
+                              </div>
+                            </td>
+                            <td className="max-w-[360px] break-all px-3 py-2 text-[var(--text-muted)]">{row.codeUrl}</td>
+                            <td className="px-3 py-2">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleDeleteGmailApiCodeRow(row.email)}
+                                disabled={row.deleted}
+                              >
+                                <Trash2 className="mr-1 h-3.5 w-3.5" /> 删除
+                              </Button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>

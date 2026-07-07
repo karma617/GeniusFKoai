@@ -34,6 +34,15 @@ const BROWSER_MODE_OPTIONS = [
 ]
 
 type GetRtSmsBalanceAction = 'auto_switch' | 'wait_release' | 'terminate'
+type RegisterCountMode = 'child' | 'parent'
+
+type GmailApiCodeAliasUsage = {
+  alias_limit?: number
+  summary?: {
+    configured_parent_count?: number
+    usable_parent_count?: number
+  }
+}
 
 const GET_RT_SMS_BALANCE_ACTION_OPTIONS: {
   value: GetRtSmsBalanceAction
@@ -58,6 +67,7 @@ const GET_RT_SMS_BALANCE_ACTION_OPTIONS: {
 ]
 
 const ACCOUNT_TOOL_BUTTON_CLASS = 'h-8 shrink-0 whitespace-nowrap bg-transparent'
+const EMAIL_ALIAS_HARD_LIMIT = 6
 const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -438,6 +448,8 @@ function RegisterModal({
   })
   const [configLoading, setConfigLoading] = useState(true)
   const [regCount, setRegCount] = useState(1)
+  const [registerCountMode, setRegisterCountMode] = useState<RegisterCountMode>('child')
+  const [registerCountNotice, setRegisterCountNotice] = useState('')
   const [concurrency, setConcurrency] = useState(1)
   // chatgpt 平台特定：注册成功后是否自动获取支付链接（保存到账号 cashier_url 字段，
   // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
@@ -451,6 +463,9 @@ function RegisterModal({
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   const [enableEmailAlias, setEnableEmailAlias] = useState(true)
   const [emailAliasLimit, setEmailAliasLimit] = useState(6)
+  const [gmailAliasUsage, setGmailAliasUsage] = useState<GmailApiCodeAliasUsage | null>(null)
+  const [gmailAliasUsageLoading, setGmailAliasUsageLoading] = useState(false)
+  const [gmailAliasUsageError, setGmailAliasUsageError] = useState('')
   // GoPay 专属：PIN（6 位数字）、Hero-SMS API key、注册代理。仅当
   // platform === 'gopay' 时显示，未填时后端走环境变量回退。
   const [gopayPin, setGopayPin] = useState('147258')
@@ -516,6 +531,27 @@ function RegisterModal({
       })
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    if (platform !== 'chatgpt') return
+    let active = true
+    setGmailAliasUsageLoading(true)
+    setGmailAliasUsageError('')
+    apiFetch('/stats/gmail-api-code-alias-usage')
+      .then((result) => {
+        if (!active) return
+        setGmailAliasUsage(result || null)
+      })
+      .catch((exc: any) => {
+        if (!active) return
+        setGmailAliasUsage(null)
+        setGmailAliasUsageError(exc?.message || '邮箱池统计加载失败')
+      })
+      .finally(() => {
+        if (active) setGmailAliasUsageLoading(false)
+      })
+    return () => { active = false }
+  }, [platform])
 
   useEffect(() => {
     if (configLoading || registrationOptions.length === 0) return
@@ -585,10 +621,81 @@ function RegisterModal({
   }, [selection.executorType, recordHar])
 
   const defaultMailboxProvider = (configOptions.mailbox_settings || []).find(item => item.is_default) || configOptions.mailbox_settings?.[0] || null
+  const normalizedEmailAliasLimit = Math.min(Math.max(Number(emailAliasLimit || EMAIL_ALIAS_HARD_LIMIT), 1), EMAIL_ALIAS_HARD_LIMIT)
+  const aliasCountLimitActive = platform === 'chatgpt'
+    && selection.identityProvider === 'mailbox'
+    && enableEmailAlias
+    && defaultMailboxProvider?.provider_key === 'gmail_api_code'
+  const emailAliasParentCount = Number(gmailAliasUsage?.summary?.usable_parent_count || 0)
+  const registerCountMax = aliasCountLimitActive && gmailAliasUsage
+    ? (registerCountMode === 'parent' ? emailAliasParentCount : emailAliasParentCount * normalizedEmailAliasLimit)
+    : 99
+  const registerCountConsumedParents = aliasCountLimitActive && gmailAliasUsage
+    ? (registerCountMode === 'parent' ? regCount : Math.ceil(Math.max(regCount, 0) / normalizedEmailAliasLimit))
+    : 0
+
+  useEffect(() => {
+    if (!aliasCountLimitActive || !gmailAliasUsage) {
+      setRegisterCountNotice('')
+      return
+    }
+    if (registerCountMax <= 0) {
+      if (regCount !== 0) setRegCount(0)
+      setRegisterCountNotice(t('accounts.registrationCountNoMailboxCapacity'))
+      return
+    }
+    if (regCount < 1) {
+      setRegCount(1)
+      return
+    }
+    if (regCount > registerCountMax) {
+      setRegCount(registerCountMax)
+      setRegisterCountNotice(
+        registerCountMode === 'parent'
+          ? t('accounts.registrationCountParentExceeded', { max: registerCountMax })
+          : t('accounts.registrationCountChildExceeded', { max: registerCountMax }),
+      )
+      return
+    }
+    setRegisterCountNotice('')
+  }, [aliasCountLimitActive, gmailAliasUsage, registerCountMax, registerCountMode, regCount, t])
+
+  const updateRegisterCount = (rawValue: number) => {
+    let next = Math.max(Number(rawValue || 0), 0)
+    if (!aliasCountLimitActive || !gmailAliasUsage) {
+      setRegisterCountNotice('')
+      setRegCount(Math.max(next, 1))
+      return
+    }
+    if (registerCountMax <= 0) {
+      setRegCount(0)
+      setRegisterCountNotice(t('accounts.registrationCountNoMailboxCapacity'))
+      return
+    }
+    next = Math.max(next, 1)
+    if (next > registerCountMax) {
+      setRegCount(registerCountMax)
+      setRegisterCountNotice(
+        registerCountMode === 'parent'
+          ? t('accounts.registrationCountParentExceeded', { max: registerCountMax })
+          : t('accounts.registrationCountChildExceeded', { max: registerCountMax }),
+      )
+      return
+    }
+    setRegisterCountNotice('')
+    setRegCount(next)
+  }
 
   const start = async () => {
     setStarting(true)
     try {
+      const finalRegCount = aliasCountLimitActive && gmailAliasUsage
+        ? Math.min(Math.max(Number(regCount || 0), 0), registerCountMax)
+        : Math.max(Number(regCount || 1), 1)
+      if (finalRegCount < 1) {
+        setRegisterCountNotice(t('accounts.registrationCountNoMailboxCapacity'))
+        return
+      }
       const cfg = config || {}
       const extra: Record<string, any> = {
         identity_provider: selection.identityProvider,
@@ -606,7 +713,7 @@ function RegisterModal({
       }
       if (platform === 'chatgpt' && enableEmailAlias) {
         extra.enable_email_alias = true
-        extra.email_alias_limit = Math.min(Math.max(Number(emailAliasLimit || 6), 1), 6)
+        extra.email_alias_limit = normalizedEmailAliasLimit
       }
       if (selection.identityProvider === 'mailbox') {
         if (!defaultMailboxProvider?.provider_key) {
@@ -657,7 +764,7 @@ function RegisterModal({
       const res = await apiFetch('/tasks/register', {
         method: 'POST',
         body: JSON.stringify({
-          platform, count: regCount, concurrency,
+          platform, count: finalRegCount, concurrency,
           executor_type: selection.executorType,
           captcha_solver: 'auto',
           proxy: null,
@@ -804,11 +911,24 @@ function RegisterModal({
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className={cn("grid gap-3", platform === 'chatgpt' ? "md:grid-cols-3" : "grid-cols-2")}>
+                  {platform === 'chatgpt' && (
+                    <div>
+                      <label className="text-xs text-[var(--text-muted)] block mb-1">{t('accounts.registrationCountMode')}</label>
+                      <select
+                        value={registerCountMode}
+                        onChange={e => setRegisterCountMode(e.target.value as RegisterCountMode)}
+                        className="control-surface control-surface-compact w-full text-center"
+                      >
+                        <option value="child">{t('accounts.registrationCountModeChild')}</option>
+                        <option value="parent">{t('accounts.registrationCountModeParent')}</option>
+                      </select>
+                    </div>
+                  )}
                   <div>
                     <label className="text-xs text-[var(--text-muted)] block mb-1">{t('accounts.registrationCount')}</label>
-                    <input type="number" min={1} max={99} value={regCount}
-                      onChange={e => setRegCount(Number(e.target.value))}
+                    <input type="number" min={aliasCountLimitActive && gmailAliasUsage && registerCountMax <= 0 ? 0 : 1} max={registerCountMax} value={regCount}
+                      onChange={e => updateRegisterCount(Number(e.target.value))}
                       className="control-surface control-surface-compact text-center" />
                   </div>
                   <div>
@@ -818,6 +938,36 @@ function RegisterModal({
                       className="control-surface control-surface-compact text-center" />
                   </div>
                 </div>
+
+                {platform === 'chatgpt' && (
+                  <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
+                    {aliasCountLimitActive ? (
+                      <>
+                        <div>
+                          {gmailAliasUsageLoading
+                            ? t('accounts.registrationCountAliasUsageLoading')
+                            : gmailAliasUsage
+                              ? t('accounts.registrationCountAliasCapacity', {
+                                parents: emailAliasParentCount,
+                                aliasLimit: normalizedEmailAliasLimit,
+                                max: registerCountMax,
+                                consumed: registerCountConsumedParents,
+                              })
+                              : (gmailAliasUsageError || t('accounts.registrationCountAliasUsageError'))}
+                        </div>
+                        {registerCountNotice && (
+                          <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-amber-600 dark:text-amber-300">
+                            {registerCountNotice}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div>
+                        {t('accounts.registrationCountModeInactiveHint')}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {platform === 'chatgpt' && (
                   <div className="grid gap-3 md:grid-cols-2">
@@ -844,10 +994,10 @@ function RegisterModal({
                       <input
                         type="number"
                         min={1}
-                        max={6}
+                        max={EMAIL_ALIAS_HARD_LIMIT}
                         disabled={!enableEmailAlias}
                         value={emailAliasLimit}
-                        onChange={(e) => setEmailAliasLimit(Math.min(Math.max(Number(e.target.value || 6), 1), 6))}
+                        onChange={(e) => setEmailAliasLimit(Math.min(Math.max(Number(e.target.value || EMAIL_ALIAS_HARD_LIMIT), 1), EMAIL_ALIAS_HARD_LIMIT))}
                         className="control-surface control-surface-compact w-full text-center"
                       />
                       <div className="mt-1 help-text-xs">

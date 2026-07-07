@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,7 +162,9 @@ def test_list_inventory_uses_remote_pagination(monkeypatch):
 
     result = service.list_inventory(status="active", page=2, page_size=10)
 
-    assert account_paths == ["/api/v1/admin/accounts?page=2&page_size=10&status=active"]
+    assert account_paths == [
+        "/api/v1/admin/accounts?page=2&page_size=10&sort_by=created_at&sort_order=desc&status=active"
+    ]
     assert result["total"] == 31
     assert result["page"] == 2
     assert result["page_size"] == 10
@@ -232,6 +235,65 @@ def test_bulk_check_does_not_mark_usage_limit_as_error(monkeypatch):
     assert result["summary"]["marked_error"] == 0
     assert result["results"][0]["result"] == "rate_limited"
     assert marked == []
+
+
+def test_test_account_retries_network_error_three_times(monkeypatch):
+    from curl_cffi import requests as cffi_requests
+
+    service = Sub2ApiManagementService()
+    ctx = Sub2ApiContext("https://sub2api.test", "token")
+    calls = {"count": 0}
+
+    def fake_post(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] <= 3:
+            raise RuntimeError(
+                "Failed to perform, curl: (35) TLS connect error: "
+                "OPENSSL_internal:invalid library"
+            )
+        return SimpleNamespace(
+            status_code=200,
+            iter_lines=lambda: [b'data: {"type":"test_complete","success":true,"text":"ok"}'],
+            text="",
+        )
+
+    monkeypatch.setattr(cffi_requests, "post", fake_post)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    events = []
+
+    result, reason = service.test_account(ctx, "1", event_callback=events.append)
+
+    assert result == "ok"
+    assert reason == "ok"
+    assert calls["count"] == 4
+    assert [event["event"] for event in events].count("request_retry") == 3
+
+
+def test_test_account_skips_after_three_network_retries(monkeypatch):
+    from curl_cffi import requests as cffi_requests
+
+    service = Sub2ApiManagementService()
+    ctx = Sub2ApiContext("https://sub2api.test", "token")
+    calls = {"count": 0}
+
+    def fake_post(*_args, **_kwargs):
+        calls["count"] += 1
+        raise RuntimeError(
+            "Failed to perform, curl: (35) TLS connect error: "
+            "OPENSSL_internal:invalid library"
+        )
+
+    monkeypatch.setattr(cffi_requests, "post", fake_post)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    events = []
+
+    result, reason = service.test_account(ctx, "1", event_callback=events.append)
+
+    assert result == "skipped"
+    assert "curl: (35)" in reason
+    assert calls["count"] == 4
+    assert [event["event"] for event in events].count("request_retry") == 3
+    assert events[-1]["event"] == "request_failed"
 
 
 def test_bulk_check_without_ids_uses_filter_scope(monkeypatch):

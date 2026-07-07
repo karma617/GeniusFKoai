@@ -487,13 +487,18 @@ class EmailAliasMailbox(BaseMailbox):
 
     def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
         parent = self._parent_for(account)
-        _release_reserved_alias(getattr(account, "email", ""))
+        alias_email = getattr(account, "email", "")
+        _release_reserved_alias(alias_email)
         marker = getattr(self.mailbox, "mark_invalid_email", None)
         if callable(marker):
             try:
                 applied = list(marker(parent, reason=reason) or [])
                 if applied:
-                    return applied
+                    self._log(
+                        "Email alias parent marked invalid: "
+                        f"alias={alias_email} parent={parent.email} reason={reason}"
+                    )
+                    return [f"主号邮箱 {parent.email} 已标记无效: {', '.join(applied)}"]
             except Exception as exc:
                 self._log(f"Email alias parent invalid mark failed: {parent.email} error={exc}")
         self._release_parent(parent)

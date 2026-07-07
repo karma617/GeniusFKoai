@@ -2527,6 +2527,30 @@
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：恢复 application/gmail_api_code_usage.py 中对历史 provider resource / 任务日志 parent 的 `setdefault` 纳入统计逻辑；恢复 GmailApiCodeUsage.tsx 的旧文案和历史记录标签；删除 tests/test_gmail_api_code_usage_stats.py 本轮新增/调整断言；移除 docs/gmail-api-code.md 与 progress.md 本轮追加内容即可恢复旧口径。
 
+## 2026-07-06 - Task: Gmail API接码配置列表增加用量、失败率、状态和软删除
+
+### What was done
+- Gmail API接码配置弹窗的已识别邮箱列表改为表格展示，新增剩余别名、接码失败率、状态、删除按钮。
+- 剩余别名按总额 6 计算，成功注册 alias 扣减 1；新增邮箱无历史统计时默认剩余 6。
+- 接码失败率按 `未成功落库分配数 / (成功别名数 + 未成功落库分配数)` 计算，并按失败率从低到高排序。
+- 删除按钮改为软删除：配置行变成 `# deleted 邮箱----接码链接`，列表继续显示且排在最后，但后端解析会跳过，不再参与新任务领取。
+- Gmail API接码用量统计的别名总额同步改为 6。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\gmail_api_code_mailbox.py application\gmail_api_code_usage.py tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py -q` -> 11 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> 通过；Vite 保留 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: Gmail API接码已识别列表新增用量列、失败率排序、状态展示和软删除按钮。
+  - application/gmail_api_code_usage.py: Gmail API接码统计别名总额改为 6。
+  - tests/test_gmail_api_code_mailbox.py: 增加 `# deleted` 软删除行不会被后端解析领取的回归测试。
+  - tests/test_gmail_api_code_usage_stats.py: 更新 6 个别名总额下的剩余额度断言。
+  - docs/gmail-api-code.md: 记录配置弹窗软删除语义和任务跳过规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 ProviderCards.tsx 中 Gmail API接码列表为原两列展示并移除软删除处理；将 application/gmail_api_code_usage.py 的 `ALIAS_LIMIT` 改回旧值；删除 tests/test_gmail_api_code_mailbox.py 的软删除解析测试并恢复 tests/test_gmail_api_code_usage_stats.py 旧断言；移除 docs/gmail-api-code.md 与 progress.md 本轮追加内容即可恢复旧列表行为。
+
 ## 2026-07-06 - Task: SUB2API 导入文件 account_id 随机化脚本
 
 ### What was done
@@ -2566,3 +2590,202 @@
   - data/sub2api/log-success-sub2api-summary.json: 本批日志生成的合并摘要，记录使用文件和缺失邮箱。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：删除 `scripts/merge_sub2api_from_register_log.py`、`docs/sub2api-log-merge.md`、本轮生成的 `data/sub2api/log-success-sub2api-20260706T031148Z-16fd7bd6.json` 和 `data/sub2api/log-success-sub2api-summary.json`，并移除 progress.md 本轮追加内容即可撤销本轮改动。
+
+## 2026-07-06 - Task: 邮箱验证码超时无效打标日志明确主号邮箱
+
+### What was done
+- 邮箱别名模式下，验证码三轮未收到触发无效打标时，返回信息明确写出被标记的是主号邮箱。
+- 注册任务日志从“已给当前邮箱打标”改为“邮箱无效打标完成”，同时展示当前 alias 和已标记的主号邮箱，避免误以为 alias 子邮箱被单独标记。
+- 邮箱别名文档同步说明：实际无效状态写在主号邮箱上，不写在 alias 子邮箱上。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py core\email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py tests\test_email_alias_mailbox.py tests\test_chatgpt_protocol_otp.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_email_alias_mailbox.py tests\test_chatgpt_protocol_otp.py -q` -> 41 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: alias 无效打标成功后返回包含主号邮箱的说明，并记录 alias 到主号的打标日志。
+  - platforms/chatgpt/register.py: 注册任务无效邮箱打标日志改为同时显示当前邮箱和打标结果。
+  - tests/test_gmail_api_code_mailbox.py: 更新 Gmail API接码别名无效打标断言，确认返回主号邮箱。
+  - tests/test_email_alias_mailbox.py: 新增 alias 无效打标返回主号邮箱和记录父邮箱日志的回归测试。
+  - tests/test_chatgpt_protocol_otp.py: 更新验证码三轮超时后的打标日志断言。
+  - docs/email-alias-mailbox.md: 记录无效打标实际写入主号邮箱的日志语义。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/email_alias_mailbox.py 中 `mark_invalid_email` 的原返回值；恢复 platforms/chatgpt/register.py 的旧打标日志文案；还原上述测试断言和新增测试；移除 docs/email-alias-mailbox.md 与 progress.md 本轮追加内容即可恢复旧日志展示。
+
+## 2026-07-06 - Task: Gmail API接码接口状态码处理
+
+### What was done
+- Gmail API接码取码时新增接口业务状态判断：`602` 表示暂未收到验证码，继续轮询等待。
+- Gmail API接码取码时遇到 `502` 会立即判定当前 Gmail 主邮箱不可用或已下架，释放占用并标记为无效，后续领取邮箱时跳过该主邮箱。
+- Gmail API接码文档同步记录 `602` 和 `502` 的处理语义。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\gmail_api_code_mailbox.py tests\test_gmail_api_code_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py -q` -> 9 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - core/gmail_api_code_mailbox.py: 解析接码 API 的 `602` / `502` 状态，并在 `502` 时标记当前 Gmail 主邮箱无效。
+  - tests/test_gmail_api_code_mailbox.py: 增加 `602` 继续轮询和 `502` 跳过死号的回归测试。
+  - docs/gmail-api-code.md: 记录 Gmail API接码接口状态码处理规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 core/gmail_api_code_mailbox.py 中接口状态解析和 `502` 自动无效打标逻辑；删除 tests/test_gmail_api_code_mailbox.py 本轮新增两条状态码测试；移除 docs/gmail-api-code.md 与 progress.md 本轮追加内容即可恢复旧的纯文本取码行为。
+
+## 2026-07-06 - Task: ChatGPT 邮箱验证码单轮等待压缩到 10 秒
+
+### What was done
+- ChatGPT 邮箱 OTP 单轮默认等待时间从 20 秒调整为 10 秒，仍保留最多 3 轮重发。
+- 同步更新注册流程注释、回归测试和文档说明，避免日志与文档继续显示旧的 20 秒口径。
+- 保留 `CHATGPT_OTP_TIMEOUT_SECONDS` 环境变量覆盖能力；需要临时放宽时仍可用环境变量调大。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 24 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 将 ChatGPT 邮箱 OTP 默认单轮等待从 20 秒改为 10 秒，并更新相关注释。
+  - tests/test_chatgpt_protocol_otp.py: 更新默认超时回归测试为 10 秒。
+  - docs/chatgpt-register-flow.md: 记录邮箱 OTP 默认单轮等待 10 秒。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 platforms/chatgpt/register.py 的 `CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS` 改回 20，并恢复相关注释、测试断言、docs/chatgpt-register-flow.md 和 progress.md 本轮追加内容即可恢复旧默认等待。
+
+## 2026-07-06 - Task: Gmail API接码 502 死号改为换父邮箱补投
+
+### What was done
+- 确认本批日志不是一次取码失败终止：第 1/3 轮超时后进入第 2/3 轮，第二轮成功取码并注册成功。
+- 调度层新增 Gmail API接码 `502` 死号/下架软重试：当前主号已被标记无效后，不把当前注册目标计为最终失败，而是切换下一个父邮箱继续补投。
+- 区分日志文案：临时池空仍提示等待释放，`502` 死号提示父邮箱不可用或已下架并切换新父邮箱。
+- Gmail API接码文档同步说明：单个 `502` 死号不会直接终止整批任务。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_retries_gmail_api_code_pool_temporarily_empty tests\test_platform_action_task.py::test_chatgpt_register_retries_gmail_api_code_dead_parent -q` -> 2 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py::test_gmail_api_code_status_502_marks_email_invalid -q` -> 1 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 将 Gmail API接码 `502` 死号/下架错误纳入邮箱别名父邮箱补投流程，并使用独立日志文案。
+  - tests/test_platform_action_task.py: 增加 `502` 死号后继续补投当前注册目标的回归测试。
+  - docs/gmail-api-code.md: 记录 `502` 死号在邮箱别名注册下会换父邮箱补投。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：撤销 application/tasks.py 中 `_is_email_alias_unavailable_parent_error` 和对应补投分支；删除 tests/test_platform_action_task.py 本轮新增测试；恢复 docs/gmail-api-code.md 中 `502` 说明；移除 progress.md 本轮追加内容即可恢复为 `502` 直接导致当前注册尝试失败。
+
+## 2026-07-06 - Task: ChatGPT NextAuth OAuth URL 获取失败增加重试
+
+### What was done
+- Platform reference 注册成功后补建 ChatGPT Web session 时，NextAuth OAuth URL 获取从单次尝试改为最多 3 次尝试。
+- 每次失败后等待 2 秒再重试；第三次仍失败时只跳过 K12 Web session 补建，不影响 Platform 注册主链成功。
+- K12 文档同步说明该 URL 获取失败的重试策略和失败影响范围。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_k12_join.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py::test_platform_reference_nextauth_retries_oauth_url tests\test_k12_join.py::test_platform_reference_nextauth_resolves_choose_account_via_workspace_select tests\test_k12_join.py::test_platform_reference_nextauth_waits_second_email_otp_for_web_session tests\test_k12_join.py::test_platform_reference_nextauth_rejects_signin_csrf_fallback -q` -> 4 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: ChatGPT NextAuth OAuth URL 获取增加 3 次重试和重试日志。
+  - tests/test_k12_join.py: 增加前两次 URL 获取失败、第三次成功后继续建立 Web session 的回归测试。
+  - docs/k12-space-join.md: 记录 NextAuth OAuth URL 获取的 3 次重试策略。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 platforms/chatgpt/register.py 中 `_establish_chatgpt_web_session_for_platform_reference` 的单次 `_start_oauth()` 判断；删除 tests/test_k12_join.py 本轮新增测试；移除 docs/k12-space-join.md 与 progress.md 本轮追加内容即可恢复旧的单次尝试行为。
+
+## 2026-07-06 - Task: Sub2API 管理账号列表按创建时间倒序
+
+### What was done
+- Sub2API 管理页读取远端账号列表时，统一向远端账号分页接口传入 `sort_by=created_at` 和 `sort_order=desc`。
+- 普通分页、标签本地过滤前的全量拉取、统计总数用的轻量请求都会使用同一账号列表查询构造，避免页面不同路径排序口径不一致。
+- Sub2API 管理文档同步说明账号列表按创建时间倒序展示。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py tests\test_sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py::test_list_inventory_uses_remote_pagination tests\test_sub2api_management.py::test_sub2api_account_tags_can_assign_and_filter -q` -> 2 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- application\sub2api_management.py tests\test_sub2api_management.py docs\sub2api-management.md` -> 无空白错误；Git 提示上述 Python 文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 远端账号列表查询固定附带创建时间倒序排序参数。
+  - tests/test_sub2api_management.py: 更新远端分页请求契约断言，覆盖排序参数。
+  - docs/sub2api-management.md: 记录 Sub2API 管理账号列表按创建时间倒序展示。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/sub2api_management.py 中 `_account_list_query` 添加的 `sort_by` / `sort_order` 参数；恢复 tests/test_sub2api_management.py 中远端分页路径断言；恢复 docs/sub2api-management.md 中本轮新增排序说明；移除 progress.md 本轮追加内容即可恢复旧的远端默认排序。
+
+## 2026-07-06 - Task: ChatGPT 自动注册数量按邮箱别名产能限制
+
+### What was done
+- ChatGPT 自动注册弹窗在注册数量前新增计数类型，默认使用 `以子号计数`，也可切换为 `以母号计数`。
+- 使用 Gmail API接码邮箱池统计计算上限：以母号计数时最大值为配置母号总数；以子号计数时最大值为配置母号总数乘以当前别名上限。
+- 用户输入超过当前计数类型上限时，页面会提示超出原因并自动把注册数量改为最大值；提交任务时也会使用同一上限再次钳制。
+- 注册弹窗显示当前邮箱池母号数、别名上限、最大可填数量和预计消耗母号数。
+- 邮箱别名文档同步记录计数类型语义。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留既有 chunk size warning。
+- `git diff --check -- frontend\src\pages\Accounts.tsx frontend\src\lib\i18n.ts progress.md` -> 无空白错误；Git 提示上述文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 自动注册弹窗新增计数类型、Gmail API接码邮箱池统计读取、注册数量上限计算和超限提示。
+  - frontend/src/lib/i18n.ts: 新增计数类型、容量说明和超限提示的中英文文案。
+  - docs/email-alias-mailbox.md: 记录以母号计数和以子号计数的上限计算规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 frontend/src/pages/Accounts.tsx 中 `RegisterCountMode` / Gmail API接码统计读取 / 注册数量上限钳制 / 计数类型 UI；删除 frontend/src/lib/i18n.ts 本轮新增文案；恢复 docs/email-alias-mailbox.md 本轮新增段落；移除 progress.md 本轮追加内容即可恢复旧的单一注册数量输入逻辑。
+
+## 2026-07-07 - Task: 注册数量容量过滤不可用母号
+
+### What was done
+- ChatGPT 自动注册数量上限从 Gmail API接码配置母号总数改为可用母号数，过滤已不可用或已注册的母号。
+- 以母号计数时最大值使用可用母号数；以子号计数时最大值使用可用母号数乘以当前别名上限。
+- 注册弹窗容量说明和邮箱别名文档同步改为“可用母号”口径。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 保留既有 chunk size warning。
+- `git diff --check -- frontend\src\pages\Accounts.tsx frontend\src\lib\i18n.ts progress.md` -> 无空白错误；Git 提示上述文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 注册数量上限改用 Gmail API接码统计中的 `usable_parent_count`。
+  - frontend/src/lib/i18n.ts: 注册弹窗容量说明改为“可用母号”。
+  - docs/email-alias-mailbox.md: 计数类型说明改为按可用母号计算上限。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 frontend/src/pages/Accounts.tsx 中注册数量容量来源从 `usable_parent_count` 改回 `configured_parent_count`；恢复 frontend/src/lib/i18n.ts 和 docs/email-alias-mailbox.md 中“可用母号”相关文案；移除 progress.md 本轮追加内容即可恢复旧的配置母号总数口径。
+
+## 2026-07-07 - Task: 获取 RT 邮箱 OTP 兼容别名母号
+
+### What was done
+- 获取 RT 任务读取邮箱 OTP 时识别邮箱别名元数据，将登录子号和实际读信母号分离。
+- 对历史资源里的 `outlook_email` provider key 增加兼容映射，改用当前启用的 `outlook_email_api` 初始化邮箱 provider。
+- 读取 OTP 时保留子号邮箱作为收件人匹配目标，避免同一母号下多个子号验证码串用。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_otp_callback.py -q` -> 3 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\plugin.py tests\test_chatgpt_get_rt_otp_callback.py` -> 无输出，编译通过。
+- `git diff --check -- platforms\chatgpt\plugin.py tests\test_chatgpt_get_rt_otp_callback.py docs\email-alias-mailbox.md` -> 无空白错误；Git 提示部分 Python 文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/plugin.py: 获取 RT 邮箱 OTP 回调增加别名父邮箱识别、旧 outlook provider 键映射和子号收件人匹配元数据。
+  - tests/test_chatgpt_get_rt_otp_callback.py: 增加 Outlook plus 别名账号读取母号收件箱的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/plugin.py 中 `_mailbox_provider_key` 的 `outlook_email` 映射、`_alias_parent_from` 及别名邮箱账号转换逻辑；删除 tests/test_chatgpt_get_rt_otp_callback.py 中本轮新增测试；移除 progress.md 本轮追加内容即可恢复旧的直接按子号查询邮箱行为。
+
+## 2026-07-07 - Task: Sub2API 批量测活网络错误重试
+
+### What was done
+- Sub2API 批量测活发起远端模型测试请求时，识别 `curl_cffi` 传输层网络异常，包括 `curl:`、`Failed to perform`、TLS/SSL、连接、代理、DNS、超时和重置类错误。
+- 网络异常会先重试 3 次，重试仍失败才把该账号记为跳过；HTTP 非 200、SSE 业务错误和限流判定保持原逻辑。
+- 批量测活文档同步说明网络异常重试 3 次后才跳过。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 25 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- application\sub2api_management.py tests\test_sub2api_management.py docs\sub2api-management.md progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 批量测活远端测试请求增加网络错误识别和 3 次重试后跳过。
+  - tests/test_sub2api_management.py: 增加网络错误重试后成功、连续网络错误重试后跳过的回归测试。
+  - docs/sub2api-management.md: 记录批量测活网络异常会先重试 3 次。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/sub2api_management.py 中 `TEST_REQUEST_NETWORK_RETRIES` / `TEST_REQUEST_RETRY_DELAYS` / `_is_test_request_network_error` 以及 `test_account` 的重试循环，恢复为单次 `cffi_requests.post` 异常即跳过；删除 tests/test_sub2api_management.py 本轮新增两个网络重试测试；恢复 docs/sub2api-management.md 本轮新增的重试说明；移除 progress.md 本轮追加内容即可恢复旧的单次请求行为。

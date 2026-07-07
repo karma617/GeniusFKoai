@@ -244,6 +244,11 @@ def _is_email_alias_temporary_pool_error(error: object) -> bool:
     text = str(error or "")
     return "Gmail API接码邮箱池暂未找到可用邮箱" in text
 
+
+def _is_email_alias_unavailable_parent_error(error: object) -> bool:
+    text = str(error or "")
+    return "Gmail API接码邮箱不可用或已下架" in text or "api_status=502" in text
+
 _SMSPOOL_RELEASE_DRAIN_TASK_TYPES = {
     TASK_TYPE_REGISTER,
     TASK_TYPE_GET_RT,
@@ -3047,6 +3052,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             error = str(exc)
             if _is_email_alias_parent_exhausted_error(error):
                 logger.log("父邮箱别名配额已耗尽，正在切换新父邮箱继续当前注册")
+                return EMAIL_ALIAS_PARENT_RETRY_RESULT
+            if email_alias_retry_enabled and _is_email_alias_unavailable_parent_error(error):
+                logger.log("邮箱别名父邮箱不可用或已下架，正在切换新父邮箱继续当前注册")
                 return EMAIL_ALIAS_PARENT_RETRY_RESULT
             if email_alias_retry_enabled and _is_email_alias_temporary_pool_error(error):
                 logger.log("邮箱别名父邮箱池当前都在使用中，等待释放后继续当前注册")

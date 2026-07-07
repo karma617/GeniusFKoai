@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import queue
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -24,6 +25,8 @@ from platforms.chatgpt.sub2api_upload import (
 
 DEFAULT_TEST_MODEL = "gpt-5.4-mini"
 ERROR_STATUS = "error"
+TEST_REQUEST_NETWORK_RETRIES = 3
+TEST_REQUEST_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
 
 def _utcnow_iso() -> str:
@@ -67,6 +70,31 @@ def _is_usage_limit_error(value: Any) -> bool:
         or '"type":"usage_limit_reached"' in text
         or "api returned 429" in text
         or "http 429" in text
+    )
+
+
+def _is_test_request_network_error(value: Any) -> bool:
+    text = str(value or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "failed to perform",
+            "curl:",
+            "tls connect error",
+            "openssl_internal",
+            "invalid library",
+            "ssl",
+            "timeout",
+            "timed out",
+            "connection",
+            "connect",
+            "network",
+            "proxy",
+            "reset",
+            "empty reply",
+            "resolve",
+            "name resolution",
+        )
     )
 
 
@@ -586,7 +614,12 @@ class Sub2ApiManagementService:
         status: str = "",
         search: str = "",
     ) -> str:
-        query: dict[str, str] = {"page": str(page), "page_size": str(page_size)}
+        query: dict[str, str] = {
+            "page": str(page),
+            "page_size": str(page_size),
+            "sort_by": "created_at",
+            "sort_order": "desc",
+        }
         if group_id:
             query["group"] = str(group_id)
         if status:
@@ -752,18 +785,36 @@ class Sub2ApiManagementService:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {ctx.token}",
         }
-        emit({"event": "request_started", "message": f"发起模型测活请求 model={model_id}"})
-        try:
-            response = cffi_requests.post(
-                f"{ctx.origin}/api/v1/admin/accounts/{account_id}/test",
-                headers=headers,
-                data=json.dumps({"model_id": model_id}, ensure_ascii=False).encode("utf-8"),
-                timeout=60,
-                impersonate="chrome110",
-                stream=True,
-            )
-        except Exception as exc:
-            reason = f"test request failed: {exc}"
+        response = None
+        for attempt in range(1, TEST_REQUEST_NETWORK_RETRIES + 2):
+            emit({"event": "request_started", "message": f"发起模型测活请求 model={model_id}"})
+            try:
+                response = cffi_requests.post(
+                    f"{ctx.origin}/api/v1/admin/accounts/{account_id}/test",
+                    headers=headers,
+                    data=json.dumps({"model_id": model_id}, ensure_ascii=False).encode("utf-8"),
+                    timeout=60,
+                    impersonate="chrome110",
+                    stream=True,
+                )
+                break
+            except Exception as exc:
+                reason = f"test request failed: {exc}"
+                if attempt <= TEST_REQUEST_NETWORK_RETRIES and _is_test_request_network_error(exc):
+                    delay = TEST_REQUEST_RETRY_DELAYS[min(attempt - 1, len(TEST_REQUEST_RETRY_DELAYS) - 1)]
+                    emit(
+                        {
+                            "event": "request_retry",
+                            "result": "skipped",
+                            "message": f"{reason}，网络错误重试 {attempt}/{TEST_REQUEST_NETWORK_RETRIES}",
+                        }
+                    )
+                    time.sleep(delay)
+                    continue
+                emit({"event": "request_failed", "result": "skipped", "message": reason})
+                return "skipped", reason
+        if response is None:
+            reason = "test request failed: no response"
             emit({"event": "request_failed", "result": "skipped", "message": reason})
             return "skipped", reason
 

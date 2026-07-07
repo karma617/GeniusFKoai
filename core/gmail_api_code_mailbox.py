@@ -28,6 +28,10 @@ class GmailApiCodeEntry:
     code_url: str
 
 
+class GmailApiCodeMailboxUnavailable(RuntimeError):
+    """接码 API 明确返回邮箱不可用状态。"""
+
+
 def parse_gmail_api_code_entries(value: Any) -> list[GmailApiCodeEntry]:
     entries: list[GmailApiCodeEntry] = []
     seen: set[str] = set()
@@ -174,14 +178,35 @@ class GmailApiCodeMailbox(BaseMailbox):
             return " ".join(GmailApiCodeMailbox._flatten_json(v) for v in value)
         return str(value or "")
 
+    @staticmethod
+    def _api_status_value(value: Any) -> int | None:
+        if isinstance(value, dict):
+            for key in ("status", "status_code", "code", "error_code"):
+                raw = value.get(key)
+                if isinstance(raw, int) and raw in {502, 602}:
+                    return raw
+                if isinstance(raw, str) and raw.strip() in {"502", "602"}:
+                    return int(raw.strip())
+        return None
+
     def _fetch_text(self, entry: GmailApiCodeEntry) -> str:
         response = requests.get(entry.code_url, proxies=self.proxy, timeout=15)
-        response.raise_for_status()
         text = response.text or ""
+        data = None
         try:
-            return self._flatten_json(json.loads(text))
+            data = json.loads(text)
         except Exception:
-            return text
+            data = None
+        status = self._api_status_value(data)
+        http_status = getattr(response, "status_code", None)
+        if status is None and http_status in {502, 602}:
+            status = http_status
+        if status == 602:
+            return ""
+        if status == 502:
+            raise GmailApiCodeMailboxUnavailable("Gmail API接码邮箱不可用或已下架 (api_status=502)")
+        response.raise_for_status()
+        return self._flatten_json(data) if data is not None else text
 
     @staticmethod
     def _extract_code(text: str, code_pattern: str | None = None) -> str:
@@ -226,6 +251,9 @@ class GmailApiCodeMailbox(BaseMailbox):
                 if code and current_id not in seen:
                     return code
                 seen.add(current_id)
+            except GmailApiCodeMailboxUnavailable as exc:
+                self.mark_invalid_email(account, reason="gmail_api_code_502")
+                raise RuntimeError(str(exc)) from exc
             except Exception as exc:
                 last_error = str(exc)
             time.sleep(self.poll_interval)
