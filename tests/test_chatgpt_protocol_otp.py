@@ -161,6 +161,7 @@ def _bare_engine() -> RegistrationEngine:
     engine._email_otp_page_loaded = False
     engine._otp_continue_url = None
     engine._otp_page_type = None
+    engine._latest_chatgpt_init_final_url = ""
     engine._email_otp_exhausted = False
     engine.protocol_fingerprint = register_module.ProtocolFingerprint.create()
     return engine
@@ -439,6 +440,211 @@ def test_run_defaults_to_platform_reference_flow_when_http_client_exists(monkeyp
     assert result.success is True
     assert result.email == "platform@example.com"
     assert called == ["platform@example.com"]
+
+
+def test_latest_chatgpt_register_flow_uses_login_hint_and_session(monkeypatch):
+    engine = _bare_engine()
+    calls = []
+
+    class Response:
+        def __init__(self, status_code=200, data=None, text="", headers=None, url=""):
+            self.status_code = status_code
+            self._data = data if data is not None else {}
+            self.text = text or json.dumps(self._data)
+            self.headers = headers or {}
+            self.url = url
+
+        def json(self):
+            return self._data
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "outlook_email_api"})()
+
+        def create_email(self):
+            return {"email": "new@example.com", "service_id": "mailbox-1"}
+
+        def refresh_before_ids(self):
+            return {"old-message"}
+
+        def get_verification_code(self, **kwargs):
+            assert kwargs["email"] == "new@example.com"
+            assert kwargs["otp_sent_at"] is not None
+            return "654321"
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+
+        def get(self, url, headers=None, allow_redirects=True, timeout=None, **kwargs):
+            calls.append(("GET", url, headers or None))
+            if url == "https://chatgpt.com/api/auth/csrf":
+                return Response(data={"csrfToken": "csrf-token"})
+            if url == "https://chatgpt.com/api/auth/session":
+                return Response(
+                    data={
+                        "accessToken": "access-token",
+                        "sessionToken": "session-token-json",
+                        "account": {"id": "acct_123"},
+                        "user": {"email": "new@example.com"},
+                        "expires": "2026-07-14T00:00:00.000Z",
+                    }
+                )
+            if url == "https://chatgpt.com/":
+                return Response()
+            if url == "https://auth.openai.com/oauth/start":
+                return Response(status_code=302, headers={"Location": "https://auth.openai.com/email-verification"})
+            if url == "https://auth.openai.com/email-verification":
+                return Response(text="<html>Email verification</html>")
+            if url == "https://auth.openai.com/about-you":
+                return Response(text="<html>About you</html>")
+            if url == "https://auth.openai.com/api/accounts/client_auth_session_dump":
+                return Response(data={"ok": True})
+            if url.startswith("https://chatgpt.com/api/auth/callback/openai"):
+                self.cookies.set("__Secure-next-auth.session-token", "session-token-cookie")
+                self.cookies.set("_account", "acct_cookie")
+                return Response()
+            raise AssertionError(f"unexpected GET {url}")
+
+        def post(self, url, headers=None, data=None, allow_redirects=True, timeout=None, **kwargs):
+            calls.append(("POST", url, data))
+            assert "/api/accounts/user/register" not in url
+            assert "/oauth/token" not in url
+            if url.startswith("https://chatgpt.com/api/auth/signin/openai?"):
+                assert "login_hint=new%40example.com" in url
+                return Response(data={"url": "https://auth.openai.com/oauth/start"})
+            if url == "https://auth.openai.com/api/accounts/email-otp/validate":
+                assert json.loads(data)["code"] == "654321"
+                return Response(data={"continue_url": "https://auth.openai.com/about-you", "page": {"type": "about_you"}})
+            if url == "https://auth.openai.com/api/accounts/create_account":
+                payload = json.loads(data)
+                assert payload["name"]
+                assert payload["birthdate"]
+                return Response(data={"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz"})
+            raise AssertionError(f"unexpected POST {url}")
+
+    engine.email_service = EmailService()
+    engine.session = Session()
+    engine._init_session = lambda: True
+    engine._check_sentinel = lambda *args, **kwargs: None
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    result = engine.run_chatgpt_register_latest()
+
+    assert result.success is True
+    assert result.email == "new@example.com"
+    assert result.account_id == "acct_123"
+    assert result.access_token == "access-token"
+    assert result.refresh_token == ""
+    assert result.session_token == "session-token-json"
+    assert result.metadata["auth_source"] == "chatgpt_register_latest"
+    assert any(
+        item[0] == "POST" and item[1] == "https://auth.openai.com/api/accounts/create_account"
+        for item in calls
+    )
+    assert not any("/api/accounts/user/register" in item[1] for item in calls)
+
+
+def test_latest_chatgpt_register_submits_password_before_waiting_for_otp(monkeypatch):
+    engine = _bare_engine()
+    calls = []
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "icloud_hme"})()
+
+        def create_email(self):
+            return {"email": "new@example.com", "service_id": "mailbox-1"}
+
+    engine.email_service = EmailService()
+    engine._init_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: None
+
+    def init_oauth():
+        calls.append("init")
+        engine._latest_chatgpt_init_final_url = "https://auth.openai.com/create-account/password"
+        return True, ""
+
+    def register_password():
+        calls.append("password")
+        engine.password = "Generated123!"
+        engine._email_otp_continue_url = "https://auth.openai.com/email-verification"
+        engine._otp_sent_at = 1000.0
+        return True, engine.password
+
+    def get_verification_code():
+        calls.append("otp")
+        assert calls[:2] == ["init", "password"]
+        assert engine._otp_sent_at == 1000.0
+        return "654321"
+
+    def finish(result):
+        result.success = True
+        result.email = engine.email
+        result.account_id = "acct_123"
+        result.access_token = "access-token"
+        return result
+
+    engine._latest_chatgpt_init_email_oauth = init_oauth
+    engine._register_password = register_password
+    engine._get_verification_code = get_verification_code
+    engine._latest_chatgpt_validate_email_otp = lambda code: {"continue_url": "https://auth.openai.com/about-you"}
+    engine._latest_chatgpt_open_about_you = lambda url: None
+    engine._latest_chatgpt_create_account_with_retry = lambda: True
+    engine._latest_chatgpt_fetch_session_result = finish
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    result = engine.run_chatgpt_register_latest()
+
+    assert result.success is True
+    assert result.password == "Generated123!"
+    assert calls == ["init", "password", "otp"]
+
+
+def test_latest_chatgpt_register_retries_init_transport_error(monkeypatch):
+    engine = _bare_engine()
+    calls = {"init": 0, "refresh": 0, "reset": 0}
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "outlook_email_api"})()
+
+        def create_email(self):
+            return {"email": "new@example.com", "service_id": "mailbox-1"}
+
+    engine.email_service = EmailService()
+    engine._init_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: calls.__setitem__("refresh", calls["refresh"] + 1)
+    engine._reset_latest_chatgpt_session_for_retry = lambda: calls.__setitem__("reset", calls["reset"] + 1)
+    engine._get_verification_code = lambda: "654321"
+    engine._latest_chatgpt_validate_email_otp = lambda code: {"continue_url": "https://auth.openai.com/about-you"}
+    engine._latest_chatgpt_open_about_you = lambda url: None
+    engine._latest_chatgpt_create_account_with_retry = lambda: True
+
+    def init_oauth():
+        calls["init"] += 1
+        if calls["init"] == 1:
+            return (
+                False,
+                "Failed to perform, curl: (35) TLS connect error: "
+                "error:00000000:invalid library (0):OPENSSL_internal:invalid library (0).",
+            )
+        return True, ""
+
+    def finish(result):
+        result.success = True
+        result.email = engine.email
+        result.account_id = "acct_123"
+        result.access_token = "access-token"
+        return result
+
+    engine._latest_chatgpt_init_email_oauth = init_oauth
+    engine._latest_chatgpt_fetch_session_result = finish
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    result = engine.run_chatgpt_register_latest()
+
+    assert result.success is True
+    assert calls["init"] == 2
+    assert calls["reset"] == 1
+    assert calls["refresh"] == 2
 
 
 def test_send_verification_code_uses_password_referer_like_reference_flow():

@@ -3959,3 +3959,69 @@
   - docs/chatgpt-register-flow.md: 记录该错误分类、YesCaptcha 不适用原因和任务停止策略；该文件是本地 gitignored 文档。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：移除 platforms/chatgpt/register.py 中新增的 Cloudflare Managed Challenge 常量、检测函数、异常类和 authorize 分支；恢复 platforms/chatgpt/plugin.py 中 `_refresh_session_failed_result()` 签名和 `_handle_refresh_session()` 错误分类处理；移除 application/tasks.py 中连续 Cloudflare 拦截停止逻辑；删除本轮新增测试；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-13 - Task: 批量注册迁移 chatgpt_register 最新邮箱注册链路
+
+### What was done
+- 将协议邮箱批量注册的账号注册主链切换为 `D:\work\ai\chatgpt_register\chatgpt_register.py` 的最新版流程：从 `chatgpt.com` 带 `login_hint=email` 初始化 OAuth，等待服务端自动发送的邮箱验证码，验证后进入 `about-you/create_account`，再跟随 callback 获取 `chatgpt.com` session。
+- 保留当前项目的邮箱领取、`before_ids` 刷新、验证码轮询、邮箱无效/别名父号耗尽打标、K12 后处理和任务调度，不引入外部项目里的邮箱客户端、`accounts.txt` 写入或 CPA 上传副作用。
+- 注册结果改为以新版链路返回的 ChatGPT Web session/accessToken 为准；新版脚本邮箱注册主链没有正式 refresh token，因此不再沿用旧 Platform/Codex OAuth 兜底逻辑伪装出 RT。
+- 同步文档说明新版链路的边界、保留项和 session/token 保存语义。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_flow_uses_login_hint_and_session tests\test_chatgpt_protocol_mailbox_fallback.py::test_protocol_mailbox_raises_on_otp_timeout tests\test_chatgpt_protocol_mailbox_fallback.py::test_protocol_mailbox_raises_on_oauth_start_block -q` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 26 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py platforms/chatgpt/protocol_mailbox.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md progress.md` -> 通过，仅有 CRLF 转换提示。
+- 未执行真实 OpenAI 批量注册，避免消耗邮箱/账号资源；本轮用模拟 session 覆盖新版请求顺序与返回字段。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 增加 chatgpt_register 最新邮箱 OAuth 注册链、session/accessToken 结果保存和 create_account 的 `registration_disallowed` 重试。
+  - platforms/chatgpt/protocol_mailbox.py: 默认协议邮箱 worker 优先调用新版注册链路，并保留旧 FakeEngine/兼容回退。
+  - tests/test_chatgpt_protocol_otp.py: 增加模拟 session 回归测试，确认默认链路使用 `login_hint`、OTP、`create_account` 和 session 获取，不再走旧 `user/register` 或 OAuth token 兜底。
+  - docs/chatgpt-register-flow.md: 记录新版链路、保留当前邮箱/OTP 逻辑以及 RT 为空的原因。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 platforms/chatgpt/protocol_mailbox.py 中 `ChatGPTProtocolMailboxWorker.run()` 为直接调用 `self.engine.run()`；移除 platforms/chatgpt/register.py 中 `run_chatgpt_register_latest()` 及 `_latest_chatgpt_*` 辅助方法，并移除 `_last_create_account_error_code` 相关记录；删除 tests/test_chatgpt_protocol_otp.py 中新增测试；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可回到旧批量注册链路。
+
+## 2026-07-13 - Task: chatgpt_register 初始化 TLS 失败重试
+
+### What was done
+- 将 `chatgpt_register` 最新注册链路的初始化失败按类型区分：`TLS connect error`、连接重置、超时等 transport 错误最多重试 3 次。
+- 每次初始化重试前重建 HTTP session，并刷新邮箱已见邮件集合，避免上一轮失败会话可能触发的旧验证码被后续会话误用。
+- 业务错误、CSRF 缺失、页面契约异常等非网络类初始化失败仍直接暴露，不用重试掩盖真实问题。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_retries_init_transport_error tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_flow_uses_login_hint_and_session -q` -> 2 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 27 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 增加初始化 transport 错误识别、session 重建和 3 次有限重试。
+  - tests/test_chatgpt_protocol_otp.py: 增加 TLS connect error 初始化失败会重试的回归测试。
+  - docs/chatgpt-register-flow.md: 补充初始化网络错误重试语义。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/register.py 中 `_is_latest_chatgpt_init_retryable_error()`、`_reset_latest_chatgpt_session_for_retry()` 以及 `run_chatgpt_register_latest()` 初始化重试循环，恢复为一次初始化失败即返回；删除 tests/test_chatgpt_protocol_otp.py 中 `test_latest_chatgpt_register_retries_init_transport_error`；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-13 - Task: chatgpt_register 密码页后再等待邮箱验证码
+
+### What was done
+- 根据 iCloud HME 注册日志确认，本轮失败不是邮箱取件优先故障，而是 OpenAI 初始化最终停在 `create-account/password`，当前链路跳过密码提交后直接等待验证码，导致验证码未被正确触发。
+- `chatgpt_register` 最新注册链路现在会记录初始化最终页面；如果停在注册密码页，先复用现有密码提交逻辑，进入邮箱验证页后再使用当前项目原有邮箱验证码等待流程。
+- 初始化直接进入邮箱验证页的路径保持不提交密码；异常落到其他页面时直接报注册步骤异常，避免把未发码误判为 iCloud 邮箱无效。
+- 本地文档补充密码页分支，说明只有进入邮箱验证页后才开始等待验证码。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 28 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 记录 `chatgpt_register` 初始化最终页面，并在密码页分支先提交注册密码后再等待 OTP。
+  - tests/test_chatgpt_protocol_otp.py: 增加密码页必须先提交密码再等待 OTP 的回归测试，并保留直接邮箱验证页不走密码注册的覆盖。
+  - docs/chatgpt-register-flow.md: 补充初始化到密码页时的处理顺序；该文件是本地 gitignored 文档。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/register.py 中 `_latest_chatgpt_init_final_url` 状态记录、`run_chatgpt_register_latest()` 的 `create-account/password` 分支和 `_register_password()` 中 OTP 时间点更新；删除 tests/test_chatgpt_protocol_otp.py 中 `test_latest_chatgpt_register_submits_password_before_waiting_for_otp`；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。

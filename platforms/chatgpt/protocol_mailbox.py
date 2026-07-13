@@ -320,7 +320,11 @@ class ChatGPTProtocolMailboxWorker:
 
         self.engine.password = password
 
-        result = self.engine.run()
+        latest_runner = getattr(self.engine, "run_chatgpt_register_latest", None)
+        if callable(latest_runner):
+            result = latest_runner()
+        else:
+            result = self.engine.run()
 
         if not result or not result.success:
             raise RuntimeError(result.error_message if result else "??????")

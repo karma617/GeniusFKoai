@@ -719,9 +719,11 @@ class RegistrationEngine:
         self._otp_continue_url: Optional[str] = None
 
         self._otp_page_type: Optional[str] = None
+        self._latest_chatgpt_init_final_url: str = ""
         self._email_otp_exhausted: bool = False
 
         self._user_already_exists: bool = False
+        self._last_create_account_error_code: str = ""
 
         self._platform_authorize_final_url: str = ""
 
@@ -1308,6 +1310,363 @@ class RegistrationEngine:
             self._log(f"初始化会话失败: {e}", "error")
 
             return False
+
+
+
+    @staticmethod
+    def _response_json_dict(response) -> dict:
+        try:
+            data = response.json()
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+
+    @staticmethod
+    def _openai_error_code_from_payload(payload: dict) -> str:
+        error = payload.get("error") if isinstance(payload, dict) else {}
+        if isinstance(error, dict):
+            return str(error.get("code") or "").strip()
+        return ""
+
+
+    @staticmethod
+    def _is_latest_chatgpt_init_retryable_error(message: str) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        retry_markers = (
+            "tls connect error",
+            "openssl_internal",
+            "curl: (35)",
+            "connection reset",
+            "connection aborted",
+            "remote end closed connection",
+            "connect timeout",
+            "connection timeout",
+            "timed out",
+            "timeout",
+            "network error",
+            "failed to perform",
+        )
+        return any(marker in text for marker in retry_markers)
+
+
+    def _reset_latest_chatgpt_session_for_retry(self) -> None:
+        try:
+            close = getattr(self.session, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+        self.http_client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+        self.protocol_fingerprint.apply_to_client(self.http_client)
+        self.session = self.http_client.session
+        self._device_id = None
+        self._create_account_continue_url = None
+        self._email_otp_continue_url = None
+        self._email_otp_page_loaded = False
+        self._otp_continue_url = None
+        self._otp_page_type = None
+        self._latest_chatgpt_init_final_url = ""
+
+
+    def _latest_chatgpt_init_email_oauth(self) -> tuple[bool, str]:
+        """按 chatgpt_register 最新流程初始化邮箱注册，并记录 OpenAI 返回的下一步页面。"""
+        from .constants import CHATGPT_APP
+
+        if not self.session:
+            return False, "session_not_initialized"
+        if not self.email:
+            return False, "email_not_initialized"
+
+        otp_maybe_sent_at = time.time()
+        self._otp_sent_at = None
+        self._latest_chatgpt_init_final_url = ""
+        try:
+            self.session.get(f"{CHATGPT_APP}/", timeout=20)
+            csrf_resp = self.session.get(f"{CHATGPT_APP}/api/auth/csrf", timeout=20)
+            if getattr(csrf_resp, "status_code", 0) != 200:
+                return False, f"csrf_http_{getattr(csrf_resp, 'status_code', 0)}"
+
+            csrf_data = self._response_json_dict(csrf_resp)
+            csrf_token = str(csrf_data.get("csrfToken") or "").strip()
+            if not csrf_token:
+                csrf_cookie = str(self.session.cookies.get("__Host-next-auth.csrf-token", "") or "")
+                csrf_token = csrf_cookie.split("%7C")[0] if "%7C" in csrf_cookie else csrf_cookie.split("|")[0]
+            if not csrf_token:
+                return False, "csrf_token_missing"
+
+            query = urllib.parse.urlencode(
+                {
+                    "prompt": "login",
+                    "screen_hint": "login_or_signup",
+                    "login_hint": self.email,
+                }
+            )
+            signin_resp = self.session.post(
+                f"{CHATGPT_APP}/api/auth/signin/openai?{query}",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                data=urllib.parse.urlencode(
+                    {
+                        "callbackUrl": f"{CHATGPT_APP}/",
+                        "csrfToken": csrf_token,
+                        "json": "true",
+                    }
+                ),
+                allow_redirects=False,
+                timeout=20,
+            )
+
+            signin_data = self._response_json_dict(signin_resp)
+            next_url = str(signin_data.get("url") or signin_resp.headers.get("Location") or "").strip()
+            if not next_url:
+                return False, f"signin_no_authorize_url_http_{getattr(signin_resp, 'status_code', 0)}"
+
+            final_resp = None
+            current_url = next_url
+            for redirect_index in range(15):
+                final_resp = self.session.get(current_url, allow_redirects=False, timeout=30)
+                location = str(final_resp.headers.get("Location") or final_resp.headers.get("location") or "").strip()
+                self._log(
+                    f"chatgpt_register 初始化重定向 {redirect_index + 1}: "
+                    f"status={getattr(final_resp, 'status_code', 0)} url={current_url}"
+                )
+                if not location:
+                    break
+                current_url = urllib.parse.urljoin(current_url, location)
+
+            self._latest_chatgpt_init_final_url = current_url
+            if "/email-verification" in current_url or "/email-otp" in current_url:
+                self._email_otp_continue_url = current_url
+                self._otp_sent_at = otp_maybe_sent_at
+
+            did = self._read_oai_did_cookie()
+            if not did:
+                did = self._seed_oai_did_cookie(self._protocol_device_id())
+            self._device_id = did
+            self._log(f"chatgpt_register 初始化完成，device_id={did[:12]}...")
+            if final_resp is not None:
+                self._log(f"chatgpt_register 初始化最终状态: {getattr(final_resp, 'status_code', 0)}")
+            if current_url:
+                self._log(f"chatgpt_register 初始化最终页面: {current_url}")
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)
+
+
+    def _latest_chatgpt_validate_email_otp(self, code: str) -> dict:
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "referer": "https://auth.openai.com/email-verification",
+        }
+        response = self.session.post(
+            OPENAI_API_ENDPOINTS["validate_otp"],
+            headers=headers,
+            data=json.dumps({"code": code}, separators=(",", ":")),
+            timeout=30,
+        )
+        payload = self._response_json_dict(response)
+        self._otp_page_type = str(((payload.get("page") or {}).get("type")) or "")
+        self._otp_continue_url = str(payload.get("continue_url") or "").strip()
+        self._log(
+            f"chatgpt_register OTP validate 状态: {getattr(response, 'status_code', 0)} "
+            f"page_type={self._otp_page_type or '(empty)'}"
+        )
+        if getattr(response, "status_code", 0) != 200:
+            error_code = self._openai_error_code_from_payload(payload)
+            raise RuntimeError(error_code or f"email_otp_validate_http_{getattr(response, 'status_code', 0)}")
+        error_code = self._openai_error_code_from_payload(payload)
+        if error_code:
+            raise RuntimeError(error_code)
+        return payload
+
+
+    def _latest_chatgpt_open_about_you(self, url: str) -> None:
+        if not url:
+            return
+        target = urllib.parse.urljoin("https://auth.openai.com/", url)
+        try:
+            response = self.session.get(
+                target,
+                headers={"referer": "https://auth.openai.com/email-verification"},
+                timeout=20,
+            )
+            self._log(f"chatgpt_register about-you 导航状态: {getattr(response, 'status_code', 0)}")
+        except Exception as exc:
+            self._log(f"chatgpt_register about-you 导航失败（继续尝试创建账号）: {exc}", "warning")
+
+
+    def _latest_chatgpt_create_account_with_retry(self) -> bool:
+        for attempt in range(1, 4):
+            self._last_create_account_error_code = ""
+            if self._create_user_account():
+                return True
+            error_code = str(getattr(self, "_last_create_account_error_code", "") or "")
+            if error_code == "registration_disallowed" and attempt < 3:
+                self._log(f"registration_disallowed，按最新版流程重试创建账号 ({attempt}/3)", "warning")
+                time.sleep(2)
+                continue
+            return False
+        return False
+
+
+    def _latest_chatgpt_fetch_session_result(self, result: RegistrationResult) -> RegistrationResult:
+        from .constants import CHATGPT_APP
+
+        callback_url = str(self._create_account_continue_url or "").strip()
+        if not callback_url:
+            result.error_message = "create_account 未返回 callback URL"
+            return result
+        callback_url = urllib.parse.urljoin("https://auth.openai.com/", callback_url)
+
+        cb_resp = self.session.get(callback_url, allow_redirects=True, timeout=30)
+        self._log(f"chatgpt_register callback 状态: {getattr(cb_resp, 'status_code', 0)}")
+
+        session_token = str(self.session.cookies.get("__Secure-next-auth.session-token") or "").strip()
+        account_cookie = str(self.session.cookies.get("_account") or "").strip()
+        session_cookies_header = _cookies_to_header(self.session.cookies)
+
+        session_resp = self.session.get(
+            f"{CHATGPT_APP}/api/auth/session",
+            headers={"accept": "application/json"},
+            timeout=20,
+        )
+        self._log(f"chatgpt_register session API 状态: {getattr(session_resp, 'status_code', 0)}")
+        session_data = self._response_json_dict(session_resp)
+        access_token = str(session_data.get("accessToken") or "").strip()
+        session_token = str(session_data.get("sessionToken") or session_token or "").strip()
+        account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
+        user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
+        account_id = (
+            str(account_data.get("id") or "").strip()
+            or _extract_chatgpt_account_id(access_token)
+            or account_cookie
+        )
+        if not access_token:
+            result.error_message = "chatgpt.com session 未返回 accessToken"
+            return result
+        if not account_id:
+            result.error_message = "chatgpt.com session 未返回 account_id"
+            return result
+
+        result.success = True
+        result.email = self.email or ""
+        result.password = self.password or ""
+        result.account_id = account_id
+        result.access_token = access_token
+        result.refresh_token = ""
+        result.id_token = access_token
+        result.session_token = session_token
+        result.source = "register"
+        service_type = getattr(getattr(self.email_service, "service_type", None), "value", "")
+        result.metadata = {
+            "email_service": service_type,
+            "proxy_used": self.proxy_url,
+            "registered_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "is_existing_account": False,
+            "cookies": session_cookies_header,
+            "profile": user_data,
+            "expires_at": str(session_data.get("expires") or ""),
+            "session": session_data,
+            "auth_source": "chatgpt_register_latest",
+            "openai_register_reference": r"D:\work\ai\chatgpt_register\chatgpt_register.py",
+        }
+        self._log("=" * 60)
+        self._log("注册成功! (chatgpt_register 最新邮箱 OAuth 流程)")
+        self._log(f"邮箱: {result.email}")
+        self._log(f"Account ID: {result.account_id}")
+        self._log("=" * 60)
+        return result
+
+
+    def run_chatgpt_register_latest(self) -> RegistrationResult:
+        """执行 D:\\work\\ai\\chatgpt_register 的最新版邮箱注册主链。"""
+        result = RegistrationResult(success=False, logs=self.logs)
+        try:
+            self._log("=" * 60)
+            self._log("开始注册流程（chatgpt_register 最新版）")
+            self._log("=" * 60)
+
+            self._log("1. 准备邮箱...")
+            if not self._create_email():
+                result.error_message = "创建邮箱失败"
+                return result
+            result.email = self.email
+
+            if not self.password:
+                self.password = self._generate_password()
+            result.password = self.password or ""
+
+            self._log("2. 初始化会话...")
+            if not self._init_session():
+                result.error_message = "初始化会话失败"
+                return result
+
+            self._refresh_mailbox_before_ids()
+            self._log("3. 使用 chatgpt.com login_hint 初始化邮箱 OAuth 注册...")
+            init_error = ""
+            for init_attempt in range(1, 4):
+                if init_attempt > 1:
+                    self._log(f"chatgpt_register 初始化网络失败，重试 ({init_attempt}/3)...", "warning")
+                    self._refresh_mailbox_before_ids()
+                    self._reset_latest_chatgpt_session_for_retry()
+                init_ok, init_error = self._latest_chatgpt_init_email_oauth()
+                if init_ok:
+                    break
+                if not self._is_latest_chatgpt_init_retryable_error(init_error) or init_attempt >= 3:
+                    result.error_message = f"chatgpt_register 初始化失败: {init_error}"
+                    return result
+                self._log(f"chatgpt_register 初始化失败: {init_error}", "warning")
+                time.sleep(2)
+
+            init_final_url = str(getattr(self, "_latest_chatgpt_init_final_url", "") or "")
+            if "/create-account/password" in init_final_url:
+                self._log("4. 初始化进入注册密码页，先提交密码...")
+                password_ok, registered_password = self._register_password()
+                if not password_ok:
+                    result.error_message = "注册密码失败"
+                    return result
+                if registered_password:
+                    result.password = registered_password
+                if not self._email_otp_continue_url:
+                    result.error_message = "注册密码后未进入邮箱验证码步骤"
+                    return result
+            elif init_final_url and "/email-verification" not in init_final_url and "/email-otp" not in init_final_url:
+                result.error_message = f"chatgpt_register 初始化后未进入邮箱验证码步骤: {init_final_url}"
+                return result
+
+            self._log("5. 等待邮箱验证码...")
+            code = self._get_verification_code()
+            if not code:
+                result.error_message = (
+                    "邮箱验证码三轮未收到，已标记无效邮箱"
+                    if self._email_otp_exhausted
+                    else "获取验证码失败"
+                )
+                return result
+
+            self._log("6. 提交邮箱验证码...")
+            validate_payload = self._latest_chatgpt_validate_email_otp(code)
+            about_you_url = str(validate_payload.get("continue_url") or "").strip()
+            self._latest_chatgpt_open_about_you(about_you_url)
+
+            self._log("7. 创建账号资料...")
+            if not self._latest_chatgpt_create_account_with_retry():
+                result.error_message = (
+                    "EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - parent email alias quota exhausted"
+                    if getattr(self, "_user_already_exists", False)
+                    else "创建用户账户失败"
+                )
+                return result
+
+            self._log("8. 跟随 callback 并获取 chatgpt.com session...")
+            return self._latest_chatgpt_fetch_session_result(result)
+        except Exception as exc:
+            self._log(f"chatgpt_register 最新注册流程异常: {exc}", "error")
+            result.error_message = str(exc)
+            return result
 
 
 
@@ -1935,10 +2294,12 @@ class RegistrationEngine:
                         if page_type == OPENAI_PAGE_TYPES.get("EMAIL_OTP_VERIFICATION", "email_otp_verification"):
 
                             self._log("密码提交后进入邮箱 OTP 验证流程")
+                            self._otp_page_type = page_type
+                            self._email_otp_continue_url = continue_url or "https://auth.openai.com/email-verification"
+                            self._email_otp_page_loaded = False
+                            self._otp_sent_at = time.time()
 
                             if continue_url:
-
-                                self._email_otp_continue_url = continue_url
 
                                 self._log(f"密码响应 continue_url: {continue_url}")
 
@@ -2602,6 +2963,7 @@ class RegistrationEngine:
         """创建用户账户"""
 
         try:
+            self._last_create_account_error_code = ""
 
             user_info = generate_random_user_info()
 
@@ -2713,6 +3075,9 @@ class RegistrationEngine:
             if response.status_code != 200:
 
                 self._log(f"账户创建失败: {response.text}", "warning")
+                self._last_create_account_error_code = self._openai_error_code_from_payload(
+                    self._response_json_dict(response)
+                )
                 if self._is_deleted_or_deactivated_account_response(response):
                     self._log("OpenAI 判定该邮箱关联账号已删除或停用，准备删除当前邮箱", "warning")
                     self._delete_current_email_after_openai_reject("openai_account_deleted_or_deactivated")
