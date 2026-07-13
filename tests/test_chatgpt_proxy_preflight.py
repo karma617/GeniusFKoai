@@ -59,6 +59,38 @@ def test_chatgpt_proxy_preflight_does_not_replace_explicit_proxy(monkeypatch):
     assert any(level == "warning" and "ChatGPT" in message for level, message in logger.messages)
 
 
+def test_chatgpt_proxy_preflight_keeps_proxy_on_transient_tls_error(monkeypatch):
+    failures = []
+
+    monkeypatch.setattr(
+        tasks,
+        "_resolve_registration_proxy_for_platform",
+        lambda platform_name, **kwargs: "socks5://user:pass@us.1024proxy.io:3000",
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_chatgpt_proxy_preflight",
+        lambda proxy, *, timeout=12: (
+            False,
+            "SSLError: Failed to perform, curl: (35) TLS connect error: "
+            "OPENSSL_internal:invalid library (0)",
+        ),
+    )
+    monkeypatch.setattr("core.proxy_pool.proxy_pool.report_fail", lambda proxy: failures.append(proxy))
+    logger = _Logger()
+
+    resolved = tasks._resolve_chatgpt_reachable_proxy(
+        platform_name="chatgpt",
+        explicit_proxy=None,
+        proxy_getter=lambda: None,
+        logger=logger,
+    )
+
+    assert resolved == "socks5://user:pass@us.1024proxy.io:3000"
+    assert failures == []
+    assert any("继续使用浏览器真实流程" in message for _level, message in logger.messages)
+
+
 def test_proxy_preflight_skips_non_chatgpt_platform(monkeypatch):
     checked = False
 

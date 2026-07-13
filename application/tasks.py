@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from sqlmodel import Session, select, func
+from sqlalchemy.exc import OperationalError
+from sqlmodel import Session, select, func
 
 from core.account_graph import (
     load_account_graphs,
@@ -24,7 +25,8 @@ from core.datetime_utils import format_local_clock, serialize_datetime
 from core.db import AccountModel, TaskEventModel, TaskLog, TaskModel, engine, save_account
 from core.platform_accounts import build_platform_account
 from core.registry import get
-from infrastructure.platform_runtime import PlatformRuntime
+from infrastructure.accounts_repository import AccountsRepository
+from infrastructure.platform_runtime import PlatformRuntime
 from application.ctf_plus import CtfPlusAccountsService
 from application.phone_binding import PhoneBindingService
 
@@ -36,9 +38,21 @@ TASK_TYPE_PLATFORM_ACTION = "platform_action"
 TASK_TYPE_PHONE_BIND = "phone_bind"
 TASK_TYPE_CODEX_OAUTH = "codex_oauth"
 TASK_TYPE_GET_RT = "get_rt"
-TASK_TYPE_GET_RT_BYPASS = "get_rt_bypass"
+TASK_TYPE_GET_RT_BYPASS = "get_rt_bypass"
+TASK_TYPE_REFRESH_SESSION = "refresh_session"
 TASK_TYPE_GOPAY_PAY_CHATGPT = "gopay_pay_chatgpt"
 TASK_TYPE_GOPAY_REGISTER_ACCOUNT = "gopay_register_account"
+
+TASK_DB_WRITE_ATTEMPTS = 5
+
+BUGFREE_LABEL = "BUGFREE"
+CHATGPT_TRIAL_LABEL = "试用"
+CHATGPT_FREE_PLUS_CAMPAIGN_ID = "plus-1-month-free"
+CHATGPT_ACCOUNTS_CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480"
+BUGFREE_SKIP_RESULT = "__bugfree_skip__"
+BUGFREE_TARGET_SECONDS = 7 * 24 * 60 * 60
+BUGFREE_TARGET_TOLERANCE_SECONDS = 24 * 60 * 60
+BUGFREE_MONTH_SKIP_SECONDS = 25 * 24 * 60 * 60
 
 GET_RT_SMS_BALANCE_ACTION_AUTO_SWITCH = "auto_switch"
 GET_RT_SMS_BALANCE_ACTION_WAIT_RELEASE = "wait_release"
@@ -202,6 +216,14 @@ def _json_default(value: Any) -> Any:
 
 def _dump_json(data: Any) -> str:
     return json.dumps(data or {}, ensure_ascii=False, default=_json_default)
+
+
+def _is_database_locked_error(exc: Exception) -> bool:
+    return "database is locked" in str(exc).lower()
+
+
+def _sleep_db_write_retry(attempt: int) -> None:
+    time.sleep(min(0.25 * (attempt + 1), 1.5))
 
 
 def _safe_json_stem(value: Any) -> str:
@@ -413,7 +435,7 @@ def serialize_event(event: TaskEventModel) -> dict[str, Any]:
     }
 
 
-def create_task(
+def _create_task_without_db_lock_retry(
     *,
     task_type: str,
     platform: str,
@@ -437,7 +459,46 @@ def create_task(
         session.commit()
         session.refresh(task)
     append_task_event(task.id, f"任务已创建: {task_type}", event_type="state")
-    return serialize_task(task)
+    return serialize_task(task)
+
+
+def create_task(
+    *,
+    task_type: str,
+    platform: str,
+    payload: dict[str, Any],
+    progress_total: int = 1,
+    result_seed: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    task_id = f"task_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+    last_error: OperationalError | None = None
+    for attempt in range(TASK_DB_WRITE_ATTEMPTS):
+        task = TaskModel(
+            id=task_id,
+            type=task_type,
+            platform=platform,
+            status=TASK_STATUS_PENDING,
+            payload_json=_dump_json(payload),
+            result_json=_dump_json(_task_result_seed(result_seed)),
+            progress_current=0,
+            progress_total=max(int(progress_total or 0), 0),
+        )
+        try:
+            with Session(engine) as session:
+                session.add(task)
+                session.commit()
+                session.refresh(task)
+                serialized = serialize_task(task)
+            append_task_event(task.id, f"任务已创建: {task_type}", event_type="state")
+            return serialized
+        except OperationalError as exc:
+            if not _is_database_locked_error(exc) or attempt >= TASK_DB_WRITE_ATTEMPTS - 1:
+                raise
+            last_error = exc
+            _sleep_db_write_retry(attempt)
+    if last_error:
+        raise last_error
+    raise RuntimeError("创建任务失败")
 
 
 def create_register_task(payload: dict[str, Any]) -> dict[str, Any]:
@@ -577,7 +638,21 @@ def create_get_rt_bypass_task(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def create_gopay_pay_chatgpt_task(payload: dict[str, Any]) -> dict[str, Any]:
+def create_refresh_session_task(payload: dict[str, Any]) -> dict[str, Any]:
+    """批量重新登录并刷新 ChatGPT session/at。"""
+
+    payload = dict(payload or {})
+    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    payload["ids"] = ids
+    return create_task(
+        task_type=TASK_TYPE_REFRESH_SESSION,
+        platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+        payload=payload,
+        progress_total=max(len(ids), 1),
+    )
+
+
+def create_gopay_pay_chatgpt_task(payload: dict[str, Any]) -> dict[str, Any]:
     """GoPay 协议付款 ChatGPT Plus 任务创建。
 
     payload 至少包含 ``chatgpt_account_ids: [int, ...]`` 或 ``register_count``；
@@ -645,7 +720,7 @@ def list_task_events(task_id: str, *, since: int = 0, limit: int = 200) -> list[
     return [serialize_event(item) for item in items]
 
 
-def append_task_event(task_id: str, message: str, *, event_type: str = "log", level: str = "info", detail: dict | None = None) -> dict[str, Any]:
+def _append_task_event_without_db_lock_retry(task_id: str, message: str, *, event_type: str = "log", level: str = "info", detail: dict | None = None) -> dict[str, Any]:
     with Session(engine) as session:
         event = TaskEventModel(
             task_id=task_id,
@@ -660,7 +735,33 @@ def append_task_event(task_id: str, message: str, *, event_type: str = "log", le
     return serialize_event(event)
 
 
-def mark_incomplete_tasks_interrupted() -> None:
+def append_task_event(task_id: str, message: str, *, event_type: str = "log", level: str = "info", detail: dict | None = None) -> dict[str, Any]:
+    last_error: OperationalError | None = None
+    for attempt in range(TASK_DB_WRITE_ATTEMPTS):
+        event = TaskEventModel(
+            task_id=task_id,
+            type=event_type,
+            level=level,
+            message=message,
+            detail_json=_dump_json(detail or {}),
+        )
+        try:
+            with Session(engine) as session:
+                session.add(event)
+                session.commit()
+                session.refresh(event)
+                return serialize_event(event)
+        except OperationalError as exc:
+            if not _is_database_locked_error(exc) or attempt >= TASK_DB_WRITE_ATTEMPTS - 1:
+                raise
+            last_error = exc
+            _sleep_db_write_retry(attempt)
+    if last_error:
+        raise last_error
+    raise RuntimeError("写入任务事件失败")
+
+
+def mark_incomplete_tasks_interrupted() -> None:
     interrupted_ids: list[str] = []
     with Session(engine) as session:
         non_terminal = [TASK_STATUS_PENDING] + list(ACTIVE_TASK_STATUSES)
@@ -895,7 +996,408 @@ def _build_chatgpt_upload_account(account):
     target.account_id = account.user_id or extra.get("account_id", "")
     target.cookies = extra.get("cookies", "")
     target.extra = extra
-    return target
+    return target
+
+
+def _format_bugfree_reset_at(reset_at: int) -> str:
+    if reset_at <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(reset_at, timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    except Exception:
+        return ""
+
+
+def _extract_chatgpt_account_id_for_usage(account) -> str:
+    extra = dict(getattr(account, "extra", {}) or {})
+    overview = extra.get("account_overview") if isinstance(extra.get("account_overview"), dict) else {}
+    return str(
+        extra.get("chatgpt_account_id")
+        or extra.get("chatgptAccountId")
+        or extra.get("account_id")
+        or overview.get("chatgpt_account_id")
+        or overview.get("chatgptAccountId")
+        or overview.get("account_id")
+        or getattr(account, "user_id", "")
+        or ""
+    ).strip()
+
+
+def _extract_chatgpt_access_token(account) -> str:
+    extra = dict(getattr(account, "extra", {}) or {})
+    return str(
+        extra.get("access_token")
+        or extra.get("accessToken")
+        or getattr(account, "token", "")
+        or ""
+    ).strip()
+
+
+def _extract_chatgpt_session_token(account) -> str:
+    extra = dict(getattr(account, "extra", {}) or {})
+    session = extra.get("session") if isinstance(extra.get("session"), dict) else {}
+    return str(
+        extra.get("session_token")
+        or extra.get("sessionToken")
+        or session.get("sessionToken")
+        or session.get("session_token")
+        or ""
+    ).strip()
+
+
+def _extract_chatgpt_cookies(account) -> str:
+    extra = dict(getattr(account, "extra", {}) or {})
+    return str(extra.get("cookies") or extra.get("cookie") or extra.get("cookie_header") or "").strip()
+
+
+def _inspect_chatgpt_bugfree_usage(account, *, proxy: str | None = None, timeout: int = 20) -> dict[str, Any]:
+    from curl_cffi import requests as cffi_requests
+    from platforms.chatgpt.payment import WHAM_USAGE_URL, _build_proxies
+
+    access_token = _extract_chatgpt_access_token(account)
+    if not access_token:
+        return {
+            "ok": False,
+            "url": WHAM_USAGE_URL,
+            "error": "缺少 access_token，无法查询 BUGFREE 额度周期",
+        }
+
+    headers = {
+        "authorization": f"Bearer {access_token}",
+        "accept": "application/json",
+        "openai-beta": "codex-1",
+        "oai-language": "zh-CN",
+        "originator": "Codex Desktop",
+        "sec-fetch-site": "none",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-dest": "empty",
+    }
+    chatgpt_account_id = _extract_chatgpt_account_id_for_usage(account)
+    if chatgpt_account_id:
+        headers["Chatgpt-Account-Id"] = chatgpt_account_id
+
+    try:
+        response = cffi_requests.get(
+            WHAM_USAGE_URL,
+            headers=headers,
+            proxies=_build_proxies(proxy),
+            timeout=timeout,
+            impersonate="chrome124",
+        )
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if not (200 <= status_code < 300):
+            body = str(getattr(response, "text", "") or "")[:240]
+            return {
+                "ok": False,
+                "url": WHAM_USAGE_URL,
+                "status_code": status_code,
+                "error": f"wham/usage HTTP {status_code}: {body}".strip(),
+            }
+        data = response.json()
+        if not isinstance(data, dict):
+            return {
+                "ok": False,
+                "url": WHAM_USAGE_URL,
+                "status_code": status_code,
+                "error": "wham/usage 响应格式异常",
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "url": WHAM_USAGE_URL,
+            "status_code": 0,
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
+
+    window = data.get("rate_limit", {}).get("primary_window", {}) if isinstance(data.get("rate_limit"), dict) else {}
+    try:
+        reset_at = int(window.get("reset_at") or 0) if isinstance(window, dict) else 0
+    except Exception:
+        reset_at = 0
+    now_ts = int(time.time())
+    reset_delta_seconds = reset_at - now_ts if reset_at > 0 else 0
+    reset_days = reset_delta_seconds / 86400 if reset_delta_seconds > 0 else 0
+    reset_at_text = _format_bugfree_reset_at(reset_at)
+    is_bugfree = (
+        reset_delta_seconds > 0
+        and abs(reset_delta_seconds - BUGFREE_TARGET_SECONDS) <= BUGFREE_TARGET_TOLERANCE_SECONDS
+    )
+    is_month_window = reset_delta_seconds >= BUGFREE_MONTH_SKIP_SECONDS
+    if is_bugfree:
+        decision = "bugfree"
+        reason = "额度刷新时间在 7 天左右"
+    elif is_month_window:
+        decision = "skip_month"
+        reason = "额度刷新时间约 30 天，跳过当前账号"
+    else:
+        decision = "skip"
+        reason = "额度刷新时间不在 7 天左右，跳过当前账号"
+    return {
+        "ok": True,
+        "url": WHAM_USAGE_URL,
+        "status_code": status_code,
+        "usage": data,
+        "reset_at": reset_at,
+        "reset_at_text": reset_at_text,
+        "reset_delta_seconds": reset_delta_seconds,
+        "reset_days": reset_days,
+        "is_bugfree": is_bugfree,
+        "decision": decision,
+        "reason": reason,
+    }
+
+
+def _mark_bugfree_account(saved_account_id: int, usage_info: dict[str, Any]) -> None:
+    if saved_account_id <= 0:
+        return
+    with Session(engine) as session:
+        model = session.get(AccountModel, saved_account_id)
+        if not model:
+            return
+        graph = load_account_graphs(session, [saved_account_id]).get(saved_account_id, {})
+        overview = dict(graph.get("overview") or {})
+        chips = [
+            str(item).strip()
+            for item in (overview.get("chips") or [])
+            if str(item or "").strip()
+        ]
+        if BUGFREE_LABEL not in chips:
+            chips.append(BUGFREE_LABEL)
+        usage = usage_info.get("usage") if isinstance(usage_info.get("usage"), dict) else {}
+        patch_account_graph(
+            session,
+            model,
+            summary_updates={
+                "chips": chips,
+                "bugfree": True,
+                "bugfree_reset_at": int(usage_info.get("reset_at") or 0),
+                "bugfree_reset_at_text": str(usage_info.get("reset_at_text") or ""),
+                "bugfree_reset_days": round(float(usage_info.get("reset_days") or 0), 3),
+                "wham_usage": usage,
+                "chatgpt_usage": usage,
+            },
+        )
+        model.updated_at = _utcnow()
+        session.add(model)
+        session.commit()
+
+
+def _find_chatgpt_free_plus_trial_campaign(data: dict[str, Any], account_id: str = "") -> dict[str, Any] | None:
+    accounts = data.get("accounts") if isinstance(data, dict) else {}
+    if not isinstance(accounts, dict):
+        return None
+    candidates: list[dict[str, Any]] = []
+    if account_id and isinstance(accounts.get(account_id), dict):
+        candidates.append(accounts[account_id])
+    if isinstance(accounts.get("default"), dict):
+        candidates.append(accounts["default"])
+    candidates.extend(
+        item
+        for key, item in accounts.items()
+        if key not in {account_id, "default"} and isinstance(item, dict)
+    )
+    for item in candidates:
+        campaigns = item.get("eligible_promo_campaigns")
+        if not isinstance(campaigns, dict):
+            continue
+        plus = campaigns.get("plus")
+        if not isinstance(plus, dict):
+            continue
+        metadata = plus.get("metadata") if isinstance(plus.get("metadata"), dict) else {}
+        discount = metadata.get("discount") if isinstance(metadata.get("discount"), dict) else {}
+        try:
+            percentage = int(float(discount.get("percentage") or 0))
+        except (TypeError, ValueError):
+            percentage = 0
+        if plus.get("id") == CHATGPT_FREE_PLUS_CAMPAIGN_ID and percentage == 100:
+            return plus
+    return None
+
+
+def _inspect_chatgpt_free_plus_trial(account, *, proxy: str | None = None, timeout: int = 20) -> dict[str, Any]:
+    from curl_cffi import requests as cffi_requests
+    from platforms.chatgpt.payment import _build_proxies
+
+    access_token = _extract_chatgpt_access_token(account)
+    if not access_token:
+        return {
+            "ok": False,
+            "url": CHATGPT_ACCOUNTS_CHECK_URL,
+            "eligible": False,
+            "error": "缺少 access_token，无法查询免费 Plus 试用权益",
+        }
+
+    headers = {
+        "authorization": f"Bearer {access_token}",
+        "accept": "application/json",
+        "oai-language": "zh-CN",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+    }
+    chatgpt_account_id = _extract_chatgpt_account_id_for_usage(account)
+    if chatgpt_account_id:
+        headers["Chatgpt-Account-Id"] = chatgpt_account_id
+
+    try:
+        response = cffi_requests.get(
+            CHATGPT_ACCOUNTS_CHECK_URL,
+            headers=headers,
+            proxies=_build_proxies(proxy),
+            timeout=timeout,
+            impersonate="chrome124",
+        )
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if not (200 <= status_code < 300):
+            body = str(getattr(response, "text", "") or "")[:240]
+            return {
+                "ok": False,
+                "url": CHATGPT_ACCOUNTS_CHECK_URL,
+                "status_code": status_code,
+                "eligible": False,
+                "error": f"accounts/check HTTP {status_code}: {body}".strip(),
+            }
+        data = response.json()
+        if not isinstance(data, dict):
+            return {
+                "ok": False,
+                "url": CHATGPT_ACCOUNTS_CHECK_URL,
+                "status_code": status_code,
+                "eligible": False,
+                "error": "accounts/check 响应格式异常",
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "url": CHATGPT_ACCOUNTS_CHECK_URL,
+            "status_code": 0,
+            "eligible": False,
+            "error": f"{exc.__class__.__name__}: {exc}",
+        }
+
+    campaign = _find_chatgpt_free_plus_trial_campaign(data, chatgpt_account_id)
+    metadata = campaign.get("metadata") if isinstance(campaign, dict) and isinstance(campaign.get("metadata"), dict) else {}
+    discount = metadata.get("discount") if isinstance(metadata.get("discount"), dict) else {}
+    duration = metadata.get("duration") if isinstance(metadata.get("duration"), dict) else {}
+    return {
+        "ok": True,
+        "url": CHATGPT_ACCOUNTS_CHECK_URL,
+        "status_code": status_code,
+        "eligible": bool(campaign),
+        "campaign": campaign or {},
+        "campaign_id": str((campaign or {}).get("id") or ""),
+        "plan_name": str(metadata.get("plan_name") or ""),
+        "title": str(metadata.get("title") or ""),
+        "discount_percentage": discount.get("percentage"),
+        "duration": duration,
+    }
+
+
+def _mark_chatgpt_trial_account(saved_account_id: int, trial_info: dict[str, Any]) -> None:
+    if saved_account_id <= 0:
+        return
+    with Session(engine) as session:
+        model = session.get(AccountModel, saved_account_id)
+        if not model:
+            return
+        graph = load_account_graphs(session, [saved_account_id]).get(saved_account_id, {})
+        overview = dict(graph.get("overview") or {})
+        chips = [
+            str(item).strip()
+            for item in (overview.get("chips") or [])
+            if str(item or "").strip()
+        ]
+        if CHATGPT_TRIAL_LABEL not in chips:
+            chips.append(CHATGPT_TRIAL_LABEL)
+        patch_account_graph(
+            session,
+            model,
+            summary_updates={
+                "chips": chips,
+                "chatgpt_free_plus_trial": True,
+                "chatgpt_free_plus_trial_campaign_id": str(trial_info.get("campaign_id") or ""),
+                "chatgpt_free_plus_trial_plan_name": str(trial_info.get("plan_name") or ""),
+                "chatgpt_free_plus_trial_title": str(trial_info.get("title") or ""),
+                "chatgpt_free_plus_trial_discount_percentage": trial_info.get("discount_percentage"),
+                "chatgpt_free_plus_trial_duration": trial_info.get("duration") or {},
+            },
+        )
+        model.updated_at = _utcnow()
+        session.add(model)
+        session.commit()
+
+
+def _saved_account_id(saved_model: Any, account: Any) -> int:
+    try:
+        saved_account_id = int(getattr(saved_model, "id", 0) or 0)
+        if saved_account_id > 0:
+            return saved_account_id
+    except Exception:
+        pass
+
+    platform = str(getattr(account, "platform", "") or "").strip()
+    email = str(getattr(account, "email", "") or "").strip()
+    if not platform or not email:
+        return 0
+    with Session(engine) as session:
+        model = session.exec(
+            select(AccountModel)
+            .where(AccountModel.platform == platform)
+            .where(AccountModel.email == email)
+        ).first()
+        return int(getattr(model, "id", 0) or 0) if model else 0
+
+
+def _run_bugfree_post_register_check(
+    *,
+    account,
+    saved_account_id: int,
+    logger: TaskLogger,
+    proxy: str | None,
+) -> bool:
+    usage_info = _inspect_chatgpt_bugfree_usage(account, proxy=proxy)
+    logger.log(f"  [BUGFREE] 请求额度接口: {usage_info.get('url') or ''}")
+    if not usage_info.get("ok"):
+        logger.log(f"  [BUGFREE] 查询失败: {usage_info.get('error') or 'unknown'}", level="error")
+        return False
+
+    reset_at = int(usage_info.get("reset_at") or 0)
+    reset_at_text = str(usage_info.get("reset_at_text") or "")
+    reset_days = float(usage_info.get("reset_days") or 0)
+    logger.log(
+        "  [BUGFREE] rate_limit.primary_window.reset_at="
+        f"{reset_at}（{reset_at_text or '无法转换'}），距离当前约 {reset_days:.2f} 天"
+    )
+    if not usage_info.get("is_bugfree"):
+        logger.log(f"  [BUGFREE] {usage_info.get('reason') or '非目标账号'}", level="warning")
+        return False
+
+    _mark_bugfree_account(saved_account_id, usage_info)
+    logger.log(f"  [BUGFREE] 已确认并打标签 {BUGFREE_LABEL}")
+    return True
+
+
+def _run_chatgpt_trial_post_register_check(
+    *,
+    account,
+    saved_account_id: int,
+    logger: TaskLogger,
+    proxy: str | None,
+) -> bool:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "chatgpt":
+        return False
+    trial_info = _inspect_chatgpt_free_plus_trial(account, proxy=proxy)
+    logger.log(f"  [试用] 请求权益接口: {trial_info.get('url') or ''}")
+    if not trial_info.get("ok"):
+        logger.log(f"  [试用] 查询失败，保留已注册账号: {trial_info.get('error') or 'unknown'}", level="warning")
+        return False
+    if not trial_info.get("eligible"):
+        logger.log("  [试用] 当前账号没有免费领取 Plus 权益")
+        return False
+
+    _mark_chatgpt_trial_account(saved_account_id, trial_info)
+    logger.log(f"  [试用] 已确认免费领取 Plus 权益并打标签 {CHATGPT_TRIAL_LABEL}")
+    return True
 
 
 def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
@@ -1257,6 +1759,10 @@ def _maybe_wrap_email_alias_mailbox(mailbox, *, platform_name: str, extra: dict[
         False,
     ):
         return mailbox
+    mail_provider = str(extra.get("mail_provider") or "").strip().lower()
+    if mail_provider in {"icloud_hme", "icloud"} or type(mailbox).__name__ == "ICloudHMEMailbox":
+        return mailbox
+
     from core.email_alias_mailbox import EmailAliasMailbox, normalize_email_alias_limit
 
     return EmailAliasMailbox(
@@ -1363,6 +1869,85 @@ def _run_single_account_check(account_id: int, logger: TaskLogger | None = None)
     return valid, result
 
 
+def _chatgpt_health_error_text(value: Any) -> str:
+    if value in (None, "", {}, []):
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str).strip()
+    except Exception:
+        return str(value).strip()
+
+
+def _chatgpt_health_status_code(value: Any) -> int:
+    if isinstance(value, dict):
+        for key in ("status_code", "status", "http_status", "code"):
+            try:
+                status_code = int(value.get(key) or 0)
+            except (TypeError, ValueError):
+                status_code = 0
+            if 100 <= status_code <= 599:
+                return status_code
+    text = _chatgpt_health_error_text(value)
+    match = re.search(r"\b(?:HTTP|status(?:_code)?|status)\D*(\d{3})\b", text, re.IGNORECASE)
+    if not match:
+        match = re.search(r"\b(400|401|403|404|429|5\d\d)\b", text)
+    if match:
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _chatgpt_health_state_error(state: dict[str, Any]) -> Any:
+    for key in ("profile_error", "token_refresh_error", "subscription_error", "codex_usage_error"):
+        value = state.get(key)
+        if value not in (None, "", {}, []):
+            return value
+    return ""
+
+
+def _sanitize_chatgpt_state_for_health_result(state: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key in (
+        "platform",
+        "desktop_app",
+        "session_token_present",
+        "quota_note",
+        "valid",
+        "account_id",
+        "subscription_status",
+        "profile_error",
+        "token_refresh_error",
+        "subscription_error",
+        "codex_usage_error",
+        "codex_usage",
+        "usage_breakdowns",
+        "prompt_remaining_percent",
+        "next_reset_at",
+    ):
+        if key in state:
+            sanitized[key] = state[key]
+    remote_user = state.get("remote_user") if isinstance(state.get("remote_user"), dict) else state.get("profile")
+    if isinstance(remote_user, dict):
+        remote_email = str(remote_user.get("email") or "").strip()
+        if remote_email:
+            sanitized["remote_email"] = remote_email
+    probe = state.get("codex_usage_probe")
+    if isinstance(probe, dict):
+        sanitized["codex_usage_probe"] = {
+            key: probe.get(key)
+            for key in ("source", "force", "url", "model", "status_code", "duration_ms", "account_id_present")
+            if key in probe
+        }
+    extra = state.get("codex_usage_extra")
+    if isinstance(extra, dict):
+        sanitized["codex_usage_extra"] = dict(extra)
+    return sanitized
+
+
 def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None = None) -> dict[str, Any]:
     with Session(engine) as session:
         model = session.get(AccountModel, account_id)
@@ -1373,28 +1958,25 @@ def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None 
         account = build_platform_account(session, model)
 
     extra = dict(account.extra or {})
-    access_token = str(extra.get("access_token") or extra.get("accessToken") or account.token or "").strip()
-    chatgpt_account_id = str(
-        extra.get("chatgpt_account_id")
-        or extra.get("chatgptAccountId")
-        or extra.get("account_id")
-        or account.user_id
-        or ""
-    ).strip()
-    if not access_token:
+    access_token = _extract_chatgpt_access_token(account)
+    session_token = _extract_chatgpt_session_token(account)
+    cookies = _extract_chatgpt_cookies(account)
+    chatgpt_account_id = _extract_chatgpt_account_id_for_usage(account)
+    if not (access_token or session_token or cookies):
         result = {
             "account_id": account_id,
             "email": account.email,
             "valid": False,
             "status_code": 0,
-            "error": "缺少 access_token，无法请求 wham/usage",
+            "error": "缺少 access_token/session_token/cookies，无法查询账号状态/订阅",
         }
         _persist_chatgpt_health_result(account_id, result)
         if logger:
-            logger.log(f"{account.email}: 测活失效（缺少 access_token）", level="warning")
+            logger.log(f"{account.email}: 测活失效（缺少状态查询凭据）", level="warning")
         return result
 
     proxy = None
+    proxy_pool = None
     try:
         from platforms.chatgpt.plugin import _resolve_action_proxy, proxy_pool
         proxy = _resolve_action_proxy(
@@ -1406,44 +1988,31 @@ def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None 
     except Exception as exc:
         if logger:
             logger.log(f"{account.email}: 代理解析失败，改用直连: {exc}", level="warning")
-        proxy_pool = None
 
     try:
-        from curl_cffi import requests as cffi_requests
-        from platforms.chatgpt.payment import WHAM_USAGE_URL, _build_proxies
+        from platforms.chatgpt.switch import fetch_chatgpt_account_state
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "accept": "application/json",
-            "openai-beta": "codex-1",
-            "oai-language": "zh-CN",
-            "originator": "Codex Desktop",
-            "sec-fetch-site": "none",
-            "sec-fetch-mode": "no-cors",
-            "sec-fetch-dest": "empty",
-        }
-        if chatgpt_account_id:
-            headers["Chatgpt-Account-Id"] = chatgpt_account_id
-
-        response = cffi_requests.get(
-            WHAM_USAGE_URL,
-            headers=headers,
-            proxies=_build_proxies(proxy),
-            timeout=20,
-            impersonate="chrome124",
+        state = fetch_chatgpt_account_state(
+            access_token=access_token,
+            session_token=session_token,
+            cookies=cookies,
+            proxy=proxy,
+            chatgpt_account_id=chatgpt_account_id,
+            existing_extra=extra,
+            force_usage=True,
         )
-        status_code = int(getattr(response, "status_code", 0) or 0)
-        if 200 <= status_code < 300:
-            data = response.json()
-            if not isinstance(data, dict):
-                raise ValueError("wham/usage 响应格式异常")
+        if not isinstance(state, dict):
+            raise ValueError("账号状态/订阅响应格式异常")
+
+        sanitized_state = _sanitize_chatgpt_state_for_health_result(state)
+        if bool(state.get("valid")):
             result = {
                 "account_id": account_id,
                 "email": account.email,
                 "valid": True,
-                "status_code": status_code,
-                "plan_type": str(data.get("plan_type") or ""),
-                "usage": data,
+                "status_code": 200,
+                "plan_type": str(state.get("subscription_status") or ""),
+                "account_state": sanitized_state,
             }
             if proxy:
                 try:
@@ -1452,18 +2021,22 @@ def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None 
                     pass
             _persist_chatgpt_health_result(account_id, result)
             if logger:
-                logger.log(f"{account.email}: 测活存活 HTTP {status_code}")
+                plan_text = str(state.get("subscription_status") or "unknown")
+                logger.log(f"{account.email}: 测活存活（账号状态/订阅: {plan_text}）")
             return result
 
-        body = str(getattr(response, "text", "") or "")[:240]
-        invalid = status_code in {400, 401, 403, 404}
+        state_error = _chatgpt_health_state_error(state)
+        status_code = _chatgpt_health_status_code(state_error)
+        error_text = _chatgpt_health_error_text(state_error) or "账号状态/订阅查询失败"
+        invalid = status_code in {400, 401, 403, 404} or "缺少 access_token" in error_text
         result = {
             "account_id": account_id,
             "email": account.email,
             "valid": False,
             "status_code": status_code,
-            "error": f"wham/usage HTTP {status_code}: {body}".strip(),
+            "error": error_text[:500],
             "transient": not invalid,
+            "account_state": sanitized_state,
         }
         if proxy:
             try:
@@ -1473,9 +2046,11 @@ def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None 
         if invalid:
             _persist_chatgpt_health_result(account_id, result)
             if logger:
-                logger.log(f"{account.email}: 测活失效 HTTP {status_code}", level="warning")
+                suffix = f" HTTP {status_code}" if status_code else ""
+                logger.log(f"{account.email}: 测活失效（账号状态/订阅{suffix}）", level="warning")
         elif logger:
-            logger.log(f"{account.email}: 测活错误 HTTP {status_code}，未改为失效", level="error")
+            suffix = f" HTTP {status_code}" if status_code else ""
+            logger.log(f"{account.email}: 测活错误（账号状态/订阅{suffix}），未改为失效", level="error")
         return result
     except Exception as exc:
         if proxy:
@@ -1511,23 +2086,49 @@ def _persist_chatgpt_health_result(account_id: int, result: dict[str, Any]) -> N
         }
         lifecycle_status = None
         if valid:
+            account_state = result.get("account_state") if isinstance(result.get("account_state"), dict) else {}
             usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
-            plan_type = str(result.get("plan_type") or usage.get("plan_type") or "").strip()
+            subscription_status = str(
+                result.get("plan_type")
+                or account_state.get("subscription_status")
+                or usage.get("plan_type")
+                or ""
+            ).strip()
             summary_updates.update(
                 {
                     "validity_status": "valid",
-                    "wham_usage": usage,
-                    "chatgpt_usage": usage,
                     "health_error": "",
                 }
             )
-            if plan_type:
-                summary_updates["plan"] = plan_type
-                summary_updates["plan_name"] = plan_type
-                if plan_type in {"plus", "team", "pro"}:
+            if account_state:
+                summary_updates["chatgpt_account_state"] = account_state
+                for key in (
+                    "codex_usage",
+                    "usage_breakdowns",
+                    "prompt_remaining_percent",
+                    "next_reset_at",
+                    "codex_usage_error",
+                    "codex_usage_probe",
+                    "codex_usage_extra",
+                    "remote_email",
+                ):
+                    if key in account_state:
+                        summary_updates[key] = account_state[key]
+            if usage:
+                summary_updates["wham_usage"] = usage
+                summary_updates["chatgpt_usage"] = usage
+            elif isinstance(account_state.get("codex_usage"), dict):
+                summary_updates["chatgpt_usage"] = account_state["codex_usage"]
+            if subscription_status:
+                summary_updates["subscription_status"] = subscription_status
+                summary_updates["plan"] = subscription_status
+                summary_updates["plan_name"] = subscription_status
+                if subscription_status in {"plus", "team", "pro", "enterprise"}:
                     summary_updates["plan_state"] = "subscribed"
-                elif plan_type == "free":
+                elif subscription_status == "free":
                     summary_updates["plan_state"] = "free"
+                elif subscription_status == "trial":
+                    summary_updates["plan_state"] = "trial"
             current_graph = load_account_graphs(session, [account_id]).get(account_id, {})
             merged_graph = dict(current_graph)
             merged_overview = dict(merged_graph.get("overview") or {})
@@ -1535,6 +2136,7 @@ def _persist_chatgpt_health_result(account_id: int, result: dict[str, Any]) -> N
             merged_graph["overview"] = merged_overview
             lifecycle_status = recover_lifecycle_status_for_valid_account(merged_graph)
         else:
+            account_state = result.get("account_state") if isinstance(result.get("account_state"), dict) else {}
             summary_updates.update(
                 {
                     "validity_status": "invalid",
@@ -1542,6 +2144,8 @@ def _persist_chatgpt_health_result(account_id: int, result: dict[str, Any]) -> N
                     "health_error": str(result.get("error") or ""),
                 }
             )
+            if account_state:
+                summary_updates["chatgpt_account_state"] = account_state
             lifecycle_status = AccountStatus.INVALID.value
         patch_account_graph(
             session,
@@ -1578,7 +2182,8 @@ def execute_task(task_id: str) -> None:
         TASK_TYPE_PHONE_BIND: _execute_phone_bind_task,
         TASK_TYPE_CODEX_OAUTH: _execute_codex_oauth_task,
         TASK_TYPE_GET_RT: _execute_get_rt_task,
-        TASK_TYPE_GET_RT_BYPASS: _execute_get_rt_bypass_task,
+        TASK_TYPE_GET_RT_BYPASS: _execute_get_rt_bypass_task,
+        TASK_TYPE_REFRESH_SESSION: _execute_refresh_session_task,
         TASK_TYPE_GOPAY_PAY_CHATGPT: _execute_gopay_pay_chatgpt_task,
         TASK_TYPE_GOPAY_REGISTER_ACCOUNT: _execute_gopay_register_account_task,
     }
@@ -2250,7 +2855,25 @@ def _chatgpt_proxy_preflight(proxy: str | None, *, timeout: int = 12) -> tuple[b
         return False, f"{exc.__class__.__name__}: {str(exc)[:180]}"
 
 
-def _resolve_chatgpt_reachable_proxy(
+def _is_chatgpt_proxy_preflight_transient_error(value: Any) -> bool:
+    text = str(value or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "failed to perform",
+            "curl:",
+            "tls connect error",
+            "openssl_internal",
+            "invalid library",
+            "sslerror",
+            "ssl error",
+        )
+    )
+
+
+
+
+def _resolve_chatgpt_reachable_proxy(
     *,
     platform_name: str,
     explicit_proxy: str | None,
@@ -2290,7 +2913,15 @@ def _resolve_chatgpt_reachable_proxy(
                 )
             return resolved
 
-        last_detail = detail
+        last_detail = detail
+
+        if _is_chatgpt_proxy_preflight_transient_error(detail):
+            logger.log(
+                "ChatGPT 代理预检遇到传输/TLS异常，无法确认代理不可用，"
+                f"将继续使用浏览器真实流程: {_mask_proxy_for_log(resolved)}: {detail}",
+                level="warning",
+            )
+            return resolved
         logger.log(
             f"ChatGPT \u4ee3\u7406\u9884\u68c0\u5931\u8d25\uff0c\u5c06\u8df3\u8fc7 {_mask_proxy_for_log(resolved)}: {detail}",
             level="warning",
@@ -2956,7 +3587,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             platform = _build_platform_instance(platform_name, _build_payload, logger, resolved_proxy=resolved_proxy, shared_mailbox=shared_mailbox)
             # 失败不计进度的模式（chatgpt_plus_must_succeed）下 index 可能 > count，
             # 显示成"已成功 X/N，本次为第 M 次尝试"更直观。
-            if chatgpt_plus_must_succeed:
+            if chatgpt_plus_must_succeed or bugfree_mode_enabled:
                 logger.log(
                     f"开始注册账号（已成功 {success}/{count}，本次第 {index + 1} 次尝试）"
                 )
@@ -2965,8 +3596,24 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if resolved_proxy:
                 logger.log(f"使用代理: {resolved_proxy}")
             account = platform.register(email=email, password=password)
-            save_account(account)
-            _mark_outlook_mailbox_event(shared_mailbox, account, "registration_success", logger)
+            saved_model = save_account(account)
+            _mark_outlook_mailbox_event(shared_mailbox, account, "registration_success", logger)
+            saved_account_id = _saved_account_id(saved_model, account)
+            _run_chatgpt_trial_post_register_check(
+                account=account,
+                saved_account_id=saved_account_id,
+                logger=logger,
+                proxy=resolved_proxy,
+            )
+
+            if bugfree_mode_enabled:
+                if not _run_bugfree_post_register_check(
+                    account=account,
+                    saved_account_id=saved_account_id,
+                    logger=logger,
+                    proxy=resolved_proxy,
+                ):
+                    return BUGFREE_SKIP_RESULT
             _auto_followup_windsurf_payment(
                 platform_name=platform_name,
                 payload=payload,
@@ -3150,12 +3797,25 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             platform_name == "chatgpt"
             and _bool_config(extra.get("auto_chatgpt_plus_payment"), False)
         )
+        bugfree_mode_enabled = (
+            platform_name == "chatgpt"
+            and _bool_config(extra.get("bugfree_mode"), False)
+        )
+
         email_alias_retry_enabled = _bool_config(
             extra.get("enable_email_alias", extra.get("email_alias_enabled")),
             False,
         )
 
-        if chatgpt_plus_must_succeed:
+        if bugfree_mode_enabled:
+            max_attempts = max(
+                count * 10,
+                count * (EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT + 1)
+                if email_alias_retry_enabled
+                else count,
+                1,
+            )
+        elif chatgpt_plus_must_succeed:
             max_attempts = max(
                 count * 5,
                 count * (EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT + 1)
@@ -3176,7 +3836,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 count if not herosms_enabled else max_success * 3, 1
             )
 
-        if email_alias_retry_enabled and not (chatgpt_plus_must_succeed or register_sms_candidates):
+        if email_alias_retry_enabled and not (bugfree_mode_enabled or chatgpt_plus_must_succeed or register_sms_candidates):
             max_attempts += count * EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT
 
         def _hero_phone_alive() -> bool:
@@ -3212,7 +3872,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 # qsize 是近似的（多线程下不严格），但作为"全死光"判定够用
                 if sms_slot_queue.qsize() == 0 and len(futures) >= concurrency:
                     return False
-            if chatgpt_plus_must_succeed:
+            if chatgpt_plus_must_succeed or bugfree_mode_enabled:
                 # 必须达到 count 个 success；失败不计 progress，继续投。
                 # 已成功 + 在跑的 ≥ count 时不再投（避免超额）。
                 return success + len(futures) < count
@@ -3259,12 +3919,16 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     completed += 1
                     if result is True:
                         success += 1
-                    elif result != "__cancel_requested__":
+                    elif result == BUGFREE_SKIP_RESULT:
+
+                        pass
+
+                    elif result != "__cancel_requested__":
                         errors.append(str(result))
                     logger.set_progress(
                         min(
                             success
-                            if (herosms_enabled or chatgpt_plus_must_succeed)
+                            if (herosms_enabled or chatgpt_plus_must_succeed or bugfree_mode_enabled)
                             else completed,
                             progress_total,
                         ),
@@ -3298,6 +3962,15 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         and not logger.is_cancel_requested()
     ):
         errors.append("Email alias quota exhausted: no available parent mailbox after retry")
+
+    if (
+        bugfree_mode_enabled
+        and success < count
+        and not errors
+        and submitted >= max_attempts
+        and not logger.is_cancel_requested()
+    ):
+        errors.append(f"BUGFREE模式未找到足够账号：目标 {count} 个，已确认 {success} 个，已尝试 {submitted} 个")
 
     if logger.is_cancel_requested():
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
@@ -4064,7 +4737,146 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     logger.finish(final_status)
 
 
-def _execute_get_rt_bypass_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+def _execute_refresh_session_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    """批量重新登录 ChatGPT 账号，刷新 Web session/at。"""
+
+    if logger.is_cancel_requested():
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+        return
+
+    platform = str(payload.get("platform") or "chatgpt").strip() or "chatgpt"
+    if platform != "chatgpt":
+        logger.finish(TASK_STATUS_FAILED, error="重新登录获取session/at 仅支持 ChatGPT")
+        return
+
+    ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
+    if not ids:
+        logger.finish(TASK_STATUS_FAILED, error="请选择至少 1 个账号")
+        return
+
+    total = len(ids)
+    try:
+        concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
+    except Exception:
+        concurrency = 1
+
+    logger.set_progress(0, total)
+    logger.log(f"开始重新登录获取session/at：账号 {total} 个，并发 {concurrency}")
+
+    results: list[dict[str, Any] | None] = [None] * total
+    completed = 0
+    consecutive_cloudflare_challenges = 0
+    stop_for_cloudflare_challenge = False
+
+    def run_one(index: int, account_id: int) -> dict[str, Any]:
+        logger.set_subtask(f"refresh_session_{index + 1}", f"账号 {account_id}")
+        try:
+            if logger.is_cancel_requested():
+                return {"ok": False, "account_id": account_id, "error": "任务已取消"}
+            logger.log(f"[{index + 1}/{total}] 重新登录获取session/at: 账号 #{account_id}")
+            runtime = PlatformRuntime()
+            result = runtime.execute_action(
+                type("Command", (), {
+                    "platform": "chatgpt",
+                    "account_id": account_id,
+                    "action_id": "refresh_session",
+                    "params": {},
+                })(),
+                log_fn=logger.log,
+                cancel_check=logger.is_cancel_requested,
+            )
+            if result.ok:
+                logger.log(f"[{index + 1}/{total}] 重新登录成功: 账号 #{account_id}")
+                return {"ok": True, "account_id": account_id, "data": result.data}
+
+            error = str(result.error or "重新登录失败")
+            data = result.data if isinstance(result.data, dict) else {}
+            error_type = str(data.get("error_type") or "")
+            should_delete = (
+                bool(data.get("delete_local_account"))
+                or error_type == "account_banned"
+            )
+            deleted = False
+            if should_delete:
+                deleted = AccountsRepository().delete(account_id)
+                delete_note = "已删除本地账号" if deleted else "本地账号不存在或已删除"
+                logger.log(
+                    f"[{index + 1}/{total}] 重新登录失败，账号已封禁/注销，{delete_note} #{account_id}: {error}",
+                    level="error",
+                )
+            else:
+                logger.log(f"[{index + 1}/{total}] 重新登录失败 #{account_id}: {error}", level="error")
+            return {"ok": False, "account_id": account_id, "error": error, "deleted": deleted, "error_type": error_type}
+        except Exception as exc:
+            logger.log(f"[{index + 1}/{total}] 重新登录异常 #{account_id}: {exc}", level="error")
+            return {"ok": False, "account_id": account_id, "error": str(exc)}
+        finally:
+            logger.clear_subtask()
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        future_map = {}
+        next_index = 0
+        while next_index < total and len(future_map) < concurrency and not logger.is_cancel_requested():
+            future = pool.submit(run_one, next_index, ids[next_index])
+            future_map[future] = next_index
+            next_index += 1
+        while future_map:
+            done, _pending = wait(future_map.keys(), return_when=FIRST_COMPLETED)
+            for future in done:
+                index = future_map.pop(future)
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {"ok": False, "account_id": ids[index], "error": str(exc)}
+                results[index] = item
+                if item.get("ok"):
+                    logger.record_success()
+                    consecutive_cloudflare_challenges = 0
+                else:
+                    logger.record_error(str(item.get("error") or "重新登录失败"))
+                    if str(item.get("error_type") or "") == "cloudflare_managed_challenge":
+                        consecutive_cloudflare_challenges += 1
+                        if consecutive_cloudflare_challenges >= 2:
+                            stop_for_cloudflare_challenge = True
+                            logger.log(
+                                "连续遇到 Cloudflare Managed Challenge，停止提交后续账号；"
+                                "请更换低风险代理/IP，或改用可执行 JS 的浏览器/Camoufox/本地 solver 路径后重试。",
+                                level="warning",
+                            )
+                    else:
+                        consecutive_cloudflare_challenges = 0
+                completed += 1
+                logger.set_progress(completed, total)
+            while (
+                next_index < total
+                and len(future_map) < concurrency
+                and not logger.is_cancel_requested()
+                and not stop_for_cloudflare_challenge
+            ):
+                future = pool.submit(run_one, next_index, ids[next_index])
+                future_map[future] = next_index
+                next_index += 1
+
+    final_results = [item for item in results if item is not None]
+    success_count = sum(1 for item in final_results if item.get("ok"))
+    failure_count = len(final_results) - success_count
+    logger.set_result_data({
+        "total": total,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "results": final_results,
+    })
+    if stop_for_cloudflare_challenge and len(final_results) < total:
+        logger.finish(TASK_STATUS_FAILED, error="Cloudflare Managed Challenge 连续拦截，已停止后续账号")
+    elif logger.is_cancel_requested() and len(final_results) < total:
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+    elif success_count > 0:
+        logger.finish(TASK_STATUS_SUCCEEDED)
+    else:
+        logger.finish(TASK_STATUS_FAILED, error="全部账号重新登录失败")
+
+
+def _execute_get_rt_bypass_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     """批量获取 refresh_token（绕过手机号，session/select 拦截）。"""
     if logger.is_cancel_requested():
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
@@ -4636,12 +5448,19 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
             platform = _build_platform_instance(
                 "chatgpt", slot_payload, logger, resolved_proxy=resolved_proxy,
-            )
-            account = platform.register()
-            save_account(account)
-            with Session(engine) as session:
-                fresh = session.exec(
-                    select(AccountModel)
+            )
+            account = platform.register()
+            saved_model = save_account(account)
+            _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
+            _run_chatgpt_trial_post_register_check(
+                account=account,
+                saved_account_id=_saved_account_id(saved_model, account),
+                logger=logger,
+                proxy=resolved_proxy,
+            )
+            with Session(engine) as session:
+                fresh = session.exec(
+                    select(AccountModel)
                     .where(AccountModel.platform == "chatgpt")
                     .where(AccountModel.email == account.email)
                 ).first()
@@ -4727,7 +5546,14 @@ def _register_chatgpt_accounts_for_gopay(
             account = platform.register()
             save_account(account)
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
-            # save_account 返回的 model 出 session 即 detached，访问 .id 会抛
+            _run_chatgpt_trial_post_register_check(
+                account=account,
+                saved_account_id=_saved_account_id(None, account),
+                logger=logger,
+                proxy=resolved_proxy,
+            )
+
+            # save_account 返回的 model 出 session 即 detached，访问 .id 会抛
             # DetachedInstanceError。用 email 重新查一次拿稳定 id。
             with Session(engine) as session:
                 fresh = session.exec(
@@ -4870,7 +5696,9 @@ def _execute_account_health_check_task(payload: dict[str, Any], logger: TaskLogg
                     logger.record_error(str(item.get("error") or "unknown error"))
                 else:
                     counts["invalid"] += 1
-                    logger.record_success()
+                    identity = str(item.get("email") or f"账号 #{account_ids[index]}")
+                    error = str(item.get("error") or "账号状态/订阅查询判定失效")
+                    logger.record_error(f"{identity}: {error}")
                 completed += 1
                 logger.set_progress(completed, total)
 

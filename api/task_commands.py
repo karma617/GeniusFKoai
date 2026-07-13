@@ -181,6 +181,17 @@ def create_get_rt_bypass_task(body: GetRtBypassTaskRequest):
     return command_service.create_get_rt_bypass_task(body.model_dump())
 
 
+class RefreshSessionTaskRequest(BaseModel):
+    platform: str = "chatgpt"
+    ids: list[int] = Field(default_factory=list)
+    concurrency: int = 1
+
+
+@router.post("/refresh-session")
+def create_refresh_session_task(body: RefreshSessionTaskRequest):
+    return command_service.create_refresh_session_task(body.model_dump())
+
+
 @router.post("/gopay-pay-chatgpt")
 def create_gopay_pay_chatgpt_task(body: GoPayPayChatGptTaskRequest):
     return command_service.create_gopay_pay_chatgpt_task(body.model_dump())

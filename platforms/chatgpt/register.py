@@ -88,6 +88,39 @@ CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS = 10
 logger = logging.getLogger(__name__)
 
 
+PLATFORM_AUTHORIZE_CLOUDFLARE_MANAGED_CHALLENGE = "platform_authorize_cloudflare_managed_challenge"
+
+
+def is_cloudflare_managed_challenge_html(body: str) -> bool:
+    text = str(body or "")
+    if not text:
+        return False
+    lowered = text.lower()
+    return (
+        "just a moment" in lowered
+        and "challenges.cloudflare.com" in lowered
+        and "window._cf_chl_opt" in lowered
+        and "ctype" in lowered
+        and "managed" in lowered
+    )
+
+
+class CloudflareManagedChallengeError(RuntimeError):
+    """auth.openai.com returned Cloudflare managed challenge before protocol auth."""
+
+    def __init__(self, *, status: int | str = "unknown", final_url: str = "") -> None:
+        message = (
+            f"{PLATFORM_AUTHORIZE_CLOUDFLARE_MANAGED_CHALLENGE}: "
+            "auth.openai.com 返回 Cloudflare Managed Challenge，协议请求无法直接调用 YesCaptcha；"
+            "请切换低风险代理/IP，或改用可执行 JS 的浏览器/Camoufox/本地 solver 路径"
+        )
+        if status:
+            message += f" status={status}"
+        if final_url:
+            message += f" final_url={final_url}"
+        super().__init__(message)
+
+
 
 
 
@@ -196,6 +229,8 @@ class SentinelPayload:
     flow: str
 
     t: str = ""
+
+    so_token: str = ""
 
 
 
@@ -1537,14 +1572,16 @@ class RegistrationEngine:
 
         try:
 
-            from .authflow_experimental.sentinel_quickjs import get_sentinel_token_via_quickjs
+            from .authflow_experimental.sentinel_quickjs import get_sentinel_tokens_via_quickjs
 
-            token = get_sentinel_token_via_quickjs(
+            token_bundle = get_sentinel_tokens_via_quickjs(
                 session,
                 device_id=device_id,
                 flow=flow,
                 log=lambda message: self._log(f"{label} {message}"),
             )
+            token = str((token_bundle or {}).get("token") or "")
+            so_token = str((token_bundle or {}).get("so_token") or "")
 
         except Exception as exc:
 
@@ -1558,7 +1595,12 @@ class RegistrationEngine:
 
             return None
 
-        self._log(f"{label} QuickJS Sentinel 已启用: flow={payload.flow} t_len={len(payload.t)}")
+        payload.so_token = so_token
+
+        self._log(
+            f"{label} QuickJS Sentinel 已启用: "
+            f"flow={payload.flow} t_len={len(payload.t)} so_len={len(payload.so_token)}"
+        )
 
         return payload
 
@@ -2422,7 +2464,7 @@ class RegistrationEngine:
         try:
             applied = list(marker(reason=reason) or [])
             if applied:
-                self._log("已标记父邮箱为已注册（别名耗尽）: " + ", ".join(applied), "warning")
+                self._log("已标记父邮箱为别名已上限: " + ", ".join(applied), "warning")
             else:
                 self._log("父邮箱耗尽标记未返回标签: " + str(self.email), "warning")
             return applied
@@ -2641,7 +2683,14 @@ class RegistrationEngine:
 
                     }, separators=(",", ":"))
 
-                    self._log(f"create_account Sentinel 已获取: flow={ca_sentinel.flow}")
+                    if ca_sentinel.so_token:
+
+                        create_headers["openai-sentinel-so-token"] = ca_sentinel.so_token
+
+                    self._log(
+                        f"create_account Sentinel 已获取: "
+                        f"flow={ca_sentinel.flow} so={'yes' if ca_sentinel.so_token else 'no'}"
+                    )
 
 
 
@@ -2669,7 +2718,7 @@ class RegistrationEngine:
                     self._delete_current_email_after_openai_reject("openai_account_deleted_or_deactivated")
 
                 if self._is_user_already_exists_response(response):
-                    self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为已注册", "warning")
+                    self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为别名已上限", "warning")
                     self._mark_parent_email_exhausted("openai_user_already_exists")
                     self._user_already_exists = True
 
@@ -3726,6 +3775,8 @@ class RegistrationEngine:
         if resp is None or getattr(resp, "status_code", 0) != 200:
 
             body = getattr(resp, "text", "") if resp is not None else ""
+            if is_cloudflare_managed_challenge_html(body):
+                raise CloudflareManagedChallengeError(status=status, final_url=str(final_url or ""))
 
             raise RuntimeError(error or f"platform_authorize_http_{status}: {body}")
 
@@ -4319,7 +4370,7 @@ class RegistrationEngine:
 
             if resp is not None and self._is_user_already_exists_response(resp):
 
-                self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为已注册", "warning")
+                self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为别名已上限", "warning")
 
                 self._mark_parent_email_exhausted("openai_user_already_exists")
 
@@ -4744,9 +4795,7 @@ class RegistrationEngine:
         payload = _decode_jwt_payload_no_verify(id_token) or _decode_jwt_payload_no_verify(access_token)
 
         account_id = _extract_chatgpt_account_id(access_token) or str(payload.get("sub") or "").strip()
-        chatgpt_session, chatgpt_cookies = ({}, "")
-        if getattr(self, "k12_join_enabled", False):
-            chatgpt_session, chatgpt_cookies = self._establish_chatgpt_web_session_for_platform_reference()
+        chatgpt_session, chatgpt_cookies = self._establish_chatgpt_web_session_for_platform_reference()
         chatgpt_user = chatgpt_session.get("user") if isinstance(chatgpt_session.get("user"), dict) else {}
         chatgpt_session_token = str(
             chatgpt_session.get("sessionToken") or chatgpt_session.get("session_token") or ""

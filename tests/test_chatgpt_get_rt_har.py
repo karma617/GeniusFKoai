@@ -262,10 +262,16 @@ def test_chatgpt_upload_actions_return_structured_data(monkeypatch):
     from platforms.chatgpt import cpa_upload as cpa_upload_module
     from platforms.chatgpt import sub2api_upload as sub2api_upload_module
 
+    seen = {}
+
+    def fake_sub2api_upload(*args, **kwargs):
+        seen["sub2api"] = kwargs
+        return True, "SUB2API ok"
+
     monkeypatch.setattr(cpa_upload_module, "generate_token_json", lambda account: {"email": account.email})
     monkeypatch.setattr(cpa_upload_module, "upload_to_cpa", lambda *args, **kwargs: (True, "CPA ok"))
     monkeypatch.setattr(cpa_upload_module, "upload_to_team_manager", lambda *args, **kwargs: (True, "TM ok"))
-    monkeypatch.setattr(sub2api_upload_module, "upload_to_sub2api", lambda *args, **kwargs: (True, "SUB2API ok"))
+    monkeypatch.setattr(sub2api_upload_module, "upload_to_sub2api", fake_sub2api_upload)
 
     platform = ChatGPTPlatform(RegisterConfig())
     account = Account(
@@ -283,8 +289,37 @@ def test_chatgpt_upload_actions_return_structured_data(monkeypatch):
     assert sub2api_result["ok"] is True
     assert sub2api_result["data"]["upload_target"] == "sub2api"
     assert sub2api_result["data"]["upload_status"] == "uploaded"
+    assert seen["sub2api"]["force_upload_without_rt"] is False
     assert cpa_result["data"]["upload_target"] == "cpa"
     assert tm_result["data"]["upload_target"] == "team_manager"
+
+
+def test_chatgpt_upload_sub2api_action_can_force_without_rt(monkeypatch):
+    from platforms.chatgpt import sub2api_upload as sub2api_upload_module
+
+    seen = {}
+
+    def fake_sub2api_upload(*args, **kwargs):
+        seen["sub2api"] = kwargs
+        return True, "SUB2API ok"
+
+    monkeypatch.setattr(sub2api_upload_module, "upload_to_sub2api", fake_sub2api_upload)
+
+    platform = ChatGPTPlatform(RegisterConfig())
+    account = Account(
+        platform="chatgpt",
+        email="user@example.com",
+        password="Secret123!",
+        token="access-token",
+        extra={},
+    )
+
+    result = platform.execute_action("upload_sub2api", account, {"force_upload_without_rt": "true"})
+
+    assert result["ok"] is True
+    assert seen["sub2api"]["force_upload_without_rt"] is True
+    assert result["data"]["force_upload_without_rt"] is True
+    assert result["data"]["uploaded_without_rt"] is True
 
 
 def test_chatgpt_k12_join_upload_action_uses_saved_web_session(monkeypatch):

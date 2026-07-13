@@ -78,6 +78,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'invalid',
   'banned',
 ]
+const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'BUGFREE', 'FREE', 'K12', 'PLUS']
 const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -240,8 +241,20 @@ function normalizeAccountBadges(acc: any, badges: any[]) {
 
 function getAccountBadgeClassName(badge: any, mode: 'detail' | 'modern' | 'legacy') {
   const tone = String(badge?.tone || '').trim().toLowerCase()
-  const isK12 = String(badge?.label || '').trim().toLowerCase() === 'k12'
+  const label = String(badge?.label || '').trim().toLowerCase()
+  const isK12 = label === 'k12'
   const successClass = 'border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+  const bugfreeClass = 'border-red-600 bg-red-600 text-white shadow-[0_0_0_1px_rgba(220,38,38,0.35),0_8px_18px_rgba(220,38,38,0.18)] dark:border-red-400 dark:bg-red-500 dark:text-white'
+  if (label === 'bugfree') {
+    return cn(
+      mode === 'detail'
+        ? 'rounded-full border px-2 py-0.5 text-[11px] font-bold tracking-wide'
+        : mode === 'modern'
+          ? 'rounded border px-1.5 py-0.5 text-[10px] font-bold tracking-wide'
+          : 'rounded border px-1 py-0.5 text-[11px] font-bold tracking-wide',
+      bugfreeClass,
+    )
+  }
   if (mode === 'detail') {
     return cn(
       'rounded-full border px-2 py-0.5 text-[11px]',
@@ -455,13 +468,14 @@ function RegisterModal({
   // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
   const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
-  const [k12BatchUploadEnabled, setK12BatchUploadEnabled] = useState(true)
+  const [k12BatchUploadEnabled, setK12BatchUploadEnabled] = useState(false)
+  const [bugfreeMode, setBugfreeMode] = useState(false)
   const [k12Join, setK12Join] = useState(false)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
   const [authflowExperimental] = useState(false)
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
-  const [enableEmailAlias, setEnableEmailAlias] = useState(true)
+  const [enableEmailAlias, setEnableEmailAlias] = useState(false)
   const [emailAliasLimit, setEmailAliasLimit] = useState(6)
   const [gmailAliasUsage, setGmailAliasUsage] = useState<GmailApiCodeAliasUsage | null>(null)
   const [gmailAliasUsageLoading, setGmailAliasUsageLoading] = useState(false)
@@ -760,6 +774,7 @@ function RegisterModal({
       if (platform === 'chatgpt') {
         extra.remote_upload_enabled = remoteUploadEnabled
         extra.k12_batch_upload_enabled = k12BatchUploadEnabled
+        extra.bugfree_mode = bugfreeMode
       }
       const res = await apiFetch('/tasks/register', {
         method: 'POST',
@@ -1087,6 +1102,25 @@ function RegisterModal({
                   <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
                     <input
                       type="checkbox"
+                      checked={bugfreeMode}
+                      onChange={(e) => setBugfreeMode(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                    />
+                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        BUGFREE模式
+                      </div>
+                      <div className="mt-0.5">
+                        勾选后注册成功会查询 ChatGPT 额度刷新周期；仅当 primary_window.reset_at 距当前约 7 天时才计入成功，并给账号打 BUGFREE 标签。
+                      </div>
+                    </div>
+                  </label>
+                )}
+
+                {platform === 'chatgpt' && (
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                    <input
+                      type="checkbox"
                       checked={k12BatchUploadEnabled}
                       onChange={(e) => setK12BatchUploadEnabled(e.target.checked)}
                       className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
@@ -1242,17 +1276,17 @@ function ResultStat({ label, value }: { label: string; value: any }) {
 }
 
 function metricToneClass(tone?: string) {
-  if (tone === 'good') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-  if (tone === 'warning') return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200'
-  if (tone === 'danger') return 'border-red-500/25 bg-red-500/10 text-red-200'
-  return 'border-[var(--border)] bg-[var(--bg-hover)] text-[var(--text-primary)]'
+  if (tone === 'good') return 'border-teal-500/35 bg-white text-slate-950 shadow-sm dark:bg-slate-950 dark:text-slate-100'
+  if (tone === 'warning') return 'border-amber-500/45 bg-white text-slate-950 shadow-sm dark:bg-slate-950 dark:text-slate-100'
+  if (tone === 'danger') return 'border-red-500/40 bg-white text-slate-950 shadow-sm dark:bg-slate-950 dark:text-slate-100'
+  return 'border-[var(--border)] bg-white text-slate-950 shadow-sm dark:bg-slate-950 dark:text-slate-100'
 }
 
 function metricAccentClass(tone?: string) {
-  if (tone === 'good') return 'from-emerald-400/70 to-cyan-300/50'
-  if (tone === 'warning') return 'from-amber-300/80 to-orange-300/50'
-  if (tone === 'danger') return 'from-red-400/80 to-rose-300/50'
-  return 'from-[var(--accent)]/80 to-[var(--accent-strong)]/45'
+  if (tone === 'good') return 'from-teal-500 to-cyan-500'
+  if (tone === 'warning') return 'from-amber-500 to-orange-500'
+  if (tone === 'danger') return 'from-red-500 to-rose-500'
+  return 'from-[var(--accent)] to-[var(--accent-strong)]'
 }
 
 function DisplayMetricCard({ metric, compact = false }: { metric: any; compact?: boolean }) {
@@ -1261,13 +1295,13 @@ function DisplayMetricCard({ metric, compact = false }: { metric: any; compact?:
       <div className={`pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b ${metricAccentClass(metric?.tone)}`} />
       <div className="relative flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-[0.18em] opacity-65">{metric?.label || '-'}</div>
-          {metric?.sub ? <div className="mt-1 truncate text-[11px] opacity-65">{metric.sub}</div> : null}
+          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600 dark:text-slate-300">{metric?.label || '-'}</div>
+          {metric?.sub ? <div className="mt-1 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">{metric.sub}</div> : null}
         </div>
-        <div className={`${compact ? 'text-sm' : 'text-lg'} shrink-0 font-semibold tracking-[-0.03em]`}>{formatResultValue(metric?.value)}</div>
+        <div className={`${compact ? 'text-sm' : 'text-lg'} shrink-0 font-bold tracking-[-0.03em] text-slate-950 dark:text-slate-50`}>{formatResultValue(metric?.value)}</div>
       </div>
       {typeof metric?.percent === 'number' ? (
-        <div className="relative mt-3 h-1.5 overflow-hidden rounded-full bg-black/25">
+        <div className="relative mt-3 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
           <div className={`h-full rounded-full bg-gradient-to-r ${metricAccentClass(metric?.tone)}`} style={{ width: `${Math.max(0, Math.min(100, metric.percent))}%` }} />
         </div>
       ) : null}
@@ -1293,16 +1327,16 @@ function DisplaySections({ sections }: { sections: any[] }) {
   return (
     <div className="space-y-3">
       {sections.map((section: any) => (
-        <div key={section?.key || section?.title} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-3">
+        <div key={section?.key || section?.title} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-950">
           <div className="text-xs font-semibold text-[var(--text-primary)]">{section?.title || '明细'}</div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {(Array.isArray(section?.items) ? section.items : []).map((item: any, index: number) => (
-              <div key={`${item?.title || 'item'}-${index}`} className="rounded-lg border border-[var(--border-soft)] bg-black/20 p-3">
+              <div key={`${item?.title || 'item'}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
                 <div className="text-xs font-semibold text-[var(--text-primary)]">{item?.title || '-'}</div>
-                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-[var(--text-secondary)]">
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-700 dark:text-slate-300">
                   {(Array.isArray(item?.metrics) ? item.metrics : []).map((metric: any) => (
                     <div key={metric?.key || metric?.label}>
-                      <span className="text-[var(--text-muted)]">{metric?.label || '-'}: </span>
+                      <span className="text-slate-500 dark:text-slate-400">{metric?.label || '-'}: </span>
                       <span>{formatResultValue(metric?.value)}</span>
                     </div>
                   ))}
@@ -1730,6 +1764,27 @@ function ActionParamsModal({
                 </label>
               )
             }
+            if (param.type === 'checkbox') {
+              return (
+                <label
+                  key={param.key}
+                  className="flex items-start gap-3 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={value === 'true'}
+                    onChange={e => setForm(current => ({ ...current, [param.key]: e.target.checked ? 'true' : '' }))}
+                    className="mt-0.5 h-4 w-4 rounded border-[var(--border-soft)] accent-[var(--accent)]"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-[var(--text-primary)]">{param.label || param.key}</span>
+                    {param.description && (
+                      <span className="mt-0.5 block text-xs text-[var(--text-muted)]">{param.description}</span>
+                    )}
+                  </span>
+                </label>
+              )
+            }
             return (
               <label key={param.key} className="block">
                 <div className="mb-1 text-xs text-[var(--text-muted)]">{param.label || param.key}</div>
@@ -1777,6 +1832,7 @@ function ActionMenu({
   const [actionTask, setActionTask] = useState<{ taskId: string; title: string } | null>(null)
   const [actionTaskStatus, setActionTaskStatus] = useState<string | null>(null)
   const [pendingAction, setPendingAction] = useState<{ action: any; params: Record<string, string> } | null>(null)
+  const [actionLaunching, setActionLaunching] = useState<{ id: string; label: string } | null>(null)
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, maxHeight: 320 })
   const menuRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -1787,8 +1843,10 @@ function ActionMenu({
   const runAction = (action: any, params: Record<string, any>) => {
     setRunning(action.id)
     setActionTaskStatus(null)
+    setActionLaunching({ id: action.id, label: action.label || '操作' })
     apiFetch(`/actions/${acc.platform}/${acc.id}/${action.id}`, { method: 'POST', body: JSON.stringify({ params }) })
       .then(resp => {
+        setActionLaunching(null)
         if (resp?.sync) {
           setRunning(null)
           if (!resp.ok) {
@@ -1814,6 +1872,7 @@ function ActionMenu({
         })
       })
       .catch(() => {
+        setActionLaunching(null)
         setRunning(null)
         setToast({ type: 'error', text: t('login.requestFailed') })
       })
@@ -1827,7 +1886,11 @@ function ActionMenu({
     const viewportPadding = 12
     const menuWidth = 220
     const copyActionCount = (canCopySession ? 1 : 0) + (canCopyK12Session ? 1 : 0)
-    const estimatedHeight = Math.min(320, (actions.length + copyActionCount) * 40 + 56)
+    const estimatedHeight = (actions.length + copyActionCount + 1) * 40 + 64
+    const desiredHeight = Math.min(
+      menuRef.current?.scrollHeight || estimatedHeight,
+      window.innerHeight - viewportPadding * 2,
+    )
 
     let left = rect.right - menuWidth
     if (left < viewportPadding) left = viewportPadding
@@ -1835,15 +1898,20 @@ function ActionMenu({
       left = Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding)
     }
 
-    let top = rect.bottom + 8
-    if (top + estimatedHeight > window.innerHeight - viewportPadding) {
-      top = Math.max(viewportPadding, rect.top - estimatedHeight - 8)
-    }
+    const gap = 8
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding - gap
+    const spaceAbove = rect.top - viewportPadding - gap
+    const openUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow
+    const availableHeight = Math.max(96, openUp ? spaceAbove : spaceBelow)
+    const maxHeight = Math.min(desiredHeight, availableHeight)
+    const top = openUp
+      ? Math.max(viewportPadding, rect.top - maxHeight - gap)
+      : Math.min(rect.bottom + gap, window.innerHeight - viewportPadding - maxHeight)
 
     setMenuPosition({
       top: Math.round(top),
       left: Math.round(left),
-      maxHeight: Math.max(160, window.innerHeight - viewportPadding * 2),
+      maxHeight: Math.round(maxHeight),
     })
   }, [actions.length, canCopySession, canCopyK12Session])
 
@@ -1957,6 +2025,12 @@ function ActionMenu({
           }}
           onDone={handleActionDone}
         />
+      )}
+      {actionLaunching && !actionTask && !pendingAction && (
+        <div className="fixed top-5 right-5 z-[9999] flex items-center gap-2.5 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] px-4 py-3 text-[13px] font-medium text-[var(--text-secondary)] shadow-lg">
+          <Loader2 className="h-4 w-4 animate-spin text-[var(--accent)]" />
+          <span>{actionLaunching.label}：正在启动任务...</span>
+        </div>
       )}
       {pendingAction && (
         <ActionParamsModal
@@ -2127,28 +2201,28 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
         </div>
         {/* ── Scrollable Content ── */}
         <div className="px-6 py-4 space-y-3 flex-1 overflow-y-auto min-h-0">
-          <div className="relative overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--accent-soft)] p-4 shadow-[var(--shadow-soft)]">
-            <div className="pointer-events-none absolute -right-16 -top-20 h-44 w-44 rounded-full bg-[var(--accent-soft)] blur-3xl" />
+          <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-950">
+            <div className="pointer-events-none absolute -right-16 -top-20 h-44 w-44 rounded-full bg-teal-100/50 blur-3xl dark:bg-teal-950/30" />
             <div className="relative flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">核心状态</div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-600 dark:text-slate-300">核心状态</div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <Badge variant={STATUS_VARIANT[getDisplayStatus(acc)] || 'secondary'}>{getDisplayStatus(acc)}</Badge>
                   <span className="text-lg font-semibold tracking-[-0.03em] text-[var(--text-primary)]">{acc.plan_name || overview.plan_name || overview.plan || getPlanState(acc)}</span>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-right text-[11px] text-[var(--text-muted)] sm:grid-cols-3">
-                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+              <div className="grid grid-cols-2 gap-2 text-right text-[11px] text-slate-600 dark:text-slate-300 sm:grid-cols-3">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 dark:border-slate-800 dark:bg-slate-900">
                   <div className="uppercase tracking-[0.12em]">生命周期</div>
-                  <div className="mt-1 text-[var(--text-primary)]">{getLifecycleStatus(acc)}</div>
+                  <div className="mt-1 font-semibold text-slate-950 dark:text-slate-50">{getLifecycleStatus(acc)}</div>
                 </div>
-                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 dark:border-slate-800 dark:bg-slate-900">
                   <div className="uppercase tracking-[0.12em]">有效性</div>
-                  <div className="mt-1 text-[var(--text-primary)]">{getValidityStatus(acc)}</div>
+                  <div className="mt-1 font-semibold text-slate-950 dark:text-slate-50">{getValidityStatus(acc)}</div>
                 </div>
-                <div className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-2.5 py-2">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 dark:border-slate-800 dark:bg-slate-900">
                   <div className="uppercase tracking-[0.12em]">套餐状态</div>
-                  <div className="mt-1 text-[var(--text-primary)]">{getPlanState(acc)}</div>
+                  <div className="mt-1 font-semibold text-slate-950 dark:text-slate-50">{getPlanState(acc)}</div>
                 </div>
               </div>
             </div>
@@ -2184,7 +2258,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
                 </div>
               )}
               {verificationMailbox?.email && (
-                <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
                   验证码邮箱: {verificationMailbox.email} · {verificationMailbox.provider || '-'} · ID {verificationMailbox.account_id || '-'}
                 </div>
               )}
@@ -2194,11 +2268,11 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
             <div className="space-y-2">
               <label className="text-xs text-[var(--text-muted)] block">Provider Accounts</label>
               {providerAccounts.map((item: any, index: number) => (
-                <div key={`${item.provider_name || 'provider'}-${item.login_identifier || index}`} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-3">
+                <div key={`${item.provider_name || 'provider'}-${item.login_identifier || index}`} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-950">
                   <div className="text-xs font-semibold text-[var(--text-primary)]">
                     {item.provider_name || item.provider_type || 'provider'}
                   </div>
-                  <div className="mt-1 text-xs text-[var(--text-secondary)] break-all">
+                  <div className="mt-1 text-xs font-medium text-slate-700 break-all dark:text-slate-300">
                     登录标识: {item.login_identifier || '-'}
                   </div>
                   {item.credentials && Object.keys(item.credentials).length > 0 && (
@@ -2207,7 +2281,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
                         <div key={key}>
                           <div className="text-[11px] text-[var(--text-muted)]">{key}</div>
                           <div className="flex items-start gap-1">
-                            <div className="flex-1 rounded-md border border-[var(--border-soft)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
+                            <div className="flex-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-mono text-slate-700 break-all max-h-40 overflow-y-auto dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
                               {String(value || '-')}
                             </div>
                             {value ? (
@@ -2228,10 +2302,10 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
             <div className="space-y-2">
               <label className="text-xs text-[var(--text-muted)] block">Platform Credentials</label>
               {platformCredentials.map((item: any) => (
-                <div key={`${item.scope}-${item.key}`} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-3">
+                <div key={`${item.scope}-${item.key}`} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-950">
                   <div className="text-[11px] text-[var(--text-muted)]">{item.key}</div>
                   <div className="mt-1 flex items-start gap-1">
-                    <div className="flex-1 rounded-md border border-[var(--border-soft)] bg-black/20 px-2 py-1.5 text-xs font-mono text-[var(--text-secondary)] break-all max-h-40 overflow-y-auto">
+                    <div className="flex-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-mono text-slate-700 break-all max-h-40 overflow-y-auto dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
                       {item.value}
                     </div>
                     <button onClick={() => copyText(String(item.value || ''))} className="mt-1 shrink-0 text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
@@ -2304,6 +2378,7 @@ function ExportMenu({
   platform,
   total,
   statusFilter,
+  tagFilter,
   searchFilter,
   selectedIds,
   triggerClassName,
@@ -2312,6 +2387,7 @@ function ExportMenu({
   platform: string
   total: number
   statusFilter: string
+  tagFilter: string
   searchFilter: string
   selectedIds: number[]
   triggerClassName?: string
@@ -2342,6 +2418,7 @@ function ExportMenu({
           ids: hasSelection ? selectedIds : [],
           select_all: !hasSelection,
           status_filter: !hasSelection ? statusFilter || null : null,
+          tag_filter: !hasSelection ? tagFilter || null : null,
           search_filter: !hasSelection ? searchFilter || null : null,
         }),
       })
@@ -2409,6 +2486,7 @@ export default function Accounts() {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
+  const [filterTag, setFilterTag] = useState('')
   const [page, setPage] = useState(1)
   const [detail, setDetail] = useState<any | null>(null)
   const [showImport, setShowImport] = useState(false)
@@ -2418,6 +2496,7 @@ export default function Accounts() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [invalidDeleting, setInvalidDeleting] = useState(false)
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchHealthChecking, setBatchHealthChecking] = useState(false)
   const [batchStatusOpen, setBatchStatusOpen] = useState(false)
@@ -2436,6 +2515,8 @@ export default function Accounts() {
   const [getRtBypassTaskId, setGetRtBypassTaskId] = useState('')
   const [getRtBypassBusy, setGetRtBypassBusy] = useState(false)
   const [getRtBypassConfirmOpen, setGetRtBypassConfirmOpen] = useState(false)
+  const [refreshSessionTaskId, setRefreshSessionTaskId] = useState('')
+  const [refreshSessionBusy, setRefreshSessionBusy] = useState(false)
   const [getRtSmsProvider, setGetRtSmsProvider] = useState('')
   const [getRtSmsapiPhone, setGetRtSmsapiPhone] = useState('')
   const [getRtSmsapiUrl, setGetRtSmsapiUrl] = useState('')
@@ -2489,20 +2570,21 @@ export default function Accounts() {
   useEffect(() => {
     setSelectedIds(new Set())
     setPage(1)
-  }, [tab, filterStatus, debouncedSearch])
+  }, [tab, filterStatus, filterTag, debouncedSearch])
 
-  const load = useCallback(async (p = tab, s = debouncedSearch, fs = filterStatus, pg = page) => {
+  const load = useCallback(async (p = tab, s = debouncedSearch, fs = filterStatus, ft = filterTag, pg = page) => {
     setLoading(true)
     try {
       const params = new URLSearchParams({ platform: p, page: String(pg), page_size: String(pageSize) })
       if (s) params.set('email', s)
       if (fs) params.set('status', fs)
+      if (ft) params.set('tag', ft)
       const data = await apiFetch(`/accounts?${params}`)
       setAccounts(data.items); setTotal(data.total)
     } finally { setLoading(false) }
-  }, [tab, debouncedSearch, filterStatus, page])
+  }, [tab, debouncedSearch, filterStatus, filterTag, page])
 
-  useEffect(() => { load(tab, debouncedSearch, filterStatus, page) }, [tab, debouncedSearch, filterStatus, page, load])
+  useEffect(() => { load(tab, debouncedSearch, filterStatus, filterTag, page) }, [tab, debouncedSearch, filterStatus, filterTag, page, load])
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -2597,9 +2679,6 @@ export default function Accounts() {
     if (navigator.clipboard) { navigator.clipboard.writeText(text) }
     else { const el = document.createElement('textarea'); el.value = text; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) }
   }
-  const emailApiLine = (email: string) =>
-    `${email} https://hsxhome.com/api/find/openai?email=${email}&t=fzKIywnF4KEGGB_i`
-
   const startHealthCheck = async () => {
     setBatchHealthChecking(true)
     try {
@@ -2756,6 +2835,57 @@ export default function Accounts() {
     setSelectedIds(new Set())
     await load()
   }, [load])
+
+  const startRefreshSession = async () => {
+    setError('')
+    const ids = [...selectedIds].map(Number)
+    if (ids.length === 0) {
+      setError(t('accounts.selectAtLeastOne'))
+      return
+    }
+    setRefreshSessionBusy(true)
+    try {
+      const data = await apiFetch('/tasks/refresh-session', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids,
+          concurrency: Math.max(Number(actionConcurrency || 1), 1),
+        }),
+      })
+      setRefreshSessionTaskId(String(data?.task_id || data?.id || ''))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setRefreshSessionBusy(false)
+    }
+  }
+
+  const handleRefreshSessionTaskDone = useCallback(async () => {
+    setRefreshSessionBusy(false)
+    setSelectedIds(new Set())
+    await load()
+  }, [load])
+
+  const deleteInvalidAndBanned = async () => {
+    setError('')
+    if (!confirm('确定要删除当前平台下所有失效和已封禁账号吗？此操作不可恢复。')) {
+      return
+    }
+    setInvalidDeleting(true)
+    try {
+      await apiFetch(`/accounts/invalid-and-banned?platform=${encodeURIComponent(tab)}`, {
+        method: 'DELETE',
+      })
+      setSelectedIds(new Set())
+      setPage(1)
+      await load(tab, debouncedSearch, filterStatus, filterTag, 1)
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setInvalidDeleting(false)
+    }
+  }
 
   const openBatchStatusModal = () => {
     setError('')
@@ -3321,6 +3451,15 @@ export default function Accounts() {
           onDone={handleGetRtBypassTaskDone}
         />
       )}
+      {refreshSessionTaskId && (
+        <TaskLogDialog
+          title="重新登录获取session/at"
+          taskId={refreshSessionTaskId}
+          taskStatus={null}
+          onClose={() => setRefreshSessionTaskId('')}
+          onDone={handleRefreshSessionTaskDone}
+        />
+      )}
       {error && (
         <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
           {error}
@@ -3360,6 +3499,7 @@ export default function Accounts() {
                   platform={tab}
                   total={total}
                   statusFilter={filterStatus}
+                  tagFilter={filterTag}
                   searchFilter={debouncedSearch}
                   selectedIds={[...selectedIds]}
                   showIcon={false}
@@ -3451,6 +3591,22 @@ export default function Accounts() {
               <Button
                 size="sm"
                 variant="outline"
+                disabled={refreshSessionBusy || selectedCount === 0}
+                onClick={startRefreshSession}
+                className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
+              >
+                {refreshSessionBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                重新登录获取session/at
+              </Button>
+            ) : null}
+            {tab === 'chatgpt' ? (
+              <Button
+                size="sm"
+                variant="outline"
                 disabled={batchStatusUpdating || selectedCount === 0}
                 onClick={openBatchStatusModal}
                 className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
@@ -3461,6 +3617,22 @@ export default function Accounts() {
                   <ListChecks className="mr-2 h-4 w-4" />
                 )}
                 {'\u4fee\u6539\u72b6\u6001'}
+              </Button>
+            ) : null}
+            {tab === 'chatgpt' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={invalidDeleting || loading}
+                onClick={deleteInvalidAndBanned}
+                className="h-10 rounded-lg border-red-500 bg-red-500/5 px-5 text-[13px] font-semibold text-red-600 shadow-[var(--shadow-soft)] hover:bg-red-500/10"
+              >
+                {invalidDeleting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="mr-2 h-4 w-4" />
+                )}
+                一键清除所有失效帐号
               </Button>
             ) : null}
             <div className="ml-auto flex flex-wrap items-center gap-4">
@@ -3507,6 +3679,16 @@ export default function Accounts() {
                     <option key={status} value={status}>
                       {status === 'eligible' ? t('accounts.eligible') : translateAccountStatus(status, language)}
                     </option>
+                  ))}
+                </select>
+                <select
+                  value={filterTag}
+                  onChange={e => setFilterTag(e.target.value)}
+                  className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] pl-3 pr-8 text-[12px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                >
+                  <option value="">全部标签</option>
+                  {ACCOUNT_TAG_FILTER_OPTIONS.map(tag => (
+                    <option key={tag} value={tag}>{tag}</option>
                   ))}
                 </select>
                 {tab === 'chatgpt' && (
@@ -3679,13 +3861,18 @@ export default function Accounts() {
                               </div>
                               <div className="min-w-0">
                                 <div className="flex min-w-0 items-center gap-2">
-                                  <span className="truncate font-mono text-[13px] font-medium text-[var(--text-primary)]" title={acc.email}>
+                                  <span
+                                    className="truncate font-mono text-[13px] font-medium text-[var(--text-primary)] cursor-copy"
+                                    title={acc.email}
+                                    onClick={e => { e.stopPropagation(); copy(acc.email) }}
+                                  >
                                     {acc.email}
                                   </span>
                                   <button
-                                    onClick={e => { e.stopPropagation(); copy(emailApiLine(acc.email)) }}
+                                    onClick={e => { e.stopPropagation(); copy(acc.email) }}
                                     className="text-[var(--text-muted)] opacity-0 transition-opacity hover:text-[var(--accent)] group-hover:opacity-100"
-                                    aria-label="copy"
+                                    title="复制邮箱"
+                                    aria-label="复制邮箱"
                                   >
                                     <Copy className="h-3.5 w-3.5" />
                                   </button>
@@ -3856,6 +4043,7 @@ export default function Accounts() {
                 platform={tab}
                 total={total}
                 statusFilter={filterStatus}
+                tagFilter={filterTag}
                 searchFilter={debouncedSearch}
                 selectedIds={[...selectedIds]}
               />
@@ -3976,6 +4164,17 @@ export default function Accounts() {
                 <option key={status} value={status}>
                   {status === 'eligible' ? t('accounts.eligible') : translateAccountStatus(status, language)}
                 </option>
+              ))}
+            </select>
+            <select
+              value={filterTag}
+              onChange={e => setFilterTag(e.target.value)}
+              className="rounded-md border border-[var(--border-soft)] bg-transparent py-1.5 pl-3 pr-8 text-sm text-[var(--text-primary)] transition-colors focus:border-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--text-primary)] appearance-none"
+              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundPosition: 'right 8px center', backgroundRepeat: 'no-repeat' }}
+            >
+              <option value="">全部标签</option>
+              {ACCOUNT_TAG_FILTER_OPTIONS.map(tag => (
+                <option key={tag} value={tag}>{tag}</option>
               ))}
             </select>
           </div>
@@ -4128,8 +4327,8 @@ export default function Accounts() {
                 </td>
                 <td className="px-3 py-2.5 font-mono text-sm text-[var(--text-primary)] align-top">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate tracking-tight" title={acc.email}>{acc.email}</span>
-                    <button onClick={e => { e.stopPropagation(); copy(emailApiLine(acc.email)) }} title="复制 Email+邮件API" className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
+                    <span className="truncate tracking-tight cursor-copy" title={acc.email} onClick={e => { e.stopPropagation(); copy(acc.email) }}>{acc.email}</span>
+                    <button onClick={e => { e.stopPropagation(); copy(acc.email) }} title="复制邮箱" className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
                   </div>
                   {verificationMailbox && (verificationMailbox.email || verificationMailbox.account_id || verificationMailbox.provider) && (
                     <div

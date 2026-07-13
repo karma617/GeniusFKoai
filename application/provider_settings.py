@@ -14,16 +14,25 @@ class ProviderSettingsService:
         return [self._serialize(item) for item in items]
 
     def save_setting(self, payload: dict) -> dict:
+        auth = dict(payload.get("auth") or {})
+        provider_type = str(payload.get("provider_type") or "")
+        provider_key = str(payload.get("provider_key") or "")
+        if provider_type == "mailbox" and provider_key == "icloud_hme" and not auth.get("icloud_hme_accounts_json"):
+            existing = self.repository.get_by_key(provider_type, provider_key)
+            if existing:
+                existing_auth = existing.get_auth()
+                if existing_auth.get("icloud_hme_accounts_json"):
+                    auth["icloud_hme_accounts_json"] = existing_auth["icloud_hme_accounts_json"]
         item = self.repository.save(
             setting_id=payload.get("id"),
-            provider_type=str(payload.get("provider_type") or ""),
-            provider_key=str(payload.get("provider_key") or ""),
+            provider_type=provider_type,
+            provider_key=provider_key,
             display_name=str(payload.get("display_name") or ""),
             auth_mode=str(payload.get("auth_mode") or ""),
             enabled=bool(payload.get("enabled", True)),
             is_default=bool(payload.get("is_default", False)),
             config=dict(payload.get("config") or {}),
-            auth=dict(payload.get("auth") or {}),
+            auth=auth,
             metadata=dict(payload.get("metadata") or {}),
         )
         return {

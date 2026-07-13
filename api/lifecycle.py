@@ -51,10 +51,13 @@ def trigger_expiry_warning(body: WarningRequest):
 @router.get("/status")
 def lifecycle_status():
     """返回生命周期管理器运行状态。"""
-    from core.lifecycle import lifecycle_manager
+    from core.lifecycle import get_lifecycle_service_flags, is_lifecycle_manager_enabled, lifecycle_manager
     return {
+        "enabled": is_lifecycle_manager_enabled(),
+        "services": get_lifecycle_service_flags(),
         "running": lifecycle_manager._running,
         "check_interval_hours": lifecycle_manager.check_interval / 3600,
         "refresh_interval_hours": lifecycle_manager.refresh_interval / 3600,
+        "external_sync_interval_hours": lifecycle_manager.cpa_sync_interval / 3600,
         "warning_hours": lifecycle_manager.warning_hours,
     }

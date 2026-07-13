@@ -39,6 +39,24 @@ def test_normal_account_without_refresh_token_still_rejected():
         )
 
 
+def test_normal_account_without_refresh_token_can_force_direct_payload():
+    account = SimpleNamespace(
+        email="normal@example.com",
+        credentials={"access_token": _make_access_token(), "plan_type": "free"},
+    )
+
+    payload = sub2api_upload._build_direct_account_payload(
+        account,
+        group_ids=[1],
+        proxy_id=None,
+        priority=1,
+        force_upload_without_rt=True,
+    )
+
+    assert payload["credentials"]["plan_type"] == "free"
+    assert "refresh_token" not in payload["credentials"]
+
+
 def test_k12_account_without_refresh_token_builds_direct_payload():
     account = SimpleNamespace(
         email="k12@example.com",
@@ -86,6 +104,23 @@ def test_k12_account_without_refresh_token_builds_import_payload():
         group_ids=[1],
         proxy_id=None,
         priority=1,
+    )
+
+    assert payload["content"] == account.credentials["access_token"]
+
+
+def test_normal_account_without_refresh_token_can_force_import_payload():
+    account = SimpleNamespace(
+        email="normal@example.com",
+        credentials={"access_token": _make_access_token(), "plan_type": "free"},
+    )
+
+    payload = sub2api_upload._build_import_payload(
+        account,
+        group_ids=[1],
+        proxy_id=None,
+        priority=1,
+        force_upload_without_rt=True,
     )
 
     assert payload["content"] == account.credentials["access_token"]

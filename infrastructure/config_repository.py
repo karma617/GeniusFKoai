@@ -15,9 +15,16 @@ class ConfigRepository:
         "any2api_url", "any2api_password",
         "sub2api_url", "sub2api_email", "sub2api_password",
         "sub2api_group_name", "sub2api_account_priority", "sub2api_default_proxy_name",
+        "lifecycle_account_check_enabled",
+        "lifecycle_token_refresh_enabled", "lifecycle_trial_warning_enabled",
+        "lifecycle_external_sync_enabled",
         "proxy_strategy", "proxy_fallback_url",
     }
     DEFAULT_VALUES = {
+        "lifecycle_account_check_enabled": "true",
+        "lifecycle_token_refresh_enabled": "true",
+        "lifecycle_trial_warning_enabled": "true",
+        "lifecycle_external_sync_enabled": "false",
         "proxy_strategy": PROXY_STRATEGY_POOL_THEN_DEFAULT,
         "proxy_fallback_url": DEFAULT_FALLBACK_PROXY_URL,
     }

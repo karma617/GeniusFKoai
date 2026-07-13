@@ -7,7 +7,7 @@ import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import ProviderCards from '@/components/settings/ProviderCards'
-import { Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Globe2, ShieldCheck, CircleOff, Activity, Save, DownloadCloud, SearchCheck, Database } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Globe2, ShieldCheck, CircleOff, Activity, Save, DownloadCloud, SearchCheck, Database, Loader2 } from 'lucide-react'
 
 const DEFAULT_FALLBACK_PROXY_URL = 'http://127.0.0.1:7897'
 const FREE_PROXY_TEXT = {
@@ -34,13 +34,16 @@ const FREE_PROXY_TEXT = {
 }
 
 type FreeProxySource = { id: string; name: string }
+type ProxyImportScheme = 'http' | 'https' | 'socks5'
 
 export default function Proxies() {
   const { t } = useI18n()
   const [proxies, setProxies] = useState<any[]>([])
   const [newProxy, setNewProxy] = useState('')
+  const [importScheme, setImportScheme] = useState<ProxyImportScheme>('http')
   const [region, setRegion] = useState('')
   const [checking, setChecking] = useState(false)
+  const [checkingProxyIds, setCheckingProxyIds] = useState<Set<number>>(new Set())
   const [proxyStrategy, setProxyStrategy] = useState('pool_then_default')
   const [fallbackProxyUrl, setFallbackProxyUrl] = useState(DEFAULT_FALLBACK_PROXY_URL)
   const [savingProxyConfig, setSavingProxyConfig] = useState(false)
@@ -92,12 +95,12 @@ export default function Proxies() {
     if (lines.length > 1) {
       await apiFetch('/proxies/bulk', {
         method: 'POST',
-        body: JSON.stringify({ proxies: lines, region }),
+        body: JSON.stringify({ proxies: lines, region, import_scheme: importScheme }),
       })
     } else {
       await apiFetch('/proxies', {
         method: 'POST',
-        body: JSON.stringify({ url: lines[0], region }),
+        body: JSON.stringify({ url: lines[0], region, import_scheme: importScheme }),
       })
     }
     setNewProxy('')
@@ -115,9 +118,16 @@ export default function Proxies() {
   }
 
   const check = async () => {
+    const ids = proxies.map(item => Number(item.id)).filter(Boolean)
     setChecking(true)
-    await apiFetch('/proxies/check', { method: 'POST' })
-    setTimeout(() => { load(); setChecking(false) }, 3000)
+    setCheckingProxyIds(new Set(ids))
+    try {
+      await apiFetch('/proxies/check', { method: 'POST' })
+      await load()
+    } finally {
+      setChecking(false)
+      setCheckingProxyIds(new Set())
+    }
   }
 
   const saveProxyConfig = async () => {
@@ -461,13 +471,29 @@ export default function Proxies() {
               )}
             </div>
             <div>
-              <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">{t('common.add')}</div>
-              <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">{t('proxies.addTitle')}</div>
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">{t('common.add')}</div>
+                  <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">{t('proxies.addTitle')}</div>
+                </div>
+                <label className="min-w-28 space-y-1 text-xs text-[var(--text-muted)]">
+                  <span>导入协议头</span>
+                  <select
+                    value={importScheme}
+                    onChange={e => setImportScheme(e.target.value as ProxyImportScheme)}
+                    className="control-surface control-surface-compact"
+                  >
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                    <option value="socks5">socks5</option>
+                  </select>
+                </label>
+              </div>
             </div>
             <textarea
               value={newProxy}
               onChange={e => setNewProxy(e.target.value)}
-              placeholder="http://user:pass@host:port"
+              placeholder={`${importScheme}://user:pass@host:port`}
               rows={8}
               className="control-surface control-surface-mono resize-none"
             />
@@ -512,7 +538,14 @@ export default function Proxies() {
             )}
             {proxies.map(p => (
               <tr key={p.id} className="border-b border-[var(--border)]/40 hover:bg-[var(--bg-hover)]/70">
-                <td className="px-4 py-2.5 font-mono text-xs text-[var(--text-secondary)]">{p.url}</td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[var(--text-secondary)]">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 break-all">{p.url}</span>
+                    {checkingProxyIds.has(Number(p.id)) && (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--accent)]" />
+                    )}
+                  </div>
+                </td>
                 <td className="px-4 py-2.5 text-[var(--text-muted)]">{p.region || '-'}</td>
                 <td className="px-4 py-2.5">
                   <span className="text-emerald-400">{p.success_count}</span>

@@ -17,6 +17,41 @@ from core.platform_accounts import build_platform_account
 from core.registry import get
 
 logger = logging.getLogger(__name__)
+LIFECYCLE_ACCOUNT_CHECK_ENABLED_KEY = "lifecycle_account_check_enabled"
+LIFECYCLE_TOKEN_REFRESH_ENABLED_KEY = "lifecycle_token_refresh_enabled"
+LIFECYCLE_TRIAL_WARNING_ENABLED_KEY = "lifecycle_trial_warning_enabled"
+LIFECYCLE_EXTERNAL_SYNC_ENABLED_KEY = "lifecycle_external_sync_enabled"
+LIFECYCLE_SERVICE_DEFAULTS = {
+    LIFECYCLE_ACCOUNT_CHECK_ENABLED_KEY: True,
+    LIFECYCLE_TOKEN_REFRESH_ENABLED_KEY: True,
+    LIFECYCLE_TRIAL_WARNING_ENABLED_KEY: True,
+    LIFECYCLE_EXTERNAL_SYNC_ENABLED_KEY: False,
+}
+
+
+def _bool_config(value: str | None, default: bool = False) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "on", "启用", "开启"}
+
+
+def is_lifecycle_manager_enabled() -> bool:
+    """Return whether any periodic lifecycle service should auto-start."""
+    return any(get_lifecycle_service_flags().values())
+
+
+def get_lifecycle_service_flags() -> dict[str, bool]:
+    """Return per-service lifecycle switches with safe defaults."""
+    try:
+        from core.config_store import config_store
+
+        return {
+            key: _bool_config(config_store.get(key, "true" if default else "false"), default)
+            for key, default in LIFECYCLE_SERVICE_DEFAULTS.items()
+        }
+    except Exception:
+        return dict(LIFECYCLE_SERVICE_DEFAULTS)
 
 
 def _external_upload_targets_config() -> dict[str, str | bool]:
@@ -179,59 +214,41 @@ def refresh_expiring_tokens(
             results["skipped"] += 1
             continue
 
-        credentials = {
-            c["key"]: c["value"]
-            for c in (graph.get("credentials") or [])
-            if c.get("scope") == "platform"
-        }
-        refresh_token = credentials.get("refresh_token", "")
-        session_token = credentials.get("session_token", "")
-        if not refresh_token and not session_token:
+        if not str(acc.password or "").strip():
             results["skipped"] += 1
             continue
 
         try:
-            from platforms.chatgpt.token_refresh import TokenRefreshManager
+            from domain.actions import ActionExecutionCommand
+            from infrastructure.accounts_repository import AccountsRepository
+            from infrastructure.platform_runtime import PlatformRuntime
 
-            class _Account:
-                pass
+            result = PlatformRuntime().execute_action(
+                ActionExecutionCommand(
+                    platform="chatgpt",
+                    account_id=int(acc.id or 0),
+                    action_id="refresh_session",
+                    params={},
+                ),
+                log_fn=log,
+            )
 
-            a = _Account()
-            a.email = acc.email
-            a.session_token = session_token
-            a.refresh_token = refresh_token
-            a.client_id = credentials.get("client_id", "")
-
-            proxy = None  # Could be enhanced to use proxy pool
-            manager = TokenRefreshManager(proxy_url=proxy)
-            result = manager.refresh_account(a)
-
-            if result.success:
-                credential_updates = {}
-                if result.access_token:
-                    credential_updates["access_token"] = result.access_token
-                if result.refresh_token:
-                    credential_updates["refresh_token"] = result.refresh_token
-
-                with Session(engine) as session:
-                    model = session.get(AccountModel, acc.id)
-                    if model and credential_updates:
-                        model.updated_at = _utcnow()
-                        patch_account_graph(
-                            session, model,
-                            credential_updates=credential_updates,
-                            summary_updates={
-                                "last_refresh_at": _utcnow_iso(),
-                                "refresh_success": True,
-                            },
-                        )
-                        session.add(model)
-                        session.commit()
+            if result.ok:
                 results["refreshed"] += 1
-                log(f"  ✓ {acc.email}: token 刷新成功")
+                log(f"  ✓ {acc.email}: session/at 重新登录成功")
             else:
+                data = result.data if isinstance(result.data, dict) else {}
+                should_delete = (
+                    bool(data.get("delete_local_account"))
+                    or str(data.get("error_type") or "") == "account_banned"
+                )
+                if should_delete:
+                    deleted = AccountsRepository().delete(int(acc.id or 0))
+                    note = "已删除本地账号" if deleted else "本地账号不存在或已删除"
+                    log(f"  ✗ {acc.email}: 账号已封禁/注销，{note}: {result.error}")
+                else:
+                    log(f"  ✗ {acc.email}: {result.error}")
                 results["failed"] += 1
-                log(f"  ✗ {acc.email}: {result.error_message}")
         except Exception as exc:
             results["failed"] += 1
             log(f"  ✗ {acc.email}: 刷新异常 {exc}")
@@ -605,23 +622,34 @@ class LifecycleManager:
         while self._running:
             now = time.time()
             try:
+                service_flags = get_lifecycle_service_flags()
                 # Trial expiry warnings — run every cycle
-                flag_expiring_trials(hours_warning=self.warning_hours)
+                if service_flags.get(LIFECYCLE_TRIAL_WARNING_ENABLED_KEY, True):
+                    flag_expiring_trials(hours_warning=self.warning_hours)
 
                 # Validity check
-                if now - self._last_check >= self.check_interval:
+                if (
+                    service_flags.get(LIFECYCLE_ACCOUNT_CHECK_ENABLED_KEY, True)
+                    and now - self._last_check >= self.check_interval
+                ):
                     print("[LifecycleManager] 开始账号有效性检测...")
                     check_accounts_validity()
                     self._last_check = now
 
                 # Token refresh
-                if now - self._last_refresh >= self.refresh_interval:
+                if (
+                    service_flags.get(LIFECYCLE_TOKEN_REFRESH_ENABLED_KEY, True)
+                    and now - self._last_refresh >= self.refresh_interval
+                ):
                     print("[LifecycleManager] 开始 token 自动续期...")
                     refresh_expiring_tokens()
                     self._last_refresh = now
 
                 # CPA sync (刷新 token + 存活检查 + 上传)
-                if now - self._last_cpa_sync >= self.cpa_sync_interval:
+                if (
+                    service_flags.get(LIFECYCLE_EXTERNAL_SYNC_ENABLED_KEY, False)
+                    and now - self._last_cpa_sync >= self.cpa_sync_interval
+                ):
                     target_label = _external_upload_target_label()
                     if target_label:
                         print(f"[LifecycleManager] 开始 {target_label} 同步 (刷新+检查+上传)...")

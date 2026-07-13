@@ -325,6 +325,18 @@ def _create_gmail_api_code(extra: dict, proxy: str | None) -> 'BaseMailbox':
     )
 
 
+def _create_icloud_hme(extra: dict, proxy: str | None) -> 'BaseMailbox':
+    from core.icloud_hme import ICloudHMEMailbox
+
+    mailbox_proxy = str(extra.get("icloud_hme_proxy") or "").strip()
+    return ICloudHMEMailbox(
+        accounts_json=extra.get("icloud_hme_accounts_json", ""),
+        label_prefix=extra.get("icloud_hme_label_prefix", ""),
+        poll_interval=extra.get("icloud_hme_poll_interval", ""),
+        proxy=mailbox_proxy or proxy,
+    )
+
+
 def _create_laoudo(extra: dict, proxy: str | None) -> 'BaseMailbox':
     return LaoudoMailbox(
         auth_token=extra.get("laoudo_auth", ""),
@@ -357,6 +369,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "local_ms_pool": _create_local_ms_pool,
     "gmail_oauth_fission": _create_gmail_oauth_fission,
     "gmail_api_code": _create_gmail_api_code,
+    "icloud_hme": _create_icloud_hme,
     "laoudo_api": _create_laoudo,
     # backward-compat fallback
     "generic_http": _create_generic_http,
@@ -371,6 +384,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "local_ms": _create_local_ms_pool,
     "gmail_oauth": _create_gmail_oauth_fission,
     "gmail_api": _create_gmail_api_code,
+    "icloud": _create_icloud_hme,
     "laoudo": _create_laoudo,
 }
 

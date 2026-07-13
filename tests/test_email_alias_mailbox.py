@@ -115,6 +115,17 @@ class InvalidMarkMailbox(FakeMailbox):
         return ["invalid"]
 
 
+class AliasExhaustedMarkMailbox(InvalidMarkMailbox):
+    def __init__(self, email: str = "main@example.com"):
+        super().__init__(email)
+        self.alias_exhausted_marks: list[tuple[str, str]] = []
+
+    def mark_alias_exhausted(self, account: MailboxAccount, reason: str = "") -> list[str]:
+        self.alias_exhausted_marks.append((account.email, reason))
+        self._release_local_account_reservation(account)
+        return ["别名已上限"]
+
+
 def _mailbox_resource(email: str, *, parent_email: str = "", is_alias: bool = False) -> dict:
     metadata = {"email": email}
     if is_alias:
@@ -236,6 +247,20 @@ def test_email_alias_quota_exhausted_switches_to_next_parent():
     assert mailbox.released == ["main@example.com"]
 
 
+def test_email_alias_quota_exhausted_skips_parent_repeated_by_source():
+    _save_registered("main+one@example.com", parent_email="main@example.com", is_alias=True)
+    _save_registered("main+two@example.com", parent_email="main@example.com", is_alias=True)
+    mailbox = SequentialMailbox(["main@example.com", "main@example.com", "fresh@example.com"])
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt")
+
+    account = wrapper.get_email()
+
+    assert account.email.startswith("fresh+")
+    assert account.extra["email_alias"]["parent_email"] == "fresh@example.com"
+    assert mailbox.marked_success == ["main@example.com"]
+    assert mailbox.released == ["main@example.com"]
+
+
 def test_email_alias_quota_exhausted_releases_parent_when_pool_reports_occupied():
     _save_registered("main+one@example.com", parent_email="main@example.com", is_alias=True)
     _save_registered("main+two@example.com", parent_email="main@example.com", is_alias=True)
@@ -335,6 +360,18 @@ def test_email_alias_parent_exhausted_marks_parent_invalid_before_success():
 
     assert wrapper.mark_parent_exhausted(account) == ["invalid"]
     assert mailbox.invalid_marks == [("main@example.com", "user_already_exists")]
+    assert mailbox.marked_success == []
+    assert mailbox.released == ["main@example.com"]
+
+
+def test_email_alias_parent_exhausted_prefers_alias_exhausted_mark():
+    mailbox = AliasExhaustedMarkMailbox()
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt")
+    account = wrapper.get_email()
+
+    assert wrapper.mark_parent_exhausted(account) == ["别名已上限"]
+    assert mailbox.alias_exhausted_marks == [("main@example.com", "user_already_exists")]
+    assert mailbox.invalid_marks == []
     assert mailbox.marked_success == []
     assert mailbox.released == ["main@example.com"]
 

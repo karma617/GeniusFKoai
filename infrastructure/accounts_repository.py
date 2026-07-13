@@ -23,6 +23,7 @@ from core.platform_accounts import resolve_primary_token
 from domain.accounts import (
     AccountBatchStatusUpdateCommand,
     AccountCreateCommand,
+    AccountDeleteInvalidBannedCommand,
     AccountExportSelection,
     AccountImportLine,
     AccountQuery,
@@ -50,6 +51,65 @@ PLAN_DERIVED_SUMMARY_KEYS = {
     "plan_state",
     "trial_eligible",
 }
+
+
+def _tag_text(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _record_tag_values(item: AccountRecord) -> set[str]:
+    overview = item.overview if isinstance(item.overview, dict) else {}
+    display_summary = item.display_summary if isinstance(item.display_summary, dict) else {}
+    values: set[str] = set()
+
+    for chip in overview.get("chips") or []:
+        text = _tag_text(chip)
+        if text:
+            values.add(text)
+    for badge in display_summary.get("badges") or []:
+        if isinstance(badge, dict):
+            text = _tag_text(badge.get("label"))
+            if text:
+                values.add(text)
+
+    for value in (
+        item.lifecycle_status,
+        item.display_status,
+        item.plan_state,
+        item.plan_name,
+        overview.get("plan"),
+        overview.get("plan_name"),
+        overview.get("membership_type"),
+        overview.get("individual_membership_type"),
+    ):
+        text = _tag_text(value)
+        if text and text != "unknown":
+            values.add(text)
+
+    if overview.get("k12_workspace_id") or overview.get("k12_session") or (isinstance(overview.get("k12"), dict) and overview["k12"].get("session")):
+        values.add("k12")
+    if bool(overview.get("bugfree")):
+        values.add("bugfree")
+    if bool(overview.get("chatgpt_free_plus_trial")):
+        values.add("试用")
+    for credential in item.credentials or []:
+        if _tag_text(credential.get("key")) == "plan_type" and _tag_text(credential.get("value")) == "k12":
+            values.add("k12")
+
+    if "plus" in values or "subscribed" in values:
+        values.add("plus")
+    if "free" in values or "registered" in values:
+        values.add("free")
+    if "bugfree" in values:
+        values.add("bugfree")
+    return values
+
+
+def _matches_tag_filter(item: AccountRecord, tag: str) -> bool:
+    expected = _tag_text(tag)
+    if not expected:
+        return True
+    return expected in _record_tag_values(item)
 
 
 def _build_summary_updates(
@@ -181,7 +241,7 @@ class AccountsRepository:
                 statement = statement.where(AccountModel.email.contains(query.email))
                 count_statement = count_statement.where(AccountModel.email.contains(query.email))
             statement = statement.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
-            if not query.status:
+            if not query.status and not query.tag:
                 total = int(session.exec(count_statement).one() or 0)
                 start = (page - 1) * page_size
                 models = session.exec(statement.offset(start).limit(page_size)).all()
@@ -195,6 +255,8 @@ class AccountsRepository:
                     "plan_state": item.plan_state,
                     "validity_status": item.validity_status,
                 }, query.status)]
+            if query.tag:
+                records = [item for item in records if _matches_tag_filter(item, query.tag)]
         total = len(records)
         start = (page - 1) * page_size
         end = start + page_size
@@ -227,6 +289,8 @@ class AccountsRepository:
                 "plan_state": item.plan_state,
                 "validity_status": item.validity_status,
             }, selection.status_filter)]
+        if selection.tag_filter:
+            records = [item for item in records if _matches_tag_filter(item, selection.tag_filter)]
         return records
 
     def create(self, command: AccountCreateCommand) -> AccountRecord:
@@ -354,6 +418,39 @@ class AccountsRepository:
             session.delete(model)
             session.commit()
             return True
+
+    def delete_invalid_and_banned(self, command: AccountDeleteInvalidBannedCommand) -> dict:
+        platform = str(command.platform or "chatgpt").strip() or "chatgpt"
+        with Session(engine) as session:
+            statement = select(AccountModel)
+            if platform:
+                statement = statement.where(AccountModel.platform == platform)
+            models = session.exec(statement).all()
+            records = self._load_records(session, models)
+            delete_ids = [
+                item.id
+                for item in records
+                if (
+                    item.lifecycle_status in {"invalid", "banned"}
+                    or item.display_status in {"invalid", "banned"}
+                    or item.validity_status in {"invalid", "banned"}
+                )
+            ]
+            delete_id_set = set(delete_ids)
+            for model in models:
+                account_id = int(model.id or 0)
+                if account_id not in delete_id_set:
+                    continue
+                purge_account_graph(session, account_id)
+                session.delete(model)
+            session.commit()
+        return {
+            "ok": True,
+            "platform": platform,
+            "deleted": len(delete_ids),
+            "deleted_ids": delete_ids,
+            "statuses": ["invalid", "banned"],
+        }
 
     def import_lines(self, platform: str, lines: list[AccountImportLine]) -> int:
         created = 0

@@ -15,15 +15,15 @@ _TEST_DB_PATH = _tmp.name
 os.environ["ACCOUNT_MANAGER_DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
 
 import pytest
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import SQLModel
 
 # Patch the engine before the app is created
 from core import db as _db_module
 
-_db_module.engine = create_engine(
+_db_module.engine = _db_module.create_configured_engine(
     f"sqlite:///{_TEST_DB_PATH}",
     echo=False,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
 )
 
 

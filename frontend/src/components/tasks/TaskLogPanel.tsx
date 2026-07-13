@@ -23,8 +23,33 @@ type LogGroup = {
   events: LogEvent[];
 };
 
+type TaskFailureDetail = {
+  id: string;
+  label: string;
+  account: string;
+  reason: string;
+};
+
+type HealthCheckItem = {
+  account_id?: number | string;
+  email?: string;
+  valid?: boolean;
+  transient?: boolean;
+  status_code?: number | string;
+  error?: string;
+};
+
+type GroupSummary = {
+  id: string;
+  label: string;
+  account: string;
+  status: "success" | "failed" | "running";
+  failureReason: string;
+};
+
 const MAIN_GROUP_ID = "__main__";
 const VISIBLE_LOG_LINE_LIMIT = 1200;
+const VISIBLE_FAILURE_REASON_LIMIT = 520;
 
 function classifyLine(line: string): string {
   if (line.includes("✓") || line.includes("成功")) return "text-emerald-700 dark:text-emerald-300";
@@ -36,6 +61,59 @@ function classifyLine(line: string): string {
 function getVisibleLine(line: string): string {
   if (line.length <= VISIBLE_LOG_LINE_LIMIT) return line;
   return line.slice(0, VISIBLE_LOG_LINE_LIMIT);
+}
+
+function stripLogPrefix(line: string): string {
+  return line.replace(/^\[[^\]]+\]\s*/, "").trim();
+}
+
+function getVisibleFailureReason(reason: string): string {
+  if (reason.length <= VISIBLE_FAILURE_REASON_LIMIT) return reason;
+  return `${reason.slice(0, VISIBLE_FAILURE_REASON_LIMIT)}...`;
+}
+
+function extractEmail(line: string): string {
+  return line.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
+}
+
+function extractFailureReason(line: string): string {
+  const message = stripLogPrefix(line);
+  const markers = ["✗ 注册失败:", "注册失败:", "测活失效", "测活异常", "失败:", "错误:"];
+  for (const marker of markers) {
+    const index = message.indexOf(marker);
+    if (index >= 0) {
+      return message.slice(index + marker.length).trim() || message;
+    }
+  }
+  return message;
+}
+
+function summarizeLogGroup(group: LogGroup): GroupSummary {
+  let account = "";
+  let failureReason = "";
+  let hasSuccess = false;
+  let hasFailure = false;
+
+  for (const ev of group.events) {
+    const line = stripLogPrefix(ev.line);
+    account = account || extractEmail(line);
+    if (line.includes("✓") || line.includes("注册成功")) {
+      hasSuccess = true;
+      account = extractEmail(line) || account;
+    }
+    if (line.includes("✗") || line.includes("注册失败") || line.includes("错误")) {
+      hasFailure = true;
+      failureReason = extractFailureReason(line);
+    }
+  }
+
+  return {
+    id: group.id,
+    label: group.label,
+    account,
+    status: hasFailure ? "failed" : hasSuccess ? "success" : "running",
+    failureReason,
+  };
 }
 
 export function TaskLogPanel({
@@ -209,11 +287,36 @@ export function TaskLogPanel({
 
   const currentStatus = doneStatus || task?.status || "running";
   const progress = task?.progress_detail || {};
-  const progressTotal = Number(progress.total || 0);
+  const resultData =
+    task?.data && typeof task.data === "object"
+      ? task.data
+      : task?.result?.data && typeof task.result.data === "object"
+        ? task.result.data
+        : {};
+  const isAccountHealthCheck = task?.type === "account_health_check";
+  const healthValidCount = Number(resultData?.valid || 0);
+  const healthInvalidCount = Number(resultData?.invalid || 0);
+  const healthErrorCount = Number(resultData?.error || 0);
+  const healthTotal = Number(resultData?.total || 0);
+  const progressTotal = Number(healthTotal || progress.total || 0);
   const progressCurrent = Number(progress.current || 0);
+  const successCount = isAccountHealthCheck
+    ? healthValidCount
+    : Number(task?.success || 0);
+  const failureCount = isAccountHealthCheck
+    ? healthInvalidCount + healthErrorCount
+    : Number(task?.error_count || 0);
+  const handledCount =
+    isAccountHealthCheck && progressTotal > 0
+      ? Math.min(successCount + failureCount, progressTotal)
+      : successCount + failureCount > 0
+      ? successCount + failureCount
+      : progressCurrent;
+  const pendingCount =
+    progressTotal > 0 ? Math.max(progressTotal - handledCount, 0) : 0;
   const progressPercent =
     progressTotal > 0
-      ? Math.min(100, Math.round((progressCurrent / progressTotal) * 100))
+      ? Math.min(100, Math.round((handledCount / progressTotal) * 100))
       : 0;
   const errorText =
     task?.error || (Array.isArray(task?.errors) ? task.errors[0] : "");
@@ -230,6 +333,55 @@ export function TaskLogPanel({
         : currentStatus === "cancelled" || currentStatus === "interrupted"
           ? "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"
           : "border-[rgba(var(--accent-rgb),0.24)] bg-[rgba(var(--accent-rgb),0.08)] text-[var(--accent)]";
+  const groupSummaries = useMemo(
+    () =>
+      groups
+        .filter((group) => group.id !== MAIN_GROUP_ID)
+        .map(summarizeLogGroup),
+    [groups],
+  );
+  const healthCheckFailureDetails: TaskFailureDetail[] = useMemo(() => {
+    if (!isAccountHealthCheck || !Array.isArray(resultData?.items)) return [];
+    return (resultData.items as HealthCheckItem[])
+      .filter((item) => item && !item.valid)
+      .map((item, index) => {
+        const accountId = String(item.account_id || "");
+        const statusCode = String(item.status_code || "").trim();
+        const defaultReason = item.transient
+          ? "检测异常"
+          : statusCode
+            ? `账号状态/订阅 HTTP ${statusCode}`
+            : "账号状态/订阅判定失效";
+        return {
+          id: accountId || `health-check-${index}`,
+          label: item.transient ? "检测异常" : "账号失效",
+          account: String(item.email || accountId || `#${index + 1}`),
+          reason: String(item.error || defaultReason),
+        };
+      });
+  }, [isAccountHealthCheck, resultData]);
+  const taskFailureDetails: TaskFailureDetail[] = useMemo(() => {
+    if (healthCheckFailureDetails.length > 0) return healthCheckFailureDetails;
+
+    const details = groupSummaries
+      .filter((item) => item.status === "failed" && item.failureReason)
+      .map((item) => ({
+        id: item.id,
+        label: item.label,
+        account: item.account,
+        reason: item.failureReason,
+      }));
+
+    if (details.length > 0 || !friendlyError) return details;
+    return [
+      {
+        id: "task-error",
+        label: t("taskLog.mainGroup"),
+        account: "",
+        reason: String(friendlyError),
+      },
+    ];
+  }, [friendlyError, groupSummaries, healthCheckFailureDetails, t]);
 
   const copyLogs = () => {
     navigator.clipboard
@@ -239,7 +391,7 @@ export function TaskLogPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 text-[var(--text-primary)]">
-      <div className="grid shrink-0 gap-3 md:grid-cols-3">
+      <div className="grid shrink-0 gap-3 md:grid-cols-4">
         <div className={`rounded-lg border px-4 py-3 ${statusTone}`}>
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] opacity-80">
             {t("taskLog.status")}
@@ -250,18 +402,34 @@ export function TaskLogPanel({
         </div>
         <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-4 py-3">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-            {t("taskLog.progress")}
+            {t("taskLog.taskTotal")}
           </div>
           <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
-            {progress.label || task?.progress || "0/0"}
+            {t("taskLog.taskTotalValue", {
+              handled: handledCount,
+              total: progressTotal,
+            })}
           </div>
         </div>
         <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-4 py-3">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-            {t("taskLog.events")}
+            {t("taskLog.successCount")}
           </div>
-          <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
-            {t("taskLog.logCount", { count: events.length })}
+          <div className="mt-1 text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+            {successCount}
+          </div>
+        </div>
+        <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+            {t("taskLog.failureCount")}
+          </div>
+          <div className="mt-1 flex items-baseline gap-2 text-sm font-semibold text-red-700 dark:text-red-300">
+            <span>{failureCount}</span>
+            {pendingCount > 0 ? (
+              <span className="text-xs font-medium text-[var(--text-secondary)]">
+                {t("taskLog.pendingCount", { count: pendingCount })}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>
@@ -281,13 +449,35 @@ export function TaskLogPanel({
         />
       </div>
 
-      {errorText ? (
-        <div className="flex h-36 shrink-0 flex-col rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
-          <div className="mb-1 font-semibold">
-            {t("taskLog.failureReason")}
+      {taskFailureDetails.length > 0 ? (
+        <div className="flex max-h-56 shrink-0 flex-col rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+          <div className="mb-2 flex items-center justify-between gap-3 font-semibold">
+            <span>{t("taskLog.failureDetails")}</span>
+            <span className="text-xs font-medium text-red-700/70 dark:text-red-300/70">
+              {t("taskLog.failureDetailCount", {
+                count: taskFailureDetails.length,
+              })}
+            </span>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words pr-2 text-red-700/90 dark:text-red-300/90">
-            {friendlyError}
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-2">
+            {taskFailureDetails.map((item) => (
+              <div
+                key={item.id}
+                className="rounded-md border border-red-500/20 bg-[var(--bg-card)]/80 px-3 py-2"
+              >
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-red-700 dark:text-red-300">
+                  <span>{item.account || item.label}</span>
+                  {item.account && item.label ? (
+                    <span className="font-medium text-red-700/65 dark:text-red-300/65">
+                      {item.label}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-red-700/90 dark:text-red-300/90">
+                  {getVisibleFailureReason(item.reason)}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       ) : null}
@@ -298,7 +488,7 @@ export function TaskLogPanel({
             {t("taskLog.liveLog")}
           </div>
           <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
-            {t("taskLog.liveTitle")}
+            {t("taskLog.liveTitle")} · {t("taskLog.logCount", { count: events.length })}
           </div>
         </div>
         <button

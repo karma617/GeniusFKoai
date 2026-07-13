@@ -9,6 +9,7 @@ from core.datetime_utils import serialize_datetime
 from domain.accounts import (
     AccountBatchStatusUpdateCommand,
     AccountCreateCommand,
+    AccountDeleteInvalidBannedCommand,
     AccountImportLine,
     AccountQuery,
     AccountRecord,
@@ -68,6 +69,9 @@ class AccountsService:
 
     def delete_account(self, account_id: int) -> dict:
         return {"ok": self.repository.delete(account_id)}
+
+    def delete_invalid_and_banned(self, command: AccountDeleteInvalidBannedCommand) -> dict:
+        return self.repository.delete_invalid_and_banned(command)
 
     def import_accounts(self, platform: str, lines: list[str]) -> dict:
         parsed: list[AccountImportLine] = []

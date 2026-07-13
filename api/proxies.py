@@ -13,11 +13,13 @@ service = ProxiesService()
 class ProxyCreateRequest(BaseModel):
     url: str
     region: str = ""
+    import_scheme: str = "http"
 
 
 class ProxyBulkCreateRequest(BaseModel):
     proxies: list[str]
     region: str = ""
+    import_scheme: str = "http"
 
 
 class FreeProxyFetchRequest(BaseModel):
@@ -45,7 +47,9 @@ def list_proxies():
 
 @router.post("")
 def create_proxy(body: ProxyCreateRequest):
-    item = service.create_proxy(ProxyCreateCommand(url=body.url, region=body.region))
+    item = service.create_proxy(
+        ProxyCreateCommand(url=body.url, region=body.region, import_scheme=body.import_scheme)
+    )
     if not item:
         raise HTTPException(400, "代理已存在")
     return item
@@ -53,7 +57,13 @@ def create_proxy(body: ProxyCreateRequest):
 
 @router.post("/bulk")
 def bulk_create_proxies(body: ProxyBulkCreateRequest):
-    return service.bulk_create_proxies(ProxyBulkCreateCommand(proxies=body.proxies, region=body.region))
+    return service.bulk_create_proxies(
+        ProxyBulkCreateCommand(
+            proxies=body.proxies,
+            region=body.region,
+            import_scheme=body.import_scheme,
+        )
+    )
 
 
 @router.get("/free/capabilities")

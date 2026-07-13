@@ -2789,3 +2789,1173 @@
   - docs/sub2api-management.md: 记录批量测活网络异常会先重试 3 次。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：移除 application/sub2api_management.py 中 `TEST_REQUEST_NETWORK_RETRIES` / `TEST_REQUEST_RETRY_DELAYS` / `_is_test_request_network_error` 以及 `test_account` 的重试循环，恢复为单次 `cffi_requests.post` 异常即跳过；删除 tests/test_sub2api_management.py 本轮新增两个网络重试测试；恢复 docs/sub2api-management.md 本轮新增的重试说明；移除 progress.md 本轮追加内容即可恢复旧的单次请求行为。
+
+## 2026-07-08 - Task: ChatGPT 注册 BUGFREE 模式
+
+### What was done
+- ChatGPT 注册弹窗在“是否打包上传”上方新增 `BUGFREE模式` 开关，并通过注册任务 `extra.bugfree_mode` 下发。
+- 注册成功并保存账号后，BUGFREE 模式会使用当前账号 `access_token` 请求 `https://chatgpt.com/backend-api/wham/usage`，在任务日志打印接口、`rate_limit.primary_window.reset_at`、本地日期字符串和剩余天数。
+- `reset_at` 距当前 6 到 8 天时计为 BUGFREE 账号，账号概览追加 `BUGFREE` 标签并继续原有成功后处理；约 30 天或其他非 7 天账号跳过并继续补投。
+- 接口失败、非 2xx、响应格式异常或缺少 `access_token` 时，注册日志打印失败信息，当前账号不计入 BUGFREE 成功。
+
+### Testing
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> 无输出，编译通过。
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_bugfree_mode_skips_until_seven_day_account tests\test_platform_action_task.py::test_chatgpt_bugfree_check_logs_request_failure -q` -> 2 passed。
+- `npm run build`（frontend）-> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- frontend\src\pages\Accounts.tsx application\tasks.py tests\test_platform_action_task.py docs\chatgpt-register-flow.md` -> 无空白错误；Git 提示部分前端/测试文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 注册弹窗新增 BUGFREE 模式开关并下发任务参数。
+  - application/tasks.py: 新增 BUGFREE wham/usage 查询、reset_at 判定、跳过补投、BUGFREE 标签写入和失败日志。
+  - tests/test_platform_action_task.py: 增加 30 天账号跳过后继续找到 7 天账号、接口失败日志的回归测试。
+  - docs/chatgpt-register-flow.md: 记录 BUGFREE 模式接口、请求头、判定区间、跳过和失败日志规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 Accounts.tsx 中 `bugfreeMode` 状态、开关 UI 和 `extra.bugfree_mode` 下发；移除 application/tasks.py 中 BUGFREE 常量、查询/打标 helper、注册成功后的 BUGFREE 分支和调度补投逻辑；删除 tests/test_platform_action_task.py 本轮新增两条测试；恢复 docs/chatgpt-register-flow.md 本轮新增段落；移除 progress.md 本轮追加内容即可恢复旧注册流程。
+
+## 2026-07-08 - Task: 注册日志非 CF 错误修复
+
+### What was done
+- 分析本次注册日志，排除 Cloudflare `platform_authorize_http_403` 风控后，确认非 CF 问题为邮箱别名母号满额后在多并发任务里被重复选中，以及 BUGFREE 保存后读取 detached `AccountModel.id` 报错。
+- 邮箱别名包装器增加当前任务内的满额母号本地跳过集合，并加锁保护，避免 10 并发下远程标签尚未刷新时继续领取同一满额母号。
+- BUGFREE 注册成功后获取保存账号 ID 时，若保存返回对象已脱离 session，则按平台和邮箱重新查库拿稳定 ID，避免 `Instance <AccountModel ...> is not bound to a Session`。
+
+### Testing
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m pytest tests\test_email_alias_mailbox.py tests\test_platform_action_task.py::test_chatgpt_register_bugfree_mode_falls_back_when_saved_model_detached tests\test_platform_action_task.py::test_chatgpt_register_bugfree_mode_skips_until_seven_day_account -q` -> 19 passed。
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m py_compile core\email_alias_mailbox.py application\tasks.py` -> 无输出，编译通过。
+- `git diff --check -- core/email_alias_mailbox.py application/tasks.py tests/test_email_alias_mailbox.py tests/test_platform_action_task.py` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: 增加当前任务内满额母号跳过集合和锁，防止多并发重复领取已满母号。
+  - application/tasks.py: BUGFREE 保存后账号 ID 读取增加查库兜底，避免 detached ORM 对象访问失败。
+  - tests/test_email_alias_mailbox.py: 增加已满母号被底层重复返回时仍切换新母号的回归测试。
+  - tests/test_platform_action_task.py: 增加 BUGFREE 模式保存返回对象 detached 时仍能按邮箱查回账号 ID 的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 core/email_alias_mailbox.py 中 `_exhausted_parent_emails`、`_state_lock` 及 `get_email()` 的本地满额跳过逻辑；移除 application/tasks.py 中 `_saved_account_id()` 并恢复 BUGFREE 分支直接读取 `saved_model.id`；删除两条新增回归测试；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-08 - Task: 账号列表 BUGFREE 标签样式与标签筛选
+
+### What was done
+- BUGFREE 账号标签改为红底白字，并增加加粗与红色阴影，使列表和详情中的 BUGFREE 标识更醒目。
+- 账号列表增加按标签筛选功能，支持 `BUGFREE`、`FREE`、`K12`、`PLUS`，筛选请求走后端，不只过滤当前页。
+- 未手动勾选账号时，导出当前结果会同步携带当前标签筛选条件，避免筛选和导出范围不一致。
+- 后端标签匹配兼容账号已有标签、展示徽标、生命周期/套餐状态，以及 K12 会话、K12 空间和 `plan_type=k12` 等派生来源。
+
+### Testing
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m pytest tests\test_api_accounts.py::test_filter_accounts_by_tag tests\test_api_accounts.py::test_export_accounts_by_tag_filter -q` -> 2 passed。
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m py_compile domain\accounts.py infrastructure\accounts_repository.py api\accounts.py tests\test_api_accounts.py` -> 无输出，编译通过。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- frontend/src/pages/Accounts.tsx domain/accounts.py infrastructure/accounts_repository.py api/accounts.py tests/test_api_accounts.py docs/chatgpt-register-flow.md progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: BUGFREE 标签样式改为红色醒目样式，账号列表两套工具栏新增标签筛选，下发查询与导出筛选条件。
+  - domain/accounts.py: 账号查询与导出选择对象增加标签筛选字段。
+  - api/accounts.py: 账号列表和批量导出接口接收并传递标签筛选条件。
+  - infrastructure/accounts_repository.py: 增加标签值归集和匹配逻辑，列表与导出按标签筛选。
+  - tests/test_api_accounts.py: 增加 BUGFREE 显式标签、PLUS 派生标签筛选和导出标签筛选回归测试。
+  - docs/chatgpt-register-flow.md: 记录账号列表标签筛选范围、导出行为和派生来源。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 Accounts.tsx 中 `ACCOUNT_TAG_FILTER_OPTIONS`、BUGFREE 专用样式、`filterTag` 状态、列表请求 `tag` 参数和导出 `tag_filter` 参数；移除 domain/accounts.py / api/accounts.py / infrastructure/accounts_repository.py 中标签筛选字段与匹配逻辑；删除 tests/test_api_accounts.py 本轮新增测试；恢复 docs/chatgpt-register-flow.md 本轮新增的账号列表标签筛选说明；移除 progress.md 本轮追加内容即可恢复旧列表行为。
+
+## 2026-07-08 - Task: BUGFREE 标签持久展示与筛选修复
+
+### What was done
+- 定位到 `latonyalabayen61351+pf4hivc9@outlook.com` 已有 `bugfree=true` 和 7 天额度刷新时间，但后续额度刷新把 `chips` 覆盖成了 `Free`。
+- 账号图写入时如果存在 `bugfree=true`，会自动把 `BUGFREE` 补回 `chips`，避免后续刷新再次覆盖掉标签。
+- 列表展示徽标和标签筛选都把 `bugfree=true` 作为 BUGFREE 的稳定来源，即使 `chips` 暂时只有 `Free` 也能展示并筛出。
+- 已将当前库内 `latonyalabayen61351+pf4hivc9@outlook.com` 的 `chips` 立即修复为 `['BUGFREE', 'Free']`。
+- 文档补充说明 BUGFREE 筛选以 `bugfree=true`、`chips` 或展示徽标为来源。
+
+### Testing
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m pytest tests\test_api_accounts.py::test_filter_accounts_by_tag tests\test_api_accounts.py::test_export_accounts_by_tag_filter -q` -> 2 passed。
+- `C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3824.0_x64__qbz5n2kfra8p0\python3.13.exe -m py_compile core\account_graph.py core\account_display.py infrastructure\accounts_repository.py tests\test_api_accounts.py` -> 无输出，编译通过。
+- 使用当前本地库验证 `AccountQuery(platform="chatgpt", tag="BUGFREE")`，已命中 `latonyalabayen61351+pf4hivc9@outlook.com`；该账号当前 `chips=['Free']`、`bugfree=True`，返回徽标包含 `BUGFREE`。
+- 修复该账号库内 `chips` 后再次验证，`AccountQuery(platform="chatgpt", tag="BUGFREE")` 仍命中该账号，且返回 `chips=['BUGFREE', 'Free']`、徽标包含 `BUGFREE`。
+- `git diff --check -- core/account_graph.py core/account_display.py infrastructure/accounts_repository.py tests/test_api_accounts.py progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - core/account_graph.py: 账号图归一化和补丁写入时根据 `bugfree=true` 保留 `BUGFREE` chip。
+  - core/account_display.py: 展示徽标根据 `bugfree=true` 补充 BUGFREE 标签。
+  - infrastructure/accounts_repository.py: 标签筛选根据 `bugfree=true` 匹配 BUGFREE。
+  - tests/test_api_accounts.py: 增加 `chips=Free` 但 `bugfree=true` 时的展示、筛选和导出回归覆盖。
+  - docs/chatgpt-register-flow.md: 记录 BUGFREE 标签稳定来源和 chips 被覆盖时的保留规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 core/account_graph.py 中 `BUGFREE_CHIP` 和 `_normalize_chips_for_summary` 的 BUGFREE 补回逻辑；移除 core/account_display.py 中按 `bugfree=true` 补徽标逻辑；移除 infrastructure/accounts_repository.py 中按 `overview.bugfree` 匹配 BUGFREE 的逻辑；恢复 tests/test_api_accounts.py 本轮新增/调整的回归断言；恢复 docs/chatgpt-register-flow.md 本轮说明；移除 progress.md 本轮追加内容即可回到旧的仅按 chips/badges 判断行为。
+- 数据回滚点：如需回滚本次单账号数据修复，将 `latonyalabayen61351+pf4hivc9@outlook.com` 对应 `account_overviews.summary_json` 里的 `chips` 改回 `['Free']`，保留或按需移除 `bugfree=true`。
+
+## 2026-07-08 - Task: 账号详情弹窗颜色与文字对比度优化
+
+### What was done
+- 账号详情弹窗顶部核心状态区从大面积浅青背景改为白底、浅灰分组卡和弱青色氛围光，降低脏色感。
+- 额度指标卡片改为白底深色文字，标签、数值和说明都使用更高对比度，避免浅绿文字看不清。
+- 进度条底色改为浅灰，进度色改为更清晰的 teal/cyan 实色渐变，保留状态区分但降低荧光感。
+- Provider Accounts、Platform Credentials、验证码邮箱和明细块同步改为白底/浅灰底、深色文字，提升长文本可读性。
+
+### Testing
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- frontend/src/pages/Accounts.tsx progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 优化账号详情弹窗状态卡、额度指标卡、明细卡和凭证文本块的背景色与文字对比度。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/pages/Accounts.tsx 中 `metricToneClass`、`metricAccentClass`、`DisplayMetricCard`、`DisplaySections` 和 `DetailModal` 本轮样式 class 改动；移除 progress.md 本轮追加内容即可恢复旧弹窗视觉。
+
+## 2026-07-09 - Task: 上传 SUB2API 支持无 RT 强制上传
+
+### What was done
+- 账号行菜单的“上传 SUB2API”参数弹窗顶部新增“无RT强制上传”开关，默认关闭。
+- 默认上传逻辑仍要求普通账号先具备 `refresh_token`；勾选开关后，只绕过普通账号的 RT 校验，仍保留 `access_token`、SUB2API 登录配置、分组、代理和远端请求校验。
+- 无 RT 强制上传成功时，只记录 SUB2API 强传结果，不把账号生命周期误标记为“已获取rt，已上传”。
+- 文档同步说明普通账号默认 RT 要求和“无RT强制上传”开关的例外范围。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\plugin.py platforms\chatgpt\sub2api_upload.py infrastructure\platform_runtime.py tests\test_sub2api_upload.py tests\test_chatgpt_get_rt_har.py tests\test_platform_action_task.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_upload.py tests\test_chatgpt_get_rt_har.py::test_chatgpt_upload_actions_return_structured_data tests\test_chatgpt_get_rt_har.py::test_chatgpt_upload_sub2api_action_can_force_without_rt tests\test_platform_action_task.py::test_platform_runtime_marks_sub2api_manual_upload_success tests\test_platform_action_task.py::test_platform_runtime_does_not_mark_force_sub2api_upload_as_rt_uploaded -q` -> 12 passed, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 动作参数弹窗支持 checkbox，并让“上传 SUB2API”显示“无RT强制上传”开关。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - platforms/chatgpt/plugin.py: `upload_sub2api` 动作增加强制上传参数，并把无 RT 强传结果传给持久化层。
+  - platforms/chatgpt/sub2api_upload.py: 上传 payload 构造支持显式绕过普通账号 `refresh_token` 校验，默认行为不变。
+  - infrastructure/platform_runtime.py: 无 RT 强传成功时记录 SUB2API 上传信息，不写入 `rt_uploaded` 生命周期。
+  - tests/test_sub2api_upload.py: 增加普通账号无 RT 默认拒绝、强制直建和强制导入 payload 覆盖。
+  - tests/test_chatgpt_get_rt_har.py: 增加行菜单动作参数透传和无 RT 强传结果覆盖。
+  - tests/test_platform_action_task.py: 增加无 RT 强传成功不改为 `rt_uploaded` 的持久化覆盖。
+  - docs/k12-space-join.md: 记录“无RT强制上传”开关的默认状态和校验边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 Accounts.tsx 中 checkbox 参数渲染；恢复 frontend/.frontend-build.stamp 到本轮前的构建戳；移除 platforms/chatgpt/plugin.py 的 `force_upload_without_rt` 参数和结果字段；恢复 sub2api_upload.py 中无 RT 普通账号始终拒绝的校验；恢复 platform_runtime.py 中 `upload_sub2api` 成功统一写 `rt_uploaded` 的旧逻辑；删除本轮新增测试；恢复 docs/k12-space-join.md 本轮说明；移除 progress.md 本轮追加内容即可回到旧行为。
+
+## 2026-07-09 - Task: 账号状态筛选封禁文案区分
+
+### What was done
+- 账号状态 `banned` 增加独立中英文文案，中文显示为“已封禁”，不再和 `invalid` 一起显示成“失效”。
+- 保留 `banned` 原始筛选值不变，只调整展示文案，避免影响后端筛选语义。
+
+### Testing
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/lib/i18n.ts: 增加 `accountStatus.banned` 文案并把 `banned` 状态映射到该文案。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 frontend/src/lib/i18n.ts 中 `banned` 映射恢复为 `accountStatus.invalid` 并移除 `accountStatus.banned` 文案；恢复 frontend/.frontend-build.stamp 到本轮前的构建戳；移除 progress.md 本轮追加内容即可恢复旧显示。
+
+## 2026-07-09 - Task: ChatGPT 注册成功保存登录 session
+
+### What was done
+- 定位到普通 platform-reference 注册成功后只换取 Platform OAuth token，只有开启 K12 时才补建 `chatgpt.com` NextAuth Web session，导致普通成功账号保存时 `overview.session` 为空，账号列表“复制session”提示未保存。
+- 注册成功后现在不再以 K12 开关作为条件，普通注册也会补建 ChatGPT Web session，并把 session JSON、cookies 和 session token 写入注册结果；后续账号图保存会同步到 `overview.session`，供前端复制。
+- 增加回归测试覆盖未开启 K12 的 platform-reference 注册也会保存 ChatGPT Web session。
+- 文档同步说明普通账号和 K12 账号都会在 Platform OAuth 成功后保存 ChatGPT Web session。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_k12_join.py tests\test_api_accounts.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_k12_join.py::test_platform_reference_register_saves_chatgpt_web_session_without_k12 tests\test_k12_join.py::test_platform_reference_nextauth_retries_oauth_url tests\test_api_accounts.py::test_chatgpt_registered_account_persists_full_session_for_copy tests\test_api_accounts.py::test_chatgpt_registered_account_persists_k12_session_for_copy -q` -> 4 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_k12_join.py docs/chatgpt-register-flow.md docs/k12-space-join.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: platform-reference 注册成功后始终补建 ChatGPT Web session，不再仅限 K12。
+  - tests/test_k12_join.py: 增加普通 platform-reference 注册保存 ChatGPT Web session 的回归测试。
+  - docs/chatgpt-register-flow.md: 记录 Platform OAuth 成功后会保存 `overview.session` 供复制。
+  - docs/k12-space-join.md: 说明同一 Web session 同时供普通复制 session 和 K12 切空间使用。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 platforms/chatgpt/register.py 中 `_establish_chatgpt_web_session_for_platform_reference()` 调用恢复为仅在 `k12_join_enabled` 时执行；删除 tests/test_k12_join.py 本轮新增测试；恢复 docs/chatgpt-register-flow.md 和 docs/k12-space-join.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-09 - Task: ChatGPT 查询账号状态直接弹窗展示
+
+### What was done
+- 将 ChatGPT 行菜单“查询账号状态/订阅”标记为同步动作，点击后直接执行平台状态查询并返回结果，不再创建后台任务或打开任务日志弹窗。
+- 复用前端已有同步动作处理逻辑，接口返回 `sync=true` 后直接打开操作结果弹窗展示完整返回 JSON。
+- 保留查询成功后写回账号概览的行为，列表和详情仍能更新有效性、套餐和用量摘要。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\plugin.py tests\test_api_actions.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_actions.py::test_chatgpt_account_state_action_is_sync_and_returns_data_without_task -q` -> 1 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/plugin.py tests/test_api_actions.py docs/account-actions.md` -> 无空白错误；Git 提示 platforms/chatgpt/plugin.py 未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/plugin.py: 给 `get_account_state` 动作增加 `sync=true`，让后端同步执行并直接返回结果。
+  - tests/test_api_actions.py: 增加 API 回归测试，确认查询动作返回同步结果且不包含 `task_id`。
+  - docs/account-actions.md: 记录 ChatGPT 查询账号状态/订阅的同步弹窗行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/plugin.py 中 `get_account_state` 的 `sync=true`；删除 tests/test_api_actions.py；删除 docs/account-actions.md；移除 progress.md 本轮追加内容即可恢复旧的任务弹窗行为。
+
+## 2026-07-09 - Task: ChatGPT 账号重新登录获取session/at
+
+### What was done
+- 在 ChatGPT 账号列表顶部工具栏增加“重新登录获取session/at”按钮，只对当前选中的账号创建后台任务。
+- 后端新增批量重新登录任务，逐个执行 ChatGPT 协议登录；登录成功写回账号 session、access token、session token 和 cookies，登录失败按要求标记为 `banned`。
+- 重登取邮箱 OTP 时保留别名账号作为登录邮箱，同时支持根据 `alias_parent_email` / `email_alias.parent_email` 或 plus 地址推断母邮箱，到母号邮箱池读取验证码邮件。
+- 文档补充该按钮的成功落库、失败封禁和别名母邮箱取码规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\plugin.py infrastructure\platform_runtime.py application\tasks.py application\task_commands.py api\task_commands.py tests\test_chatgpt_get_rt_otp_callback.py tests\test_platform_action_task.py tests\test_api_actions.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_otp_callback.py::test_refresh_session_email_service_logs_in_with_alias_and_reads_parent_mailbox tests\test_platform_action_task.py::test_platform_runtime_persists_refresh_session_result tests\test_api_actions.py::test_refresh_session_task_endpoint_creates_task -q` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_otp_callback.py tests\test_platform_action_task.py::test_platform_runtime_persists_refresh_session_result tests\test_platform_action_task.py::test_platform_runtime_persists_failed_get_rt_banned_status tests\test_api_actions.py -q` -> 8 passed, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- platforms/chatgpt/plugin.py infrastructure/platform_runtime.py application/tasks.py application/task_commands.py api/task_commands.py frontend/src/pages/Accounts.tsx tests/test_chatgpt_get_rt_otp_callback.py tests/test_platform_action_task.py tests/test_api_actions.py docs/account-actions.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 在当前显示的账号列表工具栏增加“重新登录获取session/at”按钮，并接入任务日志弹窗。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - api/task_commands.py: 增加 `/tasks/refresh-session` 创建任务接口。
+  - application/task_commands.py: 增加 refresh session 任务创建服务方法。
+  - application/tasks.py: 增加 `refresh_session` 任务类型、任务创建函数和批量执行函数。
+  - infrastructure/platform_runtime.py: 增加 refresh session 成功后的 session/凭据持久化逻辑，并保存 cookies。
+  - platforms/chatgpt/plugin.py: 增加 `refresh_session` 平台动作、协议重登处理和别名母邮箱 OTP 服务构造。
+  - tests/test_chatgpt_get_rt_otp_callback.py: 增加别名账号重登时登录别名、读取母邮箱的回归测试。
+  - tests/test_platform_action_task.py: 增加 refresh session 成功后持久化 session 和 cookies 的回归测试。
+  - tests/test_api_actions.py: 增加 refresh session 任务 API 的回归测试。
+  - docs/account-actions.md: 记录“重新登录获取session/at”的按钮行为、失败封禁和别名取码规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 frontend/src/pages/Accounts.tsx 中 refresh session 状态、按钮、请求函数和任务弹窗；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 api/task_commands.py、application/task_commands.py、application/tasks.py 中 `refresh_session` 任务入口与执行函数；移除 infrastructure/platform_runtime.py 的 `SESSION_RESULT_ACTION_IDS` 和 session refresh overview 持久化；移除 platforms/chatgpt/plugin.py 的 `refresh_session` 动作与重登邮箱服务；删除本轮新增测试断言和 docs/account-actions.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-09 - Task: 一键删除失效和已封禁账号
+
+### What was done
+- 在 ChatGPT 账号列表顶部工具栏增加“一键清除所有失效帐号”按钮。
+- 后端新增按平台批量删除接口，删除当前平台下所有 `invalid` 和 `banned` 账号，不限定当前页或当前选中项。
+- 删除判定覆盖 `lifecycle_status`、`display_status`、`validity_status`，任一字段为 `invalid` 或 `banned` 都会删除，并同步清理账号图谱数据。
+- 前端删除前增加确认提示，删除完成后清空选择并回到第一页刷新列表。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile api\accounts.py application\accounts.py infrastructure\accounts_repository.py domain\accounts.py tests\test_api_accounts.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_accounts.py::test_delete_invalid_and_banned_accounts_only_current_platform -q` -> 1 passed, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- api/accounts.py application/accounts.py infrastructure/accounts_repository.py domain/accounts.py frontend/src/pages/Accounts.tsx tests/test_api_accounts.py docs/account-actions.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 增加“一键清除所有失效帐号”按钮、确认提示、删除请求和删除后刷新逻辑。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - api/accounts.py: 增加 `/accounts/invalid-and-banned` 删除接口。
+  - application/accounts.py: 增加批量删除失效/封禁账号服务方法。
+  - infrastructure/accounts_repository.py: 增加按平台筛选并删除 `invalid` / `banned` 账号的仓储逻辑。
+  - domain/accounts.py: 增加批量删除失效/封禁账号命令对象。
+  - tests/test_api_accounts.py: 增加只删除当前平台失效/封禁账号、不误删正常和其他平台账号的回归测试。
+  - docs/account-actions.md: 记录“一键清除所有失效帐号”的删除范围和不可恢复性质。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 frontend/src/pages/Accounts.tsx 中 `invalidDeleting` 状态、`deleteInvalidAndBanned` 方法和“一键清除所有失效帐号”按钮；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 api/accounts.py、application/accounts.py、infrastructure/accounts_repository.py、domain/accounts.py 中 invalid-and-banned 批量删除入口；删除 tests/test_api_accounts.py 本轮新增测试；删除 docs/account-actions.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-09 - Task: 代理资源卡片布局防挤压
+
+### What was done
+- 调整 provider 配置卡片布局，将名称/描述区和操作按钮区改为上下排列，避免代理资源卡片宽度较小时挤在一行。
+- 操作按钮区允许自动换行，并禁止单个按钮被压缩，保留编辑、测试、设默认、删除和开关的原有行为。
+
+### Testing
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- frontend/src/components/settings/ProviderCards.tsx` -> 无空白错误；Git 提示该文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: 调整 provider 卡片布局为纵向信息区和可换行操作区，解决截图中代理资源按钮挤压问题。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 frontend/src/components/settings/ProviderCards.tsx 中 provider 卡片外层恢复为横向 `flex items-center` 布局，移除按钮上的 `shrink-0` 和操作区 `flex-wrap`；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 progress.md 本轮追加内容即可恢复旧布局。
+
+## 2026-07-09 - Task: user_already_exists 母邮箱打标并跳过异常母邮箱
+
+### What was done
+- 将 ChatGPT 批量注册遇到 `user_already_exists` 的别名母邮箱标记从“已注册/无效”语义改为专用的 `别名已上限` 标签。
+- Outlook 邮箱池选择母邮箱时默认跳过带 `已注册`、`别名已上限`、`无效邮箱` 标签的账号，并继续保留用户配置的跳过标签、注册成功标签和无效邮箱标签过滤。
+- 邮箱别名包装层在底层 provider 支持时优先调用专用 `mark_alias_exhausted`，不支持时才退回原无效邮箱标记兜底。
+- 注册日志中 `user_already_exists` 相关提示改为“别名已上限”，避免把别名上限误读为普通已注册账号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py core\outlook_email_mailbox.py platforms\chatgpt\register.py tests\test_email_alias_mailbox.py tests\test_outlook_email_mailbox.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py::test_email_alias_parent_exhausted_prefers_alias_exhausted_mark tests\test_email_alias_mailbox.py::test_email_alias_parent_exhausted_marks_parent_invalid_before_success tests\test_outlook_email_mailbox.py::test_outlook_email_skips_non_normal_tags_by_default tests\test_outlook_email_mailbox.py::test_outlook_email_marks_alias_exhausted_with_default_tag -q` -> 4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py tests\test_outlook_email_mailbox.py -q` -> 49 passed, 1 warning。
+- `git diff --check -- core\email_alias_mailbox.py core\outlook_email_mailbox.py platforms\chatgpt\register.py tests\test_email_alias_mailbox.py tests\test_outlook_email_mailbox.py docs\email-alias-mailbox.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - core/email_alias_mailbox.py: `user_already_exists` 时优先转发到底层邮箱池的 `mark_alias_exhausted`，并保留无效邮箱标记兜底。
+  - core/outlook_email_mailbox.py: 新增 `别名已上限` 打标入口，并将 `已注册`、`别名已上限`、`无效邮箱` 纳入默认动态账号池跳过标签。
+  - platforms/chatgpt/register.py: 调整 `user_already_exists` 相关日志文案为“别名已上限”。
+  - tests/test_email_alias_mailbox.py: 增加别名耗尽时优先使用专用标记入口的回归测试。
+  - tests/test_outlook_email_mailbox.py: 增加默认跳过非正常标签和打 `别名已上限` 标签的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 core/email_alias_mailbox.py 中 `mark_alias_exhausted` 优先转发逻辑；移除 core/outlook_email_mailbox.py 中 `OUTLOOK_EMAIL_ALIAS_EXHAUSTED_TAG_NAMES`、`OUTLOOK_EMAIL_DEFAULT_SKIP_TAG_NAMES`、`alias_exhausted_tag_names`、`mark_alias_exhausted` 及默认跳过标签扩展；恢复 platforms/chatgpt/register.py 中三处 `user_already_exists` 日志文案；删除本轮新增测试；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-09 - Task: 批量注册任务弹窗统计与失败明细优化
+
+### What was done
+- 批量注册任务弹窗顶部从单一进度和日志数改为展示任务总数、已处理数、成功数、失败数和进行中数量。
+- 失败区域从全局错误文本改为失败明细列表，优先按 worker 日志中的邮箱或子任务标题展示，并将对应失败原因绑定到具体账号/任务。
+- 保留实时日志分组、展开和复制能力，完整原始错误仍可通过日志查看。
+
+### Testing
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/tasks/TaskLogPanel.tsx: 从任务模型和日志事件派生统计卡片、失败账号/子任务摘要和失败原因明细。
+  - frontend/src/lib/i18n.ts: 增加任务统计、成功/失败数量、进行中数量和失败明细的中英文文案。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 frontend/src/components/tasks/TaskLogPanel.tsx 中任务统计派生、失败明细派生和顶部统计卡片改动；移除 frontend/src/lib/i18n.ts 本轮新增的 `taskLog.*` 文案；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 progress.md 本轮追加内容即可恢复旧弹窗展示。
+
+## 2026-07-10 - Task: annimail validated_valid 按邮箱域名分流
+
+### What was done
+- 新增 annimail 有效凭证分流脚本，默认读取 `scripts/annimail_orders/validated_valid.txt`。
+- 按每行首个邮箱域名将凭证分别写入 `validated_valid_outlook.txt` 和 `validated_valid_hotmail.txt`，原文件保持不变。
+- 已执行脚本生成本轮分流结果文件。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile scripts\annimail_split_valid_by_domain.py` -> 无输出，语法检查通过。
+- `.\.venv\Scripts\python.exe scripts\annimail_split_valid_by_domain.py` -> 生成 outlook 4615 行、hotmail 11608 行。
+- `(Get-Content -LiteralPath scripts\annimail_orders\validated_valid.txt).Count` -> 16223；两个输出文件行数 4615 + 11608 = 16223。
+- `Select-String -LiteralPath scripts\annimail_orders\validated_valid_outlook.txt -Pattern '@hotmail\.com' -CaseSensitive:$false | Select-Object -First 1` -> 无输出。
+- `Select-String -LiteralPath scripts\annimail_orders\validated_valid_hotmail.txt -Pattern '@outlook\.com' -CaseSensitive:$false | Select-Object -First 1` -> 无输出。
+
+### Notes
+- 修改文件清单
+  - scripts/annimail_split_valid_by_domain.py: 新增按 outlook/hotmail 域名分流 `validated_valid.txt` 的独立脚本。
+  - scripts/annimail_orders/validated_valid_outlook.txt: 生成 outlook.com 有效凭证分流结果。
+  - scripts/annimail_orders/validated_valid_hotmail.txt: 生成 hotmail.com 有效凭证分流结果。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 `scripts/annimail_split_valid_by_domain.py`、`scripts/annimail_orders/validated_valid_outlook.txt`、`scripts/annimail_orders/validated_valid_hotmail.txt`，并移除 progress.md 本轮追加内容即可恢复到本轮前状态。
+
+## 2026-07-11 - Task: ChatGPT 注册 Sentinel 时序与 so-token 补齐
+
+### What was done
+- 根据图片说明和 `chatgpt.com.har` 对比当前注册链路，确认默认 Platform 注册已具备 requirements token -> `/sentinel/req` -> enforcement token 的 QuickJS Sentinel 两段式流程。
+- 补齐浏览器 HAR 中 `create_account` 请求同时携带的 session observer token：QuickJS 生成 normal sentinel 时同步尝试生成 `openai-sentinel-so-token`。
+- 创建账号资料请求在拿到 so-token 时附加 `openai-sentinel-so-token`，未拿到时保持原 `openai-sentinel-token` 行为继续执行，不把注册主流程改成硬依赖。
+- 文档记录 Sentinel 时序、`{p,t,c,id,flow}` normal token 和 `{so,c,id,flow}` so-token 的使用边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\authflow_experimental\sentinel_quickjs.py platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_check_sentinel_prefers_quickjs_token tests\test_chatgpt_protocol_otp.py::test_check_sentinel_falls_back_to_legacy_when_quickjs_missing tests\test_chatgpt_protocol_otp.py::test_platform_sentinel_header_prefers_quickjs_token tests\test_chatgpt_protocol_otp.py::test_create_account_sends_quickjs_sentinel_so_token -q` -> 4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q` -> 19 passed, 1 warning。
+- `node --check platforms\chatgpt\authflow_experimental\openai_sentinel_quickjs.js` -> 无输出，语法检查通过。
+- `git diff --check -- platforms/chatgpt/authflow_experimental/openai_sentinel_quickjs.js platforms/chatgpt/authflow_experimental/sentinel_quickjs.py platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/authflow_experimental/openai_sentinel_quickjs.js: 暴露 SDK session observer 缓存入口，并在 solve 阶段尝试生成 so-token。
+  - platforms/chatgpt/authflow_experimental/sentinel_quickjs.py: QuickJS Sentinel 包装函数从单 token 扩展为 token bundle，同时保留旧单 token 兼容函数。
+  - platforms/chatgpt/register.py: `SentinelPayload` 增加 `so_token`，`create_account` 请求在有值时附加 `openai-sentinel-so-token`。
+  - tests/test_chatgpt_protocol_otp.py: 更新 QuickJS sentinel mock，并增加创建账号资料请求携带 so-token 的回归测试。
+  - docs/chatgpt-register-flow.md: 记录 Sentinel 两段式时序和 so-token 使用边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 openai_sentinel_quickjs.js 中 `EXPOSE_REPLACEMENT` 和 solve 返回值；移除 sentinel_quickjs.py 的 `get_sentinel_tokens_via_quickjs` 并恢复 `get_sentinel_token_via_quickjs` 直接返回字符串；移除 register.py 中 `SentinelPayload.so_token`、QuickJS bundle 解析和 `openai-sentinel-so-token` 请求头；恢复 tests/test_chatgpt_protocol_otp.py 本轮测试改动；恢复 docs/chatgpt-register-flow.md 本轮 Sentinel 说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-11 - Task: ChatGPT 注册成功邮箱打标旁路补齐
+
+### What was done
+- 补齐 GoPay 注册后短链复用旁路的邮箱成功打标：账号注册并保存成功后，立即调用统一的 `registration_success` 邮箱打标入口。
+- 保持主注册流程和 GoPay 常规预注册流程原有打标逻辑不变；别名额度在本次注册成功后用完时，继续由邮箱别名包装器把成功事件转给主邮箱完成“已注册”标记。
+- 在注册流程文档中记录“只要注册成功就打标”的边界，避免后续新增旁路漏掉该约定。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_gopay_pay_chatgpt_task.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gopay_pay_chatgpt_task.py -k shortlink_register_for_gopay_marks_mailbox_registration_success -q` -> 1 passed, 18 deselected, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gopay_pay_chatgpt_task.py -q` -> 19 passed, 1 warning。
+- `git diff --check -- application\tasks.py tests\test_gopay_pay_chatgpt_task.py` -> 无空白错误；Git 提示 `tests/test_gopay_pay_chatgpt_task.py` 未来检出时会按配置转换 CRLF。
+- `git diff --check -- application\tasks.py tests\test_gopay_pay_chatgpt_task.py docs\chatgpt-register-flow.md progress.md` -> 无空白错误；Git 提示 `progress.md` 和 `tests/test_gopay_pay_chatgpt_task.py` 未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 在 GoPay 注册后短链复用旁路保存 ChatGPT 账号后补调用 `registration_success` 邮箱打标入口。
+  - tests/test_gopay_pay_chatgpt_task.py: 增加短链复用旁路注册成功后调用邮箱成功打标的回归测试。
+  - docs/chatgpt-register-flow.md: 记录注册成功统一打邮箱标签和别名额度用完后的主邮箱打标边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/tasks.py 中短链复用旁路新增的 `_mark_outlook_mailbox_event(..., "registration_success", ...)` 调用；删除 tests/test_gopay_pay_chatgpt_task.py 本轮新增测试；恢复 docs/chatgpt-register-flow.md 本轮新增打标说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 账号列表邮箱点击与复制行为精简
+
+### What was done
+- 将账号列表里邮箱帐号文字改为点击即复制当前邮箱，并阻止触发行详情弹窗。
+- 将邮箱帐号后面的复制按钮改为只复制当前邮箱本身，不再拼接邮件 API 链接。
+- 同步覆盖当前页面里的两种账号列表展示形态，保持操作菜单里的详情入口不变。
+
+### Testing
+- `Select-String -Path frontend\src\pages\Accounts.tsx -Pattern "emailApiLine|Email\+邮件API|复制邮箱|cursor-copy" -Context 1,1` -> 未再找到 `emailApiLine` 或 `Email+邮件API`，只保留邮箱复制入口。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 邮箱帐号文字和旁边复制按钮统一只复制 `acc.email`，并阻止点击帐号时打开详情弹窗。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - docs/account-actions.md: 记录账号列表邮箱点击和复制按钮的当前行为边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/pages/Accounts.tsx 中 `emailApiLine` 拼接函数和邮箱复制按钮对 `emailApiLine(acc.email)` 的调用；移除邮箱文字上的复制点击处理；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 docs/account-actions.md 的“账号列表邮箱复制”小节；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 代理池检测改为 ChatGPT session 并发检测
+
+### What was done
+- 将代理资源页“检测全部”从后台单线程 `httpbin` 检测改为同步并发检测，检测目标固定为 `https://chatgpt.com/api/auth/session`。
+- 成功标准改为代理访问该地址返回 HTTP 200；非 200、超时、连接失败和代理认证失败都计入失败。
+- 前端点击检测后，当前列表每个代理地址后显示 loading 图标，等待后端完成所有代理检测后再刷新成功/失败次数。
+- 补充代理池检测说明，记录当前成功标准、并发行为和计数规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\proxies.py core\proxy_pool.py tests\test_proxy_pool_check.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_proxy_pool_check.py -q` -> 1 passed, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- application\proxies.py core\proxy_pool.py frontend\src\pages\Proxies.tsx tests\test_proxy_pool_check.py docs\proxy-pool-check.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - application/proxies.py: “检测全部”接口等待本轮代理检测完成后返回汇总，不再只启动后台线程。
+  - core/proxy_pool.py: 代理池检测改为并发请求 ChatGPT session 地址，并保证单条检测异常不会中断整批检测。
+  - frontend/src/pages/Proxies.tsx: 检测期间对当前列表每个代理地址显示逐行 loading 图标，检测完成后刷新列表。
+  - tests/test_proxy_pool_check.py: 增加代理池检测目标、每条代理都被检测、成功失败计数更新的回归测试。
+  - docs/proxy-pool-check.md: 新增代理池检测规则和 UI 行为说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/proxies.py 中后台线程触发方式；恢复 core/proxy_pool.py 中 `check_all()` 使用 `https://httpbin.org/ip` 串行检测；移除 frontend/src/pages/Proxies.tsx 中 `Loader2`、`checkingProxyIds` 和检测完成等待逻辑；删除 tests/test_proxy_pool_check.py；删除 docs/proxy-pool-check.md；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: ChatGPT 注册后免费 Plus 试用权益打标
+
+### What was done
+- 在 ChatGPT 账号注册保存成功后，请求 `accounts/check/v4-2023-04-27` 判断当前账号是否有免费领取 Plus 权益。
+- 判定命中 `eligible_promo_campaigns.plus.id = plus-1-month-free` 且 `metadata.discount.percentage = 100` 时，给账号概览追加 `试用` 标签，并保存促销活动、套餐、折扣和时长信息。
+- 账号列表展示层会把 `chatgpt_free_plus_trial=true` 补成 `试用` 徽标，后端标签筛选也能通过该字段或 chips 命中 `试用` 账号。
+- 账号列表标签筛选下拉框新增 `试用` 选项，支持直接筛选本轮新标记账号。
+- 同步更新 ChatGPT 注册流程文档，记录免费 Plus 试用权益的请求地址、字段判定和筛选来源。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py infrastructure\accounts_repository.py core\account_display.py tests\test_platform_action_task.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -k "free_plus_trial or bugfree_mode_skips_until_seven_day_account or chatgpt_register_prepares_dynamic_proxy_by_concurrency" -q` -> 3 passed, 77 deselected, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- application\tasks.py infrastructure\accounts_repository.py core\account_display.py frontend\src\pages\Accounts.tsx tests\test_platform_action_task.py docs\chatgpt-register-flow.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 新增 ChatGPT 免费 Plus 试用权益检查、判定和注册保存后打 `试用` 标签逻辑。
+  - infrastructure/accounts_repository.py: 标签筛选从 `chatgpt_free_plus_trial=true` 派生 `试用`，避免只依赖 chips。
+  - core/account_display.py: 展示摘要从 `chatgpt_free_plus_trial=true` 补出 `试用` 徽标。
+  - frontend/src/pages/Accounts.tsx: 标签筛选下拉框增加 `试用` 选项。
+  - tests/test_platform_action_task.py: 增加权益字段识别和 `试用` 标签可筛选的回归测试，并避免旧注册测试误触真实权益检查网络。
+  - docs/chatgpt-register-flow.md: 记录注册后免费 Plus 试用权益判定接口、字段和标签筛选来源。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/tasks.py 中 `CHATGPT_TRIAL_LABEL`、`CHATGPT_FREE_PLUS_CAMPAIGN_ID`、`CHATGPT_ACCOUNTS_CHECK_URL` 以及 `_find_chatgpt_free_plus_trial_campaign`、`_inspect_chatgpt_free_plus_trial`、`_mark_chatgpt_trial_account`、`_run_chatgpt_trial_post_register_check` 和注册保存后的调用；移除 infrastructure/accounts_repository.py 与 core/account_display.py 中 `chatgpt_free_plus_trial` 派生逻辑；从 frontend/src/pages/Accounts.tsx 的 `ACCOUNT_TAG_FILTER_OPTIONS` 删除 `试用`；删除 tests/test_platform_action_task.py 本轮新增的试用权益测试和默认 stub；恢复 docs/chatgpt-register-flow.md 本轮说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 允许关闭默认 Clash 动态代理 Provider
+
+### What was done
+- 修复代理资源页动态代理 Provider 卡片中默认项启用开关不可点击的问题。
+- 关闭默认 Provider 时同步取消默认标记，避免出现“已禁用但仍是默认 Provider”的配置状态。
+- 补充 Clash 动态代理 Provider 说明，明确关闭后注册会回到静态代理池，再按全局策略回落本地默认代理。
+
+### Testing
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- frontend\src\components\settings\ProviderCards.tsx docs\clash-proxy-provider.md` -> 无空白错误；Git 提示 `frontend/src/components/settings/ProviderCards.tsx` 未来检出时会按配置转换 CRLF。
+- `Select-String -Path frontend\src\components\settings\ProviderCards.tsx -Pattern "is_default: enable && setting.is_default|disabled=\{loading\[key\]\}" -Context 1,1` -> 确认关闭 Provider 会清掉默认标记，启用开关只受 loading 状态限制。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: 默认 Provider 的启用开关不再禁用，关闭时保存为 `enabled=false` 且 `is_default=false`。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - docs/clash-proxy-provider.md: 记录默认 Clash Provider 关闭后的注册代理回退顺序。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/components/settings/ProviderCards.tsx 中 `Toggle` 的 `disabled={loading[key] || isDefault}`，并将 `handleToggle` 保存逻辑恢复为 `is_default: setting.is_default`；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 docs/clash-proxy-provider.md 本轮新增关闭默认 Provider 说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: LifecycleManager 自动启动默认关闭
+
+### What was done
+- 新增 `lifecycle_manager_enabled` 全局配置，默认值为 `false`。
+- 后端启动时只有该配置显式开启才会启动 `LifecycleManager`，否则打印自动启动已关闭并跳过后台生命周期循环。
+- 生命周期状态接口增加 `enabled` 字段，用于区分“配置允许自动启动”和“当前线程正在运行”。
+- 设置页 ChatGPT 配置新增“自动启动 LifecycleManager”开关，保存后下次后端启动生效。
+- 补充 LifecycleManager 自动启动说明，明确默认关闭后不影响手动测活、获取 rt、重新登录和手动上传任务。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_lifecycle_manager_config.py -q` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile main.py api\lifecycle.py core\lifecycle.py infrastructure\config_repository.py tests\test_lifecycle_manager_config.py` -> 无输出，编译通过。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+
+### Notes
+- 修改文件清单
+  - main.py: 启动阶段按 `lifecycle_manager_enabled` 判断是否启动后台生命周期管理器。
+  - core/lifecycle.py: 新增配置键、布尔解析和 `is_lifecycle_manager_enabled()`。
+  - api/lifecycle.py: 状态接口返回 `enabled` 配置状态。
+  - infrastructure/config_repository.py: 允许保存 `lifecycle_manager_enabled` 并默认返回 `false`。
+  - frontend/src/pages/Settings.tsx: ChatGPT 设置页新增 LifecycleManager 自动启动开关，并支持 toggle 类型字段。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - tests/test_lifecycle_manager_config.py: 覆盖默认关闭、显式开启和配置项暴露。
+  - docs/lifecycle-manager.md: 记录 LifecycleManager 自动启动开关、默认值和状态接口语义。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 main.py 中无条件 `lifecycle_manager.start()`；移除 core/lifecycle.py 中 `LIFECYCLE_MANAGER_ENABLED_KEY`、`_bool_config`、`is_lifecycle_manager_enabled`；移除 api/lifecycle.py 的 `enabled` 返回字段；从 infrastructure/config_repository.py 删除 `lifecycle_manager_enabled`；移除 frontend/src/pages/Settings.tsx 新增 toggle 支持和 LifecycleManager 开关；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；删除 tests/test_lifecycle_manager_config.py 和 docs/lifecycle-manager.md；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: Web session/at 重新登录失败分类与封禁删除
+
+### What was done
+- 修正 ChatGPT “重新登录获取session/at”平台动作的失败分类，普通重登失败返回 `session_refresh_failed`，不再一律标成 `account_banned`。
+- 只有重登结果明确包含账号已删除、停用、禁用、暂停或封禁等状态时，才返回 `account_banned` 和 `delete_local_account=true`。
+- 批量重登任务读取平台返回的删除信号，遇到明确封禁/注销账号时删除本地账号记录；普通失败只记录失败并保留账号。
+- 同步更新账号动作文档，说明普通失败不删除、不标封禁，明确封禁/注销才删除本地账号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py platforms\chatgpt\plugin.py tests\test_platform_action_task.py tests\test_chatgpt_get_rt_otp_callback.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_otp_callback.py::test_refresh_session_failed_result_only_flags_confirmed_banned_accounts tests\test_platform_action_task.py::test_refresh_session_task_deletes_banned_account tests\test_platform_action_task.py::test_refresh_session_task_keeps_account_on_normal_failure tests\test_platform_action_task.py::test_platform_runtime_persists_refresh_session_result -q` -> 4 passed, 1 warning。
+- `git diff --check -- application\tasks.py platforms\chatgpt\plugin.py tests\test_platform_action_task.py tests\test_chatgpt_get_rt_otp_callback.py docs\account-actions.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/plugin.py: 拆分 Web session/at 重登失败类型，只在明确封禁/注销时返回删除信号。
+  - application/tasks.py: 批量重登任务按删除信号删除本地账号，普通失败不再写“已标记封禁”。
+  - tests/test_platform_action_task.py: 增加封禁/注销失败会删除、普通失败不删除的任务回归测试。
+  - tests/test_chatgpt_get_rt_otp_callback.py: 增加平台失败结果分类回归测试。
+  - docs/account-actions.md: 更新“重新登录获取session/at”的失败处理说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 platforms/chatgpt/plugin.py 中 `_refresh_session_failed_result()` 固定返回 `account_banned`/`banned`；恢复 application/tasks.py 中重登失败只记录“已标记封禁”且不调用 `AccountsRepository().delete()`；删除 tests/test_platform_action_task.py 和 tests/test_chatgpt_get_rt_otp_callback.py 本轮新增测试；恢复 docs/account-actions.md 中重登失败一律标记封禁的说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: LifecycleManager 按服务配置开关
+
+### What was done
+- 将 LifecycleManager 从单一总开关改为四个服务级开关：自动账号检测、token 自动续期、试用过期预警、CPA/SUB2API 后台同步。
+- 默认开启自动账号检测、token 自动续期和试用过期预警，默认关闭 CPA/SUB2API 后台同步。
+- 后端启动时只要任意服务开启就启动 LifecycleManager，循环内按各服务开关决定是否执行对应后台任务。
+- 生命周期状态接口返回 `services` 明细，设置页 ChatGPT 配置展示四个独立开关。
+- 同步更新 LifecycleManager 文档，明确服务级默认值和手动任务不受影响。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\lifecycle.py api\lifecycle.py infrastructure\config_repository.py tests\test_lifecycle_manager_config.py tests\test_api_lifecycle.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_lifecycle_manager_config.py tests\test_api_lifecycle.py -q` -> 8 passed, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- core\lifecycle.py api\lifecycle.py infrastructure\config_repository.py frontend\src\pages\Settings.tsx tests\test_lifecycle_manager_config.py tests\test_api_lifecycle.py docs\lifecycle-manager.md frontend\.frontend-build.stamp` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - core/lifecycle.py: 新增服务级开关默认值和读取函数，后台循环按服务开关分别执行账号检测、token 续期、试用预警和 CPA/SUB2API 同步。
+  - api/lifecycle.py: 生命周期状态接口返回 `enabled`、`services` 和外部同步周期。
+  - infrastructure/config_repository.py: 暴露四个 LifecycleManager 服务级配置项及默认值。
+  - frontend/src/pages/Settings.tsx: ChatGPT 设置页将单个 LifecycleManager 开关替换为四个服务级开关。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - tests/test_lifecycle_manager_config.py: 覆盖默认开启核心后台任务、默认关闭外部同步、全部关闭时不启动管理器。
+  - tests/test_api_lifecycle.py: 覆盖状态接口的服务级开关返回值。
+  - docs/lifecycle-manager.md: 记录服务级开关、默认值和状态接口语义。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/lifecycle.py 中单一 `lifecycle_manager_enabled` 判断和后台循环无条件执行各任务；恢复 api/lifecycle.py 状态接口只返回旧字段；恢复 infrastructure/config_repository.py 中单个 `lifecycle_manager_enabled=false` 默认配置；恢复 frontend/src/pages/Settings.tsx 中单个“自动启动 LifecycleManager”开关；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；恢复 tests/test_lifecycle_manager_config.py 和 tests/test_api_lifecycle.py 本轮断言；恢复 docs/lifecycle-manager.md 旧说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 移植 iCloud 隐私邮箱 HME 管理
+
+### What was done
+- 新增 `iCloud 隐私邮箱（HME）` mailbox provider，位于邮箱服务第三方服务里的 Gmail API接码后面。
+- 移植 iCloud Cookie 会话校验、Hide My Email 别名列表、创建、停用、恢复、删除等协议能力。
+- 新增 iCloud 账号管理 API，账号数据保存在 `icloud_hme` provider setting 的 `auth.icloud_hme_accounts_json` 中，列表接口不返回 Cookie 和 App 专用密码明文。
+- 设置弹窗新增 iCloud 账号列表、账号新增/编辑/删除/Cookie 校验，以及隐私邮箱列表加载、创建、停用、恢复、删除管理功能。
+- `icloud_hme` 作为 mailbox provider 可在注册流程中自动创建 HME 隐私邮箱，并在配置 App 专用密码后通过 IMAP 等待验证码。
+- 补充 iCloud HME provider 文档，记录配置入口、运行边界和管理 API。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\icloud_hme.py application\icloud_hme.py api\provider_settings.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_icloud_hme_provider.py tests\test_base_mailbox_factory.py -q` -> 7 passed, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- core\icloud_hme.py application\icloud_hme.py api\provider_settings.py application\provider_settings.py core\base_mailbox.py infrastructure\provider_definitions_repository.py frontend\src\components\settings\ProviderCards.tsx frontend\.frontend-build.stamp tests\test_icloud_hme_provider.py docs\icloud-hme-provider.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: 新增 iCloud HME Cookie 客户端、账号 JSON 解析、别名解析和 mailbox provider 运行时。
+  - application/icloud_hme.py: 新增 iCloud 账号和 HME 别名管理服务。
+  - api/provider_settings.py: 新增 `/provider-settings/icloud-hme/*` 管理接口。
+  - application/provider_settings.py: 防止通用保存配置时误清空 iCloud 账号 JSON。
+  - core/base_mailbox.py: 注册 `icloud_hme` mailbox factory。
+  - infrastructure/provider_definitions_repository.py: 新增内置 `icloud_hme` mailbox provider 定义。
+  - frontend/src/components/settings/ProviderCards.tsx: 在 provider 弹窗中新增 iCloud 账号列表和隐私邮箱管理 UI。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - tests/test_icloud_hme_provider.py: 覆盖 Cookie 解析、账号公开字段脱敏、别名解析、provider 排序和账号 CRUD API。
+  - docs/icloud-hme-provider.md: 记录 iCloud HME provider 配置、能力和接口。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 core/icloud_hme.py、application/icloud_hme.py、tests/test_icloud_hme_provider.py 和 docs/icloud-hme-provider.md；移除 api/provider_settings.py 中 `/icloud-hme/*` 路由和请求模型；恢复 application/provider_settings.py 中保存逻辑；移除 core/base_mailbox.py 的 `icloud_hme` factory；从 infrastructure/provider_definitions_repository.py 删除 `icloud_hme` 内置定义；恢复 frontend/src/components/settings/ProviderCards.tsx 本轮 iCloud UI 和类型/状态/函数改动；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 注册流程接入 iCloud 隐私邮箱收码
+
+### What was done
+- 注册流程继续复用现有邮箱 provider 选择逻辑，任务指定或默认邮箱 provider 为 `icloud_hme` 时，会创建 iCloud HME 隐私邮箱作为注册邮箱。
+- iCloud HME provider 的验证码读取补齐 Cookie Web Mail 回退：优先 IMAP，IMAP 不可用或暂未取到邮件时，通过 `mccgateway` 的 `mailws2/v1/thread/search` 读取收件箱线程摘要。
+- `get_current_ids()` 和 `wait_for_code()` 共用同一套 IMAP/Web Mail 读取逻辑，发送验证码前可建立基线邮件 ID，后续只匹配新邮件。
+- Web Mail 查询按 alias 搜索命中时允许使用线程摘要中的验证码，避免未配置 App 专用密码时注册卡在收码阶段。
+- 文档补充注册流程接入方式、收码优先级和 Web Mail 摘要读取边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\icloud_hme.py core\base_mailbox.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_icloud_hme_provider.py tests\test_base_mailbox_factory.py -q` -> 10 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: 增加 iCloud Web Mail `mccgateway` 解析、线程摘要读取、alias 查询和 IMAP/Web Mail 回退收码逻辑。
+  - tests/test_icloud_hme_provider.py: 增加 Web Mail 响应解析、Web 回退收码和 `create_mailbox("icloud_hme")` 运行时配置接入测试。
+  - docs/icloud-hme-provider.md: 记录注册流程如何选用 `icloud_hme`、验证码读取优先级和 Web Mail 边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `ICloudHMEClient` 不解析 `mccgateway`、移除 Web Mail 读取方法，并将 `ICloudHMEMailbox._recent_messages()` 恢复为仅调用 IMAP；删除 tests/test_icloud_hme_provider.py 本轮新增 Web Mail/工厂接入测试；恢复 docs/icloud-hme-provider.md 本轮新增注册接入和 Web Mail 回退说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 修复后台任务数据库锁和 token 自动续期路径
+
+### What was done
+- 任务调度线程遇到 SQLite `database is locked` 时改为记录并稍后重试，不再让 `task-runtime` 线程直接崩溃。
+- SQLite 连接增加 30 秒 busy timeout，并允许跨线程使用连接，降低后台任务、接口请求和生命周期任务并发访问时的短锁失败概率。
+- LifecycleManager 的 ChatGPT token 自动续期不再调用 OAuth refresh token 刷新，改为复用 `refresh_session` 平台动作重新登录获取 Web session / accessToken。
+- 自动续期遇到明确封禁/注销结果时删除本地账号；普通失败只记录失败并保留账号。
+- LifecycleManager 文档补充 token 自动续期实际行为和失败处理边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\lifecycle.py services\task_runtime.py core\db.py tests\test_lifecycle_manager_config.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_lifecycle_manager_config.py tests\test_api_lifecycle.py -q` -> 10 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - services/task_runtime.py: 捕获任务 claim 阶段的 SQLite database locked 错误并延迟重试，避免调度线程退出。
+  - core/db.py: SQLite engine 增加 `check_same_thread=false` 和 30 秒 busy timeout。
+  - core/lifecycle.py: ChatGPT token 自动续期改为调用 `refresh_session` 平台动作，并按封禁/注销信号删除本地账号。
+  - tests/test_lifecycle_manager_config.py: 覆盖自动续期不再调用 OAuth TokenRefreshManager，以及封禁结果会删除账号。
+  - docs/lifecycle-manager.md: 记录 token 自动续期走重新登录获取 session/at，不走 OAuth refresh token。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 services/task_runtime.py 中 claim 任务无异常捕获的旧逻辑；恢复 core/db.py 中 `create_engine(DATABASE_URL)`；恢复 core/lifecycle.py 中 `refresh_expiring_tokens()` 使用 `TokenRefreshManager.refresh_account()` 的旧路径；删除 tests/test_lifecycle_manager_config.py 本轮新增两个测试；恢复 docs/lifecycle-manager.md 本轮新增的 token 自动续期说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 代理池导入默认补 https 协议头
+
+### What was done
+- 代理池单条新增、批量导入和免费代理导入统一规范化代理地址。
+- 输入没有协议头时，后端默认补 `https://`；已有 `http://`、`https://`、`socks5://` 等协议头保持不变。
+- 代理地址按规范化后的值去重，避免 `1.1.1.1:8080` 和 `https://1.1.1.1:8080` 被重复入库。
+- 文档补充代理池导入时的协议头补全规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\proxy_pool.py infrastructure\proxies_repository.py tests\test_api_proxies.py tests\test_proxy_pool_check.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_proxies.py tests\test_proxy_pool_check.py -q` -> 9 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/proxy_pool.py: 代理 URL 规范化默认协议从 `http://` 调整为 `https://`。
+  - infrastructure/proxies_repository.py: 单条新增和批量新增入库前统一调用代理 URL 规范化并按规范化值去重。
+  - tests/test_api_proxies.py: 增加无协议头单条新增、批量新增规范化和去重回归测试。
+  - docs/proxy-pool-check.md: 记录代理池导入时无协议头默认补 `https://`。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 core/proxy_pool.py 中 `normalize_proxy_url()` 默认补全恢复为 `http://`；恢复 infrastructure/proxies_repository.py 中直接使用原始 `command.url` / `raw.strip()` 入库；删除 tests/test_api_proxies.py 本轮新增两个测试；恢复 docs/proxy-pool-check.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: ChatGPT 代理预检 TLS 异常不直接跳过代理
+
+### What was done
+- ChatGPT 注册代理预检新增传输/TLS 异常识别，覆盖 `curl: (35)`、`TLS connect error`、`OPENSSL_internal`、`invalid library` 等 curl_cffi 预检异常。
+- 预检遇到上述异常时，不再把代理记为失败，也不再立即切换代理，而是继续使用当前代理进入浏览器真实注册流程。
+- 保留原有明确失败切换逻辑：非临时预检失败仍会记录并尝试下一个代理。
+- 文档补充 ChatGPT 注册前轻量代理预检的异常处理边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_chatgpt_proxy_preflight.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_proxy_preflight.py -q` -> 4 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 新增 ChatGPT 代理预检临时 TLS/curl 异常识别，并在该类异常下保留当前代理继续浏览器真实流程。
+  - tests/test_chatgpt_proxy_preflight.py: 覆盖 TLS/curl 预检异常不会 report_fail、不会切换代理。
+  - docs/proxy-pool-check.md: 记录 ChatGPT 注册代理预检遇到 TLS/curl 传输异常时不会直接判定代理失败。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/tasks.py 中 `_is_chatgpt_proxy_preflight_transient_error()` 及 `_resolve_chatgpt_reachable_proxy()` 的传输/TLS异常保留代理分支；删除 tests/test_chatgpt_proxy_preflight.py 本轮新增测试；恢复 docs/proxy-pool-check.md 本轮新增预检异常说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 代理池检测对齐注册代理链路
+
+### What was done
+- 代理资源页“检测全部”改为使用注册流程同款 `OpenAIHTTPClient` / `curl_cffi` 创建代理会话，不再使用独立 `requests` 检测链路。
+- 检测目标改为 Cloudflare trace，成功时读取 `loc` 并写回代理地区，检测统计仍沿用成功次数、失败次数和连续失败禁用规则。
+- 代理 URL 规范化按注册运行时可用格式处理：无协议默认 `http://`，并兼容 `host:port:user:pass` 四段认证代理转换为 `user:pass@host:port`。
+- 文档同步说明检测方式、成功标准、地区写回和代理格式兼容规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\proxy_pool.py infrastructure\proxies_repository.py tests\test_api_proxies.py tests\test_proxy_pool_check.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_proxies.py tests\test_proxy_pool_check.py -q` -> 10 passed, 1 warning。
+- `git diff --check -- core\proxy_pool.py infrastructure\proxies_repository.py tests\test_api_proxies.py tests\test_proxy_pool_check.py progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。`docs/` 为仓库忽略目录，本轮文档同步已写入本地文件并在本记录中留痕。
+
+### Notes
+- 修改文件清单
+  - core/proxy_pool.py: 检测全部改为并发使用注册 HTTPClient 检测 Cloudflare trace，新增四段认证代理规范化和地区写回。
+  - infrastructure/proxies_repository.py: 继续在代理新增、批量导入时复用统一代理 URL 规范化，确保入库格式与注册运行时一致。
+  - tests/test_proxy_pool_check.py: 覆盖检测使用 OpenAIHTTPClient、检测目标、超时配置、地区写回和四段认证代理规范化。
+  - tests/test_api_proxies.py: 更新无协议代理默认补 `http://` 的新增与批量导入断言。
+  - docs/proxy-pool-check.md: 记录检测链路、检测目标、成功标准、地区写回和格式兼容规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/proxy_pool.py 中 `check_all()` / `_check_one()` 为旧的 `requests` 检测逻辑，移除四段认证代理转换、`OpenAIHTTPClient` 检测和地区写回；恢复 tests/test_proxy_pool_check.py 和 tests/test_api_proxies.py 本轮断言；恢复 docs/proxy-pool-check.md 旧检测说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 代理池导入协议头选择
+
+### What was done
+- 代理资源页手动“添加代理或批量导入”区域新增导入协议头选择，支持 `http`、`https`、`socks5`。
+- 单条新增和批量导入会把用户选择的协议头传给后端；后端只在代理地址本身没有协议头时补该协议头，已有 `http://`、`https://`、`socks5://` 的地址保持原样。
+- 四段认证代理 `host:port:user:pass` 会按用户选择转换为 `<协议头>://user:pass@host:port`，保证入库格式能被注册运行时直接使用。
+- 本地代理池说明文档同步记录导入协议头选择和格式转换规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\proxy_pool.py domain\proxies.py infrastructure\proxies_repository.py application\proxies.py api\proxies.py tests\test_api_proxies.py tests\test_proxy_pool_check.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_proxies.py tests\test_proxy_pool_check.py -q` -> 13 passed, 1 warning。
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- core\proxy_pool.py domain\proxies.py infrastructure\proxies_repository.py application\proxies.py api\proxies.py frontend\src\pages\Proxies.tsx tests\test_api_proxies.py tests\test_proxy_pool_check.py frontend\.frontend-build.stamp progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Proxies.tsx: 在手动代理导入区域新增协议头下拉框，并将选择值随单条新增和批量导入请求提交。
+  - api/proxies.py: 新增 `import_scheme` 请求字段并传入代理创建命令。
+  - domain/proxies.py: 代理新增和批量新增命令增加导入协议头字段。
+  - application/proxies.py: 批量导入时向仓库传递导入协议头。
+  - infrastructure/proxies_repository.py: 入库规范化时按导入协议头补全无协议地址。
+  - core/proxy_pool.py: 代理 URL 规范化支持指定默认协议头，并限制可选协议为 `http`、`https`、`socks5`。
+  - tests/test_api_proxies.py: 覆盖单条新增和批量导入按用户选择补协议头、已有协议头不被覆盖。
+  - tests/test_proxy_pool_check.py: 覆盖规范化函数按指定协议头处理普通代理和四段认证代理。
+  - docs/proxy-pool-check.md: 记录导入协议头选择和代理格式转换规则；该目录为本地忽略目录。
+  - frontend/.frontend-build.stamp: 前端构建后更新构建戳。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 Proxies.tsx 中 `importScheme` 状态、协议头选择 UI 和请求体 `import_scheme`；移除 api/domain/application/infrastructure 层新增的 `import_scheme` 传递；将 core/proxy_pool.py 的 `normalize_proxy_url()` 恢复为固定默认 `http`；恢复 tests/test_api_proxies.py 和 tests/test_proxy_pool_check.py 本轮新增断言；恢复 docs/proxy-pool-check.md 本轮新增说明；恢复 frontend/.frontend-build.stamp 到本轮前构建戳；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME 异常显示和复制
+
+### What was done
+- iCloud 账号卡片的异常文本改为在卡片内部滚动和换行，不再横向撑开并挤压右侧表单区域。
+- 异常文本右侧新增复制图标，可复制完整异常返回内容，便于排查 421 等接口返回。
+- 保存、校验、加载等底部失败提示同样新增复制入口，避免失败未落到账户 `last_error` 时无法复制完整错误。
+
+### Testing
+- `npm --prefix frontend run build` -> 构建通过；Vite 仍提示既有 chunk size warning。
+- `git diff --check -- frontend/src/components/settings/ProviderCards.tsx progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: 调整 iCloud 账号卡片异常区域的收缩和滚动布局，并为账号异常与底部失败提示增加复制完整异常按钮。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 ProviderCards.tsx 中 iCloud 账号异常区域为原先纯文本显示，移除 `Clipboard` 图标导入、`copyText()` helper 和底部失败提示复制按钮；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME Cookie 401 缺失识别修复
+
+### What was done
+- iCloud HME Cookie 解析兼容带 `Cookie:`、`cookie:`、`cookie：`、`cookies：` 标签的复制内容，避免标签被当作第一个 cookie 名的一部分。
+- iCloud 请求头生成不再自动给 Cookie value 补双引号，改为按解析后的原值发送，避免把 JSON 或手填值二次改写成 Apple 不接受的格式。
+- 文档补充 Cookie 输入格式兼容范围。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_icloud_hme_provider.py -q` -> 9 passed, 1 warning。
+- `git diff --check -- core/icloud_hme.py tests/test_icloud_hme_provider.py docs/icloud-hme-provider.md progress.md` -> 无空白错误；Git 提示 progress.md 未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: Cookie 输入解析兼容复制标签，并保留 Cookie value 原样生成请求头。
+  - tests/test_icloud_hme_provider.py: 增加带 `cookie：` 标签解析和 Cookie Header 原值发送回归测试。
+  - docs/icloud-hme-provider.md: 记录 Cookie 输入格式兼容规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `parse_icloud_cookie_input()` 不处理 `Cookie:` 标签、`_cookie_header()` 自动给未加引号的 value 补双引号；删除 tests/test_icloud_hme_provider.py 本轮新增断言；恢复 docs/icloud-hme-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 注册任务创建 SQLite 短锁重试
+
+### What was done
+- 任务创建写入主记录时，遇到 SQLite `database is locked` 不再立即让 `/api/tasks/register` 返回 500，而是短暂等待后重试。
+- 任务事件写入同样增加 SQLite 短锁重试，避免任务已创建但“任务已创建”事件写入失败导致接口报错。
+- 非数据库锁错误仍按原错误抛出，避免掩盖真实持久化失败。
+- 补充任务数据库短锁重试文档和回归测试。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_task_db_lock_retry.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_task_db_lock_retry.py tests\test_gopay_pay_chatgpt_task.py::test_create_gopay_register_account_task_persists_payload tests\test_gopay_pay_chatgpt_task.py::test_create_gopay_pay_chatgpt_task_persists_payload tests\test_api_actions.py::test_refresh_session_task_endpoint_creates_task -q` -> 5 passed, 1 warning。
+- `git diff --check -- application/tasks.py tests/test_task_db_lock_retry.py docs/task-db-lock-retry.md progress.md` -> 无空白错误；Git 提示 progress.md 未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 为任务创建和任务事件写入增加 SQLite `database is locked` 短锁重试。
+  - tests/test_task_db_lock_retry.py: 增加任务创建和事件写入遇到 SQLite 短锁后重试成功的单元测试。
+  - docs/task-db-lock-retry.md: 记录任务创建和事件写入的数据库短锁重试规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/tasks.py 中 `OperationalError` 导入、`TASK_DB_WRITE_ATTEMPTS`、`_is_database_locked_error()`、`_sleep_db_write_retry()` 以及任务创建/事件写入重试实现，恢复直接 `session.commit()`；删除 tests/test_task_db_lock_retry.py 和 docs/task-db-lock-retry.md；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 验证 iCloud HME 注册接入和收码逻辑
+
+### What was done
+- 确认注册构建流程在 `identity_provider=mailbox` 且 `mail_provider=icloud_hme` 时，会创建并注入 iCloud HME mailbox；未显式选择时仍沿用默认邮箱 provider。
+- 为 iCloud HME 增加回归测试：`get_email()` 每次创建 Hide My Email 隐私邮箱别名，并把 iCloud 账号 ID、别名邮箱和 anonymous_id 写入 mailbox 资源元数据。
+- 为 iCloud HME 增加收码回归测试：验证码读取按本次生成的 alias 查询 Web Mail，并跳过 baseline 中的旧线程。
+
+### Testing
+- `D:\ProgramData\miniconda3\python.exe -m py_compile core\icloud_hme.py core\base_mailbox.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- 独立 smoke：iCloud HME fake client 创建 `alias@icloud.com`，`wait_for_code()` 通过 Web Mail alias 查询返回 `654321` -> 通过。
+- `git diff --check -- tests/test_icloud_hme_provider.py progress.md` -> 无空白错误；Git 提示 progress.md 未来检出时会按配置转换 CRLF。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_icloud_hme_provider.py -q` -> 未执行成功；当前 `.venv\pyvenv.cfg` 指向不存在的 WindowsApps Python 3.13，Miniconda Python 缺 pytest/sqlalchemy，属于本地测试环境缺口。
+
+### Notes
+- 修改文件清单
+  - tests/test_icloud_hme_provider.py: 增加 iCloud HME 自动创建隐私邮箱、alias 收码过滤和注册构建层注入 `icloud_hme` mailbox 的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 tests/test_icloud_hme_provider.py 本轮新增的 `test_icloud_hme_get_email_creates_alias_and_receives_code()` 和 `test_build_platform_instance_uses_icloud_hme_mailbox()`；移除 progress.md 本轮追加内容即可恢复旧测试覆盖范围。
+
+## 2026-07-12 - Task: 开启 SQLite WAL 优化读写性能
+
+### What was done
+- SQLite engine 新增统一创建入口，所有 SQLite 连接建立时自动设置 `journal_mode=WAL`。
+- 同步设置 `synchronous=NORMAL`、`busy_timeout=30000`、`temp_store=MEMORY` 和 `foreign_keys=ON`，降低本地任务日志、前端轮询和后台任务并发时的读写锁等待。
+- 测试临时数据库改用同一套 engine 创建入口，避免测试环境和实际运行环境的 SQLite PRAGMA 不一致。
+- 新增 SQLite 性能配置文档和 PRAGMA 回归测试。
+
+### Testing
+- `D:\ProgramData\miniconda3\python.exe -m py_compile core\db.py tests\conftest.py tests\test_db_sqlite_pragmas.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m pytest tests\test_db_sqlite_pragmas.py -q --basetemp .\.tmp\pytest` -> 1 passed, 2 warnings。
+- 独立 smoke：创建临时 SQLite engine 后读取 `PRAGMA journal_mode/synchronous/busy_timeout/temp_store` -> `wal/1/30000/2`，通过。
+- `git diff --check -- core/db.py tests/conftest.py tests/test_db_sqlite_pragmas.py docs/sqlite-performance.md progress.md` -> 无空白错误；Git 提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - core/db.py: 新增 SQLite engine PRAGMA 配置，开启 WAL 并设置本地并发读写相关参数。
+  - tests/conftest.py: 测试数据库改用 `create_configured_engine()`，与实际运行保持一致。
+  - tests/test_db_sqlite_pragmas.py: 覆盖 WAL、NORMAL synchronous、busy_timeout 和 temp_store 配置。
+  - docs/sqlite-performance.md: 记录 SQLite WAL 配置、作用和边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/db.py 中直接 `create_engine(DATABASE_URL, **_engine_kwargs)`，移除 `create_configured_engine()`、`_configure_sqlite_pragmas()`、`SQLITE_BUSY_TIMEOUT_MS` 和 `event` 导入；恢复 tests/conftest.py 直接 `create_engine()`；删除 tests/test_db_sqlite_pragmas.py 和 docs/sqlite-performance.md；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME Cookie 401 自动重试
+
+### What was done
+- iCloud 请求遇到 Apple 返回 `Missing X-APPLE-WEBAUTH-USER cookie` 时，会在确认本地已解析出 `X-APPLE-WEBAUTH-USER` 的前提下，自动去掉 Cookie value 外层双引号重试一次。
+- 保留原始 Cookie Header 发送作为第一次尝试，避免破坏已可用的浏览器复制格式。
+- 文档补充浏览器 Cookie value 带外层双引号时的自动重试行为。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest` -> 12 passed, 2 warnings。
+- 使用用户本轮提供的 iCloud Cookie 真实请求 Apple validate：解析到 15 个 Cookie，包含 `X-APPLE-WEBAUTH-USER`，`validate_session()` 成功，返回 dsid、apple_id、HME service_url 和 mccgateway。
+- `git diff --check -- core/icloud_hme.py tests/test_icloud_hme_provider.py docs/icloud-hme-provider.md progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: Cookie header 支持按原值发送失败后去掉 value 外层双引号重试。
+  - tests/test_icloud_hme_provider.py: 增加 Apple 401 缺失 Cookie 时去引号重试成功的回归测试。
+  - docs/icloud-hme-provider.md: 记录 401 自动去引号重试行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `_cookie_header()` 固定原样发送、不在 `_request()` 里处理 `Missing X-APPLE-WEBAUTH-USER cookie` 自动重试；删除 tests/test_icloud_hme_provider.py 本轮新增 401 重试测试；恢复 docs/icloud-hme-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME Cookie Host 自动兜底
+
+### What was done
+- iCloud validate 遇到 `Missing X-APPLE-WEBAUTH-USER cookie` 且本地已解析出该 Cookie 时，会在当前 Host 失败后自动尝试 `icloud.com` / `icloud.com.cn` 另一个域。
+- 保留原有去掉 Cookie value 外层双引号的重试逻辑，先处理格式问题，再处理域名不匹配问题。
+- 文档补充 Host 自动兜底行为。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest` -> 13 passed, 2 warnings。
+- 使用用户本轮提供的 iCloud Cookie 真实请求 Apple validate，起始 `host=icloud.com.cn`：validate 成功，解析到 15 个 Cookie，包含 `X-APPLE-WEBAUTH-USER`，返回 dsid、apple_id、HME service_url 和 mccgateway。
+- `git diff --check -- core/icloud_hme.py tests/test_icloud_hme_provider.py docs/icloud-hme-provider.md progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: validate 缺失 `X-APPLE-WEBAUTH-USER` 时自动尝试另一个 iCloud Host。
+  - tests/test_icloud_hme_provider.py: 增加 Host 自动兜底回归测试。
+  - docs/icloud-hme-provider.md: 记录 Cookie 去引号和 Host 自动兜底行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `validate_session()` 只调用一次当前 Host，不做 Host 自动兜底；删除 tests/test_icloud_hme_provider.py 本轮新增 Host 兜底测试；恢复 docs/icloud-hme-provider.md 本轮新增 Host 说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME 校验按钮提交当前 Cookie
+
+### What was done
+- 修复 iCloud HME 设置弹窗中“校验 Cookie”只带账号 ID、不带当前 textarea Cookie 的问题。
+- 校验接口支持可选请求体；前端点击“校验 Cookie”时会提交当前表单里的 Cookie、Host、邮箱、代理和 App 专用密码。
+- 后端校验时如果请求体带了新 Cookie，会用请求体里的 Cookie 覆盖当前账号进行校验，并保存校验后的账号状态。
+- 增加接口回归测试，确认 `/validate` 使用请求体中的 Cookie，而不是只用数据库旧值。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile api\provider_settings.py application\icloud_hme.py core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest` -> 14 passed, 2 warnings。
+- `C:\Program Files (x86)\Tencent\微信web开发者工具\node.exe node_modules\typescript\bin\tsc -b` -> TypeScript 编译通过。
+- `vite build` -> 未完成；当前可用 Node 为 16.13.1，Vite 要求 Node 20.19+ 或 22.12+。
+- `git diff --check -- api/provider_settings.py application/icloud_hme.py frontend/src/components/settings/ProviderCards.tsx tests/test_icloud_hme_provider.py progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: “校验 Cookie”请求带上当前编辑表单内容。
+  - api/provider_settings.py: `/icloud-hme/accounts/{account_id}/validate` 支持可选请求体。
+  - application/icloud_hme.py: 校验账号时可用请求体 Cookie/Host 等覆盖当前账号后再校验并保存状态。
+  - tests/test_icloud_hme_provider.py: 增加 validate 接口使用请求体 Cookie 的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/components/settings/ProviderCards.tsx 中 validate 请求为无 body POST；恢复 api/provider_settings.py validate 接口不接收 body；恢复 application/icloud_hme.py `validate_account()` 只按账号 ID 读取数据库旧值；删除 tests/test_icloud_hme_provider.py 本轮新增 validate 接口测试；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME 保存后异常状态修复
+
+### What was done
+- 修复 iCloud HME 设置页校验成功后账号列表仍可能显示旧异常的问题：校验接口返回账号后，前端立即替换本地账号卡片状态，并切回对应账号的编辑上下文。
+- 保存 iCloud 账号时，如果本次带 Cookie 触发校验且校验失败，接口返回 `ok=false` 和完整异常；前端不再把这种情况展示成“保存成功”。
+- 文档补充校验成功后的 UI 状态同步，以及带 Cookie 保存失败时的返回语义。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile api\provider_settings.py application\icloud_hme.py core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest` -> 15 passed, 2 warnings。
+- `C:\Program Files (x86)\Tencent\微信web开发者工具\node.exe node_modules\typescript\bin\tsc -b` -> TypeScript 编译通过。
+- `git diff --check -- application/icloud_hme.py frontend/src/components/settings/ProviderCards.tsx tests/test_icloud_hme_provider.py docs/icloud-hme-provider.md progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - frontend/src/components/settings/ProviderCards.tsx: 校验/保存 iCloud 账号后用返回账号同步列表和编辑表单；保存校验失败时显示失败结果。
+  - application/icloud_hme.py: 带 Cookie 保存并触发校验时，校验失败返回 `ok=false` 和异常文本。
+  - tests/test_icloud_hme_provider.py: 增加带 Cookie 保存校验失败时接口返回失败状态并保留账号异常的回归测试。
+  - docs/icloud-hme-provider.md: 记录校验成功后的状态同步和保存失败返回语义。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 frontend/src/components/settings/ProviderCards.tsx 中 `applyIcloudAccountResult()` 以及校验/保存后状态同步改动；恢复 application/icloud_hme.py 中 `upsert_account()` 固定返回 `ok=true`；删除 tests/test_icloud_hme_provider.py 本轮新增保存失败断言；恢复 docs/icloud-hme-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME Cookie 转义引号兼容和 App 密码回显
+
+### What was done
+- iCloud Cookie 校验遇到 `Missing X-APPLE-WEBAUTH-USER cookie` 后，去引号重试逻辑兼容 `\"value\"` 这种 JSON/Windows curl 转义后的外层引号。
+- iCloud 账号列表接口继续隐藏 Cookie 明文，但返回 App 专用密码明文，用于设置页编辑回显。
+- 设置页点击“编辑选中”时回填 App 专用密码，输入框改为 `text` 类型明文显示，不再使用 `password` 类型。
+- 文档同步账号列表接口会返回 App 专用密码明文这一行为。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile core\icloud_hme.py application\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest` -> 16 passed, 2 warnings。
+- `C:\Program Files (x86)\Tencent\微信web开发者工具\node.exe node_modules\typescript\bin\tsc -b` -> TypeScript 编译通过。
+- `git diff --check -- core/icloud_hme.py frontend/src/components/settings/ProviderCards.tsx tests/test_icloud_hme_provider.py docs/icloud-hme-provider.md progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: Cookie value 去外层引号兼容反斜杠转义双引号；账号公开字段返回 App 专用密码。
+  - frontend/src/components/settings/ProviderCards.tsx: iCloud 账号类型增加 `app_password`；编辑选中和校验/保存后同步 App 专用密码；输入框改为明文 `text`。
+  - tests/test_icloud_hme_provider.py: 增加转义引号 Cookie 401 重试回归测试，并更新公开字段返回 App 专用密码的断言。
+  - docs/icloud-hme-provider.md: 记录账号列表接口返回 App 专用密码明文。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `_strip_cookie_outer_quotes()` 不处理 `\"value\"`，并在 `public_dict()` 中重新移除 `app_password`；恢复 ProviderCards.tsx 中 iCloud App 专用密码不回显且输入框为 `password`；恢复 tests/test_icloud_hme_provider.py 本轮新增和调整的断言；恢复 docs/icloud-hme-provider.md 账号列表接口说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME validate 接口真实打通
+
+### What was done
+- 对照 `D:\work\ai\icloud-hme` 的 HME 客户端实现，修正 iCloud Cookie Header 生成规则：请求 iCloud 时统一按浏览器格式给 Cookie value 带双引号，已带双引号的不重复添加，JSON/Windows curl 转义引号会先规范化。
+- 修复 `validate` 成功后继续请求 `maildomainws` 可能 401 的问题：iCloud 会在 `validate` 后刷新 WebAuth Cookie，客户端会重建底层 HTTP session，再用维护后的 Cookie Header 请求 HME 别名接口，避免底层 CookieJar 与手动 Cookie Header 冲突。
+- 用用户提供的 `/api/provider-settings/icloud-hme/accounts/acc_3561de15/validate` 请求体真实验证当前源码接口，返回 `ok=true`、账号 `active`、`last_error` 为空。
+- 文档同步 Cookie Header 发送规则和 validate 后重建 session 的行为。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile core\icloud_hme.py application\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest` -> 17 passed, 2 warnings。
+- 使用用户提供的完整 validate 请求体通过 FastAPI TestClient 调 `/api/provider-settings/icloud-hme/accounts/acc_3561de15/validate` -> HTTP 200，`ok=true`，账号状态 `active`，`last_error` 为空。
+- 临时启动当前源码后端到 `127.0.0.1:18000`，将同一请求 URL 从 `8000` 改为 `18000` 后真实 HTTP 调用 -> HTTP 200，`ok=true`，账号状态 `active`，`last_error` 为空，`cookies_count=16`。
+- `git diff --check -- core/icloud_hme.py tests/test_icloud_hme_provider.py docs/icloud-hme-provider.md progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: Cookie Header 统一补浏览器双引号；validate 成功后重建底层 HTTP session，避免后续 HME list 被旧 CookieJar 干扰。
+  - tests/test_icloud_hme_provider.py: 更新 Cookie Header 规则断言，并新增 validate 后 HME 请求使用新 session 的回归测试。
+  - docs/icloud-hme-provider.md: 记录 Cookie Header 规则、WebAuth token 刷新和 session 重建行为。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `_cookie_header()` 为直接拼接原 Cookie value，移除 `_quote_cookie_value()` 和 validate 成功后的 `_reset_session()`；恢复 tests/test_icloud_hme_provider.py 本轮 Cookie Header 和 session 重建相关断言；恢复 docs/icloud-hme-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: ChatGPT 批量测活改用账号状态/订阅查询
+
+### What was done
+- ChatGPT 批量测活不再直接用 `wham/usage` 返回成功作为存活依据，改为复用“查询账号状态/订阅”的账号状态查询链路。
+- 测活支持从账号凭据里读取 `access_token`、`session_token` 和 cookies；只保存 session/cookies 的账号可先走 session 刷新再查状态。
+- 账号状态查询返回 `400`、`401`、`403`、`404` 时写入失效；`429`、`5xx`、网络超时和响应格式异常仍按检测错误处理，不自动改失效。
+- 测活成功后同步 `subscription_status`、Codex 额度摘要、用量分解和远端邮箱等状态摘要，并避免把刷新出的 access token 写进账号概览。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile application\tasks.py tests\test_validity_recovery.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_validity_recovery.py -k "chatgpt_health_check" --basetemp .\.tmp\pytest -q` -> 2 passed, 4 deselected。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_validity_recovery.py --basetemp .\.tmp\pytest -q` -> 5 passed, 1 failed；失败项为既有 `test_chatgpt_check_valid_uses_proxy_pool_before_direct`，入口是 `ChatGPTPlatform.check_valid()`，不走本轮修改的批量测活任务。
+- `git diff --check -- application\tasks.py tests\test_validity_recovery.py docs\account-health-check.md progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: ChatGPT 批量测活改用账号状态/订阅查询；补 session/cookies/overview 账号 ID 提取；更新状态持久化字段。
+  - tests/test_validity_recovery.py: 增加账号状态 403 必须写失效、状态查询成功后同步订阅和 Codex 额度的回归测试。
+  - docs/account-health-check.md: 文档改为状态/订阅查询链路和新的状态判定规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/tasks.py 中 `_run_single_chatgpt_health_check()` 为直接请求 `wham/usage` 的旧实现，并移除本轮新增的状态查询辅助函数和持久化字段同步；删除 tests/test_validity_recovery.py 本轮新增的两条 `chatgpt_health_check` 测试；恢复 docs/account-health-check.md 中旧的 `wham/usage` 测活说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: ChatGPT 批量测活任务统计修正
+
+### What was done
+- 修正 ChatGPT 批量测活任务的实时计数：账号状态/订阅判定失效的账号不再记为成功，而是计入失败。
+- 任务弹窗对 `account_health_check` 使用后端结果里的 `valid/invalid/error/items` 渲染统计，旧任务也会显示为“成功=正常账号数，失败=失效账号数+检测异常数”。
+- 失败明细改为优先展示每个测活结果 item，`HTTP 403` 这类失效账号会逐条出现在失败明细里，不再只显示主任务级 1 条错误。
+- 文档补充任务弹窗统计语义，避免把“检测完成”误读为“账号成功”。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_validity_recovery.py -k "chatgpt_health_check or account_health_check_task_counts" --basetemp .\.tmp\pytest -q` -> 3 passed, 4 deselected。
+- `C:\Program Files (x86)\Tencent\微信web开发者工具\node.exe frontend\node_modules\typescript\bin\tsc -b frontend\tsconfig.json` -> 无输出，TypeScript 编译通过。
+- `git diff --check -- application\tasks.py frontend\src\components\tasks\TaskLogPanel.tsx tests\test_validity_recovery.py progress.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 批量测活失效账号计入失败计数，不再调用成功计数。
+  - frontend/src/components/tasks/TaskLogPanel.tsx: `account_health_check` 弹窗统计改用 `valid/invalid/error/items`，并从 items 生成失败明细。
+  - tests/test_validity_recovery.py: 增加任务级计数回归测试，验证失效账号不会进入成功数。
+  - docs/account-health-check.md: 记录批量测活任务弹窗的统计口径。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/tasks.py 中 `_execute_account_health_check_task()` 对失效账号调用 `record_success()` 的旧行为；移除 TaskLogPanel.tsx 中 `account_health_check` 专用统计和 item 明细逻辑；删除 tests/test_validity_recovery.py 本轮新增任务级计数测试；恢复 docs/account-health-check.md 本轮新增统计说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME 禁用外层邮箱别名包装
+
+### What was done
+- 修正 ChatGPT 注册任务的邮箱包装逻辑：`icloud_hme` 或实际 `ICloudHMEMailbox` 不再被普通邮箱别名包装器二次包装。
+- 保留普通邮箱 provider 的邮箱别名默认启用行为，避免影响 Outlook/Gmail 等母号生成 `+suffix` 子号的注册模式。
+- 增加回归测试，覆盖 `mail_provider=icloud_hme` 且 `enable_email_alias=True` 时仍使用原始 HME mailbox。
+- 文档补充 HME 自身已创建隐私邮箱，不再叠加生成 `+suffix` 地址的运行规则。
+
+### Testing
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py::test_build_platform_instance_does_not_wrap_icloud_hme_with_email_alias tests\test_icloud_hme_provider.py::test_build_platform_instance_uses_icloud_hme_mailbox tests\test_email_alias_mailbox.py::test_build_platform_instance_wraps_mailbox_when_email_alias_enabled -q --basetemp .\.tmp\pytest` -> 3 passed, 1 warning。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py tests\test_email_alias_mailbox.py -q --basetemp .\.tmp\pytest` -> 36 passed, 1 warning。
+- `git diff --check -- application\tasks.py tests\test_icloud_hme_provider.py docs\icloud-hme-provider.md` -> 无空白错误。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 邮箱别名包装入口跳过 `icloud_hme` / `ICloudHMEMailbox`，防止 HME 地址再生成 `+suffix` 子号。
+  - tests/test_icloud_hme_provider.py: 新增 HME 开启普通邮箱别名时不被二次包装的回归测试。
+  - docs/icloud-hme-provider.md: 记录 HME 与普通邮箱别名不叠加的运行规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/tasks.py 中 `_maybe_wrap_email_alias_mailbox()` 对 `icloud_hme` / `ICloudHMEMailbox` 的提前返回；删除 tests/test_icloud_hme_provider.py 本轮新增测试；恢复 docs/icloud-hme-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME 验证码 Web Mail 优先命中修复
+
+### What was done
+- 先直接验证 `nimbus.remarks_97@icloud.com` 取信路径：IMAP 只返回空壳邮件，Web Mail 按 alias 可找到 ChatGPT 验证码线程，确认不是上游未发信。
+- 修正 iCloud HME 最近邮件读取逻辑：Web Mail 按 alias 命中时优先返回 Web Mail 结果；Web Mail 没命中或已配置 App 专用密码时临时失败，才保留 IMAP 结果继续匹配。
+- 增加回归测试覆盖 IMAP 返回非空但正文、收件人、主题全空时，验证码仍从 Web Mail alias 结果中提取。
+- 文档补充 IMAP 空壳邮件场景下继续查询 Web Mail 的运行规则。
+
+### Testing
+- 直接调用 iCloud Web Mail alias 查询 `nimbus.remarks_97@icloud.com` -> 成功返回 3 个线程，其中 ChatGPT 验证码线程可提取 6 位验证码。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py::test_icloud_hme_web_mail_alias_result_overrides_empty_imap_shells tests\test_icloud_hme_provider.py::test_icloud_hme_wait_for_code_uses_web_mail_fallback -q --basetemp .\.tmp\pytest-icloud-hme-otp` -> 2 passed, 1 warning。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest-icloud-hme-provider` -> 19 passed, 1 warning。
+- `Select-String -Path core\icloud_hme.py,tests\test_icloud_hme_provider.py,docs\icloud-hme-provider.md -Pattern '[ \t]+$'` -> 无输出，未发现行尾空白。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: `_recent_messages()` 改为 Web Mail alias 命中优先，未命中时保留 IMAP 结果，不再因 IMAP 空壳邮件漏掉 Web Mail 验证码。
+  - tests/test_icloud_hme_provider.py: 增加 IMAP 空壳邮件不阻断 Web Mail 验证码提取的回归测试。
+  - docs/icloud-hme-provider.md: 记录 IMAP 和 Web Mail 双路径读取顺序，以及 IMAP 空壳邮件的处理规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `_recent_messages()` 为单一 `messages` 列表并在 Web Mail 异常后返回空列表的旧逻辑；删除 tests/test_icloud_hme_provider.py 本轮新增的空壳 IMAP 回归测试；恢复 docs/icloud-hme-provider.md 本轮新增的 Web Mail 优先和空壳说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME 转发目标不匹配诊断与拦截
+
+### What was done
+- 复查本次失败 alias `coyer_shyest.9e@icloud.com`：HME 原始列表显示该 alias 为 active，但 `forwardToEmail=723875993@qq.com`，而当前 provider 配置读取的是 `karma54617@icloud.com`。
+- 确认 iCloud Web Mail `thread/search` 的 `query` 不能当作 alias 精确搜索；不同 query 返回同一批旧线程，且线程详情 `thread/get` 显示旧 ChatGPT 邮件实际收件人为母号，不是本次 alias。
+- `parse_alias_list()` 解析并保留 `forwardToEmail`；创建 HME 前先检查现有 alias 的转发目标，和配置的 iCloud 收信邮箱不一致时直接报错，不再创建新 alias 后盲等验证码。
+- `web_find_by_alias()` 改为只对 Web Mail 返回线程做本地 alias 过滤，不再把搜索接口返回的所有旧线程都标记为 alias 命中。
+- 文档补充 HME 转发目标必须和本 provider 读取的 iCloud 邮箱一致；如果转发到 QQ/Gmail/Outlook，应改用对应邮箱 provider 收信或先调整 Apple 隐私邮箱转发目标。
+
+### Testing
+- 直接读取 HME 原始列表 -> `coyer_shyest.9e@icloud.com` 为 active，`forwardToEmail=723875993@qq.com`。
+- 直接调用 iCloud Web Mail `thread/search` 多种 query -> 均返回同一批旧线程；`thread/get` 带 `sessionHeaders` 可返回旧线程详情，旧 ChatGPT 邮件收件人为 `karma54617@icloud.com`。
+- `PYTHONPATH=.venv\Lib\site-packages D:\ProgramData\miniconda3\python.exe -m py_compile core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py::test_parse_alias_list_accepts_hme_email_shapes tests\test_icloud_hme_provider.py::test_icloud_web_find_by_alias_only_returns_locally_matched_messages tests\test_icloud_hme_provider.py::test_icloud_hme_get_email_rejects_mismatched_forward_target tests\test_icloud_hme_provider.py::test_icloud_hme_get_email_creates_alias_and_receives_code -q --basetemp .\.tmp\pytest-icloud-forward` -> 4 passed, 1 warning。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 D:\ProgramData\miniconda3\python.exe -m pytest tests\test_icloud_hme_provider.py -q --basetemp .\.tmp\pytest-icloud-hme-provider2` -> 21 passed, 1 warning。
+- 当前真实配置调用 `create_mailbox('icloud_hme').get_email()` -> 直接报出转发目标 `723875993@qq.com` 与配置收信邮箱 `karma54617@icloud.com` 不一致。
+- `Select-String -Path core\icloud_hme.py,tests\test_icloud_hme_provider.py,docs\icloud-hme-provider.md -Pattern '[ \t]+$'` -> 无输出，未发现行尾空白。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: 解析 HME `forwardToEmail`，创建 alias 前校验转发目标；Web Mail alias 查询只做本地确认过滤，不再误认旧线程。
+  - tests/test_icloud_hme_provider.py: 增加转发目标解析、转发目标不匹配拦截、Web Mail alias 本地过滤的回归测试。
+  - docs/icloud-hme-provider.md: 记录 HME `forwardToEmail` 与收信 provider 的匹配要求，以及 Web Mail 搜索不是 alias 精确搜索。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 core/icloud_hme.py 中 `forwardToEmail` 解析、`_ensure_forward_target_matches()` 和 `get_email()` 创建前检查；恢复 `web_find_by_alias()` 为直接使用 Web Search query 并标记 `_alias_search`；删除 tests/test_icloud_hme_provider.py 本轮新增测试；恢复 docs/icloud-hme-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: iCloud HME 隐藏 alias 验证码读取修复
+
+### What was done
+- 复查本次失败 alias `billows-downy-2z@icloud.com`：iCloud Web Mail 收件箱已有 3 封 OpenAI 验证码邮件，线程摘要正文包含验证码 `888147`，但线程收件人为空且正文不包含 HME alias。
+- 修正 iCloud HME Web Mail 读取逻辑：alias 本地过滤无结果时，退回读取最近收件箱线程，并把这类线程标记为未按 alias 精确命中。
+- 修正验证码等待逻辑：未按 alias 精确命中的 HME Web Mail 线程，只有在调用方提供发送前 `before_ids` baseline 时才允许参与匹配，避免无 baseline 时误读旧验证码。
+- 增加回归测试覆盖 iCloud 把 Hide My Email 收件人隐藏，导致 alias 搜不到但新 OpenAI 验证码已到达的场景。
+- 文档补充 HME alias 被 iCloud 隐藏时的 Web Mail fallback 与 baseline 过滤规则。
+
+### Testing
+- 直接调用 iCloud Web Mail 最近线程读取 `billows-downy-2z@icloud.com` 对应收件箱 -> 最新 OpenAI 线程摘要包含 `888147`，`web_find_by_alias('billows-downy-2z@icloud.com')` 返回 0，复现 alias 隐藏导致旧逻辑漏读。
+- 修复后用真实配置构造 `MailboxAccount(email='billows-downy-2z@icloud.com')` 并调用 `wait_for_code(..., keyword='OpenAI', before_ids=<除最新线程外的当前线程>)` -> 成功返回 `888147`。
+- `PYTHONPATH=.venv\Lib\site-packages .\.venv\Scripts\python.exe -m py_compile core\icloud_hme.py tests\test_icloud_hme_provider.py` -> 无输出，编译通过。
+- `PYTHONPATH=.venv\Lib\site-packages PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .\.venv\Scripts\python.exe -m pytest tests\test_icloud_hme_provider.py -q` -> 22 passed, 1 warning。
+
+### Notes
+- 修改文件清单
+  - core/icloud_hme.py: Web Mail alias 本地过滤无结果时退回最近收件箱线程；验证码等待只在存在 `before_ids` baseline 时接受这类未精确 alias 命中的新线程。
+  - tests/test_icloud_hme_provider.py: 新增 HME alias 被 iCloud 隐藏时仍能从新 OpenAI 线程提取验证码的回归测试。
+  - docs/icloud-hme-provider.md: 记录 alias 隐藏时的 Web Mail fallback 与 baseline 过滤规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 core/icloud_hme.py 中 `_recent_web_messages()` 为只返回 `web_find_by_alias()`，并恢复 `wait_for_code()` 的 alias 强过滤条件；删除 tests/test_icloud_hme_provider.py 中 `test_icloud_hme_reads_web_mail_when_alias_is_hidden`；恢复 docs/icloud-hme-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-12 - Task: 账号更多菜单底部操作可见性修复
+
+### What was done
+- 修正账号列表行操作“更多”菜单的定位计算：菜单展开时会按真实内容高度和视口上下空间决定向下或向上展开。
+- 菜单最大高度改为受当前可见空间约束，靠近页面底部时不再把“上传 Team Manager”“删除”等下方操作挤出视口。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仅提示产物 chunk 大小超过 500 kB，和本轮菜单定位改动无关。
+- `git diff --check -- frontend/src/pages/Accounts.tsx progress.md` -> 无空白错误；Git 仅提示文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 调整 `ActionMenu` 的菜单高度和上下展开位置计算，避免底部操作被视口遮挡。
+  - frontend/.frontend-build.stamp: 前端构建验证刷新了已有构建戳；该文件进入本轮前已处于 modified 状态。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/pages/Accounts.tsx 中 `ActionMenu.updateMenuPosition()` 为旧的固定估算高度和全视口 `maxHeight` 逻辑；移除 progress.md 本轮追加内容即可恢复旧行为。`frontend/.frontend-build.stamp` 是构建生成戳，需回到仓库基线时可在确认不覆盖既有本地改动后执行 `git restore -- frontend/.frontend-build.stamp`，或重新运行前端构建生成新的戳。
+
+## 2026-07-12 - Task: 注册弹窗取消两个默认勾选项
+
+### What was done
+- ChatGPT 自动注册弹窗中，“是否开启邮箱别名”改为默认不勾选；用户需要时仍可手动开启，别名上限配置保留不变。
+- “是否打包上传”改为默认不勾选；启用远端上传后默认走逐号上传，用户勾选后才在任务末尾合并本批次 K12 JSON 统一上传。
+- K12 文档同步更新默认值和远端上传方式说明，避免继续写成默认打包上传。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仅提示产物 chunk 大小超过 500 kB，和本轮默认值改动无关。
+- `git diff --check -- frontend/src/pages/Accounts.tsx docs/k12-space-join.md progress.md` -> 无空白错误；Git 仅提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 将 `enableEmailAlias` 和 `k12BatchUploadEnabled` 的初始值改为 `false`。
+  - docs/k12-space-join.md: 更新“是否打包上传”默认不勾选及逐号/打包上传语义。
+  - frontend/.frontend-build.stamp: 前端构建验证刷新了已有构建戳；该文件进入本轮前已处于 modified 状态。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 frontend/src/pages/Accounts.tsx 中 `enableEmailAlias` 和 `k12BatchUploadEnabled` 的初始值恢复为 `true`；恢复 docs/k12-space-join.md 中“是否打包上传”默认勾选和打包上传说明；移除 progress.md 本轮追加内容即可恢复旧行为。`frontend/.frontend-build.stamp` 是构建生成戳，需回到仓库基线时可在确认不覆盖既有本地改动后执行 `git restore -- frontend/.frontend-build.stamp`，或重新运行前端构建生成新的戳。
+
+## 2026-07-12 - Task: 账号更多菜单动作启动 loading
+
+### What was done
+- 账号列表行操作“更多”菜单点击平台动作后，菜单关闭时立即显示“正在启动任务...”loading 提示。
+- 后端返回同步结果、请求失败或任务弹窗创建后，loading 自动消失，避免用户在弹窗出现前误以为没有点击成功。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仅提示产物 chunk 大小超过 500 kB，和本轮 loading 改动无关。
+- `git diff --check -- frontend/src/pages/Accounts.tsx progress.md` -> 无空白错误；Git 仅提示部分文件未来检出时会按配置转换 CRLF。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 在 `ActionMenu` 中增加动作启动态，并渲染固定位置 loading 提示。
+  - frontend/.frontend-build.stamp: 前端构建验证刷新了已有构建戳；该文件进入本轮前已处于 modified 状态。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 frontend/src/pages/Accounts.tsx 中 `actionLaunching` 状态、`runAction()` 里的启动态设置/清理，以及对应 loading 提示渲染；移除 progress.md 本轮追加内容即可恢复旧行为。`frontend/.frontend-build.stamp` 是构建生成戳，需回到仓库基线时可在确认不覆盖既有本地改动后执行 `git restore -- frontend/.frontend-build.stamp`，或重新运行前端构建生成新的戳。
+
+## 2026-07-12 - Task: ChatGPT refresh_session Cloudflare Managed Challenge 分类与停止保护
+
+### What was done
+- 确认协议 authorize 首跳返回的是 Cloudflare Managed Challenge 整页拦截，不是当前 YesCaptcha 配置能直接处理的普通 Turnstile `sitekey` 挑战。
+- `refresh_session` 流程新增 Cloudflare Managed Challenge 识别和专用错误分类，避免继续把整段 HTML 作为普通 `platform_authorize_http_403` 报错展示。
+- 命中该分类时不把账号标记为 banned，也不删除账号，避免把上游风控误判为账号失效。
+- 任务执行层增加连续 2 次 Cloudflare Managed Challenge 后停止提交后续账号的保护，防止同一代理或同一路径持续触发风控。
+- 本地文档补充 YesCaptcha 不适用原因、错误分类语义和连续拦截停止策略。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\plugin.py application\tasks.py tests\test_chatgpt_get_rt_otp_callback.py tests\test_platform_action_task.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_otp_callback.py::test_cloudflare_managed_challenge_html_is_detected tests\test_chatgpt_get_rt_otp_callback.py::test_refresh_session_classifies_cloudflare_managed_challenge tests\test_platform_action_task.py::test_refresh_session_task_stops_after_repeated_cloudflare_challenges -q` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_otp_callback.py::test_refresh_session_failed_result_only_flags_confirmed_banned_accounts tests\test_chatgpt_get_rt_otp_callback.py::test_cloudflare_managed_challenge_html_is_detected tests\test_chatgpt_get_rt_otp_callback.py::test_refresh_session_classifies_cloudflare_managed_challenge tests\test_platform_action_task.py::test_refresh_session_task_deletes_banned_account tests\test_platform_action_task.py::test_refresh_session_task_keeps_account_on_normal_failure tests\test_platform_action_task.py::test_refresh_session_task_stops_after_repeated_cloudflare_challenges tests\test_platform_action_task.py::test_platform_runtime_persists_refresh_session_result -q` -> 7 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py platforms/chatgpt/plugin.py application/tasks.py tests/test_chatgpt_get_rt_otp_callback.py tests/test_platform_action_task.py progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 增加 Cloudflare Managed Challenge HTML 检测、专用异常和 authorize 非 200 分类。
+  - platforms/chatgpt/plugin.py: `refresh_session` 将 Cloudflare Managed Challenge 归类为 `cloudflare_managed_challenge`，不再按账号 banned 处理。
+  - application/tasks.py: `refresh_session` 批量任务连续 2 次遇到 Cloudflare Managed Challenge 后停止提交后续账号。
+  - tests/test_chatgpt_get_rt_otp_callback.py: 增加 Managed Challenge 检测和 refresh_session 分类回归测试。
+  - tests/test_platform_action_task.py: 增加批量任务连续 Cloudflare 拦截后停止的回归测试。
+  - docs/chatgpt-register-flow.md: 记录该错误分类、YesCaptcha 不适用原因和任务停止策略；该文件是本地 gitignored 文档。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/register.py 中新增的 Cloudflare Managed Challenge 常量、检测函数、异常类和 authorize 分支；恢复 platforms/chatgpt/plugin.py 中 `_refresh_session_failed_result()` 签名和 `_handle_refresh_session()` 错误分类处理；移除 application/tasks.py 中连续 Cloudflare 拦截停止逻辑；删除本轮新增测试；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。

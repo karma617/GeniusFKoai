@@ -4,6 +4,8 @@ import base64
 import json
 import time
 
+import pytest
+
 from application import tasks as tasks_module
 from application.tasks import _mark_get_rt_upload_status
 from core.account_graph import load_account_graphs
@@ -13,6 +15,15 @@ from domain.actions import ActionExecutionResult
 from domain.actions import ActionExecutionCommand
 from infrastructure import platform_runtime as runtime_module
 from sqlmodel import Session
+
+
+@pytest.fixture(autouse=True)
+def _disable_chatgpt_trial_post_register_check(monkeypatch):
+    monkeypatch.setattr(
+        tasks_module,
+        "_run_chatgpt_trial_post_register_check",
+        lambda *args, **kwargs: False,
+    )
 
 
 class _FakeLogger:
@@ -130,6 +141,112 @@ def test_platform_action_task_passes_task_logger_to_runtime(monkeypatch):
     assert ("log", "checkout step log", {}) in logger.events
     assert logger.result_data == {"message": "summary"}
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+
+
+def test_refresh_session_task_deletes_banned_account(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="banned-refresh@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            return ActionExecutionResult(
+                ok=False,
+                error="account has been deleted or deactivated",
+                data={"error_type": "account_banned", "delete_local_account": True},
+            )
+
+    monkeypatch.setattr(tasks_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_refresh_session_task(
+        {"platform": "chatgpt", "ids": [account_id], "concurrency": 1},
+        logger,
+    )
+
+    with Session(engine) as session:
+        assert session.get(AccountModel, account_id) is None
+
+    assert logger.result_data["results"][0]["deleted"] is True
+    assert logger.finished == (tasks_module.TASK_STATUS_FAILED, "全部账号重新登录失败")
+
+
+def test_refresh_session_task_keeps_account_on_normal_failure(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="normal-refresh@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            return ActionExecutionResult(
+                ok=False,
+                error="邮箱服务不可用",
+                data={"error_type": "session_refresh_failed"},
+            )
+
+    monkeypatch.setattr(tasks_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_refresh_session_task(
+        {"platform": "chatgpt", "ids": [account_id], "concurrency": 1},
+        logger,
+    )
+
+    with Session(engine) as session:
+        assert session.get(AccountModel, account_id) is not None
+
+    assert logger.result_data["results"][0]["deleted"] is False
+    assert logger.finished == (tasks_module.TASK_STATUS_FAILED, "全部账号重新登录失败")
+
+
+def test_refresh_session_task_stops_after_repeated_cloudflare_challenges(monkeypatch):
+    account_ids = []
+    with Session(engine) as session:
+        for index in range(3):
+            model = AccountModel(
+                platform="chatgpt",
+                email=f"cloudflare-refresh-{index}@test.com",
+                password="Secret123!",
+            )
+            session.add(model)
+            session.commit()
+            session.refresh(model)
+            account_ids.append(int(model.id or 0))
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            return ActionExecutionResult(
+                ok=False,
+                error="platform_authorize_cloudflare_managed_challenge: auth.openai.com 返回 Cloudflare Managed Challenge",
+                data={"error_type": "cloudflare_managed_challenge"},
+            )
+
+    monkeypatch.setattr(tasks_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_refresh_session_task(
+        {"platform": "chatgpt", "ids": account_ids, "concurrency": 1},
+        logger,
+    )
+
+    assert calls == account_ids[:2]
+    assert logger.result_data["total"] == 3
+    assert len(logger.result_data["results"]) == 2
+    assert logger.result_data["results"][0]["error_type"] == "cloudflare_managed_challenge"
+    assert logger.finished == (
+        tasks_module.TASK_STATUS_FAILED,
+        "Cloudflare Managed Challenge 连续拦截，已停止后续账号",
+    )
+    assert any("连续遇到 Cloudflare Managed Challenge" in event[1] for event in logger.events if event[0] == "log")
 
 
 def test_chatgpt_register_task_succeeds_after_successful_registration(monkeypatch):
@@ -256,6 +373,237 @@ def test_chatgpt_register_remote_upload_checkbox_keeps_remote_upload(monkeypatch
 
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
     assert calls == {"remote": 1, "local": 0}
+
+
+def test_chatgpt_register_bugfree_mode_skips_until_seven_day_account(monkeypatch):
+    registered = []
+    local_saved = []
+    marked = []
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            index = len(registered)
+            email_value = "month@example.com" if index == 0 else "bugfree@example.com"
+            registered.append(email_value)
+            return Account(
+                platform="chatgpt",
+                email=email_value,
+                password=password or "Secret123!",
+                user_id=f"acct_{index + 1}",
+                extra={"access_token": f"access-token-{index + 1}"},
+            )
+
+    def fake_save_account(account):
+        return type("SavedModel", (), {"id": len(registered)})()
+
+    def fake_inspect(account, *, proxy=None, timeout=20):
+        if account.email == "month@example.com":
+            return {
+                "ok": True,
+                "url": "https://chatgpt.com/backend-api/wham/usage",
+                "reset_at": 1786096087,
+                "reset_at_text": "2026-08-07 00:00:00 CST",
+                "reset_days": 30.0,
+                "is_bugfree": False,
+                "reason": "额度刷新时间约 30 天，跳过当前账号",
+            }
+        return {
+            "ok": True,
+            "url": "https://chatgpt.com/backend-api/wham/usage",
+            "reset_at": 1784108887,
+            "reset_at_text": "2026-07-15 00:00:00 CST",
+            "reset_days": 7.0,
+            "is_bugfree": True,
+            "usage": {"rate_limit": {"primary_window": {"reset_at": 1784108887}}},
+        }
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "save_account", fake_save_account)
+    monkeypatch.setattr(tasks_module, "_inspect_chatgpt_bugfree_usage", fake_inspect)
+    monkeypatch.setattr(tasks_module, "_mark_bugfree_account", lambda account_id, usage: marked.append(account_id))
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda _logger, account: local_saved.append(account.email))
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {"identity_provider": "oauth_browser", "bugfree_mode": True},
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert registered == ["month@example.com", "bugfree@example.com"]
+    assert local_saved == ["bugfree@example.com"]
+    assert marked == [2]
+    assert any("额度刷新时间约 30 天" in event[1] for event in logger.events if event[0] == "log")
+    assert any("已确认并打标签 BUGFREE" in event[1] for event in logger.events if event[0] == "log")
+
+
+def test_chatgpt_register_bugfree_mode_falls_back_when_saved_model_detached(monkeypatch):
+    marked = []
+    real_save_account = tasks_module.save_account
+
+    class DetachedSavedModel:
+        @property
+        def id(self):
+            raise RuntimeError("detached")
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            return Account(
+                platform="chatgpt",
+                email="bugfree-detached@example.com",
+                password=password or "Secret123!",
+                user_id="acct_detached",
+                extra={"access_token": "access-token"},
+            )
+
+    def save_then_return_detached(account):
+        real_save_account(account)
+        return DetachedSavedModel()
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "save_account", save_then_return_detached)
+    monkeypatch.setattr(
+        tasks_module,
+        "_inspect_chatgpt_bugfree_usage",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "url": "https://chatgpt.com/backend-api/wham/usage",
+            "reset_at": 1784108887,
+            "reset_at_text": "2026-07-15 00:00:00 CST",
+            "reset_days": 7.0,
+            "is_bugfree": True,
+            "usage": {"rate_limit": {"primary_window": {"reset_at": 1784108887}}},
+        },
+    )
+    monkeypatch.setattr(tasks_module, "_mark_bugfree_account", lambda account_id, usage: marked.append(account_id))
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: None)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {"identity_provider": "oauth_browser", "bugfree_mode": True},
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert len(marked) == 1
+    assert marked[0] > 0
+
+
+def test_chatgpt_bugfree_check_logs_request_failure(monkeypatch):
+    monkeypatch.setattr(
+        tasks_module,
+        "_inspect_chatgpt_bugfree_usage",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "url": "https://chatgpt.com/backend-api/wham/usage",
+            "error": "HTTP 500: upstream failed",
+        },
+    )
+
+    logger = _FakeLogger()
+    account = Account(
+        platform="chatgpt",
+        email="failed@example.com",
+        password="Secret123!",
+        user_id="acct_1",
+        extra={"access_token": "access-token"},
+    )
+
+    result = tasks_module._run_bugfree_post_register_check(
+        account=account,
+        saved_account_id=1,
+        logger=logger,
+        proxy=None,
+    )
+
+    assert result is False
+    assert any("请求额度接口" in event[1] for event in logger.events if event[0] == "log")
+    assert any(
+        "HTTP 500: upstream failed" in event[1] and event[2].get("level") == "error"
+        for event in logger.events
+        if event[0] == "log"
+    )
+
+
+def test_chatgpt_free_plus_trial_campaign_detection():
+    data = {
+        "accounts": {
+            "acct-123": {
+                "eligible_promo_campaigns": {
+                    "plus": {
+                        "id": "plus-1-month-free",
+                        "metadata": {
+                            "plan_name": "chatgptplusplan",
+                            "discount": {"percentage": 100},
+                            "duration": {"num_periods": 1, "period": "month"},
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    campaign = tasks_module._find_chatgpt_free_plus_trial_campaign(data, "acct-123")
+
+    assert campaign is not None
+    assert campaign["id"] == "plus-1-month-free"
+    assert tasks_module._find_chatgpt_free_plus_trial_campaign({"accounts": {"acct-123": {"eligible_promo_campaigns": {}}}}, "acct-123") is None
+
+
+def test_mark_chatgpt_trial_account_adds_filterable_trial_tag():
+    from domain.accounts import AccountQuery
+    from infrastructure.accounts_repository import AccountsRepository
+
+    saved = tasks_module.save_account(
+        Account(
+            platform="chatgpt",
+            email="trial-tag@example.com",
+            password="Secret123!",
+            user_id="acct-123",
+            extra={"access_token": "access-token"},
+        )
+    )
+    account_id = int(saved.id or 0)
+
+    tasks_module._mark_chatgpt_trial_account(
+        account_id,
+        {
+            "campaign_id": "plus-1-month-free",
+            "plan_name": "chatgptplusplan",
+            "title": "Try Plus free for 1 month",
+            "discount_percentage": 100,
+            "duration": {"num_periods": 1, "period": "month"},
+        },
+    )
+
+    total, items = AccountsRepository().list(AccountQuery(platform="chatgpt", tag="试用"))
+
+    assert total == 1
+    assert items[0].email == "trial-tag@example.com"
+    assert "试用" in items[0].overview["chips"]
+    assert any(item.get("label") == "试用" for item in items[0].display_summary["badges"])
 
 
 def test_chatgpt_register_prepares_dynamic_proxy_by_concurrency(monkeypatch):
@@ -3115,6 +3463,71 @@ def test_platform_runtime_marks_sub2api_manual_upload_success(monkeypatch):
     assert patched["summary_updates"]["rt_upload_status"] == "uploaded"
 
 
+def test_platform_runtime_does_not_mark_force_sub2api_upload_as_rt_uploaded(monkeypatch):
+    patched = {}
+
+    class FakeSession:
+        def __init__(self, engine):
+            self.added = []
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model_cls, account_id):
+            return type("Model", (), {"id": account_id, "platform": "chatgpt", "updated_at": None})()
+
+        def add(self, model):
+            self.added.append(model)
+
+        def commit(self):
+            self.committed = True
+
+    class FakePlatform:
+        def __init__(self, config=None):
+            pass
+
+        def execute_action(self, action_id, account, params):
+            return {
+                "ok": True,
+                "data": {
+                    "message": "SUB2API 无RT强制上传成功",
+                    "upload_target": "sub2api",
+                    "upload_status": "uploaded",
+                    "force_upload_without_rt": True,
+                    "uploaded_without_rt": True,
+                },
+            }
+
+    def fake_patch_account_graph(session, model, **kwargs):
+        patched.update(kwargs)
+
+    monkeypatch.setattr(runtime_module, "Session", FakeSession)
+    monkeypatch.setattr(runtime_module, "load_all", lambda: None)
+    monkeypatch.setattr(runtime_module, "get", lambda platform: FakePlatform)
+    monkeypatch.setattr(runtime_module, "build_platform_account", lambda session, model: object())
+    monkeypatch.setattr(runtime_module, "patch_account_graph", fake_patch_account_graph)
+
+    result = runtime_module.PlatformRuntime().execute_action(
+        ActionExecutionCommand(
+            platform="chatgpt",
+            account_id=123,
+            action_id="upload_sub2api",
+            params={"force_upload_without_rt": True},
+        )
+    )
+
+    assert result.ok is True
+    assert patched["lifecycle_status"] is None
+    assert "display_status" not in patched["summary_updates"]
+    assert "rt_upload_status" not in patched["summary_updates"]
+    assert patched["summary_updates"]["sub2api_upload_status"] == "uploaded"
+    assert patched["summary_updates"]["sub2api_force_upload_without_rt"] is True
+
+
 def test_platform_runtime_persists_k12_join_upload_session(monkeypatch):
     patched = {}
 
@@ -3293,6 +3706,71 @@ def test_platform_runtime_persists_session_refresh_after_failed_get_rt(monkeypat
     assert patched["credential_updates"]["refresh_token"] == "new-refresh"
     assert patched["credential_updates"]["session_token"] == "new-session"
     assert patched["summary_updates"]["session_refresh_status"] == "refreshed"
+
+
+def test_platform_runtime_persists_refresh_session_result(monkeypatch):
+    patched = {}
+
+    class FakeSession:
+        def __init__(self, engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model_cls, account_id):
+            return type("Model", (), {"id": account_id, "platform": "chatgpt", "updated_at": None})()
+
+        def add(self, model):
+            pass
+
+        def commit(self):
+            pass
+
+    class FakePlatform:
+        def __init__(self, config=None):
+            pass
+
+        def execute_action(self, action_id, account, params):
+            return {
+                "ok": True,
+                "data": {
+                    "email": "refresh-session@test.com",
+                    "account_id": "acct-refresh",
+                    "access_token": "new-access",
+                    "session_token": "new-session",
+                    "cookies": "__Secure-next-auth.session-token=new-session",
+                    "session": {"accessToken": "new-access", "user": {"email": "refresh-session@test.com"}},
+                    "session_refreshed_at": "2026-07-09T10:00:00Z",
+                    "session_refresh_status": "refreshed",
+                },
+            }
+
+    def fake_patch_account_graph(session, model, **kwargs):
+        patched.update(kwargs)
+
+    monkeypatch.setattr(runtime_module, "Session", FakeSession)
+    monkeypatch.setattr(runtime_module, "load_all", lambda: None)
+    monkeypatch.setattr(runtime_module, "get", lambda platform: FakePlatform)
+    monkeypatch.setattr(runtime_module, "build_platform_account", lambda session, model: object())
+    monkeypatch.setattr(runtime_module, "patch_account_graph", fake_patch_account_graph)
+
+    result = runtime_module.PlatformRuntime().execute_action(
+        ActionExecutionCommand(platform="chatgpt", account_id=123, action_id="refresh_session", params={})
+    )
+
+    assert result.ok is True
+    assert patched["credential_updates"]["access_token"] == "new-access"
+    assert patched["credential_updates"]["session_token"] == "new-session"
+    assert patched["credential_updates"]["cookies"] == "__Secure-next-auth.session-token=new-session"
+    assert patched["lifecycle_status"] == "registered"
+    assert patched["summary_updates"]["session"]["accessToken"] == "new-access"
+    assert patched["summary_updates"]["chatgpt_session"]["accessToken"] == "new-access"
+    assert patched["summary_updates"]["session_refresh_status"] == "refreshed"
+    assert patched["summary_updates"]["last_session_refresh_at"] == "2026-07-09T10:00:00Z"
 
 
 def test_load_account_graphs_normalizes_legacy_authorized_rt_status():

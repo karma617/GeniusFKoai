@@ -20,12 +20,14 @@ class ProxyRecord:
 class ProxyCreateCommand:
     url: str
     region: str = ""
+    import_scheme: str = "http"
 
 
 @dataclass(slots=True)
 class ProxyBulkCreateCommand:
     proxies: list[str]
     region: str = ""
+    import_scheme: str = "http"
 
 
 @dataclass(slots=True)

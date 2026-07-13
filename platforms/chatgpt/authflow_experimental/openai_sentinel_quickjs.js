@@ -1,6 +1,6 @@
 const EXPOSE_PATCH = "return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.token=ye,t}({});";
 const EXPOSE_REPLACEMENT =
-  "return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.token=ye,t.__debug_n=_n,t.__debug_bindProof=D,t}({});";
+  "return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.__debug_setSessionObserver=se,t.token=ye,t.__debug_n=_n,t.__debug_bindProof=D,t}({});";
 const INSTANCE_PATCH = "var P=new _;";
 const INSTANCE_REPLACEMENT = "var P=new _;globalThis.__debugP=P;";
 const SDK_GLOBAL_PATCH = "var SentinelSDK=";
@@ -370,7 +370,20 @@ async function run(payload, sdkSource) {
     globalThis.SentinelSDK.__debug_bindProof(challenge, requestP);
     const dx = challenge && challenge.turnstile ? challenge.turnstile.dx : null;
     const tValue = dx ? await globalThis.SentinelSDK.__debug_n(challenge, dx) : null;
-    return { final_p: finalP, t: tValue };
+    let soToken = "";
+    try {
+      const flow = String(payload.flow || "authorize_continue");
+      if (
+        typeof globalThis.SentinelSDK.__debug_setSessionObserver === "function" &&
+        typeof globalThis.SentinelSDK.sessionObserverToken === "function"
+      ) {
+        globalThis.SentinelSDK.__debug_setSessionObserver(flow, challenge);
+        soToken = await globalThis.SentinelSDK.sessionObserverToken(flow) || "";
+      }
+    } catch {
+      soToken = "";
+    }
+    return { final_p: finalP, t: tValue, so_token: soToken };
   }
 
   throw new Error(`unsupported action: ${payload.action}`);

@@ -268,6 +268,8 @@ class EmailAliasMailbox(BaseMailbox):
         self._log_fn = log_fn
         self._parents_by_alias: dict[str, MailboxAccount] = {}
         self._local_alias_success_counts: dict[str, int] = {}
+        self._exhausted_parent_emails: set[str] = set()
+        self._state_lock = threading.Lock()
 
     def _log(self, message: str) -> None:
         if not callable(self._log_fn):
@@ -412,16 +414,25 @@ class EmailAliasMailbox(BaseMailbox):
                 raise
             parent_email = normalize_email_address(parent.email)
             last_parent = parent_email or last_parent
+            with self._state_lock:
+                parent_exhausted = bool(parent_email and parent_email in self._exhausted_parent_emails)
+            if parent_exhausted:
+                self._log(f"Email alias parent already exhausted in current task; skipping: {parent_email}")
+                continue
             usage = get_email_alias_usage(parent_email, platform=self.platform)
             local_alias_success_count = self._local_alias_success_counts.get(parent_email, 0)
             last_usage = usage
             if (
                 usage.alias_success_count + local_alias_success_count >= self.alias_limit
             ):
-                if parent_email in seen_full:
-                    break
+                should_mark = False
+                with self._state_lock:
+                    if parent_email and parent_email not in self._exhausted_parent_emails:
+                        self._exhausted_parent_emails.add(parent_email)
+                        should_mark = True
                 seen_full.add(parent_email)
-                self._mark_parent_alias_quota_exhausted(parent, usage)
+                if should_mark:
+                    self._mark_parent_alias_quota_exhausted(parent, usage)
                 continue
 
             alias_email = _random_alias(parent_email, platform=self.platform)
@@ -542,6 +553,14 @@ class EmailAliasMailbox(BaseMailbox):
             "Email alias parent exhausted (user_already_exists): "
             f"alias={getattr(account, 'email', '')} parent={parent.email}"
         )
+        alias_exhausted_marker = getattr(self.mailbox, "mark_alias_exhausted", None)
+        if callable(alias_exhausted_marker):
+            try:
+                applied = list(alias_exhausted_marker(parent, reason="user_already_exists") or [])
+                if applied:
+                    return applied
+            except Exception as exc:
+                self._log(f"Email alias parent exhausted mark failed: {parent.email} error={exc}")
         invalid_marker = getattr(self.mailbox, "mark_invalid_email", None)
         if callable(invalid_marker):
             try:

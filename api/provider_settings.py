@@ -75,6 +75,28 @@ class GmailOAuthExchangeRequest(BaseModel):
     code_verifier: str = ""
 
 
+class ICloudHMEAccountRequest(BaseModel):
+    id: str = ""
+    name: str = ""
+    real_email: str = ""
+    icloud_email: str = ""
+    cookies: str = ""
+    cookie_header: str = ""
+    host: str = "icloud.com"
+    proxy: str = ""
+    app_password: str = ""
+    validate_account: bool = Field(default=True, alias="validate")
+
+
+class ICloudHMEAliasCreateRequest(BaseModel):
+    account_id: str
+    label: str = ""
+
+
+class ICloudHMEAliasActionRequest(BaseModel):
+    account_id: str
+
+
 _GMAIL_OAUTH_SESSIONS: dict[str, dict] = {}
 _GMAIL_OAUTH_LOCK = threading.Lock()
 _GMAIL_OAUTH_CALLBACK_HOST = "127.0.0.1"
@@ -211,6 +233,106 @@ def exchange_gmail_oauth_code(body: GmailOAuthExchangeRequest):
         return {"ok": True, "token_json": token_json}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@router.get("/icloud-hme/accounts")
+def list_icloud_hme_accounts():
+    from application.icloud_hme import ICloudHMEService
+
+    return ICloudHMEService().list_accounts()
+
+
+@router.post("/icloud-hme/accounts")
+def upsert_icloud_hme_account(body: ICloudHMEAccountRequest):
+    from application.icloud_hme import ICloudHMEService
+
+    try:
+        payload = body.model_dump()
+        payload["validate"] = body.validate_account
+        return ICloudHMEService().upsert_account(payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.delete("/icloud-hme/accounts/{account_id}")
+def delete_icloud_hme_account(account_id: str):
+    from application.icloud_hme import ICloudHMEService
+
+    result = ICloudHMEService().delete_account(account_id)
+    if not result.get("ok"):
+        raise HTTPException(404, result.get("error") or "iCloud 账号不存在")
+    return result
+
+
+@router.post("/icloud-hme/accounts/{account_id}/validate")
+def validate_icloud_hme_account(account_id: str, body: ICloudHMEAccountRequest | None = None):
+    from application.icloud_hme import ICloudHMEService
+
+    try:
+        payload = body.model_dump() if body else None
+        return ICloudHMEService().validate_account(account_id, payload)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@router.get("/icloud-hme/aliases")
+def list_icloud_hme_aliases(account_id: str):
+    from application.icloud_hme import ICloudHMEService
+
+    try:
+        return ICloudHMEService().list_aliases(account_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.post("/icloud-hme/aliases")
+def create_icloud_hme_alias(body: ICloudHMEAliasCreateRequest):
+    from application.icloud_hme import ICloudHMEService
+
+    try:
+        return ICloudHMEService().create_alias(body.account_id, body.label)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.post("/icloud-hme/aliases/{anonymous_id}/deactivate")
+def deactivate_icloud_hme_alias(anonymous_id: str, body: ICloudHMEAliasActionRequest):
+    from application.icloud_hme import ICloudHMEService
+
+    try:
+        return ICloudHMEService().alias_action(body.account_id, anonymous_id, "deactivate")
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.post("/icloud-hme/aliases/{anonymous_id}/reactivate")
+def reactivate_icloud_hme_alias(anonymous_id: str, body: ICloudHMEAliasActionRequest):
+    from application.icloud_hme import ICloudHMEService
+
+    try:
+        return ICloudHMEService().alias_action(body.account_id, anonymous_id, "reactivate")
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
+
+
+@router.delete("/icloud-hme/aliases/{anonymous_id}")
+def delete_icloud_hme_alias(anonymous_id: str, body: ICloudHMEAliasActionRequest):
+    from application.icloud_hme import ICloudHMEService
+
+    try:
+        return ICloudHMEService().alias_action(body.account_id, anonymous_id, "delete")
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
 
 
 @router.post("/test")

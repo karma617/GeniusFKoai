@@ -505,6 +505,54 @@ def test_register_for_gopay_uses_real_save_account(monkeypatch):
         assert int(m.id) == ids[0]
 
 
+def test_shortlink_register_for_gopay_marks_mailbox_registration_success(monkeypatch):
+    """注册+短链旁路只要注册成功，就必须给对应邮箱打已注册标签。"""
+    import application.tasks as tasks_mod
+    from core.base_platform import Account, AccountStatus
+
+    marked: list[tuple[str, str]] = []
+
+    class FakeMailbox:
+        def mark_registration_success(self, mailbox_account):
+            marked.append((mailbox_account.email, mailbox_account.account_id))
+            return ["已注册"]
+
+    class FakePlatform:
+        mailbox = FakeMailbox()
+
+        def register(self, *a, **k):
+            return Account(
+                platform="chatgpt",
+                email="shortlink-tag@x.com",
+                password="pw",
+                user_id="u",
+                status=AccountStatus.REGISTERED,
+                extra={
+                    "provider_resources": [
+                        {
+                            "provider_name": "outlook_email_api",
+                            "resource_type": "mailbox",
+                            "handle": "parent-shortlink@example.com",
+                            "resource_identifier": "mailbox-parent-1",
+                        }
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(tasks_mod, "_build_platform_instance", lambda *a, **k: FakePlatform())
+    monkeypatch.setattr(tasks_mod, "_resolve_registration_proxy_for_platform", lambda *a, **k: None)
+
+    class _L:
+        def log(self, *a, **k): pass
+        def is_cancel_requested(self): return False
+        def set_subtask(self, *a, **k): pass
+        def clear_subtask(self): pass
+
+    tasks_mod._register_chatgpt_shortlink_grab_for_gopay(1, {}, _L())
+
+    assert marked == [("parent-shortlink@example.com", "mailbox-parent-1")]
+
+
 
 # -- 需求 2: 填了 midtrans_url 跳过 ChatGPT 注册直接付款 --
 

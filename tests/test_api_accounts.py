@@ -78,6 +78,42 @@ def test_delete_account(client):
     assert get_resp.status_code == 404
 
 
+def test_delete_invalid_and_banned_accounts_only_current_platform(client):
+    invalid_id = _create_account(
+        client,
+        email="delete-invalid@test.com",
+        lifecycle_status="invalid",
+    ).json()["id"]
+    banned_id = _create_account(
+        client,
+        email="delete-banned@test.com",
+        lifecycle_status="banned",
+    ).json()["id"]
+    registered_id = _create_account(
+        client,
+        email="keep-registered@test.com",
+        lifecycle_status="registered",
+    ).json()["id"]
+    other_platform_id = _create_account(
+        client,
+        platform="cursor",
+        email="keep-cursor-invalid@test.com",
+        lifecycle_status="invalid",
+    ).json()["id"]
+
+    resp = client.delete("/api/accounts/invalid-and-banned", params={"platform": "chatgpt"})
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ok"] is True
+    assert payload["deleted"] == 2
+    assert set(payload["deleted_ids"]) == {invalid_id, banned_id}
+    assert client.get(f"/api/accounts/{invalid_id}").status_code == 404
+    assert client.get(f"/api/accounts/{banned_id}").status_code == 404
+    assert client.get(f"/api/accounts/{registered_id}").status_code == 200
+    assert client.get(f"/api/accounts/{other_platform_id}").status_code == 200
+
+
 def test_update_account(client):
     create_resp = _create_account(client)
     account_id = create_resp.json()["id"]
@@ -95,6 +131,36 @@ def test_filter_accounts_by_platform(client):
     data = resp.json()
     assert data["total"] == 1
     assert data["items"][0]["platform"] == "cursor"
+
+
+def test_filter_accounts_by_tag(client):
+    _create_account(client, platform="chatgpt", email="bugfree@test.com", overview={"chips": ["BUGFREE"]})
+    _create_account(client, platform="chatgpt", email="sticky-bugfree@test.com", overview={"chips": ["Free"], "bugfree": True})
+    _create_account(client, platform="chatgpt", email="plus@test.com", lifecycle_status="subscribed")
+    _create_account(client, platform="chatgpt", email="free@test.com")
+
+    bugfree_resp = client.get("/api/accounts", params={"platform": "chatgpt", "tag": "BUGFREE"})
+    plus_resp = client.get("/api/accounts", params={"platform": "chatgpt", "tag": "PLUS"})
+    bugfree_items = bugfree_resp.json()["items"]
+    sticky_item = next(item for item in bugfree_items if item["email"] == "sticky-bugfree@test.com")
+    sticky_badges = [badge["label"] for badge in sticky_item["display_summary"]["badges"]]
+
+    assert {item["email"] for item in bugfree_items} == {"bugfree@test.com", "sticky-bugfree@test.com"}
+    assert "BUGFREE" in sticky_badges
+    assert [item["email"] for item in plus_resp.json()["items"]] == ["plus@test.com"]
+
+
+def test_export_accounts_by_tag_filter(client):
+    _create_account(client, platform="chatgpt", email="bugfree@test.com", overview={"chips": ["Free"], "bugfree": True})
+    _create_account(client, platform="chatgpt", email="free@test.com")
+
+    resp = client.post(
+        "/api/accounts/export/json",
+        json={"platform": "chatgpt", "select_all": True, "tag_filter": "BUGFREE"},
+    )
+
+    assert resp.status_code == 200
+    assert [item["email"] for item in resp.json()] == ["bugfree@test.com"]
 
 
 def test_list_accounts_paginates_before_serializing_current_page(client):

@@ -6,9 +6,15 @@ def test_lifecycle_status(client):
     resp = client.get("/api/lifecycle/status")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["enabled"] is True
     assert "running" in data
+    assert data["services"]["lifecycle_account_check_enabled"] is True
+    assert data["services"]["lifecycle_token_refresh_enabled"] is True
+    assert data["services"]["lifecycle_trial_warning_enabled"] is True
+    assert data["services"]["lifecycle_external_sync_enabled"] is False
     assert "check_interval_hours" in data
     assert "refresh_interval_hours" in data
+    assert "external_sync_interval_hours" in data
     assert "warning_hours" in data
 
 

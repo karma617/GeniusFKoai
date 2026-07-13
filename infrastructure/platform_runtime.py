@@ -41,10 +41,12 @@ PERSISTED_ACTION_DATA_KEYS = {
     "orgId",
     "auth_token",
     "authToken",
+    "cookies",
 }
 
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}
 OAUTH_RESULT_ACTION_IDS = {"get_rt"}
+SESSION_RESULT_ACTION_IDS = {"refresh_session"}
 UPLOAD_RESULT_ACTION_IDS = {"upload_sub2api", "k12_join_upload"}
 FAILED_ACTION_PERSISTED_ERROR_TYPES = {"account_banned", "session_stale_refreshed"}
 CASHIER_URL_ACTION_IDS = {
@@ -276,6 +278,28 @@ def _build_oauth_result_overview(platform: str, data: dict[str, Any]) -> dict[st
     return overview
 
 
+def _build_session_refresh_overview(platform: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    if platform != "chatgpt" or not isinstance(data, dict):
+        return None
+    session = data.get("session") if isinstance(data.get("session"), dict) else {}
+    if not session:
+        return None
+    now = str(data.get("session_refreshed_at") or "").strip() or _utcnow_iso()
+    return {
+        "platform": platform,
+        "checked_at": now,
+        "lifecycle_status": "registered",
+        "display_status": "registered",
+        "valid": True,
+        "validity_status": "valid",
+        "session": session,
+        "chatgpt_session": session,
+        "session_refresh_status": "refreshed",
+        "last_session_refresh_at": now,
+        "remote_email": str(data.get("email") or ""),
+    }
+
+
 def _build_upload_result_overview(platform: str, action_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if platform != "chatgpt" or not isinstance(data, dict):
         return None
@@ -302,6 +326,16 @@ def _build_upload_result_overview(platform: str, action_id: str, data: dict[str,
     if str(data.get("upload_status") or "").strip() != "uploaded":
         return None
     now = _utcnow_iso()
+    if data.get("uploaded_without_rt"):
+        return {
+            "platform": platform,
+            "checked_at": now,
+            "valid": True,
+            "sub2api_upload_status": "uploaded",
+            "sub2api_upload_message": str(data.get("message") or ""),
+            "sub2api_uploaded_at": now,
+            "sub2api_force_upload_without_rt": True,
+        }
     return {
         "platform": platform,
         "checked_at": now,
@@ -443,6 +477,11 @@ class PlatformRuntime:
                         needs_save = True
                 if action_ok and command.action_id in OAUTH_RESULT_ACTION_IDS:
                     overview = _build_oauth_result_overview(command.platform, data)
+                    if overview:
+                        summary_updates.update(overview)
+                        needs_save = True
+                if action_ok and command.action_id in SESSION_RESULT_ACTION_IDS:
+                    overview = _build_session_refresh_overview(command.platform, data)
                     if overview:
                         summary_updates.update(overview)
                         needs_save = True

@@ -14,6 +14,7 @@ from application.phone_binding import PhoneBindingService
 from domain.accounts import (
     AccountBatchStatusUpdateCommand,
     AccountCreateCommand,
+    AccountDeleteInvalidBannedCommand,
     AccountExportSelection,
     AccountQuery,
     AccountUpdateCommand,
@@ -68,6 +69,7 @@ class BatchExportRequest(BaseModel):
     ids: list[int] = Field(default_factory=list)
     select_all: bool = False
     status_filter: Optional[str] = None
+    tag_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
 
@@ -112,11 +114,12 @@ def _stream_artifact(artifact: ExportArtifact) -> StreamingResponse:
 def list_accounts(
     platform: str = "",
     status: str = "",
+    tag: str = "",
     email: str = "",
     page: int = 1,
     page_size: int = 20,
 ):
-    return service.list_accounts(AccountQuery(platform=platform, status=status, email=email, page=page, page_size=page_size))
+    return service.list_accounts(AccountQuery(platform=platform, status=status, tag=tag, email=email, page=page, page_size=page_size))
 
 
 @router.post("")
@@ -148,6 +151,7 @@ def export_accounts_json(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -165,6 +169,7 @@ def export_accounts_csv(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -182,6 +187,7 @@ def export_accounts_sub2api(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -199,6 +205,7 @@ def export_accounts_cpa(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -216,6 +223,7 @@ def export_accounts_email_api(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -233,6 +241,7 @@ def export_accounts_cockpit(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -295,6 +304,7 @@ def export_accounts_kiro_go(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -312,6 +322,7 @@ def export_accounts_any2api(body: BatchExportRequest):
                 ids=body.ids,
                 select_all=body.select_all,
                 status_filter=body.status_filter or "",
+                tag_filter=body.tag_filter or "",
                 search_filter=body.search_filter or "",
             )
         )
@@ -323,6 +334,11 @@ def export_accounts_any2api(body: BatchExportRequest):
 @router.post("/import")
 def import_accounts(body: ImportRequest):
     return service.import_accounts(body.platform, body.lines)
+
+
+@router.delete("/invalid-and-banned")
+def delete_invalid_and_banned_accounts(platform: str = "chatgpt"):
+    return service.delete_invalid_and_banned(AccountDeleteInvalidBannedCommand(platform=platform))
 
 
 @router.get("/{account_id}")

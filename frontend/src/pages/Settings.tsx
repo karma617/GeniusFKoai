@@ -310,6 +310,15 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
         { key: 'sub2api_default_proxy_name', label: '默认代理', placeholder: '留空不用代理；可填代理名称或 ID' },
       ],
     }, {
+      section: '后台生命周期任务',
+      desc: '控制后端启动后的周期性后台任务；CPA/SUB2API 后台同步默认关闭，账号检测和 token 续期默认开启。',
+      items: [
+        { key: 'lifecycle_account_check_enabled', label: '自动账号检测', type: 'toggle' },
+        { key: 'lifecycle_token_refresh_enabled', label: 'token 自动续期', type: 'toggle' },
+        { key: 'lifecycle_trial_warning_enabled', label: '试用过期预警', type: 'toggle' },
+        { key: 'lifecycle_external_sync_enabled', label: 'CPA/SUB2API 后台同步', type: 'toggle' },
+      ],
+    }, {
       section: 'Team Manager',
       desc: '上传到自建 Team Manager 系统',
       items: [
@@ -336,7 +345,17 @@ function Field({ field, form, setForm, showSecret, setShowSecret, selectOptions 
     <div className="grid grid-cols-3 gap-4 items-center py-3 border-b border-white/5 last:border-0">
       <label className="text-sm text-[var(--text-secondary)] font-medium">{label}</label>
       <div className="col-span-2 relative">
-        {options ? (
+        {type === 'toggle' ? (
+          <label className="inline-flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={['true', '1', 'yes', 'on'].includes(String(form[key] || '').toLowerCase())}
+              onChange={e => setForm((f: any) => ({ ...f, [key]: e.target.checked ? 'true' : 'false' }))}
+              className="checkbox-accent"
+            />
+            {['true', '1', 'yes', 'on'].includes(String(form[key] || '').toLowerCase()) ? '已开启' : '已关闭'}
+          </label>
+        ) : options ? (
           <select
             value={form[key] || options[0].value}
             onChange={e => setForm((f: any) => ({ ...f, [key]: e.target.value }))}
@@ -960,6 +979,15 @@ export default function Settings({ embedded, defaultTab }: { embedded?: boolean;
             { key: 'sub2api_group_name', label: 'OpenAI 分组', placeholder: 'codex' },
             { key: 'sub2api_account_priority', label: '账号优先级', placeholder: '1', type: 'number' },
             { key: 'sub2api_default_proxy_name', label: '默认代理', placeholder: '留空不用代理；可填代理名称或 ID' },
+          ],
+        }, {
+          section: 'Lifecycle Manager',
+          desc: '控制后端启动后的周期性后台任务；CPA/SUB2API 后台同步默认关闭，账号检测和 token 续期默认开启。',
+          items: [
+            { key: 'lifecycle_account_check_enabled', label: '自动账号检测', type: 'toggle' },
+            { key: 'lifecycle_token_refresh_enabled', label: 'token 自动续期', type: 'toggle' },
+            { key: 'lifecycle_trial_warning_enabled', label: '试用过期预警', type: 'toggle' },
+            { key: 'lifecycle_external_sync_enabled', label: 'CPA/SUB2API 后台同步', type: 'toggle' },
           ],
         }, {
           section: 'Team Manager',

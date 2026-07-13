@@ -33,6 +33,7 @@ class AccountRecord:
 class AccountQuery:
     platform: str = ""
     status: str = ""
+    tag: str = ""
     email: str = ""
     page: int = 1
     page_size: int = 20
@@ -80,6 +81,11 @@ class AccountBatchStatusUpdateCommand:
 
 
 @dataclass(slots=True)
+class AccountDeleteInvalidBannedCommand:
+    platform: str = "chatgpt"
+
+
+@dataclass(slots=True)
 class AccountImportLine:
     email: str
     password: str
@@ -103,4 +109,5 @@ class AccountExportSelection:
     ids: list[int] = field(default_factory=list)
     select_all: bool = False
     status_filter: str = ""
+    tag_filter: str = ""
     search_filter: str = ""

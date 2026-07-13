@@ -103,8 +103,11 @@ async def lifespan(app: FastAPI):
     task_runtime.start()
     from services.solver_manager import start_async
     start_async()
-    from core.lifecycle import lifecycle_manager
-    lifecycle_manager.start()
+    from core.lifecycle import is_lifecycle_manager_enabled, lifecycle_manager
+    if is_lifecycle_manager_enabled():
+        lifecycle_manager.start()
+    else:
+        print("[LifecycleManager] 自动启动已关闭")
     yield
     from core.lifecycle import lifecycle_manager as _lifecycle_manager
     _lifecycle_manager.stop()

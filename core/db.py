@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import UniqueConstraint, inspect
+from sqlalchemy import UniqueConstraint, event, inspect
 from sqlmodel import Field, SQLModel, Session, create_engine, select
 
 
@@ -19,7 +19,38 @@ def _default_database_url() -> str:
 
 
 DATABASE_URL = os.getenv("ACCOUNT_MANAGER_DATABASE_URL", _default_database_url())
-engine = create_engine(DATABASE_URL)
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+
+def _is_sqlite_database_url(database_url: str) -> bool:
+    return str(database_url or "").startswith("sqlite")
+
+
+def _configure_sqlite_pragmas(engine_obj) -> None:
+    @event.listens_for(engine_obj, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            cursor.execute("PRAGMA temp_store=MEMORY")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+
+def create_configured_engine(database_url: str, **kwargs):
+    engine_obj = create_engine(database_url, **kwargs)
+    if _is_sqlite_database_url(database_url):
+        _configure_sqlite_pragmas(engine_obj)
+    return engine_obj
+
+
+_engine_kwargs = {}
+if DATABASE_URL.startswith("sqlite"):
+    _engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+engine = create_configured_engine(DATABASE_URL, **_engine_kwargs)
 
 
 class AccountModel(SQLModel, table=True):

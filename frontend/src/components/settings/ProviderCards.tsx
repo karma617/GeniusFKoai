@@ -5,7 +5,7 @@ import type { TranslationKey } from '@/lib/i18n'
 import type { ProviderOption, ProviderSetting } from '@/lib/config-options'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Save, Eye, EyeOff, X, Pencil, Plus, Trash2, FlaskConical, Search } from 'lucide-react'
+import { Save, Eye, EyeOff, X, Pencil, Plus, Trash2, FlaskConical, Search, Clipboard } from 'lucide-react'
 import { invalidateConfigOptionsCache } from '@/lib/app-data'
 
 const CATEGORY_GROUPS = [
@@ -39,6 +39,33 @@ type GmailApiCodeUsageItem = {
   email_status: string
   email_status_reason: string
   status: string
+}
+
+type ICloudHMEAccount = {
+  id: string
+  name: string
+  real_email: string
+  icloud_email: string
+  app_password?: string
+  host: string
+  proxy?: string
+  status: string
+  alias_total: number
+  alias_active: number
+  last_validated?: string
+  last_error?: string
+  cookies_count?: number
+  has_app_password?: boolean
+}
+
+type ICloudHMEAlias = {
+  email: string
+  anonymous_id?: string
+  anonymousId?: string
+  label?: string
+  active?: boolean
+  created_at?: string
+  createdAt?: string
 }
 
 const GMAIL_API_CODE_ALIAS_LIMIT = 6
@@ -257,6 +284,22 @@ function EditModal({
   const [gmailOauthLoading, setGmailOauthLoading] = useState(false)
   const [gmailOauthResult, setGmailOauthResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
   const [gmailApiCodeUsage, setGmailApiCodeUsage] = useState<Record<string, GmailApiCodeUsageItem>>({})
+  const [icloudAccounts, setIcloudAccounts] = useState<ICloudHMEAccount[]>([])
+  const [icloudAliases, setIcloudAliases] = useState<ICloudHMEAlias[]>([])
+  const [icloudSelectedAccountId, setIcloudSelectedAccountId] = useState('')
+  const [icloudAliasLabel, setIcloudAliasLabel] = useState('')
+  const [icloudLoading, setIcloudLoading] = useState(false)
+  const [icloudResult, setIcloudResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
+  const [icloudAccountForm, setIcloudAccountForm] = useState({
+    id: '',
+    name: '',
+    real_email: '',
+    icloud_email: '',
+    host: 'icloud.com',
+    proxy: '',
+    cookie_header: '',
+    app_password: '',
+  })
   const [gmailMothers, setGmailMothers] = useState<GmailMother[]>(() => {
     const parsed = parseGmailPool((setting?.auth?.gmail_oauth_pool_json || '') || (setting?.config?.gmail_oauth_pool_json || ''))
     if (parsed.length > 0) return parsed
@@ -278,6 +321,25 @@ function EditModal({
       return left.email.localeCompare(right.email)
     })
     : []
+
+  const copyText = async (text: string) => {
+    const value = String(text || '')
+    if (!value) return
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value)
+        return
+      }
+    } catch {
+      // Fallback below covers non-secure or restricted clipboard contexts.
+    }
+    const el = document.createElement('textarea')
+    el.value = value
+    document.body.appendChild(el)
+    el.select()
+    document.execCommand('copy')
+    document.body.removeChild(el)
+  }
 
   // 加载 async-select 字段的选项
   useEffect(() => {
@@ -329,6 +391,205 @@ function EditModal({
       })
     return () => { active = false }
   }, [provider.value])
+
+  const loadIcloudAccounts = async () => {
+    if (provider.value !== 'icloud_hme') return
+    setIcloudLoading(true)
+    try {
+      const data = await apiFetch('/provider-settings/icloud-hme/accounts')
+      const accounts = Array.isArray(data?.accounts) ? data.accounts : []
+      setIcloudAccounts(accounts)
+      setIcloudSelectedAccountId(current => current || accounts[0]?.id || '')
+    } catch (e: any) {
+      setIcloudResult({ ok: false, error: e.message || '加载 iCloud 账号失败' })
+    } finally {
+      setIcloudLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (provider.value !== 'icloud_hme') return
+    loadIcloudAccounts()
+  }, [provider.value]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resetIcloudAccountForm = () => {
+    setIcloudAccountForm({
+      id: '',
+      name: '',
+      real_email: '',
+      icloud_email: '',
+      host: 'icloud.com',
+      proxy: '',
+      cookie_header: '',
+      app_password: '',
+    })
+  }
+
+  const editIcloudAccount = (account: ICloudHMEAccount) => {
+    setIcloudAccountForm({
+      id: account.id,
+      name: account.name || '',
+      real_email: account.real_email || '',
+      icloud_email: account.icloud_email || '',
+      host: account.host || 'icloud.com',
+      proxy: account.proxy || '',
+      cookie_header: '',
+      app_password: account.app_password || '',
+    })
+  }
+
+  const applyIcloudAccountResult = (account: ICloudHMEAccount, accounts?: ICloudHMEAccount[]) => {
+    const nextAccounts = Array.isArray(accounts)
+      ? accounts
+      : icloudAccounts.map(item => item.id === account.id ? account : item)
+    setIcloudAccounts(nextAccounts.some(item => item.id === account.id) ? nextAccounts : [...nextAccounts, account])
+    setIcloudSelectedAccountId(account.id)
+    setIcloudAccountForm(current => ({
+      id: account.id,
+      name: account.name || '',
+      real_email: account.real_email || '',
+      icloud_email: account.icloud_email || '',
+      host: account.host || current.host || 'icloud.com',
+      proxy: account.proxy || '',
+      cookie_header: current.id === account.id || current.cookie_header.trim() ? current.cookie_header : '',
+      app_password: account.app_password || (current.id === account.id ? current.app_password : ''),
+    }))
+  }
+
+  const saveIcloudAccount = async () => {
+    setIcloudLoading(true)
+    setIcloudResult(null)
+    try {
+      const result = await apiFetch('/provider-settings/icloud-hme/accounts', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...icloudAccountForm,
+          cookies: icloudAccountForm.cookie_header,
+          validate: Boolean(icloudAccountForm.cookie_header.trim()),
+        }),
+      })
+      const accounts = Array.isArray(result.accounts) ? result.accounts : []
+      if (result.account) {
+        applyIcloudAccountResult(result.account, accounts)
+      } else {
+        setIcloudAccounts(accounts)
+        setIcloudSelectedAccountId(icloudSelectedAccountId)
+      }
+      if (result.ok === false || result.account?.status === 'error') {
+        setIcloudResult({ ok: false, error: result.error || result.account?.last_error || 'iCloud 账号保存后仍异常' })
+        return
+      }
+      setIcloudResult({ ok: true, message: 'iCloud 账号已保存。' })
+      resetIcloudAccountForm()
+    } catch (e: any) {
+      setIcloudResult({ ok: false, error: e.message || '保存 iCloud 账号失败' })
+    } finally {
+      setIcloudLoading(false)
+    }
+  }
+
+  const deleteIcloudAccount = async (accountId: string) => {
+    if (!accountId) return
+    setIcloudLoading(true)
+    setIcloudResult(null)
+    try {
+      const result = await apiFetch(`/provider-settings/icloud-hme/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' })
+      const accounts = Array.isArray(result.accounts) ? result.accounts : []
+      setIcloudAccounts(accounts)
+      setIcloudSelectedAccountId(accounts[0]?.id || '')
+      setIcloudAliases([])
+      setIcloudResult({ ok: true, message: 'iCloud 账号已删除。' })
+    } catch (e: any) {
+      setIcloudResult({ ok: false, error: e.message || '删除 iCloud 账号失败' })
+    } finally {
+      setIcloudLoading(false)
+    }
+  }
+
+  const validateIcloudAccount = async (accountId: string) => {
+    setIcloudLoading(true)
+    setIcloudResult(null)
+    try {
+      const account = icloudAccounts.find(item => item.id === accountId)
+      const shouldUseForm = icloudAccountForm.id === accountId || Boolean(icloudAccountForm.cookie_header.trim())
+      const result = await apiFetch(`/provider-settings/icloud-hme/accounts/${encodeURIComponent(accountId)}/validate`, {
+        method: 'POST',
+        body: JSON.stringify(shouldUseForm
+          ? {
+              ...icloudAccountForm,
+              id: accountId,
+              cookies: icloudAccountForm.cookie_header,
+              host: icloudAccountForm.host || account?.host || 'icloud.com',
+            }
+          : {}),
+      })
+      if (result.account) applyIcloudAccountResult(result.account)
+      else await loadIcloudAccounts()
+      setIcloudResult(result.ok ? { ok: true, message: 'Cookie 校验成功。' } : { ok: false, error: result.error || 'Cookie 校验失败' })
+    } catch (e: any) {
+      setIcloudResult({ ok: false, error: e.message || '校验 iCloud 账号失败' })
+    } finally {
+      setIcloudLoading(false)
+    }
+  }
+
+  const loadIcloudAliases = async (accountId: string = icloudSelectedAccountId) => {
+    if (!accountId) return
+    setIcloudLoading(true)
+    setIcloudResult(null)
+    try {
+      const result = await apiFetch(`/provider-settings/icloud-hme/aliases?account_id=${encodeURIComponent(accountId)}`)
+      setIcloudAliases(Array.isArray(result.aliases) ? result.aliases : [])
+      setIcloudResult({ ok: true, message: `已加载 ${Number(result.count || 0)} 个隐私邮箱。` })
+      await loadIcloudAccounts()
+    } catch (e: any) {
+      setIcloudResult({ ok: false, error: e.message || '加载 iCloud 隐私邮箱失败' })
+    } finally {
+      setIcloudLoading(false)
+    }
+  }
+
+  const createIcloudAlias = async () => {
+    if (!icloudSelectedAccountId) return
+    setIcloudLoading(true)
+    setIcloudResult(null)
+    try {
+      const result = await apiFetch('/provider-settings/icloud-hme/aliases', {
+        method: 'POST',
+        body: JSON.stringify({ account_id: icloudSelectedAccountId, label: icloudAliasLabel }),
+      })
+      setIcloudAliases(Array.isArray(result.aliases) ? result.aliases : [])
+      setIcloudAliasLabel('')
+      setIcloudResult({ ok: true, message: `已创建 ${result.alias?.email || '隐私邮箱'}。` })
+      await loadIcloudAccounts()
+    } catch (e: any) {
+      setIcloudResult({ ok: false, error: e.message || '创建 iCloud 隐私邮箱失败' })
+    } finally {
+      setIcloudLoading(false)
+    }
+  }
+
+  const icloudAliasAction = async (alias: ICloudHMEAlias, action: 'deactivate' | 'reactivate' | 'delete') => {
+    const anonymousId = alias.anonymous_id || alias.anonymousId || ''
+    if (!icloudSelectedAccountId || !anonymousId) return
+    setIcloudLoading(true)
+    setIcloudResult(null)
+    try {
+      const url = `/provider-settings/icloud-hme/aliases/${encodeURIComponent(anonymousId)}${action === 'delete' ? '' : `/${action}`}`
+      const result = await apiFetch(url, {
+        method: action === 'delete' ? 'DELETE' : 'POST',
+        body: JSON.stringify({ account_id: icloudSelectedAccountId }),
+      })
+      if (Array.isArray(result.aliases)) setIcloudAliases(result.aliases)
+      else await loadIcloudAliases(icloudSelectedAccountId)
+      setIcloudResult({ ok: true, message: '隐私邮箱操作已完成。' })
+      await loadIcloudAccounts()
+    } catch (e: any) {
+      setIcloudResult({ ok: false, error: e.message || '操作 iCloud 隐私邮箱失败' })
+    } finally {
+      setIcloudLoading(false)
+    }
+  }
 
   const handleSave = async () => {
     const config: Record<string, string> = {}
@@ -542,6 +803,8 @@ function EditModal({
         style={
           provider.value === 'gmail_api_code'
             ? { width: '80vw', maxWidth: '80vw' }
+            : provider.value === 'icloud_hme'
+              ? { width: '80vw', maxWidth: '80vw' }
             : provider.value === 'gmail_oauth_fission'
               ? { width: '50vw', maxWidth: '50vw' }
               : undefined
@@ -563,6 +826,7 @@ function EditModal({
               provider.value === 'gmail_oauth_fission'
               && ['gmail_oauth_master_email', 'gmail_oauth_pool_json', 'gmail_oauth_credentials_json', 'gmail_oauth_token_json'].includes(field.key)
             ) return null
+            if (provider.value === 'icloud_hme' && field.key === 'icloud_hme_accounts_json') return null
             const sk = `${provider.value}:${field.key}`
             return (
               <div key={field.key}>
@@ -622,6 +886,228 @@ function EditModal({
               </div>
             )
           })}
+          {provider.value === 'icloud_hme' && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">iCloud 账号列表</h3>
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">
+                      Cookie 用于管理 Hide My Email；App 专用密码用于 IMAP 收验证码，可选但推荐配置。
+                    </p>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" onClick={resetIcloudAccountForm}>
+                    <Plus className="mr-1 h-3.5 w-3.5" /> 新增账号
+                  </Button>
+                </div>
+                <div className="grid min-w-0 gap-3 lg:grid-cols-[1fr_1.25fr]">
+                  <div className="min-w-0 space-y-2">
+                    {icloudAccounts.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
+                        暂无 iCloud 账号。右侧填写账号名称和 Cookie 后保存。
+                      </div>
+                    ) : icloudAccounts.map(account => (
+                      <div
+                        key={account.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setIcloudSelectedAccountId(account.id)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            setIcloudSelectedAccountId(account.id)
+                          }
+                        }}
+                        className={`w-full min-w-0 rounded-lg border px-3 py-2 text-left transition-colors ${
+                          icloudSelectedAccountId === account.id
+                            ? 'border-[var(--accent)] bg-[var(--accent)]/10'
+                            : 'border-[var(--border-soft)] bg-[var(--bg-card)] hover:bg-[var(--bg-pane)]'
+                        }`}
+                      >
+                        <div className="flex min-w-0 items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-medium text-[var(--text-primary)]">
+                              {account.name || account.real_email || account.icloud_email || account.id}
+                            </div>
+                            <div className="mt-0.5 truncate text-xs text-[var(--text-muted)]">
+                              {account.icloud_email || account.real_email || '未识别邮箱'} · {account.host || 'icloud.com'}
+                            </div>
+                          </div>
+                          <Badge className="shrink-0" variant={account.status === 'active' ? 'success' : account.status === 'error' ? 'danger' : 'secondary'}>
+                            {account.status === 'active' ? '可用' : account.status === 'error' ? '异常' : '待配置'}
+                          </Badge>
+                        </div>
+                        <div className="mt-2 flex min-w-0 flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
+                          <span>别名 {account.alias_active || 0}/{account.alias_total || 0}</span>
+                          <span>Cookie {account.cookies_count || 0}</span>
+                          <span>{account.has_app_password ? 'IMAP 已配置' : '未配 IMAP'}</span>
+                        </div>
+                        {account.last_error && (
+                          <div className="mt-2 flex min-w-0 items-start gap-2 rounded-md bg-red-500/5 px-2 py-1.5 text-[11px] text-red-500">
+                            <div className="max-h-16 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">
+                              {account.last_error}
+                            </div>
+                            <button
+                              type="button"
+                              title="复制完整异常"
+                              aria-label="复制完整异常"
+                              className="shrink-0 rounded-md p-1 text-red-500/80 transition-colors hover:bg-red-500/10 hover:text-red-600"
+                              onClick={e => {
+                                e.stopPropagation()
+                                copyText(account.last_error || '')
+                              }}
+                            >
+                              <Clipboard className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] p-3">
+                    <div className="mb-3 text-sm font-medium text-[var(--text-primary)]">
+                      {icloudAccountForm.id ? '编辑 iCloud 账号' : '新增 iCloud 账号'}
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <input className="control-surface" placeholder="显示名称" value={icloudAccountForm.name} onChange={e => setIcloudAccountForm(v => ({ ...v, name: e.target.value }))} />
+                      <select className="control-surface" value={icloudAccountForm.host} onChange={e => setIcloudAccountForm(v => ({ ...v, host: e.target.value }))}>
+                        <option value="icloud.com">icloud.com</option>
+                        <option value="icloud.com.cn">icloud.com.cn</option>
+                      </select>
+                      <input className="control-surface" placeholder="Apple ID / 真实邮箱（可选）" value={icloudAccountForm.real_email} onChange={e => setIcloudAccountForm(v => ({ ...v, real_email: e.target.value }))} />
+                      <input className="control-surface" placeholder="iCloud 邮箱（IMAP 用，可选）" value={icloudAccountForm.icloud_email} onChange={e => setIcloudAccountForm(v => ({ ...v, icloud_email: e.target.value }))} />
+                      <input className="control-surface" placeholder="代理（可选）" value={icloudAccountForm.proxy} onChange={e => setIcloudAccountForm(v => ({ ...v, proxy: e.target.value }))} />
+                      <input className="control-surface" placeholder="App 专用密码（可选）" type="text" value={icloudAccountForm.app_password} onChange={e => setIcloudAccountForm(v => ({ ...v, app_password: e.target.value }))} autoComplete="off" />
+                    </div>
+                    <textarea
+                      className="control-surface mt-3 min-h-24 font-mono text-xs"
+                      placeholder="Cookie Header 或 JSON；编辑账号时留空会保留旧 Cookie"
+                      value={icloudAccountForm.cookie_header}
+                      onChange={e => setIcloudAccountForm(v => ({ ...v, cookie_header: e.target.value }))}
+                      data-1p-ignore
+                      data-lpignore="true"
+                    />
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button type="button" size="sm" onClick={saveIcloudAccount} disabled={icloudLoading || (!icloudAccountForm.id && !icloudAccountForm.cookie_header.trim())}>
+                        <Save className="mr-1 h-3.5 w-3.5" /> 保存账号
+                      </Button>
+                      {icloudSelectedAccountId && (
+                        <>
+                          <Button type="button" variant="outline" size="sm" onClick={() => {
+                            const account = icloudAccounts.find(item => item.id === icloudSelectedAccountId)
+                            if (account) editIcloudAccount(account)
+                          }}>
+                            <Pencil className="mr-1 h-3.5 w-3.5" /> 编辑选中
+                          </Button>
+                          <Button type="button" variant="outline" size="sm" onClick={() => validateIcloudAccount(icloudSelectedAccountId)} disabled={icloudLoading}>
+                            校验 Cookie
+                          </Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => deleteIcloudAccount(icloudSelectedAccountId)} disabled={icloudLoading}>
+                            <Trash2 className="mr-1 h-3.5 w-3.5" /> 删除账号
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-[var(--text-primary)]">隐私邮箱列表</h3>
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">选择一个 iCloud 账号后加载、创建、停用、恢复或删除 Hide My Email 别名。</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select className="control-surface min-w-48" value={icloudSelectedAccountId} onChange={e => setIcloudSelectedAccountId(e.target.value)}>
+                      <option value="">选择 iCloud 账号</option>
+                      {icloudAccounts.map(account => (
+                        <option key={account.id} value={account.id}>{account.name || account.icloud_email || account.real_email || account.id}</option>
+                      ))}
+                    </select>
+                    <Button type="button" variant="outline" size="sm" onClick={() => loadIcloudAliases()} disabled={icloudLoading || !icloudSelectedAccountId}>
+                      加载列表
+                    </Button>
+                  </div>
+                </div>
+                <div className="mb-3 flex gap-2">
+                  <input
+                    className="control-surface"
+                    placeholder="新建别名标签（可选）"
+                    value={icloudAliasLabel}
+                    onChange={e => setIcloudAliasLabel(e.target.value)}
+                  />
+                  <Button type="button" onClick={createIcloudAlias} disabled={icloudLoading || !icloudSelectedAccountId}>
+                    <Plus className="mr-1 h-3.5 w-3.5" /> 创建隐私邮箱
+                  </Button>
+                </div>
+                {icloudAliases.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-6 text-center text-xs text-[var(--text-muted)]">
+                    暂无已加载隐私邮箱。点击“加载列表”读取 iCloud 当前别名。
+                  </div>
+                ) : (
+                  <div className="max-h-72 overflow-auto rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)]">
+                    <table className="w-full min-w-[860px] text-left text-xs">
+                      <thead className="sticky top-0 bg-[var(--bg-card)] text-[var(--text-muted)] shadow-[0_1px_0_var(--border-soft)]">
+                        <tr>
+                          <th className="px-3 py-2 font-medium">隐私邮箱</th>
+                          <th className="px-3 py-2 font-medium">标签</th>
+                          <th className="px-3 py-2 font-medium">状态</th>
+                          <th className="px-3 py-2 font-medium">创建时间</th>
+                          <th className="px-3 py-2 font-medium">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--border-soft)]">
+                        {icloudAliases.map(alias => {
+                          const anonymousId = alias.anonymous_id || alias.anonymousId || alias.email
+                          return (
+                            <tr key={anonymousId}>
+                              <td className="px-3 py-2 font-medium text-[var(--text-primary)]">{alias.email}</td>
+                              <td className="px-3 py-2 text-[var(--text-secondary)]">{alias.label || '-'}</td>
+                              <td className="px-3 py-2">
+                                <Badge variant={alias.active ? 'success' : 'secondary'}>{alias.active ? '启用' : '停用'}</Badge>
+                              </td>
+                              <td className="px-3 py-2 text-[var(--text-muted)]">{alias.created_at || alias.createdAt || '-'}</td>
+                              <td className="px-3 py-2">
+                                <div className="flex flex-wrap gap-1">
+                                  {alias.active ? (
+                                    <Button type="button" variant="ghost" size="sm" onClick={() => icloudAliasAction(alias, 'deactivate')} disabled={icloudLoading}>停用</Button>
+                                  ) : (
+                                    <Button type="button" variant="ghost" size="sm" onClick={() => icloudAliasAction(alias, 'reactivate')} disabled={icloudLoading}>恢复</Button>
+                                  )}
+                                  <Button type="button" variant="ghost" size="sm" onClick={() => icloudAliasAction(alias, 'delete')} disabled={icloudLoading}>
+                                    <Trash2 className="mr-1 h-3.5 w-3.5" /> 删除
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {icloudResult && (
+                  <div className={`mt-3 flex min-w-0 items-start gap-2 rounded-lg px-3 py-2 text-xs ${icloudResult.ok ? 'border border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : 'border border-red-500/20 bg-red-500/10 text-red-600'}`}>
+                    <div className="min-w-0 flex-1 whitespace-pre-wrap break-all">
+                      {icloudResult.message || icloudResult.error}
+                    </div>
+                    {!icloudResult.ok && (
+                      <button
+                        type="button"
+                        title="复制完整异常"
+                        aria-label="复制完整异常"
+                        className="shrink-0 rounded-md p-1 text-red-500/80 transition-colors hover:bg-red-500/10 hover:text-red-600"
+                        onClick={() => copyText(icloudResult.error || icloudResult.message || '')}
+                      >
+                        <Clipboard className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           {provider.value === 'gmail_api_code' && (
             <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
@@ -990,7 +1476,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
           id: setting.id, provider_type: providerType, provider_key: provider.value,
           display_name: setting.display_name || provider.label,
           auth_mode: setting.auth_mode || provider.default_auth_mode || '',
-          enabled: enable, is_default: setting.is_default, config: setting.config || {}, auth: setting.auth || {}, metadata: setting.metadata || {},
+          enabled: enable, is_default: enable && setting.is_default, config: setting.config || {}, auth: setting.auth || {}, metadata: setting.metadata || {},
         }),
       })
     }
@@ -1064,10 +1550,10 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
 
     return (
       <div key={key}>
-        <div className="flex items-center gap-3 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-4 py-3">
+        <div className="flex flex-col gap-3 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)] px-4 py-3">
           {/* Left: name + desc + badge */}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-medium text-[var(--text-primary)]">{provider.label}</span>
               {isDefault && <Badge variant="success">{t('providers.default')}</Badge>}
             </div>
@@ -1077,11 +1563,11 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
           </div>
 
           {/* Right: actions */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => hasFields && isEnabled ? setEditTarget({ provider, setting }) : undefined}
               disabled={!hasFields || !isEnabled}
-              className={`table-action-btn ${(!hasFields || !isEnabled) ? 'opacity-30 cursor-not-allowed' : ''}`}
+              className={`table-action-btn shrink-0 ${(!hasFields || !isEnabled) ? 'opacity-30 cursor-not-allowed' : ''}`}
             >
               <Pencil className="h-3 w-3 mr-1" /> {t('providers.edit')}
             </button>
@@ -1089,7 +1575,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
             <button
               onClick={() => isEnabled ? handleTestInline(provider) : undefined}
               disabled={!isEnabled || testingKeys[key]}
-              className={`table-action-btn ${!isEnabled ? 'opacity-30 cursor-not-allowed' : ''}`}
+              className={`table-action-btn shrink-0 ${!isEnabled ? 'opacity-30 cursor-not-allowed' : ''}`}
             >
               <FlaskConical className="h-3 w-3 mr-1" /> {testingKeys[key] ? t('providers.testing') : t('providers.test')}
             </button>
@@ -1097,7 +1583,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
             <button
               onClick={() => isEnabled && !isDefault ? handleSetDefault(provider) : undefined}
               disabled={!isEnabled || isDefault || loading[key]}
-              className={`table-action-btn ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
+              className={`table-action-btn shrink-0 ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
             >
               {isDefault ? t('providers.defaultDone') : t('providers.setDefault')}
             </button>
@@ -1106,7 +1592,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
               <button
                 onClick={() => isEnabled ? handleDelete(provider) : undefined}
                 disabled={!isEnabled || isDefault || loading[key]}
-                className={`table-action-btn table-action-btn-danger ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
+                className={`table-action-btn table-action-btn-danger shrink-0 ${(!isEnabled || isDefault) ? 'opacity-30 cursor-not-allowed' : ''}`}
               >
                 <Trash2 className="h-3 w-3 mr-1" /> {t('common.delete')}
               </button>
@@ -1115,7 +1601,7 @@ export default function ProviderCards({ providerType, catalog, settings, onReloa
             <Toggle
               checked={isEnabled}
               onChange={v => handleToggle(provider, v)}
-              disabled={loading[key] || isDefault}
+              disabled={loading[key]}
             />
           </div>
         </div>

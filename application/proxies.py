@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import threading
-
 from core.proxy_pool import proxy_pool
 from domain.proxies import ProxyBulkCreateCommand, ProxyCheckSummary, ProxyCreateCommand, ProxyRecord
 from application.free_proxy_checker import (
@@ -24,7 +22,7 @@ class ProxiesService:
         return self._serialize(item) if item else None
 
     def bulk_create_proxies(self, command: ProxyBulkCreateCommand) -> dict:
-        added = self.repository.bulk_create(command.proxies, command.region)
+        added = self.repository.bulk_create(command.proxies, command.region, command.import_scheme)
         return {"added": added}
 
     def delete_proxy(self, proxy_id: int) -> dict:
@@ -37,8 +35,8 @@ class ProxiesService:
         return {"is_active": value}
 
     def trigger_check(self) -> dict:
-        threading.Thread(target=proxy_pool.check_all, daemon=True, name="proxy-check").start()
-        return {"message": "检测任务已启动"}
+        result = proxy_pool.check_all()
+        return {"message": "检测完成", **result}
 
     def free_proxy_capabilities(self) -> dict:
         return get_free_proxy_sources()

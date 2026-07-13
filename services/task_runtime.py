@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import threading
 import time
 
+from sqlalchemy.exc import OperationalError
+
 from application.tasks import claim_next_runnable_task, execute_task, mark_incomplete_tasks_interrupted
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -56,11 +62,18 @@ class TaskRuntime:
                         running_platform_counts[state.platform] = running_platform_counts.get(state.platform, 0) + 1
                     busy_account_keys.update(state.account_keys)
             while available_slots > 0 and self._running:
-                task_info = claim_next_runnable_task(
-                    running_platform_counts=running_platform_counts,
-                    busy_account_keys=busy_account_keys,
-                    max_parallel_per_platform=self.max_parallel_per_platform,
-                )
+                try:
+                    task_info = claim_next_runnable_task(
+                        running_platform_counts=running_platform_counts,
+                        busy_account_keys=busy_account_keys,
+                        max_parallel_per_platform=self.max_parallel_per_platform,
+                    )
+                except OperationalError as exc:
+                    if "database is locked" in str(exc).lower():
+                        logger.warning("任务调度读取数据库被锁定，稍后重试")
+                        time.sleep(max(self.poll_interval, 1.0))
+                        break
+                    raise
                 if not task_info:
                     break
                 task_id = task_info["id"]

@@ -14,6 +14,7 @@ from application.tasks import (
     create_codex_oauth_task,
     create_get_rt_task,
     create_get_rt_bypass_task,
+    create_refresh_session_task,
     create_gopay_pay_chatgpt_task,
     create_gopay_register_account_task,
     get_task,
@@ -46,6 +47,11 @@ class TaskCommandsService:
 
     def create_get_rt_bypass_task(self, payload: dict) -> dict:
         task = create_get_rt_bypass_task(payload)
+        task_runtime.wake_up()
+        return task
+
+    def create_refresh_session_task(self, payload: dict) -> dict:
+        task = create_refresh_session_task(payload)
         task_runtime.wake_up()
         return task
 

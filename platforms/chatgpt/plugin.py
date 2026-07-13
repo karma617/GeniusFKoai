@@ -150,6 +150,21 @@ def _is_chatgpt_deleted_or_deactivated_error(message: str) -> bool:
     )
 
 
+def _is_cloudflare_managed_challenge_error(message: str) -> bool:
+    text = str(message or "").lower()
+    if not text:
+        return False
+    return (
+        "platform_authorize_cloudflare_managed_challenge" in text
+        or (
+            "just a moment" in text
+            and "challenges.cloudflare.com" in text
+            and "window._cf_chl_opt" in text
+            and "managed" in text
+        )
+    )
+
+
 def _is_chatgpt_session_stale_error(message: str) -> bool:
     text = str(message or "").lower()
     if not text:
@@ -661,7 +676,7 @@ class ChatGPTPlatform(BasePlatform):
     def get_platform_actions(self) -> list:
         return [
             {"id": "switch_account", "label": "切换到 Codex 桌面端", "params": []},
-            {"id": "get_account_state", "label": "查询账号状态/订阅", "params": []},
+            {"id": "get_account_state", "label": "查询账号状态/订阅", "params": [], "sync": True},
             {"id": "refresh_token", "label": "刷新 Token", "params": []},
             {"id": "get_rt", "label": "获取rt",
              "params": [
@@ -673,6 +688,7 @@ class ChatGPTPlatform(BasePlatform):
                  {"key": "browser_mode", "label": "浏览器模式", "type": "select",
                   "options": ["camoufox_headed", "camoufox_headless"]},
              ]},
+            {"id": "refresh_session", "label": "重新登录获取session/at", "params": []},
             {"id": "payment_link", "label": "打开支付链接",
              "params": [
                  {"key": "country", "label": "地区", "type": "select",
@@ -725,6 +741,7 @@ class ChatGPTPlatform(BasePlatform):
              ]},
             {"id": "upload_sub2api", "label": "上传 SUB2API",
              "params": [
+                 {"key": "force_upload_without_rt", "label": "无RT强制上传", "type": "checkbox"},
                  {"key": "api_url", "label": "SUB2API 后台地址（留空用全局配置）", "type": "text"},
                  {"key": "email", "label": "SUB2API 登录邮箱（留空用全局配置）", "type": "text"},
                  {"key": "password", "label": "SUB2API 登录密码（留空用全局配置）", "type": "text"},
@@ -763,6 +780,8 @@ class ChatGPTPlatform(BasePlatform):
             if not bool(result.get("ok")):
                 return self._postprocess_get_rt_failure(account, result)
             return result
+        if action_id == "refresh_session":
+            return self._handle_refresh_session(account, params)
         if action_id in {"upload_cpa", "upload_sub2api", "upload_tm", "k12_join_upload"}:
             return self._execute_platform_action(action_id, account, params)
         return super().execute_action(action_id, account, params)
@@ -876,6 +895,7 @@ class ChatGPTPlatform(BasePlatform):
 
         if action_id == "upload_sub2api":
             from platforms.chatgpt.sub2api_upload import upload_to_sub2api
+            force_without_rt = _bool_param(params, "force_upload_without_rt", False)
             ok, msg = upload_to_sub2api(
                 a,
                 api_url=params.get("api_url") or params.get("sub2api_url"),
@@ -884,8 +904,18 @@ class ChatGPTPlatform(BasePlatform):
                 group_name=params.get("group_name") or params.get("sub2api_group_name"),
                 account_priority=params.get("account_priority") or params.get("sub2api_account_priority"),
                 default_proxy_name=params.get("default_proxy_name") or params.get("sub2api_default_proxy_name"),
+                force_upload_without_rt=force_without_rt,
             )
-            return {"ok": ok, "data": {"message": msg, "upload_target": "sub2api", "upload_status": "uploaded" if ok else "failed"}}
+            return {
+                "ok": ok,
+                "data": {
+                    "message": msg,
+                    "upload_target": "sub2api",
+                    "upload_status": "uploaded" if ok else "failed",
+                    "force_upload_without_rt": force_without_rt,
+                    "uploaded_without_rt": bool(ok and force_without_rt and not a.refresh_token),
+                },
+            }
 
         if action_id == "k12_join_upload":
             return self._handle_k12_join_upload(a, params, proxy=proxy)
@@ -1311,6 +1341,422 @@ class ChatGPTPlatform(BasePlatform):
 
         _otp_callback.refresh_before_ids = _refresh_before_ids  # type: ignore[attr-defined]
         return _otp_callback, ""
+
+    def _build_refresh_session_mailbox_email_service(self, account: Account, log_fn, proxy: str | None):
+        """Build RegistrationEngine email_service for an existing account login."""
+        from core.base_mailbox import MailboxAccount, create_mailbox
+        from core.email_alias_mailbox import EmailAliasMailbox, normalize_email_address
+        from platforms.chatgpt.protocol_mailbox import _MailboxEmailService
+
+        def _text(value) -> str:
+            return str(value or "").strip()
+
+        def _safe_list(value) -> list:
+            return list(value) if isinstance(value, (list, tuple)) else []
+
+        def _mailbox_provider_key(value: str, metadata: dict | None = None) -> str:
+            raw = _text(value)
+            api_mode = _text((metadata or {}).get("api_mode")).lower()
+            if raw in {"cloud_mail", "cfworker"} or api_mode in {"cloud_mail", "cfworker"}:
+                return "cfworker_admin_api"
+            if raw == "outlook_email":
+                return "outlook_email_api"
+            return raw
+
+        def _apply_provider_compat_settings(provider_key: str, runtime_extra: dict, metadata: dict) -> None:
+            if provider_key == "cfworker_admin_api":
+                if metadata.get("api_url") and not runtime_extra.get("cfworker_api_url"):
+                    runtime_extra["cfworker_api_url"] = metadata.get("api_url")
+                if metadata.get("domain") and not runtime_extra.get("cfworker_domain"):
+                    runtime_extra["cfworker_domain"] = metadata.get("domain")
+                token = (
+                    metadata.get("admin_token")
+                    or metadata.get("public_token")
+                    or metadata.get("api_token")
+                    or metadata.get("token")
+                )
+                if token and not runtime_extra.get("cfworker_admin_token"):
+                    runtime_extra["cfworker_admin_token"] = token
+
+        def _parent_from_plus_alias(email: str) -> str:
+            if "+" not in email or "@" not in email:
+                return ""
+            local_part, domain = email.split("@", 1)
+            return f"{local_part.split('+', 1)[0]}@{domain}"
+
+        def _alias_parent_from(metadata: dict, mailbox_email: str) -> tuple[str, str, bool]:
+            alias_meta = _safe_dict(metadata.get("email_alias"))
+            metadata_email = _text(metadata.get("email"))
+            metadata_email_lc = metadata_email.lower()
+            mailbox_email_lc = mailbox_email.lower()
+            metadata_email_is_parent = (
+                "@" in metadata_email
+                and metadata_email_lc != mailbox_email_lc
+                and "+" not in metadata_email.split("@", 1)[0]
+            )
+            parent_email = _text(
+                (metadata_email if metadata_email_is_parent else "")
+                or metadata.get("alias_parent_email")
+                or metadata.get("email_alias_parent")
+                or metadata.get("parent_email")
+                or alias_meta.get("parent_email")
+                or alias_meta.get("alias_parent_email")
+            )
+            parent_account_id = _text(
+                metadata.get("alias_parent_account_id")
+                or alias_meta.get("parent_account_id")
+                or alias_meta.get("alias_parent_account_id")
+            )
+            is_alias = bool(parent_email or parent_account_id or alias_meta.get("enabled"))
+            if not parent_email:
+                parent_email = _parent_from_plus_alias(mailbox_email)
+                if parent_email:
+                    is_alias = True
+                    log_fn(f"  重新登录: 检测到 plus 别名邮箱，按邮箱地址推断母邮箱={parent_email}")
+            return parent_email, parent_account_id, is_alias
+
+        extra = _safe_dict(account.extra)
+        resources = [dict(item) for item in _safe_list(extra.get("provider_resources")) if isinstance(item, dict)]
+        mailbox_resources = [
+            item
+            for item in resources
+            if _text(item.get("resource_type") or "mailbox").lower() == "mailbox"
+        ]
+
+        if not mailbox_resources:
+            mailbox = _safe_dict(extra.get("verification_mailbox"))
+            if not mailbox:
+                mailbox = _safe_dict(_safe_dict(extra.get("identity")).get("mailbox"))
+            if mailbox:
+                mailbox_resources.append({
+                    "provider_type": "mailbox",
+                    "provider_name": mailbox.get("provider"),
+                    "resource_type": "mailbox",
+                    "resource_identifier": mailbox.get("account_id"),
+                    "handle": mailbox.get("email"),
+                    "display_name": mailbox.get("email"),
+                    "metadata": {
+                        "account_id": mailbox.get("account_id"),
+                        "email": mailbox.get("email"),
+                    },
+                })
+
+        if not mailbox_resources:
+            return None, "账号没有绑定邮箱 provider 资源，无法自动读取真实邮箱 OTP"
+
+        def _mailbox_resource_score(item: dict) -> tuple[int, int]:
+            metadata = _safe_dict(item.get("metadata"))
+            alias_meta = _safe_dict(metadata.get("email_alias"))
+            has_alias_parent = bool(
+                metadata.get("alias_parent_email")
+                or metadata.get("email_alias_parent")
+                or metadata.get("parent_email")
+                or alias_meta.get("parent_email")
+            )
+            return (1 if has_alias_parent else 0, len(metadata))
+
+        mailbox_resources.sort(key=_mailbox_resource_score, reverse=True)
+        provider_accounts = [
+            dict(item) for item in _safe_list(extra.get("provider_accounts")) if isinstance(item, dict)
+        ]
+        account_email = _text(account.email)
+        last_error = ""
+
+        for mailbox_resource in mailbox_resources:
+            metadata = _safe_dict(mailbox_resource.get("metadata"))
+            alias_meta = _safe_dict(metadata.get("email_alias"))
+            raw_provider_name = _text(mailbox_resource.get("provider_name") or mailbox_resource.get("provider"))
+            provider_name = _mailbox_provider_key(raw_provider_name, metadata)
+            resource_email = _text(
+                mailbox_resource.get("handle")
+                or mailbox_resource.get("display_name")
+                or metadata.get("email")
+                or account_email
+            )
+            mailbox_email = _text(
+                metadata.get("alias_email")
+                or alias_meta.get("alias_email")
+                or resource_email
+                or account_email
+            )
+            account_id = _text(
+                mailbox_resource.get("resource_identifier")
+                or metadata.get("account_id")
+                or metadata.get("id")
+                or resource_email
+                or mailbox_email
+            )
+            if account_email and account_email.lower() != mailbox_email.lower():
+                inferred_parent = _parent_from_plus_alias(account_email)
+                resource_parent_candidates = {
+                    resource_email.lower(),
+                    _text(metadata.get("email")).lower(),
+                }
+                resource_parent_candidates.discard("")
+                if inferred_parent and inferred_parent.lower() in resource_parent_candidates:
+                    mailbox_email = account_email
+
+            if not provider_name:
+                last_error = "账号邮箱资源缺少 provider_name"
+                continue
+            if not mailbox_email:
+                last_error = "账号邮箱资源缺少 email"
+                continue
+
+            accepted_providers = {provider_name, raw_provider_name}
+            if provider_name == "cfworker_admin_api":
+                accepted_providers.update({"cloud_mail", "cfworker"})
+            if provider_name == "outlook_email_api":
+                accepted_providers.add("outlook_email")
+            accepted_providers = {item for item in accepted_providers if item}
+
+            parent_email, parent_account_id, is_alias = _alias_parent_from(metadata, mailbox_email)
+            if is_alias and not parent_email:
+                last_error = f"别名邮箱 {mailbox_email} 缺少母邮箱，无法读取 OTP"
+                continue
+            if is_alias:
+                parent_account_id = parent_account_id or account_id or parent_email
+
+            email_candidates = {mailbox_email.lower(), parent_email.lower(), resource_email.lower()}
+            id_candidates = {account_id.lower(), parent_account_id.lower()}
+            email_candidates.discard("")
+            id_candidates.discard("")
+
+            same_provider_account = None
+            matched_provider_account = None
+            for item in provider_accounts:
+                item_provider = _mailbox_provider_key(
+                    _text(item.get("provider_name") or item.get("provider")),
+                    _safe_dict(item.get("metadata")),
+                )
+                raw_item_provider = _text(item.get("provider_name") or item.get("provider"))
+                if (item_provider or raw_item_provider) and not ({item_provider, raw_item_provider} & accepted_providers):
+                    continue
+                if same_provider_account is None:
+                    same_provider_account = item
+                item_metadata = _safe_dict(item.get("metadata"))
+                item_credentials = _safe_dict(item.get("credentials"))
+                candidates = {
+                    _text(item.get("login_identifier")).lower(),
+                    _text(item.get("display_name")).lower(),
+                    _text(item_metadata.get("email")).lower(),
+                    _text(item_metadata.get("account_id")).lower(),
+                    _text(item_credentials.get("email")).lower(),
+                    _text(item_credentials.get("login_account")).lower(),
+                    _text(item.get("id")).lower(),
+                }
+                if (email_candidates & candidates) or (id_candidates & candidates):
+                    matched_provider_account = item
+                    break
+
+            provider_account = matched_provider_account or same_provider_account
+            runtime_extra = dict(metadata)
+            _apply_provider_compat_settings(provider_name, runtime_extra, metadata)
+            runtime_resource = dict(mailbox_resource)
+            runtime_metadata = dict(metadata)
+            if is_alias:
+                runtime_metadata["alias_parent_email"] = parent_email
+                runtime_metadata["alias_parent_account_id"] = parent_account_id
+                runtime_metadata["email_alias"] = {
+                    **_safe_dict(runtime_metadata.get("email_alias")),
+                    "enabled": True,
+                    "alias_email": mailbox_email,
+                    "parent_email": parent_email,
+                    "parent_account_id": parent_account_id,
+                }
+                runtime_resource["metadata"] = runtime_metadata
+                runtime_resource["handle"] = mailbox_email
+                runtime_resource["display_name"] = mailbox_email
+                runtime_resource["resource_identifier"] = parent_account_id
+                runtime_extra = dict(runtime_metadata)
+                _apply_provider_compat_settings(provider_name, runtime_extra, runtime_metadata)
+            runtime_extra["provider_resource"] = runtime_resource
+            if provider_account:
+                runtime_extra["provider_account"] = provider_account
+
+            mailbox_account_extra = dict(runtime_extra)
+            mailbox_account_extra["mailbox_provider_key"] = provider_name
+            if is_alias:
+                mailbox_account_extra["email_alias"] = {
+                    "enabled": True,
+                    "alias_email": mailbox_email,
+                    "parent_email": parent_email,
+                    "parent_account_id": parent_account_id or account_id or parent_email,
+                }
+            mailbox_account = MailboxAccount(
+                email=mailbox_email,
+                account_id=(parent_account_id or account_id or mailbox_email) if is_alias else (account_id or mailbox_email),
+                extra=mailbox_account_extra,
+            )
+            try:
+                mailbox = create_mailbox(provider_name, extra=runtime_extra, proxy=proxy)
+            except Exception as exc:
+                last_error = f"{raw_provider_name or provider_name} -> {provider_name}: {exc}"
+                log_fn(f"  重新登录: 邮箱资源不可用，跳过: {last_error}")
+                continue
+
+            if raw_provider_name and raw_provider_name != provider_name:
+                log_fn(f"  重新登录: 邮箱 provider 兼容映射 {raw_provider_name} -> {provider_name}")
+            if is_alias:
+                normalized_parent = normalize_email_address(parent_email)
+                if not normalized_parent:
+                    return None, f"别名邮箱 {mailbox_email} 缺少母邮箱，无法读取 OTP"
+                log_fn(f"  重新登录: 检测到别名邮箱 alias={mailbox_email} parent={normalized_parent}")
+                alias_mailbox = EmailAliasMailbox(mailbox, platform="chatgpt", log_fn=log_fn)
+                parent_extra = dict(mailbox_account_extra)
+                parent_resource = dict(parent_extra.get("provider_resource") or {})
+                if parent_resource:
+                    parent_resource["handle"] = parent_email
+                    parent_resource["display_name"] = parent_email
+                    parent_resource["resource_identifier"] = parent_account_id or account_id or parent_email
+                    parent_extra["provider_resource"] = parent_resource
+                alias_mailbox._parents_by_alias[normalize_email_address(mailbox_email)] = MailboxAccount(
+                    email=parent_email,
+                    account_id=parent_account_id or account_id or parent_email,
+                    extra=parent_extra,
+                )
+                mailbox = alias_mailbox
+
+            log_fn(
+                "  重新登录: 使用本地邮箱资源读取 OTP "
+                f"provider={provider_name} login_email={mailbox_email} "
+                f"mailbox_email={parent_email if is_alias else mailbox_email}"
+            )
+            return (
+                _MailboxEmailService(
+                    mailbox=mailbox,
+                    mailbox_account=mailbox_account,
+                    provider=provider_name,
+                    log_fn=log_fn,
+                ),
+                "",
+            )
+
+        return None, f"无法初始化账号邮箱 provider: {last_error or '没有可用邮箱资源'}"
+
+    def _refresh_session_failed_result(
+        self,
+        account: Account,
+        message: str,
+        *,
+        account_banned: bool = False,
+        error_type: str = "",
+    ) -> dict:
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        resolved_error_type = error_type or ("account_banned" if account_banned else "session_refresh_failed")
+        result = {
+            "ok": False,
+            "error": message,
+            "error_type": resolved_error_type,
+            "summary_updates": {
+                "session_refresh_status": "failed",
+                "last_session_refresh_at": now,
+            },
+            "data": {
+                "email": account.email,
+                "account_id": account.user_id or "",
+                "session_refresh_status": "failed",
+                "error_type": resolved_error_type,
+            },
+        }
+        if account_banned:
+            result["lifecycle_status"] = "banned"
+            result["summary_updates"]["deactivated_reason"] = message
+            result["data"]["delete_local_account"] = True
+        return result
+
+    def _handle_refresh_session(self, account: Account, params: dict) -> dict:
+        log_fn = getattr(self, "log", print)
+        cancel_fn = getattr(self, "_cancel_check_fn", None)
+        extra = account.extra or {}
+        region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+        proxy = _resolve_action_proxy(
+            self.config.proxy if self.config else None,
+            region=region,
+            log_fn=log_fn,
+            action_label="重新登录",
+        )
+
+        if not account.password:
+            return self._refresh_session_failed_result(account, "账号缺少密码，无法重新登录")
+
+        if callable(cancel_fn) and cancel_fn():
+            return {"ok": False, "error": "任务已取消", "data": {"email": account.email}}
+
+        email_service, mailbox_error = self._build_refresh_session_mailbox_email_service(account, log_fn, proxy)
+        if email_service is None:
+            return self._refresh_session_failed_result(account, f"邮箱服务不可用: {mailbox_error}")
+
+        try:
+            from platforms.chatgpt.register import RegistrationEngine
+
+            log_fn(f"重新登录获取session/at: {account.email}, proxy={_proxy_log_value(proxy)}")
+            engine = RegistrationEngine(
+                email_service=email_service,
+                proxy_url=proxy,
+                callback_logger=log_fn,
+            )
+            engine.email = account.email
+            engine.password = account.password
+            engine.k12_join_enabled = False
+            result = engine.run()
+        except Exception as exc:
+            message = f"重新登录异常: {exc}"
+            cloudflare_challenge = _is_cloudflare_managed_challenge_error(message)
+            return self._refresh_session_failed_result(
+                account,
+                message,
+                account_banned=_is_chatgpt_deleted_or_deactivated_error(message),
+                error_type="cloudflare_managed_challenge" if cloudflare_challenge else "",
+            )
+
+        if callable(cancel_fn) and cancel_fn():
+            return {"ok": False, "error": "任务已取消", "data": {"email": account.email}}
+
+        if not result or not getattr(result, "success", False):
+            error = str(getattr(result, "error_message", "") or "重新登录失败")
+            cloudflare_challenge = _is_cloudflare_managed_challenge_error(error)
+            return self._refresh_session_failed_result(
+                account,
+                error,
+                account_banned=_is_chatgpt_deleted_or_deactivated_error(error),
+                error_type="cloudflare_managed_challenge" if cloudflare_challenge else "",
+            )
+
+        metadata = getattr(result, "metadata", None) or {}
+        session = metadata.get("session") if isinstance(metadata.get("session"), dict) else {}
+        access_token = _first_non_empty(
+            getattr(result, "access_token", ""),
+            session.get("accessToken") if isinstance(session, dict) else "",
+            session.get("access_token") if isinstance(session, dict) else "",
+        )
+        session_token = _first_non_empty(
+            getattr(result, "session_token", ""),
+            session.get("sessionToken") if isinstance(session, dict) else "",
+            session.get("session_token") if isinstance(session, dict) else "",
+        )
+        if not session or not access_token:
+            return self._refresh_session_failed_result(account, "重新登录成功但没有拿到有效 session/at")
+
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        log_fn(
+            "重新登录成功: "
+            f"{account.email} session=有 accessToken=有 sessionToken={'有' if session_token else '无'}"
+        )
+        return {
+            "ok": True,
+            "data": {
+                "message": "重新登录成功，session/at 已更新",
+                "email": account.email,
+                "account_id": _first_non_empty(getattr(result, "account_id", ""), account.user_id),
+                "access_token": access_token,
+                "session_token": session_token,
+                "cookies": metadata.get("cookies", ""),
+                "session": session,
+                "session_refreshed_at": now,
+                "session_refresh_status": "refreshed",
+            },
+        }
 
     def _handle_get_rt(self, account: Account, params: dict) -> dict:
         """通过浏览器 OAuth 获取 refresh_token（真实邮箱 OTP + 真实手机号 OTP）。

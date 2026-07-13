@@ -96,6 +96,7 @@ RT_RUNTIME_SUMMARY_KEYS = {
     "rt_uploaded_at",
     "token_backup_path",
 }
+BUGFREE_CHIP = "BUGFREE"
 
 
 def _utcnow() -> datetime:
@@ -134,6 +135,13 @@ def _dedupe_chips(*groups: list[Any]) -> list[str]:
             seen.add(chip)
             result.append(chip)
     return result
+
+
+def _normalize_chips_for_summary(summary: dict[str, Any]) -> list[str]:
+    chips = _dedupe_chips(summary.get("chips") or [])
+    if bool(summary.get("bugfree")) and not any(chip.lower() == "bugfree" for chip in chips):
+        chips.insert(0, BUGFREE_CHIP)
+    return chips
 
 
 def _normalize_plan_state(value: Any) -> str:
@@ -351,7 +359,7 @@ def _normalize_overview_summary(
     plan_name = _derive_plan_name(payload)
     display_status = _derive_display_status(lifecycle_status, validity_status, plan_state)
 
-    payload["chips"] = _dedupe_chips(payload.get("chips") or [])
+    payload["chips"] = _normalize_chips_for_summary(payload)
     if bool(payload.get("local_matches_target")) and "当前" not in payload["chips"]:
         payload["chips"].append("当前")
     legacy_extra = _safe_dict(payload.get("legacy_extra"))
@@ -973,7 +981,9 @@ def sync_legacy_account_graph(
             summary["legacy_extra"] = merged_legacy_extra
         else:
             summary.pop("legacy_extra", None)
-    summary["chips"] = _dedupe_chips(legacy_summary.get("chips") or [], existing_summary.get("chips") or [])
+    summary["chips"] = _normalize_chips_for_summary(
+        {**summary, "chips": _dedupe_chips(legacy_summary.get("chips") or [], existing_summary.get("chips") or [])}
+    )
     summary["lifecycle_status"] = _text(current.get("lifecycle_status")) or _text(legacy_summary.get("lifecycle_status")) or "registered"
 
     existing_credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
@@ -1017,7 +1027,7 @@ def sync_account_graph(session: Session, model: AccountModel) -> None:
     current = _graph_for_account(session, account_id)
     summary = _safe_dict(current.get("overview"))
     summary["lifecycle_status"] = _text(current.get("lifecycle_status")) or _text(summary.get("lifecycle_status")) or "registered"
-    summary["chips"] = _dedupe_chips(summary.get("chips") or [])
+    summary["chips"] = _normalize_chips_for_summary(summary)
 
     platform = model.platform
     credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
@@ -1085,7 +1095,9 @@ def sync_platform_account_graph(session: Session, model: AccountModel, account: 
             summary["legacy_extra"] = merged_legacy_extra
         else:
             summary.pop("legacy_extra", None)
-    summary["chips"] = _dedupe_chips(existing_summary.get("chips") or [], incoming_summary.get("chips") or [])
+    summary["chips"] = _normalize_chips_for_summary(
+        {**summary, "chips": _dedupe_chips(existing_summary.get("chips") or [], incoming_summary.get("chips") or [])}
+    )
     summary["lifecycle_status"] = lifecycle_status
 
     existing_credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
@@ -1156,6 +1168,7 @@ def patch_account_graph(
         summary["trial_end_time"] = int(trial_end_time or 0)
     effective_lifecycle = _text(lifecycle_status) or _text(current.get("lifecycle_status")) or "registered"
     summary["lifecycle_status"] = effective_lifecycle
+    summary["chips"] = _normalize_chips_for_summary(summary)
 
     existing_credentials = [item for item in current.get("credentials") or [] if item.get("scope") == "platform"]
     summary_marker = _safe_dict(summary_updates or {})

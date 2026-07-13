@@ -25,6 +25,7 @@ Implementation:
 
 Public API:
   - `get_sentinel_token_via_quickjs(session, device_id, flow, ...) -> str | None`
+  - `get_sentinel_tokens_via_quickjs(session, device_id, flow, ...) -> dict | None`
 """
 from __future__ import annotations
 
@@ -191,15 +192,15 @@ def _fetch_sentinel_challenge(
     return payload
 
 
-def get_sentinel_token_via_quickjs(
+def get_sentinel_tokens_via_quickjs(
     session: Any,
     device_id: str,
     *,
     flow: str = "authorize_continue",
     timeout_ms: int = 45000,
     log: Optional[Callable[[str], None]] = None,
-) -> Optional[str]:
-    """Try the QuickJS path. Return JSON string on success, None on any failure.
+) -> Optional[dict[str, str]]:
+    """Try the QuickJS path. Return token bundle on success, None on any failure.
 
     Caller is expected to fall back to pure-Python sentinel on None.
     """
@@ -239,6 +240,7 @@ def get_sentinel_token_via_quickjs(
             quickjs_script=quickjs_script,
             payload={
                 "device_id": did,
+                "flow": flow,
                 "request_p": request_p,
                 "challenge": challenge,
             },
@@ -260,8 +262,32 @@ def get_sentinel_token_via_quickjs(
             separators=(",", ":"),
             ensure_ascii=False,
         )
-        log(f"Sentinel QuickJS 成功 (p_len={len(final_p)} t_len={len(t_value)} c_len={len(c_value)})")
-        return token
+        so_token = str(solved.get("so_token") or "").strip()
+        log(
+            "Sentinel QuickJS 成功 "
+            f"(p_len={len(final_p)} t_len={len(t_value)} c_len={len(c_value)} "
+            f"so_len={len(so_token)})"
+        )
+        return {"token": token, "so_token": so_token}
     except Exception as e:
         log(f"Sentinel QuickJS 异常: {e}")
         return None
+
+
+def get_sentinel_token_via_quickjs(
+    session: Any,
+    device_id: str,
+    *,
+    flow: str = "authorize_continue",
+    timeout_ms: int = 45000,
+    log: Optional[Callable[[str], None]] = None,
+) -> Optional[str]:
+    """Backward-compatible wrapper returning only `openai-sentinel-token`."""
+    bundle = get_sentinel_tokens_via_quickjs(
+        session,
+        device_id,
+        flow=flow,
+        timeout_ms=timeout_ms,
+        log=log,
+    )
+    return str(bundle.get("token") or "") if bundle else None

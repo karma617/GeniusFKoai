@@ -1,12 +1,17 @@
 """代理池 - 从数据库读取代理，支持轮询、按区域选取和全局回退策略。"""
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from sqlmodel import Session, select
 from .db import ProxyModel, engine
 import time, threading, random
 from datetime import datetime, timezone
+from urllib.parse import quote, unquote
 
 
 DEFAULT_FALLBACK_PROXY_URL = "http://127.0.0.1:7897"
+PROXY_CHECK_URL = "https://cloudflare.com/cdn-cgi/trace"
+PROXY_CHECK_CONCURRENCY = 20
+PROXY_IMPORT_SCHEMES = {"http", "https", "socks5"}
 PROXY_STRATEGY_POOL_THEN_DEFAULT = "pool_then_default"
 PROXY_STRATEGY_POOL_ONLY = "pool_only"
 PROXY_STRATEGY_DEFAULT_ONLY = "default_only"
@@ -19,14 +24,50 @@ PROXY_STRATEGIES = {
 }
 
 
-def normalize_proxy_url(value: str | None) -> str | None:
-    """规范化用户输入的代理地址；无协议时默认补 http://。"""
+def normalize_proxy_scheme(value: str | None) -> str:
+    scheme = str(value or "").strip().lower()
+    return scheme if scheme in PROXY_IMPORT_SCHEMES else "http"
+
+
+def _normalize_host_port_auth_proxy(value: str, *, default_scheme: str = "http") -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    scheme = normalize_proxy_scheme(default_scheme)
+    rest = raw
+    if "://" in raw:
+        scheme, rest = raw.split("://", 1)
+        scheme = (scheme or default_scheme).strip().lower()
+    if "@" in rest:
+        return f"{scheme}://{rest}"
+    parts = rest.split(":")
+    if len(parts) == 4 and parts[1].isdigit():
+        host, port, username, password = parts
+        if host and port:
+            return (
+                f"{scheme}://"
+                f"{quote(unquote(username), safe='')}:{quote(unquote(password), safe='')}"
+                f"@{host}:{port}"
+            )
+    return None
+
+
+def normalize_proxy_url(value: str | None, *, default_scheme: str = "http") -> str | None:
+    """规范化用户输入的代理地址；注册流程可直接交给 HTTPClient 使用。"""
     proxy = str(value or "").strip()
     if not proxy:
         return None
+    scheme = normalize_proxy_scheme(default_scheme)
+    converted = _normalize_host_port_auth_proxy(proxy, default_scheme=scheme)
+    if converted:
+        return converted
     if "://" not in proxy:
-        proxy = f"http://{proxy}"
+        proxy = f"{scheme}://{proxy}"
     return proxy
+
+
+def _proxy_url_key(value: str | None) -> str:
+    return (normalize_proxy_url(value) or str(value or "").strip()).lower()
 
 
 def get_proxy_runtime_config() -> dict[str, str]:
@@ -129,18 +170,20 @@ class ProxyPool:
                 self._index += 1
             return pool[idx].url
 
-    def report_success(self, url: str) -> None:
+    def report_success(self, url: str, *, region: str = "") -> None:
         with Session(engine) as s:
-            p = s.exec(select(ProxyModel).where(ProxyModel.url == url)).first()
+            p = self._find_by_url(s, url)
             if p:
                 p.success_count += 1
                 p.last_checked = datetime.now(timezone.utc)
+                if region:
+                    p.region = region
                 s.add(p)
                 s.commit()
 
     def report_fail(self, url: str) -> None:
         with Session(engine) as s:
-            p = s.exec(select(ProxyModel).where(ProxyModel.url == url)).first()
+            p = self._find_by_url(s, url)
             if p:
                 p.fail_count += 1
                 p.last_checked = datetime.now(timezone.utc)
@@ -150,25 +193,78 @@ class ProxyPool:
                 s.add(p)
                 s.commit()
 
-    def check_all(self) -> dict:
-        """检测所有代理可用性"""
-        import requests
-        with Session(engine) as s:
-            proxies = s.exec(select(ProxyModel)).all()
-        results = {"ok": 0, "fail": 0}
-        for p in proxies:
+    def _find_by_url(self, session: Session, url: str) -> ProxyModel | None:
+        p = session.exec(select(ProxyModel).where(ProxyModel.url == url)).first()
+        if p:
+            return p
+        expected = _proxy_url_key(url)
+        for item in session.exec(select(ProxyModel)).all():
+            if _proxy_url_key(item.url) == expected:
+                return item
+        return None
+
+    def _check_one(self, url: str, *, timeout: int) -> dict:
+        from core.http_client import RequestConfig
+        from platforms.chatgpt.http_client import OpenAIHTTPClient
+
+        proxy_url = normalize_proxy_url(url) or url
+        result = {"url": url, "checked_url": proxy_url, "ok": False, "status_code": None, "error": "", "region": ""}
+        client = None
+        try:
+            client = OpenAIHTTPClient(
+                proxy_url=proxy_url,
+                config=RequestConfig(timeout=timeout, max_retries=1, impersonate="chrome136"),
+            )
+            response = client.get(PROXY_CHECK_URL, timeout=timeout)
+            result["status_code"] = response.status_code
+            if response.status_code == 200:
+                result["ok"] = True
+                for line in str(response.text or "").splitlines():
+                    if line.startswith("loc="):
+                        result["region"] = line.split("=", 1)[1].strip()
+                        break
+            else:
+                result["error"] = f"HTTP {response.status_code}"
+        except Exception as exc:
+            result["error"] = str(exc)[:200]
+        finally:
             try:
-                r = requests.get("https://httpbin.org/ip",
-                                 proxies={"http": p.url, "https": p.url},
-                                 timeout=8)
-                if r.status_code == 200:
-                    self.report_success(p.url)
-                    results["ok"] += 1
-                    continue
+                client.close()
             except Exception:
                 pass
-            self.report_fail(p.url)
-            results["fail"] += 1
+        return result
+
+    def check_all(self, *, concurrency: int = PROXY_CHECK_CONCURRENCY, timeout: int = 12) -> dict:
+        """并发检测所有代理是否能按注册流程 HTTPClient 方式出网。"""
+        with Session(engine) as s:
+            proxies = s.exec(select(ProxyModel)).all()
+        results = {"ok": 0, "fail": 0, "total": len(proxies), "results": []}
+        if not proxies:
+            return results
+
+        workers = max(1, min(int(concurrency or 1), len(proxies)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {
+                executor.submit(self._check_one, p.url, timeout=timeout): p.url
+                for p in proxies
+            }
+            for future in as_completed(future_map):
+                try:
+                    item = future.result()
+                except Exception as exc:
+                    item = {
+                        "url": future_map[future],
+                        "ok": False,
+                        "status_code": None,
+                        "error": str(exc)[:200],
+                    }
+                if item["ok"]:
+                    self.report_success(item["url"], region=str(item.get("region") or "").strip())
+                    results["ok"] += 1
+                else:
+                    self.report_fail(item["url"])
+                    results["fail"] += 1
+                results["results"].append(item)
         return results
 
 

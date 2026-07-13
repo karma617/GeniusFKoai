@@ -1059,6 +1059,70 @@ def test_platform_reference_nextauth_retries_oauth_url(monkeypatch):
     assert any("2s 后重试 (3/3)" in message for message in logs)
 
 
+def test_platform_reference_register_saves_chatgpt_web_session_without_k12(monkeypatch):
+    from platforms.chatgpt import register as register_module
+
+    calls = {"web_session": 0}
+    access_token = _make_access_token(int(time.time()) + 3600)
+
+    class FakeCookies(dict):
+        pass
+
+    class FakeClient:
+        def __init__(self, proxy_url=None):
+            self.session = SimpleNamespace(cookies=FakeCookies())
+            self.default_headers = {}
+
+    service = SimpleNamespace(service_type=SimpleNamespace(value="test"))
+    engine = RegistrationEngine(email_service=service, callback_logger=lambda _message: None)
+    engine.email = "user@example.com"
+    engine.password = "Secret123!"
+    engine.k12_join_enabled = False
+
+    def fake_authorize(_client, _device_id):
+        engine._platform_authorize_final_url = "https://auth.openai.com/sign-up"
+        return SimpleNamespace(auth_url="https://auth.openai.com/api/accounts/authorize?state=platform", state="state", code_verifier="verifier")
+
+    def fake_send_otp(_client):
+        engine._create_account_continue_url = "https://auth.openai.com/sign-in-with-chatgpt/codex/consent?code=ready"
+
+    def fake_complete_platform_oauth(*_args, **_kwargs):
+        return {
+            "access_token": access_token,
+            "refresh_token": "registration-refresh-token",
+            "id_token": access_token,
+        }
+
+    def fake_establish_web_session():
+        calls["web_session"] += 1
+        return (
+            {
+                "accessToken": "chatgpt-access-token",
+                "sessionToken": "session-token-normal",
+                "user": {"email": "user@example.com"},
+            },
+            "__Secure-next-auth.session-token=session-token-normal",
+        )
+
+    monkeypatch.setattr(register_module, "OpenAIHTTPClient", FakeClient)
+    engine._platform_reference_authorize = fake_authorize
+    engine._refresh_mailbox_before_ids = lambda: None
+    engine._platform_reference_register_user = lambda _client, _device_id: True
+    engine._platform_reference_send_otp = fake_send_otp
+    engine._platform_reference_create_account = lambda _client, _device_id: None
+    engine._complete_platform_oauth = fake_complete_platform_oauth
+    engine._establish_chatgpt_web_session_for_platform_reference = fake_establish_web_session
+
+    result = engine._run_platform_reference_register(RegistrationResult(success=False, logs=[]))
+
+    assert result.success is True
+    assert calls["web_session"] == 1
+    assert result.session_token == "session-token-normal"
+    assert result.metadata["session"]["accessToken"] == "chatgpt-access-token"
+    assert result.metadata["cookies"] == "__Secure-next-auth.session-token=session-token-normal"
+    assert result.metadata["chatgpt_session_source"] == "nextauth_after_platform_reference"
+
+
 def test_platform_reference_existing_k12_login_skips_platform_oauth(monkeypatch):
     from platforms.chatgpt import register as register_module
 

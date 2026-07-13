@@ -555,6 +555,52 @@ def test_outlook_email_skips_invalid_email_tag_by_default(monkeypatch):
     assert mailbox.get_email().email == "fresh@outlook.com"
 
 
+def test_outlook_email_skips_non_normal_tags_by_default(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {
+                            "id": 1,
+                            "email": "registered@outlook.com",
+                            "status": "active",
+                            "tags": [{"id": 9, "name": "已注册"}],
+                        },
+                        {
+                            "id": 2,
+                            "email": "alias-full@outlook.com",
+                            "status": "active",
+                            "tags": [{"id": 10, "name": "别名已上限"}],
+                        },
+                        {
+                            "id": 3,
+                            "email": "invalid@outlook.com",
+                            "status": "active",
+                            "tags": [{"id": 11, "name": "无效邮箱"}],
+                        },
+                        {
+                            "id": 4,
+                            "email": "fresh@outlook.com",
+                            "status": "active",
+                            "tags": [],
+                        },
+                    ],
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+    )
+
+    assert mailbox.get_email().email == "fresh@outlook.com"
+
+
 def test_outlook_email_get_email_skips_readability_precheck(monkeypatch):
     logs: list[str] = []
     accounts_payload = {
@@ -1125,6 +1171,36 @@ def test_outlook_email_marks_invalid_email_with_default_tag(monkeypatch):
     assert session.calls[3]["url"] == "https://mail.example.test/api/tags"
     assert session.calls[4]["url"] == "https://mail.example.test/api/accounts/tags"
     assert session.calls[4]["kwargs"]["json"] == {"account_ids": [2], "tag_id": 9, "action": "add"}
+
+
+def test_outlook_email_marks_alias_exhausted_with_default_tag(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse({"success": True, "message": "ok"}),
+            FakeResponse({"csrf_token": "csrf-token"}),
+            FakeResponse({"success": True, "tags": []}),
+            FakeResponse({"success": True, "tag": {"id": 10, "name": "别名已上限", "color": "#1a1a1a"}}),
+            FakeResponse({"success": True, "message": "成功处理 1 个账号"}),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        admin_password="fake-admin-password",
+    )
+    account = mailbox._build_account(
+        email="parent@outlook.com",
+        account_id="2",
+        source="account_list",
+        raw={"id": 2, "email": "parent@outlook.com"},
+    )
+
+    assert mailbox.mark_alias_exhausted(account, reason="user_already_exists") == ["别名已上限"]
+    assert session.calls[3]["url"] == "https://mail.example.test/api/tags"
+    assert session.calls[4]["url"] == "https://mail.example.test/api/accounts/tags"
+    assert session.calls[4]["kwargs"]["json"] == {"account_ids": [2], "tag_id": 10, "action": "add"}
 
 
 def test_outlook_email_deletes_account_via_admin_api(monkeypatch):

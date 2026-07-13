@@ -1,5 +1,89 @@
 from core.base_platform import Account, RegisterConfig
 from platforms.chatgpt.plugin import ChatGPTPlatform
+from platforms.chatgpt.register import is_cloudflare_managed_challenge_html
+
+
+def test_refresh_session_failed_result_only_flags_confirmed_banned_accounts():
+    platform = ChatGPTPlatform(RegisterConfig())
+    account = Account(
+        platform="chatgpt",
+        email="refresh@test.com",
+        password="Secret123!",
+        user_id="acct-refresh",
+    )
+
+    normal = platform._refresh_session_failed_result(account, "邮箱服务不可用")
+    banned = platform._refresh_session_failed_result(
+        account,
+        "account has been deleted or deactivated",
+        account_banned=True,
+    )
+
+    assert normal["error_type"] == "session_refresh_failed"
+    assert normal["data"]["error_type"] == "session_refresh_failed"
+    assert normal["data"].get("delete_local_account") is None
+    assert "lifecycle_status" not in normal
+
+    assert banned["error_type"] == "account_banned"
+    assert banned["lifecycle_status"] == "banned"
+    assert banned["data"]["delete_local_account"] is True
+
+
+def test_cloudflare_managed_challenge_html_is_detected():
+    body = """
+    <!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title></head>
+    <body><script>window._cf_chl_opt = {cType: 'managed'};</script>
+    <script src="https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>
+    </body></html>
+    """
+
+    assert is_cloudflare_managed_challenge_html(body) is True
+    assert is_cloudflare_managed_challenge_html("<html>normal error</html>") is False
+
+
+def test_refresh_session_classifies_cloudflare_managed_challenge(monkeypatch):
+    account = Account(
+        platform="chatgpt",
+        email="refresh@test.com",
+        password="Secret123!",
+        user_id="acct-refresh",
+    )
+    platform = ChatGPTPlatform(RegisterConfig())
+    monkeypatch.setattr(
+        platform,
+        "_build_refresh_session_mailbox_email_service",
+        lambda _account, _log_fn, _proxy: (object(), ""),
+    )
+
+    class FakeRegistrationEngine:
+        def __init__(self, *args, **kwargs):
+            self.email = ""
+            self.password = ""
+            self.k12_join_enabled = True
+
+        def run(self):
+            return type(
+                "Result",
+                (),
+                {
+                    "success": False,
+                    "error_message": (
+                        "platform_authorize_cloudflare_managed_challenge: "
+                        "auth.openai.com 返回 Cloudflare Managed Challenge"
+                    ),
+                },
+            )()
+
+    import platforms.chatgpt.register as register_module
+
+    monkeypatch.setattr(register_module, "RegistrationEngine", FakeRegistrationEngine)
+
+    result = platform._handle_refresh_session(account, {})
+
+    assert result["ok"] is False
+    assert result["error_type"] == "cloudflare_managed_challenge"
+    assert result["data"]["error_type"] == "cloudflare_managed_challenge"
+    assert result["data"].get("delete_local_account") is None
 
 
 def test_get_rt_mailbox_otp_callback_uses_attached_mailbox_resource(monkeypatch):
@@ -245,4 +329,85 @@ def test_get_rt_mailbox_otp_callback_reads_alias_parent_mailbox(monkeypatch):
     assert captured["wait_before_ids"] == {"old-message"}
     assert captured["wait_alias"] == "marchioritisa074+2axe1v3x@outlook.com"
     assert any("outlook_email -> outlook_email_api" in item for item in captured["logs"])
+    assert any("检测到别名邮箱" in item and "parent=marchioritisa074@outlook.com" in item for item in captured["logs"])
+
+
+def test_refresh_session_email_service_logs_in_with_alias_and_reads_parent_mailbox(monkeypatch):
+    captured = {"accounts": [], "logs": []}
+
+    class FakeMailbox:
+        def get_current_ids(self, account):
+            captured["accounts"].append(("baseline", account.email, account.account_id))
+            return {"old-message"}
+
+        def wait_for_code(self, account, keyword="", timeout=120, before_ids=None, code_pattern=None):
+            captured["accounts"].append(("wait", account.email, account.account_id))
+            captured["wait_before_ids"] = before_ids
+            captured["wait_alias"] = account.extra["email_alias"]["alias_email"]
+            return "112233"
+
+    def fake_create_mailbox(provider, extra=None, proxy=None):
+        captured["provider"] = provider
+        captured["extra"] = extra
+        captured["proxy"] = proxy
+        return FakeMailbox()
+
+    import core.base_mailbox as base_mailbox
+
+    monkeypatch.setattr(base_mailbox, "create_mailbox", fake_create_mailbox)
+
+    account = Account(
+        platform="chatgpt",
+        email="marchioritisa074+2axe1v3x@outlook.com",
+        password="chatgpt-password",
+        extra={
+            "provider_resources": [
+                {
+                    "provider_type": "mailbox",
+                    "provider_name": "outlook_email",
+                    "resource_type": "mailbox",
+                    "resource_identifier": "parent-3431",
+                    "handle": "marchioritisa074@outlook.com",
+                    "display_name": "marchioritisa074@outlook.com",
+                    "metadata": {
+                        "email": "marchioritisa074@outlook.com",
+                        "account_id": "parent-3431",
+                    },
+                }
+            ],
+            "provider_accounts": [
+                {
+                    "provider_type": "mailbox",
+                    "provider_name": "outlook_email_api",
+                    "login_identifier": "marchioritisa074@outlook.com",
+                    "display_name": "marchioritisa074@outlook.com",
+                    "credentials": {"email": "marchioritisa074@outlook.com"},
+                    "metadata": {"account_id": "parent-3431"},
+                }
+            ],
+        },
+    )
+    platform = ChatGPTPlatform(RegisterConfig())
+
+    service, error = platform._build_refresh_session_mailbox_email_service(
+        account,
+        captured["logs"].append,
+        proxy="http://proxy.example",
+    )
+
+    assert error == ""
+    assert service is not None
+    assert captured["provider"] == "outlook_email_api"
+    assert captured["proxy"] == "http://proxy.example"
+    assert captured["extra"]["provider_account"]["login_identifier"] == "marchioritisa074@outlook.com"
+
+    email_info = service.create_email()
+    assert email_info["email"] == "marchioritisa074+2axe1v3x@outlook.com"
+    assert service.get_verification_code(timeout=10) == "112233"
+    assert captured["accounts"] == [
+        ("baseline", "marchioritisa074@outlook.com", "parent-3431"),
+        ("wait", "marchioritisa074@outlook.com", "parent-3431"),
+    ]
+    assert captured["wait_before_ids"] == {"old-message"}
+    assert captured["wait_alias"] == "marchioritisa074+2axe1v3x@outlook.com"
     assert any("检测到别名邮箱" in item and "parent=marchioritisa074@outlook.com" in item for item in captured["logs"])

@@ -238,16 +238,25 @@ def test_check_sentinel_prefers_quickjs_token(monkeypatch):
 
     monkeypatch.setattr(
         sentinel_quickjs,
-        "get_sentinel_token_via_quickjs",
-        lambda *_args, **_kwargs: json.dumps(
-            {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "authorize_continue"}
-        ),
+        "get_sentinel_tokens_via_quickjs",
+        lambda *_args, **_kwargs: {
+            "token": json.dumps(
+                {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "authorize_continue"}
+            ),
+            "so_token": '{"so":"quick-so","c":"quick-c","id":"device-id","flow":"authorize_continue"}',
+        },
     )
     engine.http_client = FakeHTTPClient()
 
     payload = engine._check_sentinel("device-id", flow="authorize_continue")
 
-    assert payload == SentinelPayload(p="quick-p", t="quick-t", c="quick-c", flow="authorize_continue")
+    assert payload == SentinelPayload(
+        p="quick-p",
+        t="quick-t",
+        c="quick-c",
+        flow="authorize_continue",
+        so_token='{"so":"quick-so","c":"quick-c","id":"device-id","flow":"authorize_continue"}',
+    )
     assert any("QuickJS Sentinel 已启用" in message for message in engine.logs)
 
 
@@ -265,7 +274,7 @@ def test_check_sentinel_falls_back_to_legacy_when_quickjs_missing(monkeypatch):
             calls["legacy"] += 1
             return _SentinelResponse()
 
-    monkeypatch.setattr(sentinel_quickjs, "get_sentinel_token_via_quickjs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sentinel_quickjs, "get_sentinel_tokens_via_quickjs", lambda *_args, **_kwargs: None)
     engine.http_client = FakeHTTPClient()
 
     payload = engine._check_sentinel("device-id", flow="username_password_create")
@@ -291,10 +300,13 @@ def test_platform_sentinel_header_prefers_quickjs_token(monkeypatch):
 
     monkeypatch.setattr(
         sentinel_quickjs,
-        "get_sentinel_token_via_quickjs",
-        lambda *_args, **_kwargs: json.dumps(
-            {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "oauth_create_account"}
-        ),
+        "get_sentinel_tokens_via_quickjs",
+        lambda *_args, **_kwargs: {
+            "token": json.dumps(
+                {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "oauth_create_account"}
+            ),
+            "so_token": "",
+        },
     )
 
     header = engine._build_sentinel_header_for_client(FakeClient(), "device-id", "oauth_create_account")
@@ -306,6 +318,58 @@ def test_platform_sentinel_header_prefers_quickjs_token(monkeypatch):
         "id": "device-id",
         "flow": "oauth_create_account",
     }
+
+
+def test_create_account_sends_quickjs_sentinel_so_token():
+    engine = _bare_engine()
+    captured = {}
+
+    class DumpResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {}
+
+    class CreateAccountResponse:
+        status_code = 200
+        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=ok"}'
+
+        def json(self):
+            return {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=ok"}
+
+    class CreateAccountSession:
+        def get(self, url, headers=None, timeout=None):
+            return DumpResponse()
+
+        def post(self, url, headers=None, data=None, **kwargs):
+            captured["headers"] = headers or {}
+            captured["data"] = data
+            return CreateAccountResponse()
+
+    engine.session = CreateAccountSession()
+    engine._device_id = "device-id"
+    engine._check_sentinel = lambda did, flow="authorize_continue": SentinelPayload(
+        p="quick-p",
+        t="quick-t",
+        c="quick-c",
+        flow=flow,
+        so_token='{"so":"quick-so","c":"quick-c","id":"device-id","flow":"oauth_create_account"}',
+    )
+
+    assert engine._create_user_account() is True
+
+    assert json.loads(captured["headers"]["openai-sentinel-token"]) == {
+        "p": "quick-p",
+        "t": "quick-t",
+        "c": "quick-c",
+        "id": "device-id",
+        "flow": "oauth_create_account",
+    }
+    assert (
+        captured["headers"]["openai-sentinel-so-token"]
+        == '{"so":"quick-so","c":"quick-c","id":"device-id","flow":"oauth_create_account"}'
+    )
 
 
 def test_protocol_email_otp_signup_sends_otp_without_password_step():

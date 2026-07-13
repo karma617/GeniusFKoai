@@ -41,6 +41,12 @@ def _normalize_string(value: Any = "") -> str:
     return str(value or "").strip()
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _normalize_string(value).lower() in {"1", "true", "yes", "on", "y", "是"}
+
+
 def _get_config_value(key: str) -> str:
     try:
         from core.config_store import config_store
@@ -459,17 +465,26 @@ def _is_k12_account(account: Any) -> bool:
     return _account_plan_type(account) == "k12"
 
 
-def _build_codex_session_content(account: Any, tokens: dict[str, str]) -> str:
+def _allow_missing_refresh_token(account: Any, force_upload_without_rt: Any) -> bool:
+    return _truthy(force_upload_without_rt) or _is_k12_account(account)
+
+
+def _build_codex_session_content(
+    account: Any,
+    tokens: dict[str, str],
+    *,
+    force_upload_without_rt: bool = False,
+) -> str:
     extra = _account_extra(account)
     session = getattr(account, "session", None) or extra.get("session")
     access_token = tokens["access_token"]
     if not access_token:
         raise ValueError("账号缺少 access_token，无法导入 SUB2API。")
-    if not tokens["refresh_token"] and not _is_k12_account(account):
+    if not tokens["refresh_token"] and not _allow_missing_refresh_token(account, force_upload_without_rt):
         raise ValueError("账号尚未获取 rt，不能导入 SUB2API。")
     if isinstance(session, dict) and session:
         session_payload = dict(session)
-        # 普通账号必须先获取 rt；K12 session 允许无 refreshToken 上传。
+        # 普通账号默认必须先获取 rt；显式强制或 K12 session 允许无 refreshToken 上传。
         session_payload.setdefault("accessToken", access_token)
         if tokens["refresh_token"]:
             session_payload.setdefault("refreshToken", tokens["refresh_token"])
@@ -510,12 +525,17 @@ def _build_import_payload(
     group_ids: list[int],
     proxy_id: int | None,
     priority: int,
+    force_upload_without_rt: bool = False,
 ) -> dict:
     tokens = _account_tokens(account)
     access_token = tokens["access_token"]
     expires_at, expires_epoch = _account_expires(account, access_token)
     payload = {
-        "content": _build_codex_session_content(account, tokens),
+        "content": _build_codex_session_content(
+            account,
+            tokens,
+            force_upload_without_rt=force_upload_without_rt,
+        ),
         "group_ids": group_ids,
         "name": _account_name(account, access_token),
         "priority": priority,
@@ -535,12 +555,13 @@ def _build_direct_account_payload(
     group_ids: list[int],
     proxy_id: int | None,
     priority: int,
+    force_upload_without_rt: bool = False,
 ) -> dict:
     tokens = _account_tokens(account)
     access_token = tokens["access_token"]
     if not access_token:
         raise ValueError("账号缺少 access_token，无法导入 SUB2API。")
-    if not tokens["refresh_token"] and not _is_k12_account(account):
+    if not tokens["refresh_token"] and not _allow_missing_refresh_token(account, force_upload_without_rt):
         raise ValueError("账号尚未获取 rt，不能导入 SUB2API。")
     claims = _decode_jwt_payload(access_token)
     auth_info = claims.get("https://api.openai.com/auth", {}) if isinstance(claims, dict) else {}
@@ -639,6 +660,7 @@ def upload_to_sub2api(
     group_name: str | None = None,
     account_priority: Any = None,
     default_proxy_name: str | None = None,
+    force_upload_without_rt: bool = False,
     timeout: int = 30,
 ) -> Tuple[bool, str]:
     """上传单个 ChatGPT 账号到 SUB2API。"""
@@ -670,6 +692,7 @@ def upload_to_sub2api(
             group_ids=group_ids,
             proxy_id=proxy_id,
             priority=priority,
+            force_upload_without_rt=force_upload_without_rt,
         )
         try:
             result = _normalize_import_result(_request_json(
@@ -693,6 +716,7 @@ def upload_to_sub2api(
             group_ids=group_ids,
             proxy_id=proxy_id,
             priority=priority,
+            force_upload_without_rt=force_upload_without_rt,
         )
         created = _request_json(
             origin,

@@ -26,6 +26,8 @@ OUTLOOK_EMAIL_RETRY_ATTEMPTS = 3
 OUTLOOK_EMAIL_RETRY_DELAY_SECONDS = 0.6
 OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT = 10000
 OUTLOOK_EMAIL_ASYNC_PROBE_POLL_SECONDS = 1
+OUTLOOK_EMAIL_ALIAS_EXHAUSTED_TAG_NAMES = ["别名已上限"]
+OUTLOOK_EMAIL_DEFAULT_SKIP_TAG_NAMES = ["已注册", "别名已上限", "无效邮箱"]
 
 _OUTLOOK_EMAIL_RESERVATION_LOCK = threading.Lock()
 _OUTLOOK_EMAIL_RESERVED_ACCOUNTS: dict[str, float] = {}
@@ -184,6 +186,7 @@ class OutlookEmailMailbox(BaseMailbox):
         self.register_success_tag_names = _split_names(register_success_tag_names)
         self.plus_success_tag_names = _split_names(plus_success_tag_names)
         self.invalid_email_tag_names = _split_names(invalid_email_tag_names) or ["无效邮箱"]
+        self.alias_exhausted_tag_names = OUTLOOK_EMAIL_ALIAS_EXHAUSTED_TAG_NAMES
         proxy_url = _text(proxy)
         self.proxy = (
             {"http": proxy_url, "https": proxy_url}
@@ -694,7 +697,15 @@ class OutlookEmailMailbox(BaseMailbox):
         return result
 
     def _has_skip_tag(self, item: dict[str, Any]) -> bool:
-        blocked_tag_names = [*self.skip_tag_names, *self.invalid_email_tag_names]
+        blocked_tag_names = _split_names(
+            [
+                *OUTLOOK_EMAIL_DEFAULT_SKIP_TAG_NAMES,
+                *self.skip_tag_names,
+                *self.register_success_tag_names,
+                *self.invalid_email_tag_names,
+                *self.alias_exhausted_tag_names,
+            ]
+        )
         if not blocked_tag_names:
             return False
         account_tags = self._tag_names(item)
@@ -1526,6 +1537,19 @@ class OutlookEmailMailbox(BaseMailbox):
             )
             detail = reason or "invalid_email_no_otp"
             self._complete_pool_claim(account, result="failed", detail=detail)
+            return applied
+        finally:
+            self._release_local_account_reservation(account)
+
+    def mark_alias_exhausted(self, account: MailboxAccount, reason: str = "") -> list[str]:
+        """把 OpenAI 已判定别名额度耗尽的母邮箱打标，避免后续重复领取。"""
+        try:
+            applied = self.add_tags_to_account(
+                email=account.email,
+                account_id=account.account_id,
+                tag_names=self.alias_exhausted_tag_names,
+            )
+            self._complete_pool_claim(account, result="failed", detail=reason or "user_already_exists")
             return applied
         finally:
             self._release_local_account_reservation(account)
