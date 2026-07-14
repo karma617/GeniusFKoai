@@ -103,7 +103,7 @@ def test_lifecycle_validity_check_does_not_overwrite_lifecycle_status(monkeypatc
     assert overview.checked_at
 
 
-def test_chatgpt_health_check_uses_account_state_and_marks_403_invalid(monkeypatch):
+def test_chatgpt_health_check_uses_account_state_and_marks_403_banned(monkeypatch):
     account_id = _create_chatgpt_health_account()
     captured: dict = {}
 
@@ -130,11 +130,45 @@ def test_chatgpt_health_check_uses_account_state_and_marks_403_invalid(monkeypat
 
     overview = _overview(account_id)
     summary = overview.get_summary()
-    assert overview.lifecycle_status == "invalid"
+    assert overview.lifecycle_status == "banned"
     assert overview.validity_status == "invalid"
-    assert overview.display_status == "invalid"
+    assert overview.display_status == "banned"
     assert summary["health_status_code"] == 403
     assert "Forbidden" in summary["health_error"]
+
+
+def test_chatgpt_health_check_marks_401_token_expired_relogin_required(monkeypatch):
+    account_id = _create_chatgpt_health_account()
+
+    def _fake_fetch_state(**_kwargs):
+        return {
+            "valid": False,
+            "profile_error": {
+                "status_code": 401,
+                "body": {
+                    "error": {
+                        "message": "Provided authentication token is expired. Please try signing in again.",
+                        "code": "token_expired",
+                    }
+                },
+            },
+        }
+
+    monkeypatch.setattr("platforms.chatgpt.plugin._resolve_action_proxy", lambda *args, **kwargs: None)
+    monkeypatch.setattr("platforms.chatgpt.switch.fetch_chatgpt_account_state", _fake_fetch_state)
+
+    result = _run_single_chatgpt_health_check(account_id)
+
+    assert result["valid"] is False
+    assert result["status_code"] == 401
+    assert result["relogin_required"] is True
+    overview = _overview(account_id)
+    summary = overview.get_summary()
+    assert overview.lifecycle_status == "relogin_required"
+    assert overview.validity_status == "unknown"
+    assert overview.display_status == "relogin_required"
+    assert summary["health_status_code"] == 401
+    assert "token_expired" in summary["health_error"]
 
 
 def test_chatgpt_health_check_persists_subscription_and_codex_usage(monkeypatch):
@@ -173,6 +207,32 @@ def test_chatgpt_health_check_persists_subscription_and_codex_usage(monkeypatch)
     assert summary["usage_breakdowns"][0]["display_name"] == "Codex 5h"
     assert summary["remote_email"] == "remote@example.com"
     assert "access_token" not in summary["chatgpt_account_state"]
+
+
+def test_chatgpt_health_check_prefers_paid_usage_plan_over_free_subscription(monkeypatch):
+    account_id = _create_chatgpt_health_account()
+
+    def _fake_fetch_state(**_kwargs):
+        return {
+            "valid": True,
+            "account_id": "acct-health",
+            "subscription_status": "free",
+            "codex_usage": {"plan_type": "plus"},
+        }
+
+    monkeypatch.setattr("platforms.chatgpt.plugin._resolve_action_proxy", lambda *args, **kwargs: None)
+    monkeypatch.setattr("platforms.chatgpt.switch.fetch_chatgpt_account_state", _fake_fetch_state)
+
+    result = _run_single_chatgpt_health_check(account_id)
+
+    assert result["valid"] is True
+    overview = _overview(account_id)
+    summary = overview.get_summary()
+    assert overview.plan_state == "subscribed"
+    assert overview.plan_name == "plus"
+    assert overview.display_status == "subscribed"
+    assert summary["subscription_status"] == "plus"
+    assert summary["chatgpt_usage"]["plan_type"] == "plus"
 
 
 def test_account_health_check_task_counts_invalid_as_failure(monkeypatch):
@@ -267,6 +327,41 @@ def test_chatgpt_subscription_status_falls_back_to_wham_usage(monkeypatch):
     assert status == "free"
     assert captured_headers["Authorization"] == "Bearer token"
     assert captured_headers["Chatgpt-Account-Id"] == "acct-123"
+
+
+def test_chatgpt_subscription_status_prefers_paid_wham_usage_over_free_me(monkeypatch):
+    class _Resp:
+        def __init__(self, data):
+            self._data = data
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    def _fake_get(url, **_kwargs):
+        if url.endswith("/backend-api/me"):
+            return _Resp({"plan_type": "free"})
+        return _Resp({"plan_type": "plus"})
+
+    monkeypatch.setattr(payment.cffi_requests, "get", _fake_get)
+    account = type(
+        "AccountStub",
+        (),
+        {
+            "access_token": "token",
+            "cookies": "",
+            "id_token": json.dumps({"chatgpt_account_id": "acct-123"}),
+            "extra": {},
+        },
+    )()
+
+    details = payment.fetch_subscription_status_details(account)
+
+    assert details["status"] == "plus"
+    assert details["source"] == "backend-api/me"
+    assert details["usage"]["plan_type"] == "plus"
 
 
 def test_chatgpt_check_valid_uses_proxy_pool_before_direct(monkeypatch):

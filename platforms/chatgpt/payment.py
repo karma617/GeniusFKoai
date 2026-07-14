@@ -9042,8 +9042,13 @@ def fetch_subscription_status_details(account: Account, proxy: Optional[str] = N
                 usage_data = _fetch_usage_data(account, proxy=proxy)
             except Exception as usage_exc:
                 logger.info("check_subscription_status usage enrichment failed: %s", usage_exc)
+            status = _subscription_status_from_me(data)
+            if isinstance(usage_data, dict):
+                usage_status = _subscription_status_from_usage(usage_data)
+                if status == "free" and usage_status != "free":
+                    status = usage_status
             return {
-                "status": _subscription_status_from_me(data),
+                "status": status,
                 "source": "backend-api/me",
                 "me": data,
                 "usage": usage_data,

@@ -92,6 +92,11 @@ def import_free_proxy_candidates(body: FreeProxyImportRequest):
     return service.import_free_proxies(proxies=body.proxies, region=body.region)
 
 
+@router.delete("")
+def delete_all_proxies():
+    return service.delete_all_proxies()
+
+
 @router.delete("/{proxy_id}")
 def delete_proxy(proxy_id: int):
     result = service.delete_proxy(proxy_id)

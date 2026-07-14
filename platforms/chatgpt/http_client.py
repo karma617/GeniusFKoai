@@ -2,9 +2,29 @@
 from typing import Any, Dict, Optional, Tuple
 
 from core.http_client import HTTPClient, HTTPClientError, RequestConfig
+from core.proxy_pool import get_proxy_runtime_config, normalize_proxy_url
 from .constants import ERROR_MESSAGES
 import logging
 logger = logging.getLogger(__name__)
+
+def _is_local_proxy_url(value: str | None) -> bool:
+    proxy = normalize_proxy_url(value) or ""
+    lower = proxy.lower()
+    return any(marker in lower for marker in ("127.0.0.1", "localhost", "[::1]", "0.0.0.0"))
+
+
+def _with_runtime_proxy_upstream(proxy_url: str | None, config: RequestConfig | None) -> RequestConfig | None:
+    if config and str(getattr(config, "proxy_upstream_url", "") or "").strip():
+        return config
+    if not proxy_url or _is_local_proxy_url(proxy_url):
+        return config
+    upstream_url = get_proxy_runtime_config().get("upstream_url", "")
+    if not upstream_url:
+        return config
+    next_config = config or RequestConfig()
+    next_config.proxy_upstream_url = upstream_url
+    return next_config
+
 
 class OpenAIHTTPClient(HTTPClient):
     """
@@ -24,6 +44,7 @@ class OpenAIHTTPClient(HTTPClient):
             proxy_url: 代理 URL
             config: 请求配置
         """
+        config = _with_runtime_proxy_upstream(proxy_url, config)
         super().__init__(proxy_url, config)
 
         # OpenAI 特定的默认配置

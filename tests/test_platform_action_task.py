@@ -5,16 +5,20 @@ import json
 import time
 
 import pytest
+from curl_cffi import CurlOpt
 
 from application import tasks as tasks_module
 from application.tasks import _mark_get_rt_upload_status
-from core.account_graph import load_account_graphs
+from core.account_graph import load_account_graphs, patch_account_graph
 from core.base_platform import Account, RegisterConfig
 from core.db import AccountModel, engine
 from domain.actions import ActionExecutionResult
 from domain.actions import ActionExecutionCommand
 from infrastructure import platform_runtime as runtime_module
-from sqlmodel import Session
+from sqlmodel import Session, select
+
+
+_ORIGINAL_RUN_CHATGPT_TRIAL_POST_REGISTER_CHECK = tasks_module._run_chatgpt_trial_post_register_check
 
 
 @pytest.fixture(autouse=True)
@@ -203,6 +207,62 @@ def test_refresh_session_task_keeps_account_on_normal_failure(monkeypatch):
 
     assert logger.result_data["results"][0]["deleted"] is False
     assert logger.finished == (tasks_module.TASK_STATUS_FAILED, "全部账号重新登录失败")
+
+
+def test_refresh_session_task_defaults_to_relogin_required_accounts(monkeypatch):
+    with Session(engine) as session:
+        relogin_model = AccountModel(
+            platform="chatgpt",
+            email="relogin-refresh@test.com",
+            password="Secret123!",
+        )
+        registered_model = AccountModel(
+            platform="chatgpt",
+            email="registered-refresh@test.com",
+            password="Secret123!",
+        )
+        session.add(relogin_model)
+        session.add(registered_model)
+        session.commit()
+        session.refresh(relogin_model)
+        session.refresh(registered_model)
+        relogin_id = int(relogin_model.id or 0)
+        registered_id = int(registered_model.id or 0)
+        patch_account_graph(
+            session,
+            relogin_model,
+            lifecycle_status="relogin_required",
+            summary_updates={"valid": False, "display_status": "relogin_required"},
+        )
+        patch_account_graph(
+            session,
+            registered_model,
+            lifecycle_status="registered",
+            summary_updates={"valid": True, "display_status": "registered"},
+        )
+        session.commit()
+
+    calls = []
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            calls.append(command.account_id)
+            return ActionExecutionResult(ok=True, data={"refreshed": True})
+
+    monkeypatch.setattr(tasks_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_refresh_session_task(
+        {"platform": "chatgpt", "ids": [], "concurrency": 1},
+        logger,
+    )
+
+    assert calls == [relogin_id]
+    assert registered_id not in calls
+    assert logger.result_data["total"] == 1
+    assert logger.result_data["success_count"] == 1
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert any("自动处理状态为重登验证的账号 1 个" in event[1] for event in logger.events)
 
 
 def test_refresh_session_task_stops_after_repeated_cloudflare_challenges(monkeypatch):
@@ -572,6 +632,195 @@ def test_chatgpt_free_plus_trial_campaign_detection():
     assert tasks_module._find_chatgpt_free_plus_trial_campaign({"accounts": {"acct-123": {"eligible_promo_campaigns": {}}}}, "acct-123") is None
 
 
+def test_chatgpt_free_plus_trial_retries_network_error(monkeypatch):
+    calls = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "accounts": {
+                    "acct-123": {
+                        "eligible_promo_campaigns": {
+                            "plus": {
+                                "id": "plus-1-month-free",
+                                "metadata": {
+                                    "title": "Try Plus free",
+                                    "plan_name": "chatgptplusplan",
+                                    "discount": {"percentage": 100},
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+
+    def _fake_get(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("curl: (35) TLS connect error")
+        return _Resp()
+
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("curl_cffi.requests.get", _fake_get)
+    account = Account(
+        platform="chatgpt",
+        email="trial-retry@example.com",
+        password="Secret123!",
+        user_id="acct-123",
+        extra={"access_token": "access-token"},
+    )
+
+    result = tasks_module._inspect_chatgpt_free_plus_trial(account)
+
+    assert len(calls) == 3
+    assert result["ok"] is True
+    assert result["eligible"] is True
+    assert result["attempts"] == 3
+
+
+def test_chatgpt_free_plus_trial_uses_runtime_proxy_upstream(monkeypatch):
+    captured_kwargs = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"accounts": {"acct-123": {"eligible_promo_campaigns": {}}}}
+
+    def _fake_get(*_args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(
+        "core.proxy_pool.get_proxy_runtime_config",
+        lambda: {"strategy": "pool_then_default", "fallback_url": "", "upstream_url": "socks5://127.0.0.1:7897"},
+    )
+    monkeypatch.setattr("curl_cffi.requests.get", _fake_get)
+    account = Account(
+        platform="chatgpt",
+        email="trial-upstream@example.com",
+        password="Secret123!",
+        user_id="acct-123",
+        extra={"access_token": "access-token"},
+    )
+
+    result = tasks_module._inspect_chatgpt_free_plus_trial(
+        account,
+        proxy="socks5://user:pass@gate.kookeey.info:1000",
+    )
+
+    assert result["ok"] is True
+    assert captured_kwargs["proxies"] == {
+        "http": "socks5h://user:pass@gate.kookeey.info:1000",
+        "https": "socks5h://user:pass@gate.kookeey.info:1000",
+    }
+    assert captured_kwargs["curl_options"][CurlOpt.PRE_PROXY] == "socks5h://127.0.0.1:7897"
+
+
+def test_chatgpt_trial_post_register_check_logs_network_retries(monkeypatch):
+    calls = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "accounts": {
+                    "acct-123": {
+                        "eligible_promo_campaigns": {
+                            "plus": {
+                                "id": "plus-1-month-free",
+                                "metadata": {
+                                    "title": "Try Plus free",
+                                    "plan_name": "chatgptplusplan",
+                                    "discount": {"percentage": 100},
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+
+    def _fake_get(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("curl: (35) TLS connect error")
+        return _Resp()
+
+    tasks_module.save_account(
+        Account(
+            platform="chatgpt",
+            email="trial-post-retry@example.com",
+            password="Secret123!",
+            user_id="acct-123",
+            extra={"access_token": "access-token"},
+        )
+    )
+    with Session(engine) as session:
+        stored = session.exec(
+            select(AccountModel).where(AccountModel.email == "trial-post-retry@example.com")
+        ).one()
+        account_id = int(stored.id or 0)
+
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("curl_cffi.requests.get", _fake_get)
+    monkeypatch.setattr(
+        tasks_module,
+        "_run_chatgpt_trial_post_register_check",
+        _ORIGINAL_RUN_CHATGPT_TRIAL_POST_REGISTER_CHECK,
+    )
+    logger = _FakeLogger()
+
+    result = tasks_module._run_chatgpt_trial_post_register_check(
+        account=Account(
+            platform="chatgpt",
+            email="trial-post-retry@example.com",
+            password="Secret123!",
+            user_id="acct-123",
+            extra={"access_token": "access-token"},
+        ),
+        saved_account_id=account_id,
+        logger=logger,
+        proxy=None,
+    )
+
+    assert result is True
+    assert len(calls) == 3
+    assert any("第 1/3 次查询失败" in event[1] for event in logger.events)
+    assert any("第 2/3 次查询失败" in event[1] for event in logger.events)
+    assert any("已确认免费领取 Plus 权益" in event[1] for event in logger.events)
+
+
+def test_chatgpt_free_plus_trial_does_not_retry_http_failure(monkeypatch):
+    calls = []
+
+    class _Resp:
+        status_code = 500
+        text = "upstream failed"
+
+    def _fake_get(*_args, **_kwargs):
+        calls.append(1)
+        return _Resp()
+
+    monkeypatch.setattr("curl_cffi.requests.get", _fake_get)
+    account = Account(
+        platform="chatgpt",
+        email="trial-http@example.com",
+        password="Secret123!",
+        user_id="acct-123",
+        extra={"access_token": "access-token"},
+    )
+
+    result = tasks_module._inspect_chatgpt_free_plus_trial(account)
+
+    assert len(calls) == 1
+    assert result["ok"] is False
+    assert result["status_code"] == 500
+    assert result["attempts"] == 1
+
+
 def test_mark_chatgpt_trial_account_adds_filterable_trial_tag():
     from domain.accounts import AccountQuery
     from infrastructure.accounts_repository import AccountsRepository
@@ -585,7 +834,11 @@ def test_mark_chatgpt_trial_account_adds_filterable_trial_tag():
             extra={"access_token": "access-token"},
         )
     )
-    account_id = int(saved.id or 0)
+    with Session(engine) as session:
+        stored = session.exec(
+            select(AccountModel).where(AccountModel.email == "trial-tag@example.com")
+        ).one()
+        account_id = int(stored.id or 0)
 
     tasks_module._mark_chatgpt_trial_account(
         account_id,
@@ -883,6 +1136,55 @@ def test_chatgpt_register_retries_email_alias_parent_exhausted(monkeypatch):
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
     assert not any(event[0] == "error" for event in logger.events)
     assert any("正在切换新父邮箱继续当前注册" in str(event[1]) for event in logger.events)
+
+
+def test_chatgpt_register_does_not_soft_retry_alias_parent_exhausted_when_alias_disabled(monkeypatch):
+    attempts = []
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            attempts.append(len(attempts) + 1)
+            raise RuntimeError(
+                "EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - "
+                "parent email alias quota exhausted"
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_build_platform_instance",
+        lambda *args, **kwargs: FakePlatform(),
+    )
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "oauth_browser",
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert attempts == [1]
+    assert logger.finished[0] == tasks_module.TASK_STATUS_FAILED
+    assert "EMAIL_ALIAS_PARENT_EXHAUSTED" in logger.finished[1]
+    assert any(event[0] == "error" for event in logger.events)
+    assert not any("正在切换新父邮箱继续当前注册" in str(event[1]) for event in logger.events)
 
 
 def test_chatgpt_register_does_not_retry_outlook_no_available_mailbox(monkeypatch):

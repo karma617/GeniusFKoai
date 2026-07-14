@@ -184,6 +184,8 @@ def _derive_plan_name(overview: dict[str, Any]) -> str:
 def _derive_validity_status(lifecycle_status: str, overview: dict[str, Any]) -> str:
     if lifecycle_status in {"invalid", "banned"}:
         return "invalid"
+    if lifecycle_status == "relogin_required":
+        return "unknown"
     if "valid" in overview:
         return "valid" if bool(overview.get("valid")) else "invalid"
     return "unknown"
@@ -224,6 +226,8 @@ def _derive_display_status(
         return lifecycle_status
     if lifecycle_status == "banned":
         return "banned"
+    if lifecycle_status == "relogin_required":
+        return "relogin_required"
     if validity_status == "invalid":
         return "invalid"
     if plan_state == "expired" or lifecycle_status == "expired":

@@ -4025,3 +4025,519 @@
   - docs/chatgpt-register-flow.md: 补充初始化到密码页时的处理顺序；该文件是本地 gitignored 文档。
   - progress.md: 追加本轮进度、验证和回滚说明。
 - 回滚点：移除 platforms/chatgpt/register.py 中 `_latest_chatgpt_init_final_url` 状态记录、`run_chatgpt_register_latest()` 的 `create-account/password` 分支和 `_register_password()` 中 OTP 时间点更新；删除 tests/test_chatgpt_protocol_otp.py 中 `test_latest_chatgpt_register_submits_password_before_waiting_for_otp`；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可恢复旧行为。
+
+## 2026-07-13 - Task: chatgpt_register 注册日志失败分支优化
+
+### What was done
+- 根据 6 个批量注册日志定位到 3 个失败里只有两类失败：前两个是重发验证码后提交返回 `invalid_state`，第四个是密码提交返回 `email_otp_send` 但当前链路按“未进入验证码步骤”失败。
+- 对 `invalid_state` 只增加一次当前邮箱 OAuth/OTP 会话刷新：重新初始化 `chatgpt.com login_hint`，重新发码和取新码后再提交，不改变后续 `about-you/create_account/session` 成功链路。
+- 对 `email_otp_send` 只补显式发码处理：密码提交返回该页面类型时立即调用现有 `email-otp/send`，再进入当前项目原有邮箱验证码轮询。
+- 同步文档说明这两个失败分支的处理边界，明确不扩大到邮箱 provider、K12、Sub2API/CPA 或成功后的 session 保存逻辑。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_sends_otp_after_password_email_otp_send tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_refreshes_otp_once_after_invalid_state tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_retries_init_transport_error -q` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q` -> 24 passed, 1 warning。
+- 未执行真实 OpenAI 批量注册，避免消耗邮箱/账号资源；本轮用模拟 session 覆盖日志里的失败分支。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 增加 `email_otp_send` 后显式发码，以及 `invalid_state` 后单次刷新当前邮箱 OTP 会话并重提验证码。
+  - tests/test_chatgpt_protocol_otp.py: 增加 `email_otp_send` 和 `invalid_state` 两条日志复现分支的回归测试。
+  - docs/chatgpt-register-flow.md: 补充最新版注册链路中 `email_otp_send` 与 `invalid_state` 的处理语义。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/register.py 中 `_latest_chatgpt_refresh_email_otp_after_invalid_state()`、`run_chatgpt_register_latest()` 中 `invalid_state` 捕获重试和 `email_otp_send` 显式发码分支；删除 tests/test_chatgpt_protocol_otp.py 中 `test_latest_chatgpt_register_sends_otp_after_password_email_otp_send` 与 `test_latest_chatgpt_register_refreshes_otp_once_after_invalid_state`；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可回到本轮优化前行为。
+
+## 2026-07-13 - Task: chatgpt_register create_account invalid_auth_step 修正
+
+### What was done
+- 根据最新批量注册日志确认，本轮失败发生在邮箱 OTP 已验证成功之后，`create_account` 返回 `invalid_auth_step`，不是邮箱创建、收码或 OTP 解析问题。
+- 对照 `D:\work\ai\chatgpt_register\chatgpt_register.py` 最新协议，确认参考链路在 OTP 后只访问 `about-you`，随后直接调用 `create_account`，不会插入旧的 `client_auth_session_dump` 状态推进请求。
+- 为 `chatgpt_register` 最新邮箱主链新增专用创建账号资料分支，跳过旧 `client_auth_session_dump`，并把请求头收窄到参考链路的 JSON、Referer 和 Sentinel 头，避免把 OTP 后 auth step 推偏。
+- 保留旧 `_create_user_account()` 给其他现有链路使用；本轮不改邮箱 provider、邮箱创建、验证码读取、K12、Sub2API/CPA 上传或注册成功后的 session 保存流程。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_flow_uses_login_hint_and_session tests\test_chatgpt_protocol_otp.py::test_create_account_sends_quickjs_sentinel_so_token tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_sends_otp_after_password_email_otp_send tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_refreshes_otp_once_after_invalid_state -q` -> 4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 30 passed, 1 warning。
+- 未执行真实 OpenAI 批量注册，避免消耗邮箱/账号资源；本轮用模拟 session 覆盖 `client_auth_session_dump` 不应出现在最新版主链里的协议契约。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 为最新版 `chatgpt_register` 主链新增专用 create_account 方法，跳过旧 `client_auth_session_dump` 并保持成功后 callback/session 获取不变。
+  - tests/test_chatgpt_protocol_otp.py: 增加最新版主链不得调用 `client_auth_session_dump` 的回归断言。
+  - docs/chatgpt-register-flow.md: 补充最新版邮箱主链创建账号资料前不再调用旧状态推进接口。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：将 platforms/chatgpt/register.py 中 `_latest_chatgpt_create_account_with_retry()` 恢复为调用 `_create_user_account()`，删除 `_latest_chatgpt_create_user_account()`；恢复 tests/test_chatgpt_protocol_otp.py 中 `test_latest_chatgpt_register_flow_uses_login_hint_and_session` 对 `client_auth_session_dump` 的旧模拟返回；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可回到本轮修正前行为。
+
+## 2026-07-13 - Task: chatgpt_register signin/openai 403 初始化诊断与重试
+
+### What was done
+- 根据最新单账号注册日志确认，本轮失败发生在 `chatgpt.com/api/auth/signin/openai` 初始化阶段：接口返回 403 且没有 authorize URL，流程尚未进入邮箱验证码、`about-you`、`create_account` 或 session 获取。
+- 对 `signin/openai` 未返回 authorize URL 的 403 增加短诊断：优先识别 Cloudflare Managed Challenge，其次记录 OpenAI error code，最后保留响应正文摘要，避免只看到笼统的 `signin_no_authorize_url_http_403`。
+- 将该初始化 403 纳入已有初始化有限重试：重建当前注册 session 后最多重试 3 次；连续失败时保留更具体的失败原因。
+- 本轮没有改邮箱创建、邮箱验证码读取、OTP 提交后 `about-you/create_account/session` 主链、K12 或 Sub2API/CPA 后续链路。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_init_signin_403_records_response_hint tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_retries_init_signin_403 tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_retries_init_transport_error -q` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q` -> 32 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md progress.md` -> 通过，仅有 CRLF 转换提示。
+- 未执行真实 OpenAI 注册，避免消耗邮箱/账号资源；本轮用模拟 session 覆盖初始化 403 的日志诊断和重试契约。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 细分 `signin/openai` 无 authorize URL 的 403 原因，并让该初始化 403 复用已有 session 重建和有限重试。
+  - tests/test_chatgpt_protocol_otp.py: 增加初始化 403 响应摘要记录和初始化 403 重试的回归测试。
+  - docs/chatgpt-register-flow.md: 补充初始化 `signin/openai` 403 的诊断和处理边界。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/register.py 中 `_short_response_excerpt()`、`_latest_chatgpt_signin_no_authorize_error()`、`_latest_chatgpt_init_email_oauth()` 的 403 诊断日志，以及 `_is_latest_chatgpt_init_retryable_error()` 中的 `signin_no_authorize_url_http_403`；删除 tests/test_chatgpt_protocol_otp.py 中 `test_latest_chatgpt_init_signin_403_records_response_hint` 与 `test_latest_chatgpt_register_retries_init_signin_403`；恢复 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-13 - Task: 代理资源页增加清空代理池按钮
+
+### What was done
+- 在代理资源页顶部操作区增加“清空”按钮，点击前要求确认，确认后清空当前静态代理池列表并刷新页面数据。
+- 新增 `DELETE /api/proxies` 后端接口，清空 `proxies` 表中的静态代理记录并返回删除数量。
+- 明确该操作只删除静态代理池记录，不删除或禁用动态代理 Provider 配置，也不改变默认访问代理策略。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile api\proxies.py application\proxies.py infrastructure\proxies_repository.py tests\test_api_proxies.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_proxies.py -q` -> 11 passed, 1 warning。
+- `npm --prefix frontend run build` -> 通过；Vite 输出现有 chunk size warning。
+- `git diff --check -- api/proxies.py application/proxies.py infrastructure/proxies_repository.py frontend/src/pages/Proxies.tsx tests/test_api_proxies.py docs/clash-proxy-provider.md progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - api/proxies.py: 增加清空全部静态代理的 `DELETE /api/proxies` 路由。
+  - application/proxies.py: 增加代理池清空服务方法并返回删除数量。
+  - infrastructure/proxies_repository.py: 增加静态代理记录全量删除仓储方法。
+  - frontend/src/pages/Proxies.tsx: 在代理资源页新增确认清空按钮和清空中状态。
+  - tests/test_api_proxies.py: 增加清空全部代理接口的回归测试。
+  - docs/clash-proxy-provider.md: 补充清空按钮不会影响动态代理 Provider 配置的说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 api/proxies.py 中 `DELETE /api/proxies` 路由；删除 application/proxies.py 与 infrastructure/proxies_repository.py 中的清空方法；移除 frontend/src/pages/Proxies.tsx 中 `clearing` 状态、`clearAll()` 和顶部“清空”按钮；删除 tests/test_api_proxies.py 中 `test_delete_all_proxies`；恢复 docs/clash-proxy-provider.md 本轮新增说明；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-13 - Task: chatgpt_register Sentinel 指纹与 firefox144 主链对齐
+
+### What was done
+- 根据最新注册日志确认，本轮失败仍发生在 OTP 已验证、`about-you` 已访问之后的 `create_account invalid_auth_step`，不是邮箱创建、收码或 OTP 提交问题。
+- 重新对比 `D:\work\ai\chatgpt_register\chatgpt_register.py`，确认源项目最新版主链把 auth 请求和 Sentinel provider 都固定在 `firefox144`，并让 Sentinel 共享同一会话。
+- 将当前最新版主链的 HTTP 默认 `User-Agent` 固定为 Firefox 144，并把同一 UA 透传到 QuickJS Sentinel requirements/solve 输入，避免主请求是 Firefox、Sentinel token 仍按旧 Chrome/默认 UA 生成。
+- 本轮只收敛账号注册协议的指纹一致性，没有改邮箱创建、验证码读取、批量调度、K12、Sub2API/CPA、代理池或成功后的 session 保存逻辑。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\authflow_experimental\sentinel_quickjs.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_session_uses_firefox144 tests\test_chatgpt_protocol_otp.py::test_check_sentinel_prefers_quickjs_token tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_stops_when_about_you_lands_elsewhere tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_flow_uses_login_hint_and_session -q` -> 4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q` -> 28 passed, 1 warning。
+- 未执行真实 OpenAI 批量注册，避免消耗邮箱/账号资源；本轮用模拟 session 覆盖 Firefox UA、QuickJS Sentinel UA 透传和最新版主链协议契约。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 为 `chatgpt_register` 最新主链固定 Firefox 144 UA，并在 QuickJS Sentinel 调用时透传该 UA。
+  - platforms/chatgpt/authflow_experimental/sentinel_quickjs.py: 增加 `user_agent` 参数并传入 QuickJS requirements/solve payload。
+  - tests/test_chatgpt_protocol_otp.py: 增加最新版 session 写入 Firefox UA、`_check_sentinel()` 透传 UA 到 QuickJS 的回归断言。
+  - docs/chatgpt-register-flow.md: 补充最新版主链的 HTTP UA 与 Sentinel UA 一致性说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 platforms/chatgpt/register.py 中 `LATEST_CHATGPT_FIREFOX_USER_AGENT`、`_init_latest_chatgpt_session()` 的 UA 覆盖和 `_quickjs_sentinel_payload()` 的 `user_agent` 透传；移除 platforms/chatgpt/authflow_experimental/sentinel_quickjs.py 中 `user_agent` 参数及 payload 字段；恢复 tests/test_chatgpt_protocol_otp.py 和 docs/chatgpt-register-flow.md 本轮新增说明；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: chatgpt_register OTP 后 about-you 跳转判定回退到源项目语义
+
+### What was done
+- 根据 00:44 与 00:46 两段注册日志确认，邮箱创建、验证码获取和 OTP validate 均已成功，失败点在 OTP 后访问 `continue_url` 的本地判定。
+- 重新对比 `D:\work\ai\chatgpt_register\chatgpt_register.py`，确认源项目在 OTP validate 后只访问一次 `continue_url`，不要求最终 URL 必须仍停在 `/about-you`，随后直接继续 `create_account`。
+- 将本地最新版链路回退为源项目语义：`about-you` HTTP 访问成功即可继续创建账号资料；如果最终 URL 是 `https://chatgpt.com/`，只记录诊断日志，不再停止流程。
+- 将 `about-you` 访问超时从 20s 对齐到源项目 session 的 60s，并在真正失败时记录 target、final_url、响应摘要或异常原因，避免继续出现“没进到这里但日志没说走哪”的情况。
+- 本轮没有改邮箱创建、验证码读取、批量调度、K12、Sub2API/CPA、代理池或成功后的 session 保存逻辑。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_continues_when_about_you_redirects_elsewhere tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_flow_uses_login_hint_and_session -q` -> 2 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q` -> 28 passed, 1 warning。
+- 未执行真实 OpenAI 批量注册，避免消耗邮箱/账号资源；本轮用模拟 session 覆盖 `final_url=https://chatgpt.com/` 仍继续创建资料的协议契约。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 回退 OTP 后 about-you 最终 URL 强校验，成功访问即可继续 create_account，并补充失败原因记录与 60s 超时。
+  - tests/test_chatgpt_protocol_otp.py: 将 about-you 跳到 `chatgpt.com/` 的回归场景改为继续创建账号资料。
+  - docs/chatgpt-register-flow.md: 更新最新版注册链路的 about-you 判定边界和失败日志说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 platforms/chatgpt/register.py 中 `_latest_chatgpt_open_about_you()` 对最终 URL 必须包含 `/about-you` 的停止判定，并把超时恢复为 20s；恢复 tests/test_chatgpt_protocol_otp.py 中 about-you 跳转场景的旧失败断言；恢复 docs/chatgpt-register-flow.md 本轮说明；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: chatgpt_register OTP callback 分支跳过 create_account
+
+### What was done
+- 根据 01:02 注册日志确认，邮箱创建、验证码获取和 OTP validate 均已成功，失败点是 OTP validate 已返回 `chatgpt.com/api/auth/callback/openai` 后，本地仍继续访问 about-you 并调用 `create_account`。
+- 在 `chatgpt_register` 最新主链中新增 OTP callback 直达分支：只要 validate payload 已包含 ChatGPT callback，就跳过 `about-you/create_account`，直接跟随 callback 获取 `chatgpt.com` session。
+- 将该分支的 session 结果标记为 `login` 和 `is_existing_account=true`，并写入 `chatgpt_session_source=latest_otp_external_callback`，方便后续从账号 metadata 判断来源。
+- 本轮只修注册账号状态机分支，没有改邮箱创建、验证码读取、批量调度、K12、Sub2API/CPA、代理池或成功后保存链路。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_uses_otp_callback_without_create_account tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_fetch_session_marks_otp_callback_as_existing_account tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_continues_when_about_you_redirects_elsewhere tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_flow_uses_login_hint_and_session -q` -> 4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q` -> 30 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md` -> 通过，仅有 CRLF 转换提示。
+- 未执行真实 OpenAI 注册，避免消耗邮箱/账号资源；本轮用模拟 session 覆盖 OTP external callback 不再调用 about-you/create_account 的协议契约。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 增加 OTP validate 返回 ChatGPT callback 时直接取 session 的分支，并修正该分支的结果来源和 metadata 标记。
+  - tests/test_chatgpt_protocol_otp.py: 增加 OTP external callback 跳过 about-you/create_account、session 结果按已存在账号标记的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 platforms/chatgpt/register.py 中 `run_chatgpt_register_latest()` 的 OTP callback 直达分支，并恢复 `_latest_chatgpt_fetch_session_result()` 固定 `source=register`、`is_existing_account=false` 的旧行为；删除 tests/test_chatgpt_protocol_otp.py 中 `test_latest_chatgpt_register_uses_otp_callback_without_create_account` 与 `test_latest_chatgpt_fetch_session_marks_otp_callback_as_existing_account`；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: chatgpt_register 最新主链避免同邮箱重复发码
+
+### What was done
+- 对比 `D:\work\ai\chatgpt_register\chatgpt_register.py` 与当前项目后确认，最新版 `login_hint` 初始化进入 `email-verification` 时服务端已经自动触发首封验证码，源项目随后只轮询这封验证码，不在同一 OAuth 会话里超时重发。
+- 将当前项目最新版 `chatgpt_register` 主链的 OTP 等待改为不因多轮等待超时自动调用 `email-otp/send`，避免第二封验证码作废第一封验证码。
+- `invalid_state` 恢复分支在显式刷新 OTP 会话后也只等待当前已触发验证码，不再继续超时重发。
+- 保留旧协议入口的默认超时重发行为，避免把本次修复扩大到非最新版主链。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_get_verification_code_resends_after_each_60s_timeout tests\test_chatgpt_protocol_otp.py::test_get_verification_code_can_wait_without_resending_for_latest_flow tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_flow_uses_login_hint_and_session tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_register_refreshes_otp_once_after_invalid_state -q` -> 4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q` -> 31 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md progress.md` -> 通过，仅有 CRLF 转换提示。
+- 未执行真实 OpenAI 注册，避免消耗邮箱/账号资源；本轮用单元测试覆盖最新版主链不重发、旧链路默认重发和 invalid_state 恢复分支。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 为 `_get_verification_code()` 增加 `resend_on_timeout` 控制，并让最新版 `run_chatgpt_register_latest()` 及 invalid_state 恢复分支关闭同会话自动重发。
+  - tests/test_chatgpt_protocol_otp.py: 增加最新版主链等待验证码不重发的回归测试，并更新 invalid_state 恢复分支断言。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 platforms/chatgpt/register.py 中最新版主链和 invalid_state 恢复分支调用 `_get_verification_code()` 时的默认重发策略，删除 tests/test_chatgpt_protocol_otp.py 中本轮新增的不重发测试和参数断言，移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: outlookEmail 账号不存在时停止验证码等待
+
+### What was done
+- 将邮箱验证码等待中的 `账号不存在` / `account_not_found` 归类为不可恢复邮箱错误，命中后立即停止当前账号，不再继续第 2/3、第 3/3 轮等待或重发。
+- 命中该错误时按无效邮箱路径打标，并将任务失败文案改为 `邮箱账号不存在或不可读，已标记无效邮箱`，避免误报成“三轮未收到”。
+- 保留普通验证码未到、网络超时等可恢复等待行为，不改 `chatgpt_register` 最新注册协议主链。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_get_verification_code_stops_on_mailbox_account_not_found tests\test_chatgpt_protocol_otp.py::test_get_verification_code_resends_after_each_60s_timeout tests\test_chatgpt_protocol_otp.py::test_get_verification_code_can_wait_without_resending_for_latest_flow tests\test_chatgpt_protocol_otp.py::test_get_verification_code_marks_invalid_email_after_three_timeouts -q` -> 4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q` -> 32 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md progress.md` -> 通过，仅有 CRLF 转换提示。
+- 未执行真实 OpenAI 注册，避免消耗邮箱/账号资源；本轮用单元测试覆盖账号不存在立即停止、普通超时三轮等待和最新版主链不重发。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/register.py: 在验证码等待中识别不可恢复邮箱账号错误并立即终止等待，同时记录专用失败原因。
+  - tests/test_chatgpt_protocol_otp.py: 增加账号不存在时不进入后续等待轮次、不重发且打无效邮箱标签的回归测试。
+  - docs/chatgpt-register-flow.md: 补充最新版主链遇到邮箱账号不存在时的停止语义。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 platforms/chatgpt/register.py 中不可恢复邮箱错误判断、`_email_otp_failure_reason` / `_email_otp_failure_message()` 及 `_get_verification_code()` 对该判断的提前返回；删除 tests/test_chatgpt_protocol_otp.py 中对应测试；移除 docs/chatgpt-register-flow.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: ChatGPT 注册别名耗尽任务状态修正
+
+### What was done
+- 根据 02:14 注册日志确认，本次不是 `chatgpt_register` 最新协议链路失效，而是任务调度层把 `user_already_exists` / `EMAIL_ALIAS_PARENT_EXHAUSTED` 统一当成软重试，且没有真正提交新父邮箱尝试。
+- 将父邮箱别名耗尽的软重试限制为仅在启用邮箱别名模式时生效；未启用别名模式时按普通注册失败记录，避免误报“正在切换新父邮箱继续当前注册”。
+- 补强批量注册收尾判断：如果成功数未达到目标且没有已记录错误，会补入“注册未达到目标”错误，避免 `成功 0 个, 失败 0 个` 仍显示任务成功。
+- 本轮只改任务调度和状态收尾，不改 `chatgpt_register` 最新注册协议、验证码、create_account、session/AT/RT 获取链路。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_retries_email_alias_parent_exhausted tests\test_platform_action_task.py::test_chatgpt_register_does_not_soft_retry_alias_parent_exhausted_when_alias_disabled tests\test_platform_action_task.py::test_chatgpt_register_retries_gmail_api_code_pool_temporarily_empty tests\test_platform_action_task.py::test_chatgpt_register_retries_gmail_api_code_dead_parent tests\test_platform_action_task.py::test_chatgpt_register_does_not_retry_outlook_no_available_mailbox -q` -> 5 passed, 1 warning。
+- 未执行真实 OpenAI 注册，避免消耗邮箱/账号资源；本轮用任务层模拟覆盖别名开启/关闭两种调度语义。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 限制别名耗尽软重试只在别名模式启用时生效，并在未达目标且无错误时补充失败原因。
+  - tests/test_platform_action_task.py: 增加未启用别名模式时 `EMAIL_ALIAS_PARENT_EXHAUSTED` 不软重试、不假成功的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/tasks.py 中 `_is_email_alias_parent_exhausted_error(error)` 的无条件软重试判断，并删除未达目标时补充错误的收尾逻辑；删除 tests/test_platform_action_task.py 中 `test_chatgpt_register_does_not_soft_retry_alias_parent_exhausted_when_alias_disabled`；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: Sub2API 批量测活远端网络错误不标错
+
+### What was done
+- Sub2API 批量测活现在不仅识别本机请求阶段的 curl/TLS 网络异常，也识别远端 SSE `error` / `test_complete.success=false` 返回内容中的 `Failed to perform`、`curl:`、`TLS connect error`、`OPENSSL_internal`、`invalid library` 等网络错误。
+- 命中远端网络错误时先重试 3 次；3 次后仍失败则将该账号结果记为 `skipped`，不会返回 `dead`，因此不会把远端账号状态改成 `error`。
+- 保留真实业务失败的原行为：非网络类 `test_complete.success=false` 或 `error` 事件仍判定为 `dead`，后续继续标记远端账号 `error`。
+- 更新 Sub2API 管理文档，说明远端返回网络/TLS 错误也属于跳过分支，不作为账号失效依据。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\sub2api_management.py api\sub2api_management.py tests\test_sub2api_management.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_sub2api_management.py -q` -> 26 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- application\sub2api_management.py tests\test_sub2api_management.py docs\sub2api-management.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - application/sub2api_management.py: 远端测活 SSE 中的网络/TLS 错误加入 3 次重试后跳过逻辑，避免误标账号 `error`。
+  - tests/test_sub2api_management.py: 增加远端 SSE `error` 返回 curl/TLS 错误时最终 `skipped` 且不出现 `dead` 结果的回归测试。
+  - docs/sub2api-management.md: 补充远端网络/TLS 错误不标错、重试 3 次后跳过的行为说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 application/sub2api_management.py 中 `_network_attempt`、`retry_network_result()` 及远端 SSE 网络错误分支；删除 tests/test_sub2api_management.py 中 `test_test_account_skips_remote_network_error_without_marking_dead`；恢复 docs/sub2api-management.md 对网络异常说明的上一版；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: ChatGPT 测活状态区分重登验证和已封禁
+
+### What was done
+- ChatGPT 批量测活遇到 `401` 时不再标记失效，改为写入“重登验证”状态，便于后续重新登录获取 session/at。
+- ChatGPT 批量测活遇到 `403` 时不再落普通失效，改为写入“已封禁”状态。
+- 账号状态筛选和批量状态操作增加“重登验证”，并让顶部“重新登录获取session/at”在未勾选账号时默认全量处理状态为“重登验证”的账号。
+- 同步更新账号测活和账号动作说明文档，明确 401、403、重登默认范围的业务规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py api\task_commands.py core\account_graph.py infrastructure\accounts_repository.py tests\test_validity_recovery.py tests\test_platform_action_task.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_validity_recovery.py::test_chatgpt_health_check_uses_account_state_and_marks_403_banned tests\test_validity_recovery.py::test_chatgpt_health_check_marks_401_token_expired_relogin_required tests\test_platform_action_task.py::test_refresh_session_task_defaults_to_relogin_required_accounts -q` -> 3 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `git diff --check -- application\tasks.py api\task_commands.py core\account_graph.py infrastructure\accounts_repository.py frontend\src\pages\Accounts.tsx frontend\src\lib\i18n.ts tests\test_validity_recovery.py tests\test_platform_action_task.py progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 增加重登验证状态解析，401 测活结果写重登验证，403 测活结果写已封禁，并支持刷新 session 任务未传 ids 时按重登验证状态取账号。
+  - api/task_commands.py: 刷新 session 任务请求增加默认状态字段。
+  - core/account_graph.py: 账号图谱派生状态支持 `relogin_required`。
+  - infrastructure/accounts_repository.py: 批量状态更新支持 `relogin_required`。
+  - frontend/src/pages/Accounts.tsx: 状态筛选和批量状态选项增加“重登验证”，重新登录按钮允许空选择并传默认重登状态。
+  - frontend/src/lib/i18n.ts: 增加“重登验证”中英文状态文案和状态映射。
+  - tests/test_validity_recovery.py: 增加 401 重登验证断言，并将 403 回归断言改为已封禁。
+  - tests/test_platform_action_task.py: 增加未勾选时只处理重登验证账号的刷新 session 回归测试。
+  - docs/account-health-check.md: 记录 ChatGPT 测活 401 重登验证、403 已封禁、400/404 失效的判定规则。
+  - docs/account-actions.md: 记录重新登录获取 session/at 在未勾选时默认处理重登验证账号。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 application/tasks.py 中 401/403 测活持久化为原失效逻辑，并让 `_execute_refresh_session_task()` 空 ids 继续失败；移除 api/task_commands.py、core/account_graph.py、infrastructure/accounts_repository.py、frontend/src/pages/Accounts.tsx、frontend/src/lib/i18n.ts 中 `relogin_required` 相关改动；删除本轮新增/修改的 401、403、默认重登范围测试；恢复 docs/account-health-check.md 和 docs/account-actions.md 的本轮说明；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 账号注册表按截图样式调整
+
+### What was done
+- 将“账号注册表”主列表改为截图中的高密度运营表格样式，列结构调整为账号、套餐、Token、创建时间、完整 JSON、有效期、支付长链和操作。
+- 套餐、Token、有效期、支付长链都直接从现有账号图谱/列表数据派生；完整 JSON 按当前账号行对象复制。
+- 行内操作按钮改为截图样式，接入现有能力：提取长链走 `payment_link`，刷新 token 走 `refresh_token`，检测存活走当前账号 ID 的测活任务，查看、复制 AT、删除走现有本地/账号接口。
+- 同步更新账号动作说明文档，记录账号注册表列和行内操作对应的实际行为。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `git diff --check -- frontend\src\pages\Accounts.tsx progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 重排账号注册表列、样式和行内操作，并增加展示字段与行内动作辅助逻辑。
+  - docs/account-actions.md: 补充账号注册表列和行内操作说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/pages/Accounts.tsx 中账号注册表为本轮前的账号信息/密码/状态/注册时间/操作列布局，删除本轮新增的账号注册表展示 helper、`rowActionBusy`、`runInlineAccountAction()` 和 `runInlineHealthCheck()`；移除 docs/account-actions.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 账号注册表补充账号状态和标签列
+
+### What was done
+- 在账号注册表中新增“账号状态”列，展示账号图谱派生的 `display_status` 翻译结果，并沿用现有状态颜色体系。
+- 在账号注册表中新增“标签”列，展示当前账号已有的 display badges / chips，最多显示前 3 个标签，空标签显示 `-`。
+- 同步调整表格最小宽度、列宽和空状态跨列数量，避免新增列挤压已有操作按钮。
+- 更新账号动作说明文档，记录账号状态和标签列的数据来源。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `git diff --check -- frontend\src\pages\Accounts.tsx progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 账号注册表新增账号状态和标签列，并调整列宽与空状态跨列数。
+  - docs/account-actions.md: 补充账号状态列和标签列说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 frontend/src/pages/Accounts.tsx 中账号注册表的“账号状态”“标签”两列及对应行内渲染变量，恢复表格最小宽度和空状态 `colSpan`；移除 docs/account-actions.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 账号注册表增加刷新套餐入口
+
+### What was done
+- 将账号注册表行内“复制 AT”按钮改为绿色样式，突出 token 复制入口。
+- 每个 ChatGPT 账号行新增“刷新套餐”按钮，调用 `/accounts/refresh-plan` 并只传当前账号 ID，刷新完成后重新加载列表，让套餐列跟随最新订阅状态更新。
+- 在“批量测活”左侧新增“一键刷新套餐”按钮，调用同一刷新套餐接口但不传账号 ID，用于全量刷新当前平台所有账号的订阅套餐类型。
+- 批量刷新套餐、批量测活、刷新额度互斥禁用，避免用户同时触发多类全量刷新。
+- 更新账号动作说明文档，记录单账号和全量刷新套餐的接口行为。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `git diff --check -- frontend\src\pages\Accounts.tsx docs\account-actions.md progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 新增单账号刷新套餐、全量刷新套餐入口，并将复制 AT 按钮改为绿色样式。
+  - docs/account-actions.md: 补充行内刷新套餐和顶部一键刷新套餐说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 frontend/src/pages/Accounts.tsx 中 `batchPlanRefreshing`、`refreshPlanForAccount()`、`refreshPlanForAllAccounts()`、顶部“一键刷新套餐”按钮和行内“刷新套餐”按钮，恢复复制 AT 按钮原样式；移除 docs/account-actions.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 账号注册表右侧宽度撑满
+
+### What was done
+- 放开账号页内容区的 `1440px` 最大宽度限制，让账号注册表卡片直接撑满右侧可用区域。
+- 保留表格横向滚动和现有列结构，只修复右侧操作按钮因页面容器过窄被截断的问题。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `git diff --check -- frontend\src\pages\Accounts.tsx progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 将账号页主内容区域从居中最大宽度改为占满可用宽度。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 frontend/src/pages/Accounts.tsx 中账号页 `<section>` 的 `mx-auto max-w-[1440px] p-8` 类名，并移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 一键刷新套餐优先保存付费套餐
+
+### What was done
+- 核对“一键刷新套餐”实际请求为 `POST /accounts/refresh-plan?platform=chatgpt`，请求体 `{"ids": []}`，代表刷新当前平台全部账号。
+- 修复套餐落库优先级：同次刷新结果里如果 `chatgpt_usage.plan_type` 已返回 `plus`、`team`、`pro` 或 `enterprise`，优先按付费套餐写回，避免仍被 `subscription_status=free` 覆盖成 Free。
+- 更新账号动作说明文档，补充刷新套餐接口和付费套餐优先判定规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_validity_recovery.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_validity_recovery.py::test_chatgpt_health_check_persists_subscription_and_codex_usage tests\test_validity_recovery.py::test_chatgpt_health_check_prefers_paid_usage_plan_over_free_subscription -q` -> 2 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- application\tasks.py tests\test_validity_recovery.py docs\account-actions.md progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 刷新套餐/测活持久化套餐状态时优先采用同次 usage 里的付费 `plan_type`。
+  - tests/test_validity_recovery.py: 增加 `subscription_status=free` 但 `chatgpt_usage.plan_type=plus` 时保存为订阅套餐的回归测试。
+  - docs/account-actions.md: 补充一键刷新套餐的实际接口、请求体和套餐判定优先级。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 application/tasks.py 中 `_normalize_chatgpt_plan_type()`、`_resolve_chatgpt_subscription_status()` 及 `account_state.codex_usage` 作为 usage 来源的优先级调整，恢复 `_persist_chatgpt_health_result()` 原来的 `result.plan_type/account_state.subscription_status/usage.plan_type` 顺序；删除 tests/test_validity_recovery.py 中本轮新增测试；移除 docs/account-actions.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 注册后试用权益查询网络错误重试
+
+### What was done
+- 注册保存账号后查询免费 Plus 试用权益的 `accounts/check` 请求，在遇到 `curl`、TLS、超时、连接关闭、DNS 临时失败等请求阶段网络错误时最多重试 3 次。
+- HTTP 已返回但非 2xx、响应格式异常或没有试用权益时不重试，仍保持只跳过 `试用` 标签、不影响账号注册成功。
+- 更新 ChatGPT 注册流程文档，记录权益查询的重试范围和不影响注册结果的语义。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_campaign_detection tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_retries_network_error tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_does_not_retry_http_failure tests\test_platform_action_task.py::test_mark_chatgpt_trial_account_adds_filterable_trial_tag -q` -> 4 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- application\tasks.py tests\test_platform_action_task.py docs\chatgpt-register-flow.md progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 给注册后免费 Plus 试用权益查询增加请求阶段网络错误 3 次重试，并保留业务失败不重试。
+  - tests/test_platform_action_task.py: 增加权益查询网络错误重试、HTTP 失败不重试的回归测试，并修正相邻试用标签测试的 detached instance 取 ID 方式。
+  - docs/chatgpt-register-flow.md: 补充试用权益查询网络错误重试规则。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 application/tasks.py 中 `CHATGPT_TRIAL_CHECK_MAX_ATTEMPTS`、`_is_chatgpt_trial_check_retryable_error()` 和 `_inspect_chatgpt_free_plus_trial()` 的 retry loop，恢复为单次 `cffi_requests.get()`；删除 tests/test_platform_action_task.py 中本轮新增的两个权益查询重试测试并恢复相邻测试原取 ID 方式；移除 docs/chatgpt-register-flow.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 刷新套餐以 wham 付费 plan 为准
+
+### What was done
+- 定位具体账号本地数据：`chatgpt_usage.plan_type=plus`，但 `subscription_status`、`plan_state`、`plan_name` 仍为 `free`，导致前端套餐列继续显示 Free。
+- 修复 ChatGPT 订阅状态合并逻辑：当 `backend-api/me` 返回 Free、同次 `wham/usage.plan_type` 返回 Plus/Team/Pro/Enterprise 时，优先按 `wham/usage` 的付费套餐返回。
+- 更新账号动作说明文档，记录刷新套餐会用 `wham/usage` 的付费 `plan_type` 修正旧的 Free 展示。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\payment.py tests\test_validity_recovery.py application\tasks.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_validity_recovery.py::test_chatgpt_subscription_status_falls_back_to_wham_usage tests\test_validity_recovery.py::test_chatgpt_subscription_status_prefers_paid_wham_usage_over_free_me tests\test_validity_recovery.py::test_chatgpt_health_check_prefers_paid_usage_plan_over_free_subscription -q` -> 3 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- platforms\chatgpt\payment.py tests\test_validity_recovery.py docs\account-actions.md progress.md` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - platforms/chatgpt/payment.py: `backend-api/me` 为 free 但 `wham/usage` 为付费套餐时，返回付费套餐状态。
+  - tests/test_validity_recovery.py: 增加 `me=free`、`wham/usage=plus` 时订阅状态返回 Plus 的回归测试。
+  - docs/account-actions.md: 补充刷新套餐按 `wham/usage.plan_type` 修正 Free 展示的说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：恢复 platforms/chatgpt/payment.py 中 `fetch_subscription_status_details()` 固定使用 `_subscription_status_from_me(data)` 的旧返回；删除 tests/test_validity_recovery.py 中 `test_chatgpt_subscription_status_prefers_paid_wham_usage_over_free_me`；移除 docs/account-actions.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 一键刷新套餐增加实时日志弹窗
+
+### What was done
+- 一键刷新套餐改为先按当前筛选条件拉取目标账号，再逐个请求刷新套餐，避免一次全量请求时前端无法看到当前处理进度。
+- 点击一键刷新套餐后打开实时日志弹窗，展示总数、成功、失败、待处理、当前正在处理账号、接口返回套餐字段和错误信息，并支持复制接口返回摘要。
+- 后端同步刷新套餐接口返回 `plan_state`、`plan_name`、`display_status`、`subscription_status` 和 `usage_plan_type`，让弹窗能直接展示接口返回的套餐结果。
+- 更新账号动作说明文档，记录一键刷新套餐的逐个处理和日志弹窗行为。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py application\account_checks.py tests\test_account_checks.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_account_checks.py -q` -> 1 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `git diff --check -- frontend/src/pages/Accounts.tsx application/account_checks.py application/tasks.py docs/account-actions.md tests/test_account_checks.py` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 新增一键刷新套餐实时日志弹窗，并将全量刷新改为按当前筛选范围逐个刷新与记录结果。
+  - application/account_checks.py: 同步刷新套餐结果补充套餐相关字段，供前端日志展示。
+  - application/tasks.py: 单账号刷新结果补充刷新后的套餐字段，并清理本轮触及区域的异常空白行。
+  - tests/test_account_checks.py: 增加刷新套餐同步接口返回套餐字段的回归测试。
+  - docs/account-actions.md: 补充一键刷新套餐逐个处理、日志弹窗和返回字段说明。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 frontend/src/pages/Accounts.tsx 中 `PlanRefreshLogDialog`、`PlanRefreshDialogState`、`fetchPlanRefreshTargets()` 和一键刷新套餐逐个刷新逻辑，恢复为原批量调用 `/accounts/refresh-plan`；删除 application/account_checks.py 与 application/tasks.py 中本轮新增的套餐返回字段；删除 tests/test_account_checks.py；移除 docs/account-actions.md 与 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: Plus 套餐徽标改为黑金配色
+
+### What was done
+- 将账号注册表“套餐”列中的 Plus 徽标改为黑金配色，提升 Plus 与 Free 的视觉区分度。
+- Free、Trial 和其他套餐状态继续沿用原有绿色套餐徽标样式，不改变当前展示语义。
+
+### Testing
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `git diff --check -- frontend/src/pages/Accounts.tsx` -> 通过，仅有 CRLF 转换提示。
+
+### Notes
+- 修改文件清单
+  - frontend/src/pages/Accounts.tsx: 新增套餐徽标样式分支，Plus 使用黑金配色，非 Plus 保持原绿色样式。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 frontend/src/pages/Accounts.tsx 中 `getAccountPlanPillClassName()`，并将套餐列 `<span>` 恢复为原固定绿色 class；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 代理池支持本地中转代理
+
+### What was done
+- 新增全局 `proxy_upstream_url` 配置，用于把代理池目标代理放到本地代理之后连接，链路为 `本机 -> 本地中转代理 -> 代理池目标代理 -> 目标站点`。
+- 代理资源页新增“本地中转代理”输入框，并保留原“默认访问代理”作为代理池为空时的兜底，两者语义分离。
+- 代理池检测和 ChatGPT `OpenAIHTTPClient` 都接入 libcurl `PRE_PROXY`，确保检测和注册流程使用同一中转链路。
+- 通用 HTTPClient 运行时将 `socks5://` 标准化为 `socks5h://`，让 DNS 走代理端解析；实测用户给出的 Kookeey socks5 代理原样 `socks5://` 失败，`socks5h://` 成功。
+- 更新 Clash 代理文档，说明本地中转代理与默认访问代理的区别和推荐配置。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\http_client.py core\proxy_pool.py platforms\chatgpt\http_client.py infrastructure\config_repository.py tests\test_http_client_proxy_upstream.py test\test_proxy_runtime_resolution.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_http_client_proxy_upstream.py test\test_proxy_runtime_resolution.py tests\test_proxy_pool_check.py -q` -> 11 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> 通过；Vite 仍提示已有大 chunk 警告。
+- `git diff --check -- core/http_client.py core/proxy_pool.py platforms/chatgpt/http_client.py infrastructure/config_repository.py frontend/src/pages/Proxies.tsx docs/clash-proxy-provider.md tests/test_http_client_proxy_upstream.py test/test_proxy_runtime_resolution.py` -> 通过，仅有 CRLF 转换提示。
+- 对用户提供的 Kookeey 代理做真实连通性检测：原样 `socks5://` 裸连失败，`socks5h://` 裸连成功，Cloudflare trace 返回 `loc=US`、`colo=DEN`；通过本地 `socks5://127.0.0.1:7897` PRE_PROXY 也可连通，但出口显示为本地代理当前节点 `loc=JP`、`colo=NRT`。
+
+### Notes
+- 修改文件清单
+  - core/http_client.py: 增加 `proxy_upstream_url`、libcurl `PRE_PROXY` 支持，并将运行时 `socks5://` 标准化为 `socks5h://`。
+  - core/proxy_pool.py: 读取并返回 `proxy_upstream_url`，代理池检测时传入本地中转配置。
+  - platforms/chatgpt/http_client.py: ChatGPT 专用 HTTP 客户端自动应用全局本地中转配置，且本地代理目标不再套本地中转。
+  - infrastructure/config_repository.py: 允许读写 `proxy_upstream_url` 配置并给默认值。
+  - frontend/src/pages/Proxies.tsx: 代理策略卡片新增“本地中转代理”配置项和说明。
+  - docs/clash-proxy-provider.md: 补充本地中转代理与默认访问代理的区别、链路和推荐填写方式。
+  - tests/test_http_client_proxy_upstream.py: 增加 PRE_PROXY 与 socks5h 标准化回归测试。
+  - test/test_proxy_runtime_resolution.py: 增加运行时代理配置返回本地中转代理的回归测试。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 core/http_client.py 中 `proxy_upstream_url`、`_proxy_curl_options()`、`_normalize_runtime_proxy_url()` 和 PRE_PROXY/socks5h 标准化逻辑；恢复 core/proxy_pool.py、platforms/chatgpt/http_client.py、infrastructure/config_repository.py、frontend/src/pages/Proxies.tsx、docs/clash-proxy-provider.md 中本轮新增的本地中转配置；删除 tests/test_http_client_proxy_upstream.py 和 test/test_proxy_runtime_resolution.py 中本轮新增断言；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 注册后试用权益查询重试日志可见
+
+### What was done
+- 保留注册后免费 Plus 试用权益查询的网络/TLS 错误最多 3 次重试规则。
+- 将每次请求阶段失败和下一次重试写入任务日志，避免界面只看到最终失败而误判为一次失败就停止。
+- HTTP 已返回但非 2xx、响应格式异常或没有试用权益仍不重试，继续只跳过 `试用` 标签，不影响账号保存成功。
+- 更新 ChatGPT 注册流程文档，说明权益查询重试日志会在任务日志中展示。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_retries_network_error tests\test_platform_action_task.py::test_chatgpt_trial_post_register_check_logs_network_retries tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_does_not_retry_http_failure -q` -> 3 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 给注册后试用权益查询增加重试日志回调，并在任务日志中打印每次网络/TLS 查询失败和下一次重试。
+  - tests/test_platform_action_task.py: 增加注册后试用权益查询网络重试日志的回归测试。
+  - docs/chatgpt-register-flow.md: 补充权益查询网络错误重试会打印任务日志。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：移除 application/tasks.py 中 `_inspect_chatgpt_free_plus_trial()` 的 `retry_log` 参数和 `_run_chatgpt_trial_post_register_check()` 内的重试日志回调，恢复为只打印最终查询结果；删除 tests/test_platform_action_task.py 中 `test_chatgpt_trial_post_register_check_logs_network_retries`；恢复 docs/chatgpt-register-flow.md 对重试日志的说明；移除 progress.md 本轮追加内容即可回到本轮处理前行为。
+
+## 2026-07-14 - Task: 试用权益查询接入本地中转代理
+
+### What was done
+- 定位注册成功后 `accounts/check` 试用权益查询未走 `OpenAIHTTPClient`，只使用目标代理 `proxies`，因此没有带上全局本地中转代理的 libcurl `PRE_PROXY`。
+- 试用权益查询现在会复用当前注册目标代理，并在目标代理不是本地地址时读取全局 `proxy_upstream_url` 加入 `PRE_PROXY`。
+- 将这条查询里的 `socks5://` 运行时规范化为 `socks5h://`，避免 DNS 没有走代理端解析。
+- 更新 ChatGPT 注册流程文档，记录试用权益查询的链路与注册主流程保持一致。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_retries_network_error tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_uses_runtime_proxy_upstream tests\test_platform_action_task.py::test_chatgpt_trial_post_register_check_logs_network_retries tests\test_platform_action_task.py::test_chatgpt_free_plus_trial_does_not_retry_http_failure -q` -> 4 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+
+### Notes
+- 修改文件清单
+  - application/tasks.py: 试用权益查询请求参数接入全局本地中转代理 `PRE_PROXY`，并规范化目标代理为 `socks5h://`。
+  - tests/test_platform_action_task.py: 增加试用权益查询使用本地中转代理和 `socks5h://` 的回归测试。
+  - docs/chatgpt-register-flow.md: 记录试用权益查询走 `本机 -> 本地中转代理 -> 代理池目标代理 -> ChatGPT` 链路。
+  - progress.md: 追加本轮进度、验证和回滚说明。
+- 回滚点：删除 application/tasks.py 中 `_is_local_proxy_url()`、`_chatgpt_trial_check_request_kwargs()` 和 `_inspect_chatgpt_free_plus_trial()` 对 `request_kwargs` 的使用，恢复为 `_build_proxies(proxy)`；删除 tests/test_platform_action_task.py 中 `CurlOpt` 导入和 `test_chatgpt_free_plus_trial_uses_runtime_proxy_upstream`；恢复 docs/chatgpt-register-flow.md 本轮链路说明；移除 progress.md 本轮追加内容即可回到本轮处理前行为。

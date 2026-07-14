@@ -773,12 +773,34 @@ class Sub2ApiManagementService:
         *,
         model_id: str = DEFAULT_TEST_MODEL,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        _network_attempt: int = 1,
     ) -> tuple[str, str]:
         from curl_cffi import requests as cffi_requests
 
         def emit(event: dict[str, Any]) -> None:
             if callable(event_callback):
                 event_callback({"account_id": account_id, **event})
+
+        def retry_network_result(reason: str) -> tuple[str, str]:
+            if _network_attempt <= TEST_REQUEST_NETWORK_RETRIES:
+                delay = TEST_REQUEST_RETRY_DELAYS[min(_network_attempt - 1, len(TEST_REQUEST_RETRY_DELAYS) - 1)]
+                emit(
+                    {
+                        "event": "request_retry",
+                        "result": "skipped",
+                        "message": f"{reason}，网络错误重试 {_network_attempt}/{TEST_REQUEST_NETWORK_RETRIES}",
+                    }
+                )
+                time.sleep(delay)
+                return self.test_account(
+                    ctx,
+                    account_id,
+                    model_id=model_id,
+                    event_callback=event_callback,
+                    _network_attempt=_network_attempt + 1,
+                )
+            emit({"event": "request_failed", "result": "skipped", "message": reason})
+            return "skipped", reason
 
         headers = {
             "Accept": "text/event-stream, application/json",
@@ -856,6 +878,7 @@ class Sub2ApiManagementService:
                 or event.get("message")
                 or event.get("delta")
                 or event.get("response")
+                or event.get("error")
             )
             if text:
                 emit({"event": "model_message", "message": _short_error(text, 500), "raw": event})
@@ -868,6 +891,8 @@ class Sub2ApiManagementService:
                 if _is_usage_limit_error(message):
                     emit({"event": "completed", "result": "rate_limited", "message": message})
                     return "rate_limited", message
+                if _is_test_request_network_error(message):
+                    return retry_network_result(message)
                 emit({"event": "completed", "result": "dead", "message": message})
                 return "dead", message
             if event_type == "error":
@@ -876,6 +901,8 @@ class Sub2ApiManagementService:
                 if _is_usage_limit_error(message):
                     emit({"event": "completed", "result": "rate_limited", "message": message})
                     return "rate_limited", message
+                if _is_test_request_network_error(message):
+                    return retry_network_result(message)
                 emit({"event": "completed", "result": "dead", "message": message})
                 return "dead", message
 
@@ -903,12 +930,16 @@ class Sub2ApiManagementService:
                         if _is_usage_limit_error(message):
                             emit({"event": "completed", "result": "rate_limited", "message": message})
                             return "rate_limited", message
+                        if _is_test_request_network_error(message):
+                            return retry_network_result(message)
                         emit({"event": "completed", "result": "dead", "message": message})
                         return "dead", message
                     if str(event.get("type") or "") == "error":
                         if _is_usage_limit_error(message):
                             emit({"event": "completed", "result": "rate_limited", "message": message})
                             return "rate_limited", message
+                        if _is_test_request_network_error(message):
+                            return retry_network_result(message)
                         emit({"event": "completed", "result": "dead", "message": message})
                         return "dead", message
         reason = "no terminal SSE event" if not saw_terminal else "missing terminal result"

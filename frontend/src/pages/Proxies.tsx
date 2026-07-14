@@ -10,6 +10,7 @@ import ProviderCards from '@/components/settings/ProviderCards'
 import { Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Globe2, ShieldCheck, CircleOff, Activity, Save, DownloadCloud, SearchCheck, Database, Loader2 } from 'lucide-react'
 
 const DEFAULT_FALLBACK_PROXY_URL = 'http://127.0.0.1:7897'
+const DEFAULT_PROXY_UPSTREAM_URL = ''
 const FREE_PROXY_TEXT = {
   title: '\u514d\u8d39\u4ee3\u7406',
   subtitle: '\u62c9\u53d6\u516c\u5f00\u4ee3\u7406\u6e90\uff0c\u68c0\u6d4b\u53ef\u7528\u540e\u5165\u5e93',
@@ -43,9 +44,11 @@ export default function Proxies() {
   const [importScheme, setImportScheme] = useState<ProxyImportScheme>('http')
   const [region, setRegion] = useState('')
   const [checking, setChecking] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const [checkingProxyIds, setCheckingProxyIds] = useState<Set<number>>(new Set())
   const [proxyStrategy, setProxyStrategy] = useState('pool_then_default')
   const [fallbackProxyUrl, setFallbackProxyUrl] = useState(DEFAULT_FALLBACK_PROXY_URL)
+  const [proxyUpstreamUrl, setProxyUpstreamUrl] = useState(DEFAULT_PROXY_UPSTREAM_URL)
   const [savingProxyConfig, setSavingProxyConfig] = useState(false)
   const [proxyConfigSaved, setProxyConfigSaved] = useState(false)
   const [freeSources, setFreeSources] = useState<FreeProxySource[]>([])
@@ -76,6 +79,7 @@ export default function Proxies() {
     setProxies(proxyItems)
     setProxyStrategy(config.proxy_strategy || 'pool_then_default')
     setFallbackProxyUrl(config.proxy_fallback_url || DEFAULT_FALLBACK_PROXY_URL)
+    setProxyUpstreamUrl(config.proxy_upstream_url || DEFAULT_PROXY_UPSTREAM_URL)
     setProxyCatalog(options?.proxy_providers || [])
     setProxyProviderSettings(options?.proxy_settings || [])
     if (options) setProxyProviderError('')
@@ -112,6 +116,19 @@ export default function Proxies() {
     load()
   }
 
+  const clearAll = async () => {
+    if (proxies.length === 0) return
+    const confirmed = window.confirm(`确定清空代理池中的全部 ${proxies.length} 个代理吗？此操作不会删除动态代理 Provider 配置。`)
+    if (!confirmed) return
+    setClearing(true)
+    try {
+      await apiFetch('/proxies', { method: 'DELETE' })
+      await load()
+    } finally {
+      setClearing(false)
+    }
+  }
+
   const toggle = async (id: number) => {
     await apiFetch(`/proxies/${id}/toggle`, { method: 'PATCH' })
     load()
@@ -139,6 +156,7 @@ export default function Proxies() {
           data: {
             proxy_strategy: proxyStrategy,
             proxy_fallback_url: fallbackProxyUrl,
+            proxy_upstream_url: proxyUpstreamUrl,
           },
         }),
       })
@@ -258,6 +276,10 @@ export default function Proxies() {
             <RefreshCw className={`h-4 w-4 mr-1.5 ${checking ? 'animate-spin' : ''}`} />
             {t('proxies.checkAll')}
           </Button>
+          <Button variant="outline" size="sm" onClick={clearAll} disabled={checking || clearing || proxies.length === 0} className="text-red-400 hover:text-red-500">
+            <Trash2 className={`h-4 w-4 mr-1.5 ${clearing ? 'animate-pulse' : ''}`} />
+            {clearing ? '清空中...' : '清空'}
+          </Button>
         </div>
       </Card>
 
@@ -303,6 +325,23 @@ export default function Proxies() {
               />
               <div className="text-xs leading-5 text-[var(--text-muted)]">
                 代理池无可用代理时，将按这里的默认代理访问授权页并交换 token。
+              </div>
+              <div className="space-y-2 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 p-3">
+                <div>
+                  <div className="text-[11px] font-semibold text-[var(--text-secondary)]">本地中转代理</div>
+                  <div className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+                    代理池里的代理裸连不可达时填写这里。启用后检测和 ChatGPT 注册会先连本地代理，再连代理池里的目标代理。
+                  </div>
+                </div>
+                <input
+                  value={proxyUpstreamUrl}
+                  onChange={e => setProxyUpstreamUrl(e.target.value)}
+                  placeholder="例如 socks5h://127.0.0.1:7897 或 http://127.0.0.1:7897"
+                  className="control-surface control-surface-mono"
+                />
+                <div className="text-xs leading-5 text-[var(--text-muted)]">
+                  这不是兜底代理，而是代理池目标代理的上游中转；留空则直接连接代理池里的代理。
+                </div>
               </div>
               <Button onClick={saveProxyConfig} disabled={savingProxyConfig} className="w-full">
                 <Save className="h-4 w-4 mr-1.5" />

@@ -185,6 +185,7 @@ class RefreshSessionTaskRequest(BaseModel):
     platform: str = "chatgpt"
     ids: list[int] = Field(default_factory=list)
     concurrency: int = 1
+    default_status: str = ""
 
 
 @router.post("/refresh-session")

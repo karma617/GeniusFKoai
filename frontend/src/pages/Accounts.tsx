@@ -17,7 +17,7 @@ import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2,
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', trial: 'success', subscribed: 'success',
-  expired: 'warning', invalid: 'danger', banned: 'danger',
+  expired: 'warning', relogin_required: 'warning', invalid: 'danger', banned: 'danger',
   free: 'secondary', eligible: 'secondary', valid: 'success', unknown: 'secondary',
 }
 
@@ -75,6 +75,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'subscribed',
   'eligible',
   'expired',
+  'relogin_required',
   'invalid',
   'banned',
 ]
@@ -86,9 +87,33 @@ const CHATGPT_BATCH_STATUS_OPTIONS = [
   'trial',
   'subscribed',
   'expired',
+  'relogin_required',
   'invalid',
   'banned',
 ]
+
+type PlanRefreshLogEntry = {
+  id: string
+  accountId?: number
+  email: string
+  status: 'pending' | 'running' | 'success' | 'error'
+  message: string
+  planName?: string
+  planState?: string
+  subscriptionStatus?: string
+  usagePlanType?: string
+  raw?: any
+}
+
+type PlanRefreshDialogState = {
+  open: boolean
+  running: boolean
+  total: number
+  success: number
+  failed: number
+  currentEmail: string
+  logs: PlanRefreshLogEntry[]
+}
 
 function getAccountOverview(acc: any) {
   return acc?.overview || {}
@@ -295,6 +320,113 @@ function getPrimaryToken(acc: any) {
   if (acc?.primary_token) return acc.primary_token
   const credential = getCredentials(acc).find((item: any) => item?.scope === 'platform' && item?.credential_type === 'token' && item?.value)
   return credential?.value || ''
+}
+
+function getAccountPlanLabel(acc: any) {
+  const overview = getAccountOverview(acc)
+  const plan = String(acc?.plan_name || overview?.plan_name || overview?.plan || '').trim()
+  if (plan) return plan
+  const planState = String(getPlanState(acc) || '').trim().toLowerCase()
+  if (planState === 'free' || planState === 'eligible' || planState === 'unknown') return 'Free'
+  if (planState === 'trial') return 'Trial'
+  if (planState === 'subscribed') return 'Plus'
+  return planState || '-'
+}
+
+function getAccountPlanPillClassName(acc: any, planLabel: string) {
+  const normalizedLabel = String(planLabel || '').trim().toLowerCase()
+  const normalizedState = String(getPlanState(acc) || '').trim().toLowerCase()
+  if (normalizedLabel === 'plus' || normalizedState === 'subscribed') {
+    return 'border-[#d6a83d]/70 bg-[#11100d] text-[#f8d675] shadow-[0_0_0_1px_rgba(214,168,61,0.32),0_8px_18px_rgba(17,16,13,0.22)] dark:border-[#f2c75b]/70 dark:bg-black dark:text-[#ffe08a]'
+  }
+  return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 shadow-sm dark:text-emerald-300'
+}
+
+function getAccountJsonText(acc: any) {
+  try {
+    return JSON.stringify(acc, null, 2)
+  } catch {
+    return String(acc || '')
+  }
+}
+
+function getAccountJsonLength(acc: any) {
+  return getAccountJsonText(acc).length
+}
+
+function getTokenStatusLabel(acc: any) {
+  return getPrimaryToken(acc) ? 'AT可用' : '无AT'
+}
+
+function resolveTimeMs(value: any) {
+  if (value === null || value === undefined || value === '') return 0
+  if (typeof value === 'number') return value > 1000000000000 ? value : value * 1000
+  const text = String(value || '').trim()
+  if (!text) return 0
+  if (/^\d+$/.test(text)) {
+    const numberValue = Number(text)
+    return numberValue > 1000000000000 ? numberValue : numberValue * 1000
+  }
+  const parsed = Date.parse(text)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function getAccountExpiresAtMs(acc: any) {
+  const overview = getAccountOverview(acc)
+  const candidates = [
+    acc?.trial_end_time,
+    overview?.trial_end_time,
+    overview?.trial_ends_at,
+    overview?.expires_at,
+    overview?.expiresAt,
+    overview?.subscription_expires_at,
+    overview?.reset_at,
+  ]
+  for (const candidate of candidates) {
+    const ms = resolveTimeMs(candidate)
+    if (ms > 0) return ms
+  }
+  return 0
+}
+
+function getAccountValidityWindowLabel(acc: any) {
+  const expiresAt = getAccountExpiresAtMs(acc)
+  if (!expiresAt) return '-'
+  const remainingMs = expiresAt - Date.now()
+  if (remainingMs <= 0) return '已过期'
+  const totalHours = Math.max(1, Math.floor(remainingMs / 3600000))
+  const days = Math.floor(totalHours / 24)
+  const hours = totalHours % 24
+  if (days > 0 && hours > 0) return `${days}天${hours}小时`
+  if (days > 0) return `${days}天`
+  return `${hours}小时`
+}
+
+function getAccountCreatedAtLabel(acc: any, language: string) {
+  if (!acc?.created_at) return '-'
+  return formatDateTime(acc.created_at, language as any, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
+function getInlinePaymentLinkParams() {
+  return {
+    country: 'ID',
+    currency: 'IDR',
+    plan: 'plus',
+    auto_checkout: 'false',
+    use_stripe_init: 'true',
+    use_short_link: 'false',
+    payment_method: 'paypal',
+    headless: 'false',
+    checkout_mode: 'protocol',
+  }
 }
 
 function isEmptyPayload(value: any) {
@@ -1696,6 +1828,99 @@ function TaskLogDialog({
   )
 }
 
+function PlanRefreshLogDialog({
+  state,
+  onClose,
+}: {
+  state: PlanRefreshDialogState
+  onClose: () => void
+}) {
+  const logEndRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [state.logs.length, state.currentEmail])
+  const pending = Math.max(state.total - state.success - state.failed, 0)
+  const rawText = JSON.stringify(state.logs.map(item => item.raw ? { email: item.email, raw: item.raw } : { email: item.email, status: item.status, message: item.message }), null, 2)
+
+  return (
+    <div className="dialog-backdrop" onClick={() => !state.running && onClose()}>
+      <div
+        className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-2xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+        onClick={event => event.stopPropagation()}
+        style={{ width: 'min(920px, calc(100vw - 32px))', height: 'min(760px, calc(100dvh - 48px))' }}
+      >
+        <div className="relative shrink-0 overflow-hidden border-b border-emerald-500/15 bg-gradient-to-r from-emerald-500/12 via-[var(--bg-elevated)] to-[var(--bg-elevated)] px-6 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="mb-2 inline-flex rounded-full bg-emerald-500/10 px-3 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300">
+                Plan Refresh
+              </div>
+              <h2 className="truncate text-[16px] font-bold text-[var(--text-primary)]">一键刷新套餐日志</h2>
+              <p className="mt-1 text-[12px] font-medium text-[var(--text-secondary)]">
+                {state.running ? `正在处理：${state.currentEmail || '-'}` : '刷新已结束，可以关闭窗口。'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={state.running ? 'warning' : state.failed ? 'danger' : 'success'}>
+                {state.running ? '运行中' : state.failed ? '部分失败' : '已完成'}
+              </Badge>
+              <button
+                onClick={() => !state.running && onClose()}
+                disabled={state.running}
+                className="rounded-full border border-transparent bg-[var(--bg-pane)] p-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="grid shrink-0 grid-cols-2 gap-3 border-b border-[var(--border-soft)] bg-[var(--bg-base)] px-6 py-4 md:grid-cols-4">
+          {[
+            ['总数', state.total],
+            ['成功', state.success],
+            ['失败', state.failed],
+            ['待处理', pending],
+          ].map(([label, value]) => (
+            <div key={String(label)} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] px-4 py-3 shadow-sm">
+              <div className="text-[11px] font-medium text-[var(--text-muted)]">{label}</div>
+              <div className="mt-1 text-xl font-bold text-[var(--text-primary)]">{value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
+          <div className="space-y-2 font-mono text-[12px]">
+            {state.logs.map(item => (
+              <div key={item.id} className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-3 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0 truncate font-semibold text-[var(--text-primary)]">{item.email}</div>
+                  <Badge variant={item.status === 'success' ? 'success' : item.status === 'error' ? 'danger' : item.status === 'running' ? 'warning' : 'secondary'}>
+                    {item.status === 'success' ? '成功' : item.status === 'error' ? '失败' : item.status === 'running' ? '处理中' : '等待'}
+                  </Badge>
+                </div>
+                <div className="mt-2 grid gap-2 text-[11px] text-[var(--text-secondary)] md:grid-cols-4">
+                  <span>套餐：{item.planName || '-'}</span>
+                  <span>状态：{item.planState || '-'}</span>
+                  <span>订阅：{item.subscriptionStatus || '-'}</span>
+                  <span>usage：{item.usagePlanType || '-'}</span>
+                </div>
+                <div className="mt-2 break-all text-[11px] text-[var(--text-muted)]">{item.message}</div>
+              </div>
+            ))}
+            <div ref={logEndRef} />
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-3">
+          <Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(rawText)}>
+            <Copy className="mr-1.5 h-3.5 w-3.5" />
+            复制接口返回
+          </Button>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={state.running}>关闭</Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ActionParamsModal({
   action,
   initialValues,
@@ -2499,6 +2724,17 @@ export default function Accounts() {
   const [invalidDeleting, setInvalidDeleting] = useState(false)
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchHealthChecking, setBatchHealthChecking] = useState(false)
+  const [batchPlanRefreshing, setBatchPlanRefreshing] = useState(false)
+  const [rowActionBusy, setRowActionBusy] = useState('')
+  const [planRefreshDialog, setPlanRefreshDialog] = useState<PlanRefreshDialogState>({
+    open: false,
+    running: false,
+    total: 0,
+    success: 0,
+    failed: 0,
+    currentEmail: '',
+    logs: [],
+  })
   const [batchStatusOpen, setBatchStatusOpen] = useState(false)
   const [batchStatusUpdating, setBatchStatusUpdating] = useState(false)
   const [batchStatusValue, setBatchStatusValue] = useState('registered')
@@ -2583,6 +2819,25 @@ export default function Accounts() {
       setAccounts(data.items); setTotal(data.total)
     } finally { setLoading(false) }
   }, [tab, debouncedSearch, filterStatus, filterTag, page])
+
+  const fetchPlanRefreshTargets = useCallback(async () => {
+    const targets: any[] = []
+    let currentPage = 1
+    const targetPageSize = 200
+    while (true) {
+      const params = new URLSearchParams({ platform: tab, page: String(currentPage), page_size: String(targetPageSize) })
+      if (debouncedSearch) params.set('email', debouncedSearch)
+      if (filterStatus) params.set('status', filterStatus)
+      if (filterTag) params.set('tag', filterTag)
+      const data = await apiFetch(`/accounts?${params}`)
+      const items = Array.isArray(data?.items) ? data.items : []
+      targets.push(...items)
+      const totalItems = Number(data?.total || targets.length)
+      if (targets.length >= totalItems || items.length === 0) break
+      currentPage += 1
+    }
+    return targets
+  }, [tab, debouncedSearch, filterStatus, filterTag])
 
   useEffect(() => { load(tab, debouncedSearch, filterStatus, filterTag, page) }, [tab, debouncedSearch, filterStatus, filterTag, page, load])
 
@@ -2693,6 +2948,172 @@ export default function Accounts() {
     } catch (e) {
       console.error(e)
       setBatchHealthChecking(false)
+    }
+  }
+
+  const runInlineAccountAction = async (
+    acc: any,
+    actionId: string,
+    title: string,
+    params: Record<string, any> = {},
+  ) => {
+    const busyKey = `${acc.id}:${actionId}`
+    setError('')
+    setRowActionBusy(busyKey)
+    try {
+      const resp = await apiFetch(`/actions/${acc.platform}/${acc.id}/${actionId}`, {
+        method: 'POST',
+        body: JSON.stringify({ params }),
+      })
+      if (resp?.sync) {
+        if (!resp.ok) {
+          throw new Error(resp.error || t('accounts.operationFailed'))
+        }
+        const data = resp.data
+        const actionUrl = data?.url || data?.checkout_url || data?.cashier_url
+        if (actionUrl) {
+          try {
+            await writeClipboardText(actionUrl)
+          } catch {
+            // Clipboard is best-effort here; the result dialog still exposes the URL.
+          }
+        }
+        if (data && typeof data === 'object') {
+          setActionResult({ title, payload: data })
+        }
+        await load()
+        return
+      }
+      const taskId = String(resp?.task_id || resp?.id || '')
+      if (taskId) {
+        setBatchTask({ taskId, title })
+        setBatchTaskStatus(null)
+        return
+      }
+      throw new Error(resp?.error || t('accounts.operationFailed'))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setRowActionBusy(current => current === busyKey ? '' : current)
+    }
+  }
+
+  const runInlineHealthCheck = async (acc: any) => {
+    const busyKey = `${acc.id}:health_check`
+    setError('')
+    setRowActionBusy(busyKey)
+    try {
+      const res = await apiFetch(`/accounts/health-check?platform=${acc.platform || tab}`, {
+        method: 'POST',
+        body: JSON.stringify({ ids: [Number(acc.id)] }),
+      })
+      const taskId = String(res?.task_id || res?.id || '')
+      if (taskId) {
+        setBatchTask({ taskId, title: `检测存活 - ${acc.email || acc.id}` })
+        setBatchTaskStatus(null)
+        return
+      }
+      throw new Error(res?.error || t('accounts.operationFailed'))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setRowActionBusy(current => current === busyKey ? '' : current)
+    }
+  }
+
+  const refreshPlanForAccount = async (acc: any) => {
+    const busyKey = `${acc.id}:refresh_plan`
+    setError('')
+    setRowActionBusy(busyKey)
+    try {
+      await apiFetch(`/accounts/refresh-plan?platform=${acc.platform || tab}`, {
+        method: 'POST',
+        body: JSON.stringify({ ids: [Number(acc.id)] }),
+      })
+      await load()
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setRowActionBusy(current => current === busyKey ? '' : current)
+    }
+  }
+
+  const refreshPlanForAllAccounts = async () => {
+    setError('')
+    setBatchPlanRefreshing(true)
+    try {
+      const targets = await fetchPlanRefreshTargets()
+      setPlanRefreshDialog({
+        open: true,
+        running: true,
+        total: targets.length,
+        success: 0,
+        failed: 0,
+        currentEmail: '',
+        logs: targets.map((acc: any) => ({
+          id: String(acc.id),
+          accountId: Number(acc.id),
+          email: String(acc.email || acc.id || ''),
+          status: 'pending',
+          message: '等待刷新套餐',
+        })),
+      })
+      for (const acc of targets) {
+        const accountId = Number(acc.id)
+        const email = String(acc.email || accountId)
+        setPlanRefreshDialog(current => ({
+          ...current,
+          currentEmail: email,
+          logs: current.logs.map(item => item.accountId === accountId ? { ...item, status: 'running', message: '正在请求 /accounts/refresh-plan' } : item),
+        }))
+        try {
+          const response = await apiFetch(`/accounts/refresh-plan?platform=${acc.platform || tab}`, {
+            method: 'POST',
+            body: JSON.stringify({ ids: [accountId] }),
+          })
+          const item = Array.isArray(response?.items) ? response.items.find((entry: any) => Number(entry?.account_id) === accountId) || response.items[0] : null
+          const ok = Boolean(item?.ok)
+          const planName = String(item?.plan_name || '')
+          const planState = String(item?.plan_state || '')
+          const subscriptionStatus = String(item?.subscription_status || '')
+          const usagePlanType = String(item?.usage_plan_type || '')
+          setPlanRefreshDialog(current => ({
+            ...current,
+            success: current.success + (ok ? 1 : 0),
+            failed: current.failed + (ok ? 0 : 1),
+            logs: current.logs.map(logItem => logItem.accountId === accountId ? {
+              ...logItem,
+              status: ok ? 'success' : 'error',
+              message: ok
+                ? `接口返回套餐 ${planName || subscriptionStatus || usagePlanType || planState || '-'}`
+                : `接口返回失败：${item?.error || response?.error || 'unknown'}`,
+              planName,
+              planState,
+              subscriptionStatus,
+              usagePlanType,
+              raw: response,
+            } : logItem),
+          }))
+        } catch (exc: any) {
+          setPlanRefreshDialog(current => ({
+            ...current,
+            failed: current.failed + 1,
+            logs: current.logs.map(item => item.accountId === accountId ? {
+              ...item,
+              status: 'error',
+              message: exc?.message || t('login.requestFailed'),
+              raw: { error: exc?.message || String(exc || '') },
+            } : item),
+          }))
+        }
+      }
+      setPlanRefreshDialog(current => ({ ...current, running: false, currentEmail: '' }))
+      await load()
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+      setPlanRefreshDialog(current => ({ ...current, running: false, currentEmail: '' }))
+    } finally {
+      setBatchPlanRefreshing(false)
     }
   }
 
@@ -2839,10 +3260,6 @@ export default function Accounts() {
   const startRefreshSession = async () => {
     setError('')
     const ids = [...selectedIds].map(Number)
-    if (ids.length === 0) {
-      setError(t('accounts.selectAtLeastOne'))
-      return
-    }
     setRefreshSessionBusy(true)
     try {
       const data = await apiFetch('/tasks/refresh-session', {
@@ -2851,6 +3268,7 @@ export default function Accounts() {
           platform: 'chatgpt',
           ids,
           concurrency: Math.max(Number(actionConcurrency || 1), 1),
+          default_status: 'relogin_required',
         }),
       })
       setRefreshSessionTaskId(String(data?.task_id || data?.id || ''))
@@ -2941,6 +3359,12 @@ export default function Accounts() {
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
+      {planRefreshDialog.open && (
+        <PlanRefreshLogDialog
+          state={planRefreshDialog}
+          onClose={() => setPlanRefreshDialog(current => ({ ...current, open: false }))}
+        />
+      )}
       {batchStatusOpen && (
         <BatchStatusModal
           count={selectedCount}
@@ -3529,7 +3953,7 @@ export default function Accounts() {
           </div>
         </header>
 
-        <section className="mx-auto max-w-[1440px] p-8">
+        <section className="w-full max-w-none p-8">
           <div className="mb-8 flex flex-wrap items-center gap-4">
             <Button
               size="sm"
@@ -3591,7 +4015,7 @@ export default function Accounts() {
               <Button
                 size="sm"
                 variant="outline"
-                disabled={refreshSessionBusy || selectedCount === 0}
+                disabled={refreshSessionBusy}
                 onClick={startRefreshSession}
                 className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
               >
@@ -3695,7 +4119,24 @@ export default function Accounts() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={batchHealthChecking || batchRefreshing || loading}
+                    disabled={batchPlanRefreshing || batchHealthChecking || batchRefreshing || loading}
+                    className="h-8 rounded-lg border-0 bg-emerald-500/10 px-3 text-[12px] font-medium text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
+                    title="全量刷新当前平台所有账号的订阅套餐类型"
+                    onClick={refreshPlanForAllAccounts}
+                  >
+                    {batchPlanRefreshing ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {batchPlanRefreshing ? '刷新套餐中' : '一键刷新套餐'}
+                  </Button>
+                )}
+                {tab === 'chatgpt' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={batchHealthChecking || batchPlanRefreshing || batchRefreshing || loading}
                     className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
                     title={t('accounts.healthCheckTitle')}
                     onClick={startHealthCheck}
@@ -3707,7 +4148,7 @@ export default function Accounts() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={batchRefreshing || batchHealthChecking || loading}
+                  disabled={batchRefreshing || batchPlanRefreshing || batchHealthChecking || loading}
                   className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
                   title={t('accounts.refreshCreditsTitle')}
                   onClick={async () => {
@@ -3771,18 +4212,23 @@ export default function Accounts() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full table-fixed border-collapse text-left">
+              <table className="w-full min-w-[1510px] border-collapse text-left text-[12px]">
                 <colgroup>
-                  <col className="w-[7%]" />
-                  <col className="w-[28%]" />
-                  <col className="w-[15%]" />
-                  <col className="w-[20%]" />
-                  <col className="w-[10%]" />
-                  <col className="w-[20%]" />
+                  <col className="w-[44px]" />
+                  <col className="w-[210px]" />
+                  <col className="w-[82px]" />
+                  <col className="w-[92px]" />
+                  <col className="w-[112px]" />
+                  <col className="w-[148px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[170px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[106px]" />
+                  <col className="w-[356px]" />
                 </colgroup>
                 <thead>
-                  <tr className="bg-[var(--bg-pane)]/30 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-                    <th className="px-4 py-4 text-center font-semibold">
+                  <tr className="border-y border-[var(--border-soft)] bg-[var(--bg-pane)]/45 text-[12px] text-[var(--text-secondary)]">
+                    <th className="px-3 py-3 text-center font-semibold">
                       <input
                         type="checkbox"
                         checked={allSelectedOnPage}
@@ -3790,17 +4236,22 @@ export default function Accounts() {
                         className="checkbox-accent rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
                       />
                     </th>
-                    <th className="px-4 py-4 font-semibold">{t('accounts.accountInfo')}</th>
-                    <th className="px-4 py-4 font-semibold">{t('common.password')}</th>
-                    <th className="whitespace-nowrap px-4 py-4 font-semibold">{t('common.status')}</th>
-                    <th className="whitespace-nowrap px-4 py-4 font-semibold">{t('accounts.registeredAt')}</th>
-                    <th className="whitespace-nowrap px-2 py-4 text-right font-semibold">{t('common.actions')}</th>
+                    <th className="px-3 py-3 font-semibold">账号</th>
+                    <th className="px-3 py-3 font-semibold">套餐</th>
+                    <th className="px-3 py-3 font-semibold">Token</th>
+                    <th className="px-3 py-3 font-semibold">账号状态</th>
+                    <th className="px-3 py-3 font-semibold">标签</th>
+                    <th className="px-3 py-3 font-semibold">创建时间</th>
+                    <th className="px-3 py-3 font-semibold">完整 JSON</th>
+                    <th className="px-3 py-3 font-semibold">有效期</th>
+                    <th className="px-3 py-3 font-semibold">支付长链</th>
+                    <th className="px-3 py-3 font-semibold">{t('common.actions')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-soft)]">
                   {accounts.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-6 py-20 text-center">
+                      <td colSpan={11} className="px-6 py-20 text-center">
                         <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
                           <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--bg-pane)]">
                             <Mail className="h-5 w-5 text-[var(--text-muted)]" />
@@ -3817,36 +4268,33 @@ export default function Accounts() {
                   )}
                   {accounts.map(acc => (
                     (() => {
-                      const overview = getAccountOverview(acc)
-                      const verificationMailbox = getVerificationMailbox(acc)
-                      const primaryMetrics = getPrimaryMetrics(acc)
-                      const displayBadges = getDisplayBadges(acc)
+                      const primaryToken = getPrimaryToken(acc)
+                      const cashierUrl = getCashierUrl(acc)
+                      const planLabel = getAccountPlanLabel(acc)
+                      const tokenOk = Boolean(primaryToken)
+                      const jsonText = getAccountJsonText(acc)
+                      const jsonLength = getAccountJsonLength(acc)
+                      const createdLabel = getAccountCreatedAtLabel(acc, language)
+                      const validityLabel = getAccountValidityWindowLabel(acc)
                       const status = getDisplayStatus(acc)
-                      const variant = String(STATUS_VARIANT[status] || 'secondary')
-                      const statusStyles = (({
-                        success: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-                        warning: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
-                        danger: "bg-red-500/10 text-red-600 dark:text-red-400",
-                        secondary: "bg-[var(--bg-pane)] text-[var(--text-secondary)]",
-                        default: "bg-[rgba(var(--accent-rgb),0.1)] text-[var(--accent)]",
-                      } as Record<string, string>)[variant]) || "bg-[var(--bg-pane)] text-[var(--text-secondary)]"
-                      const statusDot = variant === 'success'
-                        ? 'bg-emerald-500'
-                        : variant === 'warning'
-                          ? 'bg-amber-500'
-                          : variant === 'danger'
-                            ? 'bg-red-500'
-                            : variant === 'default'
-                              ? 'bg-[var(--gradient-accent)]'
-                              : 'bg-[var(--text-muted)]'
+                      const statusVariant = String(STATUS_VARIANT[status] || 'secondary')
+                      const statusPillClass = (({
+                        success: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+                        warning: 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+                        danger: 'border-red-500/25 bg-red-500/10 text-red-600 dark:text-red-300',
+                        secondary: 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-secondary)]',
+                        default: 'border-[var(--accent-edge)] bg-[var(--accent-soft)] text-[var(--accent)]',
+                      } as Record<string, string>)[statusVariant]) || 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-secondary)]'
+                      const displayBadges = getDisplayBadges(acc)
+                      const isBusy = (actionId: string) => rowActionBusy === `${acc.id}:${actionId}`
 
                       return (
                         <tr
                           key={acc.id}
-                          className="group cursor-pointer transition-colors hover:bg-[var(--bg-pane)]/35"
+                          className="group cursor-pointer bg-[var(--bg-card)] transition-colors hover:bg-[var(--bg-pane)]/35"
                           onClick={() => setDetail(acc)}
                         >
-                          <td className="px-4 py-4 text-center align-top" onClick={e => e.stopPropagation()}>
+                          <td className="px-3 py-3 text-center align-middle" onClick={e => e.stopPropagation()}>
                             <input
                               type="checkbox"
                               checked={selectedIds.has(acc.id)}
@@ -3854,122 +4302,152 @@ export default function Accounts() {
                               className="checkbox-accent rounded border-[var(--border)] text-[var(--accent)] opacity-60 transition-opacity group-hover:opacity-100 focus:ring-[var(--accent)]"
                             />
                           </td>
-                          <td className="overflow-hidden px-4 py-4 align-top">
-                            <div className="flex min-w-0 gap-2.5">
-                              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[rgba(var(--accent-rgb),0.08)] text-[var(--accent)]">
-                                <Mail className="h-4 w-4" />
-                              </div>
-                              <div className="min-w-0">
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <span
-                                    className="truncate font-mono text-[13px] font-medium text-[var(--text-primary)] cursor-copy"
-                                    title={acc.email}
-                                    onClick={e => { e.stopPropagation(); copy(acc.email) }}
-                                  >
-                                    {acc.email}
-                                  </span>
-                                  <button
-                                    onClick={e => { e.stopPropagation(); copy(acc.email) }}
-                                    className="text-[var(--text-muted)] opacity-0 transition-opacity hover:text-[var(--accent)] group-hover:opacity-100"
-                                    title="复制邮箱"
-                                    aria-label="复制邮箱"
-                                  >
-                                    <Copy className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-                                <div className="mt-1 truncate text-[11px] text-[var(--text-muted)]">
-                                  {verificationMailbox?.email || overview?.remote_email || acc.username || acc.email}
-                                </div>
-                                {displayBadges.length > 0 && (
-                                  <div className="mt-1.5 flex flex-wrap gap-1">
-                                    {displayBadges.slice(0, 2).map((badge: any, index: number) => (
-                                      <span key={`${badge?.label || 'badge'}-${index}`} className={getAccountBadgeClassName(badge, 'modern')}>
-                                        {badge?.label}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
+                          <td className="overflow-hidden px-3 py-3 align-middle">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span
+                                className="truncate font-mono text-[12px] font-bold tracking-tight text-[var(--text-primary)]"
+                                title={acc.email}
+                              >
+                                {acc.email}
+                              </span>
+                              <button
+                                onClick={e => { e.stopPropagation(); copy(acc.email) }}
+                                className="shrink-0 text-[var(--text-muted)] opacity-0 transition-opacity hover:text-[var(--accent)] group-hover:opacity-100"
+                                title="复制账号"
+                                aria-label="复制账号"
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </button>
                             </div>
                           </td>
-                          <td className="overflow-hidden px-4 py-4 align-top">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <span className="truncate font-mono text-[12px] text-[var(--text-muted)] blur-[3px] transition-all hover:blur-none" title={acc.password}>
-                                {acc.password || '-'}
+                          <td className="px-3 py-3 align-middle">
+                            <span className={cn('inline-flex min-w-[44px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold', getAccountPlanPillClassName(acc, planLabel))}>
+                              {planLabel}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 align-middle">
+                            <span
+                              className={cn(
+                                'inline-flex min-w-[58px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm',
+                                tokenOk
+                                  ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                  : 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]',
+                              )}
+                            >
+                              {getTokenStatusLabel(acc)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 align-middle">
+                            <span className={cn('inline-flex min-w-[72px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm', statusPillClass)}>
+                              {translateAccountStatus(status, language)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 align-middle">
+                            {displayBadges.length > 0 ? (
+                              <div className="flex max-w-[140px] flex-wrap gap-1">
+                                {displayBadges.slice(0, 3).map((badge: any, index: number) => (
+                                  <span key={`${badge?.label || 'badge'}-${index}`} className={getAccountBadgeClassName(badge, 'modern')}>
+                                    {badge?.label}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="inline-flex min-w-[42px] items-center justify-center rounded border border-[var(--border-soft)] bg-[var(--bg-pane)] px-2 py-1 text-[12px] text-[var(--text-muted)]">
+                                -
                               </span>
-                              {acc.password && (
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3 align-middle font-mono text-[12px] text-[var(--text-secondary)]">
+                            {createdLabel}
+                          </td>
+                          <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
+                            <button
+                              onClick={() => copy(jsonText)}
+                              className="inline-flex min-w-[142px] items-center justify-center rounded border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-1.5 text-[12px] font-bold text-[var(--accent)] shadow-sm transition-colors hover:border-[var(--accent-edge)] hover:bg-[var(--accent-soft)]"
+                              title="复制当前账号完整 JSON"
+                            >
+                              {jsonLength} 复制完整 JSON
+                            </button>
+                          </td>
+                          <td className="px-3 py-3 align-middle">
+                            <span
+                              className={cn(
+                                'inline-flex min-w-[74px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm',
+                                validityLabel === '-' || validityLabel === '已过期'
+                                  ? 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]'
+                                  : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+                              )}
+                            >
+                              {validityLabel}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 align-middle">
+                            <span
+                              className={cn(
+                                'inline-flex min-w-[58px] items-center justify-center rounded border px-2 py-1 text-[12px] font-medium shadow-sm',
+                                cashierUrl
+                                  ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                  : 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]',
+                              )}
+                            >
+                              {cashierUrl ? '已提取' : '未提取'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {tab === 'chatgpt' && (
                                 <button
-                                  onClick={e => { e.stopPropagation(); copy(acc.password) }}
-                                  className="text-[var(--text-muted)] opacity-0 transition-opacity hover:text-[var(--accent)] group-hover:opacity-100"
-                                  aria-label="copy"
+                                  onClick={() => runInlineAccountAction(acc, 'payment_link', `提取长链 - ${acc.email}`, getInlinePaymentLinkParams())}
+                                  disabled={isBusy('payment_link')}
+                                  className="table-action-btn"
                                 >
-                                  <Copy className="h-3.5 w-3.5" />
+                                  {isBusy('payment_link') ? '提取中' : '提取长链'}
                                 </button>
                               )}
-                            </div>
-                          </td>
-                          <td className="overflow-hidden px-4 py-4 align-top">
-                            <div className="flex min-w-0 flex-col items-start gap-1.5">
-                              <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold", statusStyles)}>
-                                <span className={cn("mr-1.5 h-1.5 w-1.5 rounded-full", statusDot)} />
-                                {translateAccountStatus(status, language)}
-                              </span>
-                              {primaryMetrics.length > 0 ? (
-                                <div className="min-w-0 max-w-full space-y-0.5 text-[11px] leading-4 text-[var(--text-muted)]">
-                                  {primaryMetrics.slice(0, 1).map((metric: any) => (
-                                    <div key={metric.key || metric.label} className="truncate">
-                                      <span className="font-medium text-[var(--text-secondary)]">{metric.label}: </span>
-                                      {metric.value}
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="truncate text-[11px] text-[var(--text-muted)]">
-                                  {getCompactStatusMeta(acc)}
-                                </div>
+                              <button onClick={() => setDetail(acc)} className="table-action-btn">查看</button>
+                              <button
+                                onClick={() => copy(primaryToken)}
+                                disabled={!primaryToken}
+                                className="table-action-btn border-emerald-500/25 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500/45 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
+                                title={primaryToken ? '复制 access_token' : '当前账号没有 AT'}
+                              >
+                                复制 AT
+                              </button>
+                              {tab === 'chatgpt' && (
+                                <button
+                                  onClick={() => refreshPlanForAccount(acc)}
+                                  disabled={isBusy('refresh_plan')}
+                                  className="table-action-btn"
+                                >
+                                  {isBusy('refresh_plan') ? '刷新中' : '刷新套餐'}
+                                </button>
                               )}
-                            </div>
-                          </td>
-                          <td className="overflow-hidden px-4 py-4 align-top font-mono text-[11px] leading-5 text-[var(--text-muted)]">
-                            {acc.created_at ? formatDateTime(acc.created_at, language, {
-                              month: '2-digit',
-                              day: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              hour12: false,
-                            }) : '-'}
-                          </td>
-                          <td className="px-2 py-4 align-top" onClick={e => e.stopPropagation()}>
-                            <div className="flex items-center justify-end gap-1.5">
-                              {getCashierUrl(acc) && (
-                                <>
-                                  <button
-                                    onClick={e => { e.stopPropagation(); copy(getCashierUrl(acc)) }}
-                                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--bg-pane)] text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)]"
-                                    aria-label="copy"
-                                  >
-                                    <Copy className="h-3.5 w-3.5" />
-                                  </button>
-                                  <a
-                                    href={getCashierUrl(acc)}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    onClick={e => e.stopPropagation()}
-                                    className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--bg-pane)] text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)]"
-                                    aria-label="open"
-                                  >
-                                    <ExternalLink className="h-3.5 w-3.5" />
-                                  </a>
-                                </>
+                              {tab === 'chatgpt' && (
+                                <button
+                                  onClick={() => runInlineAccountAction(acc, 'refresh_token', `刷新 token - ${acc.email}`)}
+                                  disabled={isBusy('refresh_token')}
+                                  className="table-action-btn"
+                                >
+                                  {isBusy('refresh_token') ? '刷新中' : '刷新 token'}
+                                </button>
                               )}
-                              <ActionMenu
-                                acc={acc}
-                                onDetail={() => setDetail(acc)}
-                                onDelete={() => load()}
-                                onResult={(title, payload) => setActionResult({ title, payload })}
-                                onChanged={() => load()}
-                                onTriggerGetRt={triggerGetRtForAccount}
-                              />
+                              <button
+                                onClick={() => runInlineHealthCheck(acc)}
+                                disabled={isBusy('health_check')}
+                                className="table-action-btn"
+                              >
+                                {isBusy('health_check') ? '检测中' : '检测存活'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (confirm(t('accounts.deleteConfirm', { email: acc.email }))) {
+                                    apiFetch(`/accounts/${acc.id}`, { method: 'DELETE' }).then(() => load())
+                                  }
+                                }}
+                                className="table-action-btn table-action-btn-danger"
+                              >
+                                删除
+                              </button>
                             </div>
                           </td>
                         </tr>

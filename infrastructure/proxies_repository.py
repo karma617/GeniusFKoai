@@ -63,6 +63,15 @@ class ProxiesRepository:
             session.commit()
             return True
 
+    def delete_all(self) -> int:
+        with Session(engine) as session:
+            items = session.exec(select(ProxyModel)).all()
+            count = len(items)
+            for item in items:
+                session.delete(item)
+            session.commit()
+            return count
+
     def toggle(self, proxy_id: int) -> bool | None:
         with Session(engine) as session:
             model = session.get(ProxyModel, proxy_id)

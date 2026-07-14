@@ -39,6 +39,7 @@ CHATGPT_BATCH_STATUS_UPDATE_STATUSES = {
     "trial",
     "subscribed",
     "expired",
+    "relogin_required",
     "invalid",
     "banned",
 }
@@ -168,6 +169,12 @@ def _build_batch_status_patch(lifecycle_status: str) -> tuple[dict, set[str]]:
         })
     elif lifecycle_status in {"invalid", "banned"}:
         summary_updates["valid"] = False
+    elif lifecycle_status == "relogin_required":
+        summary_updates.update({
+            "valid": False,
+            "validity_status": "unknown",
+            "display_status": "relogin_required",
+        })
 
     return summary_updates, remove_keys
 

@@ -9,6 +9,7 @@ from urllib.parse import quote, unquote
 
 
 DEFAULT_FALLBACK_PROXY_URL = "http://127.0.0.1:7897"
+DEFAULT_PROXY_UPSTREAM_URL = ""
 PROXY_CHECK_URL = "https://cloudflare.com/cdn-cgi/trace"
 PROXY_CHECK_CONCURRENCY = 20
 PROXY_IMPORT_SCHEMES = {"http", "https", "socks5"}
@@ -89,7 +90,10 @@ def get_proxy_runtime_config() -> dict[str, str]:
     fallback_url = normalize_proxy_url(
         config_store.get("proxy_fallback_url", DEFAULT_FALLBACK_PROXY_URL)
     ) or ""
-    return {"strategy": strategy, "fallback_url": fallback_url}
+    upstream_url = normalize_proxy_url(
+        config_store.get("proxy_upstream_url", DEFAULT_PROXY_UPSTREAM_URL)
+    ) or ""
+    return {"strategy": strategy, "fallback_url": fallback_url, "upstream_url": upstream_url}
 
 
 def resolve_runtime_proxy(
@@ -213,7 +217,12 @@ class ProxyPool:
         try:
             client = OpenAIHTTPClient(
                 proxy_url=proxy_url,
-                config=RequestConfig(timeout=timeout, max_retries=1, impersonate="chrome136"),
+                config=RequestConfig(
+                    timeout=timeout,
+                    max_retries=1,
+                    impersonate="chrome136",
+                    proxy_upstream_url=get_proxy_runtime_config()["upstream_url"],
+                ),
             )
             response = client.get(PROXY_CHECK_URL, timeout=timeout)
             result["status_code"] = response.status_code

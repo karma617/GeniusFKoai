@@ -55,6 +55,16 @@ def test_delete_proxy(client):
     assert len(list_resp.json()) == 0
 
 
+def test_delete_all_proxies(client):
+    client.post("/api/proxies/bulk", json={"proxies": ["http://1.1.1.1:8080", "http://2.2.2.2:8080"]})
+
+    resp = client.delete("/api/proxies")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "deleted": 2}
+    assert client.get("/api/proxies").json() == []
+
+
 def test_bulk_add_proxies(client):
     resp = client.post("/api/proxies/bulk", json={
         "proxies": ["http://1.1.1.1:8080", "http://2.2.2.2:8080"],

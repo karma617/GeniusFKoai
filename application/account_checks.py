@@ -101,6 +101,11 @@ class AccountChecksService:
                     "email": payload.get("email", ""),
                     "platform": payload.get("platform", ""),
                     "valid": bool(valid),
+                    "plan_state": payload.get("plan_state", ""),
+                    "plan_name": payload.get("plan_name", ""),
+                    "display_status": payload.get("display_status", ""),
+                    "subscription_status": payload.get("subscription_status", ""),
+                    "usage_plan_type": payload.get("usage_plan_type", ""),
                     "ok": True,
                 }
             except Exception as exc:

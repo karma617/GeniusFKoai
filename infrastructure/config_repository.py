@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.proxy_pool import DEFAULT_FALLBACK_PROXY_URL, PROXY_STRATEGY_POOL_THEN_DEFAULT
+from core.proxy_pool import DEFAULT_FALLBACK_PROXY_URL, DEFAULT_PROXY_UPSTREAM_URL, PROXY_STRATEGY_POOL_THEN_DEFAULT
 from core.config_store import config_store
 from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
 
@@ -18,7 +18,7 @@ class ConfigRepository:
         "lifecycle_account_check_enabled",
         "lifecycle_token_refresh_enabled", "lifecycle_trial_warning_enabled",
         "lifecycle_external_sync_enabled",
-        "proxy_strategy", "proxy_fallback_url",
+        "proxy_strategy", "proxy_fallback_url", "proxy_upstream_url",
     }
     DEFAULT_VALUES = {
         "lifecycle_account_check_enabled": "true",
@@ -27,6 +27,7 @@ class ConfigRepository:
         "lifecycle_external_sync_enabled": "false",
         "proxy_strategy": PROXY_STRATEGY_POOL_THEN_DEFAULT,
         "proxy_fallback_url": DEFAULT_FALLBACK_PROXY_URL,
+        "proxy_upstream_url": DEFAULT_PROXY_UPSTREAM_URL,
     }
 
     def __init__(self, definitions: ProviderDefinitionsRepository | None = None):

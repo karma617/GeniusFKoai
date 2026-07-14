@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import logging
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi import CurlOpt
 from curl_cffi.requests import Session, Response
 
 
@@ -29,11 +30,26 @@ class RequestConfig:
     impersonate: str = "chrome136"
     verify_ssl: bool = True
     follow_redirects: bool = True
+    proxy_upstream_url: str = ""
 
 
 class HTTPClientError(Exception):
     """HTTP 客户端异常"""
     pass
+
+
+def _proxy_curl_options(upstream_url: str | None) -> dict:
+    upstream = _normalize_runtime_proxy_url(upstream_url)
+    if not upstream:
+        return {}
+    return {CurlOpt.PRE_PROXY: upstream}
+
+
+def _normalize_runtime_proxy_url(value: str | None) -> str:
+    proxy = str(value or "").strip()
+    if proxy.startswith("socks5://"):
+        return "socks5h://" + proxy[len("socks5://"):]
+    return proxy
 
 
 class HTTPClient:
@@ -65,21 +81,26 @@ class HTTPClient:
         """获取代理配置"""
         if not self.proxy_url:
             return None
+        proxy_url = _normalize_runtime_proxy_url(self.proxy_url)
         return {
-            "http": self.proxy_url,
-            "https": self.proxy_url,
+            "http": proxy_url,
+            "https": proxy_url,
         }
 
     @property
     def session(self) -> Session:
         """获取会话对象（单例）"""
         if self._session is None:
+            proxies = self.proxies or {"http": "", "https": ""}
             self._session = Session(
-                proxies=self.proxies,
+                proxies=proxies,
                 impersonate=self.config.impersonate,
                 verify=self.config.verify_ssl,
-                timeout=self.config.timeout
+                timeout=self.config.timeout,
+                curl_options=_proxy_curl_options(self.config.proxy_upstream_url),
             )
+            # Avoid implicit Windows/system HTTP(S)_PROXY routing before the selected proxy.
+            self._session.trust_env = False
         return self._session
 
     def request(
@@ -109,6 +130,10 @@ class HTTPClient:
         # 添加代理配置
         if self.proxies and "proxies" not in kwargs:
             kwargs["proxies"] = self.proxies
+        elif "proxies" not in kwargs:
+            kwargs["proxies"] = {"http": "", "https": ""}
+        if "curl_options" not in kwargs and self.config.proxy_upstream_url:
+            kwargs["curl_options"] = _proxy_curl_options(self.config.proxy_upstream_url)
 
         last_exception = None
         for attempt in range(self.config.max_retries):

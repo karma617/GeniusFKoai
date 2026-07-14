@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from types import SimpleNamespace
 
@@ -294,6 +295,40 @@ def test_test_account_skips_after_three_network_retries(monkeypatch):
     assert calls["count"] == 4
     assert [event["event"] for event in events].count("request_retry") == 3
     assert events[-1]["event"] == "request_failed"
+
+
+def test_test_account_skips_remote_network_error_without_marking_dead(monkeypatch):
+    from curl_cffi import requests as cffi_requests
+
+    service = Sub2ApiManagementService()
+    ctx = Sub2ApiContext("https://sub2api.test", "token")
+    calls = {"count": 0}
+    remote_error = (
+        "Failed to perform, curl: (35) TLS connect error: "
+        "error:00000000:invalid library (0):OPENSSL_internal:invalid library (0)."
+    )
+
+    def fake_post(*_args, **_kwargs):
+        calls["count"] += 1
+        return SimpleNamespace(
+            status_code=200,
+            iter_lines=lambda: [
+                f"data: {json.dumps({'type': 'error', 'error': remote_error})}".encode("utf-8")
+            ],
+            text="",
+        )
+
+    monkeypatch.setattr(cffi_requests, "post", fake_post)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    events = []
+
+    result, reason = service.test_account(ctx, "1", event_callback=events.append)
+
+    assert result == "skipped"
+    assert "TLS connect error" in reason
+    assert calls["count"] == 4
+    assert [event["event"] for event in events].count("request_retry") == 3
+    assert not any(event.get("result") == "dead" for event in events)
 
 
 def test_bulk_check_without_ids_uses_filter_scope(monkeypatch):

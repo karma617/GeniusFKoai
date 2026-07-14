@@ -28,6 +28,10 @@ class ProxiesService:
     def delete_proxy(self, proxy_id: int) -> dict:
         return {"ok": self.repository.delete(proxy_id)}
 
+    def delete_all_proxies(self) -> dict:
+        deleted = self.repository.delete_all()
+        return {"ok": True, "deleted": deleted}
+
     def toggle_proxy(self, proxy_id: int) -> dict | None:
         value = self.repository.toggle(proxy_id)
         if value is None:

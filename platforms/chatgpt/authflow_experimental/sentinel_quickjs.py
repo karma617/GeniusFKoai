@@ -197,6 +197,7 @@ def get_sentinel_tokens_via_quickjs(
     device_id: str,
     *,
     flow: str = "authorize_continue",
+    user_agent: str = "",
     timeout_ms: int = 45000,
     log: Optional[Callable[[str], None]] = None,
 ) -> Optional[dict[str, str]]:
@@ -218,7 +219,7 @@ def get_sentinel_tokens_via_quickjs(
             action="requirements",
             sdk_file=sdk_file,
             quickjs_script=quickjs_script,
-            payload={"device_id": did},
+            payload={"device_id": did, "user_agent": user_agent},
             timeout_ms=timeout_ms,
         )
         request_p = str(requirements.get("request_p") or "").strip()
@@ -243,6 +244,7 @@ def get_sentinel_tokens_via_quickjs(
                 "flow": flow,
                 "request_p": request_p,
                 "challenge": challenge,
+                "user_agent": user_agent,
             },
             timeout_ms=timeout_ms,
         )
@@ -279,6 +281,7 @@ def get_sentinel_token_via_quickjs(
     device_id: str,
     *,
     flow: str = "authorize_continue",
+    user_agent: str = "",
     timeout_ms: int = 45000,
     log: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
@@ -287,6 +290,7 @@ def get_sentinel_token_via_quickjs(
         session,
         device_id,
         flow=flow,
+        user_agent=user_agent,
         timeout_ms=timeout_ms,
         log=log,
     )
