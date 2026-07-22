@@ -127,6 +127,124 @@ def _collect_text_parts(value: Any) -> list[str]:
     return [text] if text else []
 
 
+def _normalize_group_options(items: Any, *, value_keys: tuple[str, ...] = ("id", "group_id", "value")) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    if not isinstance(items, list):
+        return options
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = ""
+        for key in value_keys:
+            value = _text(item.get(key))
+            if value:
+                break
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        name = _text(item.get("name") or item.get("group_name") or item.get("label") or item.get("title"))
+        label = name or f"分组 {value}"
+        count = item.get("account_count")
+        if isinstance(count, int):
+            label = f"{label} · {count} 个邮箱"
+        options.append({"value": value, "label": label, "id": value, "name": name})
+    return options
+
+
+def _extract_group_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("groups", "items", "options"):
+        items = payload.get(key)
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return _extract_group_items(data)
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    return []
+
+
+def _request_json_once(
+    session: requests.Session,
+    method: str,
+    url: str,
+    *,
+    label: str,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    with suppress_insecure_request_warning():
+        response = getattr(session, method.lower())(url, timeout=15, **kwargs)
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"{label} 响应不是 JSON: HTTP {response.status_code}") from exc
+    if response.status_code >= 400 or (isinstance(payload, dict) and payload.get("success") is False):
+        message = _outlook_email_error_message(payload, response.status_code)
+        raise RuntimeError(f"{label} 请求失败: {message}")
+    return payload if isinstance(payload, dict) else {"items": payload}
+
+
+def list_outlook_email_group_options(
+    *,
+    api_url: str,
+    api_key: str = "",
+    admin_password: str = "",
+) -> list[dict[str, str]]:
+    """读取 outlookEmail 分组下拉选项。优先走管理端 /api/groups，缺少管理员密码时从外部账号列表推断。"""
+    api = _normalize_base_url(api_url)
+    password = _text(admin_password)
+    key = _text(api_key)
+    last_error: Exception | None = None
+
+    if password:
+        session = requests.Session()
+        session.trust_env = False
+        mark_session_insecure(session)
+        session.headers.update({"user-agent": "aBaiAutoplus/outlookEmail-groups", "accept": "application/json"})
+        try:
+            _request_json_once(session, "POST", f"{api}/login", label="outlookEmail POST /login", json={"password": password})
+            csrf_payload = _request_json_once(session, "GET", f"{api}/api/csrf-token", label="outlookEmail GET /api/csrf-token")
+            csrf_token = _text(csrf_payload.get("csrf_token"))
+            if csrf_token:
+                session.headers.update({"X-CSRFToken": csrf_token})
+            payload = _request_json_once(session, "GET", f"{api}/api/groups", label="outlookEmail GET /api/groups")
+            return _normalize_group_options(_extract_group_items(payload))
+        except Exception as exc:
+            last_error = exc
+
+    if key:
+        session = requests.Session()
+        session.trust_env = False
+        mark_session_insecure(session)
+        session.headers.update(
+            {
+                "X-API-Key": key,
+                "user-agent": "aBaiAutoplus/outlookEmail-groups",
+                "accept": "application/json",
+            }
+        )
+        payload = _request_json_once(
+            session,
+            "GET",
+            f"{api}/api/external/accounts",
+            label="outlookEmail GET /api/external/accounts",
+            params={"limit": 1000, "offset": 0},
+        )
+        accounts = payload.get("accounts")
+        if not isinstance(accounts, list):
+            accounts = payload.get("items") if isinstance(payload.get("items"), list) else []
+        return _normalize_group_options(accounts, value_keys=("group_id", "group", "value"))
+
+    if last_error:
+        raise RuntimeError(str(last_error)) from last_error
+    raise RuntimeError("outlookEmail 未配置 API Key 或管理员密码，无法获取分组")
+
+
 class OutlookEmailEndpointNotFound(RuntimeError):
     """outlookEmail 旧版端点不存在，用于触发 outlookEmailPlus 兼容回退。"""
 

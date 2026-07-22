@@ -234,12 +234,13 @@ def _create_moemail(extra: dict, proxy: str | None) -> 'BaseMailbox':
 
 
 def _create_cfworker(extra: dict, proxy: str | None) -> 'BaseMailbox':
+    mailbox_proxy = str(extra.get("cfworker_proxy") or extra.get("mailbox_proxy") or "").strip()
     return CFWorkerMailbox(
         api_url=extra.get("cfworker_api_url", ""),
         admin_token=extra.get("cfworker_admin_token", ""),
         domain=extra.get("cfworker_domain", ""),
         fingerprint=extra.get("cfworker_fingerprint", ""),
-        proxy=proxy,
+        proxy=mailbox_proxy or None,
     )
 
 
@@ -1424,6 +1425,16 @@ class CFWorkerMailbox(BaseMailbox):
                 return mails
         return []
 
+    def _get_cfworker_admin_mails(self, email: str) -> list:
+        import requests
+
+        r = requests.get(f"{self.api}/admin/mails",
+            params={"limit": 20, "offset": 0, "address": email},
+            headers=self._headers(), proxies=self.proxy, timeout=10)
+        data = r.json()
+        items = data.get("results", data) if isinstance(data, dict) else data
+        return self._normalize_mail_list(items)
+
     def get_email(self) -> MailboxAccount:
         import requests, random, string
         name = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
@@ -1469,16 +1480,19 @@ class CFWorkerMailbox(BaseMailbox):
         )
 
     def _get_mails(self, email: str) -> list:
-        import requests
         if self._detect_api_mode() == "cloud_mail":
-            return self._get_cloud_mail_mails(email)
+            try:
+                return self._get_cloud_mail_mails(email)
+            except Exception as cloud_exc:
+                try:
+                    mails = self._get_cfworker_admin_mails(email)
+                    if mails:
+                        return mails
+                except Exception:
+                    pass
+                raise cloud_exc
         try:
-            r = requests.get(f"{self.api}/admin/mails",
-                params={"limit": 20, "offset": 0, "address": email},
-                headers=self._headers(), proxies=self.proxy, timeout=10)
-            data = r.json()
-            items = data.get("results", data) if isinstance(data, dict) else data
-            return self._normalize_mail_list(items)
+            return self._get_cfworker_admin_mails(email)
         except Exception:
             return self._get_cloud_mail_mails(email)
 
@@ -1543,6 +1557,45 @@ class CFWorkerMailbox(BaseMailbox):
                     pass
         return None
 
+    @staticmethod
+    def _extract_mail_code(raw: str, code_pattern: str | None = None) -> str:
+        search_text = str(raw or "")
+        body_start = search_text.find('\r\n\r\n')
+        if body_start != -1:
+            search_text = search_text[body_start:]
+        search_text = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '', search_text)
+        search_text = re.sub(r'm=\+\d+\.\d+', '', search_text)
+        search_text = re.sub(r'\bt=\d+\b', '', search_text)
+        visible_text = html.unescape(re.sub(r"<[^>]+>", " ", search_text))
+        visible_text = " ".join(visible_text.split())
+
+        if code_pattern:
+            match = re.search(code_pattern, visible_text) or re.search(code_pattern, search_text)
+            if match:
+                return match.group(1) if match.groups() else match.group(0)
+            return ""
+
+        context_patterns = (
+            r"(?:verification|verify|security|one[-\s]?time|login|email)\s+(?:code|otp)\D{0,80}(\d{6})",
+            r"(?:code|otp)\D{0,40}(?:is|:)?\D{0,20}(\d{6})",
+            r"(?:验证码|驗證碼|校验码|代碼|代码)\D{0,40}(\d{6})",
+            r"(\d{6})\D{0,50}(?:is your|your\s+(?:verification|security|login|email)\s+(?:code|otp)|验证码|驗證碼)",
+        )
+        for pattern in context_patterns:
+            match = re.search(pattern, visible_text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        span_match = re.search(r'<span[^>]*>\s*(\d{6})\s*</span>', search_text, re.IGNORECASE)
+        if span_match:
+            return span_match.group(1)
+
+        match = re.search(r'(?<!#)(?<!\d)(\d{6})(?!\d)', visible_text)
+        if match:
+            return match.group(1)
+        match = re.search(r'(?<!#)(?<!\d)(\d{6})(?!\d)', search_text)
+        return match.group(1) if match else ""
+
     def wait_for_code(self, account: MailboxAccount, keyword: str = "",
                       timeout: int = 120, before_ids: set = None, code_pattern: str = None,
                       otp_sent_at: float | None = None) -> str:
@@ -1581,30 +1634,14 @@ class CFWorkerMailbox(BaseMailbox):
                     if mid in seen:
                         if not (mid in baseline_ids and mail_epoch is not None and mail_epoch >= float(otp_sent_at) - 30):
                             continue
-                    elif mail_epoch is not None and otp_sent_at and mail_epoch < float(otp_sent_at) - 30:
-                        seen.add(mid)
-                        continue
                     seen.add(mid)
                     new_mail_count += 1
                     raw = str(mail.get("raw", ""))
                     subject = str(mail.get("subject", "") or "")
                     print(f"[CFWorker] 新邮件 #{new_mail_count} id={mid} subject={subject[:80]}")
-                    # 1. 优先匹配 <span>XXXXXX</span> （Trae 邮件格式）
-                    code_m = re.search(r'<span[^>]*>\s*(\d{6})\s*</span>', raw)
-                    if code_m:
-                        print(f"[CFWorker] 匹配到验证码 (span): {code_m.group(1)}")
-                        return code_m.group(1)
-                    # 2. 跳过 MIME header，只搜 body 部分，避免匹配时间戳
-                    body_start = raw.find('\r\n\r\n')
-                    search_text = raw[body_start:] if body_start != -1 else raw
-                    search_text = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '', search_text)
-                    # 排除时间戳模式 m=+XXXXXX. 和 t=XXXXXXXXXX
-                    search_text = re.sub(r'm=\+\d+\.\d+', '', search_text)
-                    search_text = re.sub(r'\bt=\d+\b', '', search_text)
-                    m = re.search(code_pattern or r'(?<!#)(?<!\d)(\d{6})(?!\d)', search_text)
-                    if m:
-                        code_val = m.group(1) if m.groups() else m.group(0)
-                        print(f"[CFWorker] 匹配到验证码 (regex): {code_val}")
+                    code_val = self._extract_mail_code(raw, code_pattern=code_pattern)
+                    if code_val:
+                        print(f"[CFWorker] 匹配到验证码: {code_val}")
                         return code_val
                     # 没有匹配到验证码，打印 raw 前 150 字符帮助诊断
                     print(f"[CFWorker] 邮件未匹配验证码 raw[:150]={raw[:150]}")

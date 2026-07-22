@@ -113,6 +113,14 @@ def toggle_proxy(proxy_id: int):
     return result
 
 
+@router.post("/{proxy_id}/check")
+def check_proxy(proxy_id: int):
+    result = service.check_proxy(proxy_id)
+    if not result:
+        raise HTTPException(404, "代理不存在")
+    return result
+
+
 @router.post("/check")
 def check_proxies():
     return service.trigger_check()

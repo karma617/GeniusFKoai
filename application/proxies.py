@@ -42,6 +42,13 @@ class ProxiesService:
         result = proxy_pool.check_all()
         return {"message": "检测完成", **result}
 
+    def check_proxy(self, proxy_id: int) -> dict | None:
+        item = self.repository.get(proxy_id)
+        if not item:
+            return None
+        result = proxy_pool.check_one(item.url)
+        return {"message": "检测完成", **result}
+
     def free_proxy_capabilities(self) -> dict:
         return get_free_proxy_sources()
 

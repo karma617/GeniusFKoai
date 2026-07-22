@@ -283,5 +283,14 @@ class ProxyPool:
                 results["results"].append(item)
         return results
 
+    def check_one(self, url: str, *, timeout: int = 12) -> dict:
+        """检测单个代理，复用全量检测的注册流程 HTTPClient 方式。"""
+        item = self._check_one(url, timeout=timeout)
+        if item["ok"]:
+            self.report_success(item["url"], region=str(item.get("region") or "").strip())
+        else:
+            self.report_fail(item["url"])
+        return {"ok": 1 if item["ok"] else 0, "fail": 0 if item["ok"] else 1, "total": 1, "result": item}
+
 
 proxy_pool = ProxyPool()

@@ -147,6 +147,112 @@ def test_platform_action_task_passes_task_logger_to_runtime(monkeypatch):
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
 
 
+def test_build_platform_instance_keeps_mailbox_off_registration_proxy(monkeypatch):
+    captured = {}
+    fake_mailbox = object()
+
+    class FakePlatform:
+        def __init__(self, *, config, mailbox=None):
+            self.config = config
+            self.mailbox = mailbox
+
+        def set_logger(self, _log_fn):
+            return None
+
+    def fake_create_mailbox(**kwargs):
+        captured["mailbox_proxy"] = kwargs.get("proxy")
+        return fake_mailbox
+
+    monkeypatch.setattr("core.base_mailbox.create_mailbox", fake_create_mailbox)
+    monkeypatch.setattr(tasks_module, "get", lambda _platform_name: FakePlatform)
+
+    platform = tasks_module._build_platform_instance(
+        "chatgpt",
+        {
+            "executor_type": "protocol",
+            "extra": {
+                "identity_provider": "mailbox",
+                "mail_provider": "cfworker_admin_api",
+            },
+        },
+        _FakeLogger(),
+        resolved_proxy="http://pool.proxy:1000",
+    )
+
+    assert platform.config.proxy == "http://pool.proxy:1000"
+    assert captured["mailbox_proxy"] is None
+    assert platform.mailbox is fake_mailbox
+
+
+def test_register_task_precreated_mailbox_does_not_use_registration_proxy(monkeypatch):
+    mailbox_proxy_values = []
+    platform_proxy_values = []
+    fake_mailbox = object()
+
+    class FakePlatform:
+        def __init__(self, *, config, mailbox=None):
+            self.config = config
+            self.mailbox = mailbox
+            platform_proxy_values.append(config.proxy)
+
+        def set_logger(self, _log_fn):
+            return None
+
+        def register(self, email=None, password=None):
+            assert self.mailbox is fake_mailbox
+            return Account(
+                platform="chatgpt",
+                email=email or "registered@example.com",
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token"},
+            )
+
+    def fake_create_mailbox(**kwargs):
+        mailbox_proxy_values.append(kwargs.get("proxy"))
+        return fake_mailbox
+
+    monkeypatch.setattr("core.base_mailbox.create_mailbox", fake_create_mailbox)
+    monkeypatch.setattr(tasks_module, "get", lambda _platform_name: FakePlatform)
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_registration_proxy_for_platform",
+        lambda *args, **kwargs: "http://pool.proxy:1000",
+    )
+    monkeypatch.setattr(
+        tasks_module,
+        "_resolve_chatgpt_reachable_proxy",
+        lambda *args, **kwargs: "http://pool.proxy:1000",
+    )
+    monkeypatch.setattr(tasks_module, "save_account", lambda account: type("Saved", (), {"id": 1})())
+    monkeypatch.setattr(tasks_module, "_save_task_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: ("", ""))
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: None)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": "registered@example.com",
+            "password": "Secret123!",
+            "extra": {
+                "identity_provider": "mailbox",
+                "mail_provider": "cfworker_admin_api",
+                "auto_chatgpt_plus_payment": False,
+            },
+        },
+        logger,
+    )
+
+    assert mailbox_proxy_values == [None]
+    assert platform_proxy_values == ["http://pool.proxy:1000"]
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+
+
 def test_refresh_session_task_deletes_banned_account(monkeypatch):
     with Session(engine) as session:
         model = AccountModel(platform="chatgpt", email="banned-refresh@test.com", password="Secret123!")

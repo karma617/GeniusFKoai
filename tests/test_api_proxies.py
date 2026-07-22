@@ -55,6 +55,32 @@ def test_delete_proxy(client):
     assert len(list_resp.json()) == 0
 
 
+def test_check_one_proxy(client, monkeypatch):
+    create_resp = client.post("/api/proxies", json={"url": "http://127.0.0.1:7890"})
+    proxy_id = create_resp.json()["id"]
+    calls = []
+
+    class FakeProxyPool:
+        def check_one(self, url):
+            calls.append(url)
+            return {
+                "ok": 1,
+                "fail": 0,
+                "total": 1,
+                "result": {"url": url, "ok": True, "region": "US"},
+            }
+
+    monkeypatch.setattr("application.proxies.proxy_pool", FakeProxyPool())
+
+    resp = client.post(f"/api/proxies/{proxy_id}/check")
+
+    assert resp.status_code == 200
+    assert calls == ["http://127.0.0.1:7890"]
+    assert resp.json()["message"] == "检测完成"
+    assert resp.json()["total"] == 1
+    assert resp.json()["result"]["ok"] is True
+
+
 def test_delete_all_proxies(client):
     client.post("/api/proxies/bulk", json={"proxies": ["http://1.1.1.1:8080", "http://2.2.2.2:8080"]})
 

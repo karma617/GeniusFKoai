@@ -141,6 +141,63 @@ def test_chatgpt_proxy_preflight_refreshes_local_node_on_transient_tls_error(mon
     assert any("已切换本地 Clash 节点后重试" in message for _level, message in logger.messages)
 
 
+def test_chatgpt_protocol_preflight_switches_proxy_after_transient_tls_retry(monkeypatch):
+    candidates = iter([
+        "http://bad.proxy:3128",
+        "http://good.proxy:3128",
+    ])
+    failures = []
+    preflight_calls = []
+    refreshes = []
+
+    def fake_resolve(platform_name, *, explicit_proxy, proxy_getter):
+        return next(candidates)
+
+    results = iter([
+        (
+            False,
+            "HTTPClientError: Failed to perform, curl: (56) Proxy CONNECT aborted",
+        ),
+        (
+            False,
+            "HTTPClientError: Failed to perform, curl: (56) Proxy CONNECT aborted",
+        ),
+        (True, "HTTP 200"),
+    ])
+
+    def fake_preflight(proxy, *, timeout=12):
+        preflight_calls.append(proxy)
+        return next(results)
+
+    def fake_refresh(**kwargs):
+        refreshes.append(kwargs)
+        return True
+
+    monkeypatch.setattr(tasks, "_resolve_registration_proxy_for_platform", fake_resolve)
+    monkeypatch.setattr(tasks, "_chatgpt_proxy_preflight", fake_preflight)
+    monkeypatch.setattr(tasks, "_refresh_chatgpt_local_proxy_node", fake_refresh)
+    monkeypatch.setattr("core.proxy_pool.proxy_pool.report_fail", lambda proxy: failures.append(proxy))
+    logger = _Logger()
+
+    resolved = tasks._resolve_chatgpt_reachable_proxy(
+        platform_name="chatgpt",
+        explicit_proxy=None,
+        proxy_getter=lambda: None,
+        logger=logger,
+        continue_on_transient_failure=False,
+    )
+
+    assert resolved == "http://good.proxy:3128"
+    assert preflight_calls == [
+        "http://bad.proxy:3128",
+        "http://bad.proxy:3128",
+        "http://good.proxy:3128",
+    ]
+    assert len(refreshes) == 1
+    assert failures == ["http://bad.proxy:3128"]
+    assert any("协议注册代理预检遇到传输/TLS异常" in message for _level, message in logger.messages)
+
+
 def test_chatgpt_proxy_preflight_keeps_proxy_when_local_refresh_fails(monkeypatch):
     monkeypatch.setattr(
         tasks,

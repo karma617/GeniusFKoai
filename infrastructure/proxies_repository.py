@@ -25,6 +25,11 @@ class ProxiesRepository:
             items = session.exec(select(ProxyModel)).all()
         return [_to_record(item) for item in items]
 
+    def get(self, proxy_id: int) -> ProxyRecord | None:
+        with Session(engine) as session:
+            model = session.get(ProxyModel, proxy_id)
+            return _to_record(model) if model else None
+
     def create(self, command: ProxyCreateCommand) -> ProxyRecord | None:
         url = normalize_proxy_url(command.url, default_scheme=command.import_scheme)
         if not url:

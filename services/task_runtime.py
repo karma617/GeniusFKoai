@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 class TaskWorkerState:
     thread: threading.Thread
     platform: str = ""
+    task_type: str = ""
+    task_group: str = ""
     account_keys: set[str] = field(default_factory=set)
 
 
@@ -55,18 +57,18 @@ class TaskRuntime:
             self._reap_workers()
             with self._lock:
                 available_slots = self.max_parallel_tasks - len(self._workers)
-                running_platform_counts: dict[str, int] = {}
+                running_task_group_counts: dict[str, int] = {}
                 busy_account_keys: set[str] = set()
                 for state in self._workers.values():
-                    if state.platform:
-                        running_platform_counts[state.platform] = running_platform_counts.get(state.platform, 0) + 1
+                    if state.task_group:
+                        running_task_group_counts[state.task_group] = running_task_group_counts.get(state.task_group, 0) + 1
                     busy_account_keys.update(state.account_keys)
             while available_slots > 0 and self._running:
                 try:
                     task_info = claim_next_runnable_task(
-                        running_platform_counts=running_platform_counts,
+                        running_task_group_counts=running_task_group_counts,
                         busy_account_keys=busy_account_keys,
-                        max_parallel_per_platform=self.max_parallel_per_platform,
+                        max_parallel_per_task_group=self.max_parallel_per_platform,
                     )
                 except OperationalError as exc:
                     if "database is locked" in str(exc).lower():
@@ -87,10 +89,13 @@ class TaskRuntime:
                     self._workers[task_id] = TaskWorkerState(
                         thread=worker,
                         platform=str(task_info.get("platform", "") or ""),
+                        task_type=str(task_info.get("type", "") or ""),
+                        task_group=str(task_info.get("task_group", "") or ""),
                         account_keys=set(task_info.get("account_keys") or []),
                     )
-                    if task_info.get("platform"):
-                        running_platform_counts[str(task_info["platform"])] = running_platform_counts.get(str(task_info["platform"]), 0) + 1
+                    if task_info.get("task_group"):
+                        task_group = str(task_info["task_group"])
+                        running_task_group_counts[task_group] = running_task_group_counts.get(task_group, 0) + 1
                     busy_account_keys.update(set(task_info.get("account_keys") or []))
                 worker.start()
                 available_slots -= 1

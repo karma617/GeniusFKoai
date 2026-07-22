@@ -11,6 +11,7 @@ import { Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Globe2, ShieldCheck, 
 
 const DEFAULT_FALLBACK_PROXY_URL = 'http://127.0.0.1:7897'
 const DEFAULT_PROXY_UPSTREAM_URL = ''
+const PROXY_PAGE_SIZE = 50
 const FREE_PROXY_TEXT = {
   title: '\u514d\u8d39\u4ee3\u7406',
   subtitle: '\u62c9\u53d6\u516c\u5f00\u4ee3\u7406\u6e90\uff0c\u68c0\u6d4b\u53ef\u7528\u540e\u5165\u5e93',
@@ -46,6 +47,7 @@ export default function Proxies() {
   const [checking, setChecking] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [checkingProxyIds, setCheckingProxyIds] = useState<Set<number>>(new Set())
+  const [proxyPage, setProxyPage] = useState(1)
   const [proxyStrategy, setProxyStrategy] = useState('pool_then_default')
   const [fallbackProxyUrl, setFallbackProxyUrl] = useState(DEFAULT_FALLBACK_PROXY_URL)
   const [proxyUpstreamUrl, setProxyUpstreamUrl] = useState(DEFAULT_PROXY_UPSTREAM_URL)
@@ -92,6 +94,19 @@ export default function Proxies() {
   }
 
   useEffect(() => { load() }, [])
+
+  const proxyTotalPages = Math.max(1, Math.ceil(proxies.length / PROXY_PAGE_SIZE))
+  const proxyCurrentPage = Math.min(proxyPage, proxyTotalPages)
+  const proxyPageStart = (proxyCurrentPage - 1) * PROXY_PAGE_SIZE
+  const pagedProxies = proxies.slice(proxyPageStart, proxyPageStart + PROXY_PAGE_SIZE)
+  const proxyRangeStart = proxies.length === 0 ? 0 : proxyPageStart + 1
+  const proxyRangeEnd = Math.min(proxyPageStart + pagedProxies.length, proxies.length)
+
+  useEffect(() => {
+    if (proxyPage > proxyTotalPages) {
+      setProxyPage(proxyTotalPages)
+    }
+  }, [proxyPage, proxyTotalPages])
 
   const add = async () => {
     if (!newProxy.trim()) return
@@ -144,6 +159,21 @@ export default function Proxies() {
     } finally {
       setChecking(false)
       setCheckingProxyIds(new Set())
+    }
+  }
+
+  const checkOne = async (id: number) => {
+    if (!id) return
+    setCheckingProxyIds(prev => new Set([...prev, id]))
+    try {
+      await apiFetch(`/proxies/${id}/check`, { method: 'POST' })
+      await load()
+    } finally {
+      setCheckingProxyIds(prev => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
     }
   }
 
@@ -553,8 +583,30 @@ export default function Proxies() {
         </Card>
 
         <Card className="overflow-hidden p-0">
-          <div className="border-b border-[var(--border)] px-4 py-3 text-sm font-medium text-[var(--text-primary)]">
-            {t('proxies.list')}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3 text-sm font-medium text-[var(--text-primary)]">
+            <span>{t('proxies.list')}</span>
+            <div className="flex items-center gap-2 text-xs font-normal text-[var(--text-muted)]">
+              <span>
+                {proxyRangeStart}-{proxyRangeEnd} / {proxies.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setProxyPage(page => Math.max(1, page - 1))}
+                disabled={proxyCurrentPage <= 1}
+                className="table-action-btn disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                上一页
+              </button>
+              <span>{proxyCurrentPage} / {proxyTotalPages}</span>
+              <button
+                type="button"
+                onClick={() => setProxyPage(page => Math.min(proxyTotalPages, page + 1))}
+                disabled={proxyCurrentPage >= proxyTotalPages}
+                className="table-action-btn disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                下一页
+              </button>
+            </div>
           </div>
         <div className="glass-table-wrap">
         <table className="w-full min-w-[760px] text-sm">
@@ -575,7 +627,7 @@ export default function Proxies() {
                 </td>
               </tr>
             )}
-            {proxies.map(p => (
+            {pagedProxies.map(p => (
               <tr key={p.id} className="border-b border-[var(--border)]/40 hover:bg-[var(--bg-hover)]/70">
                 <td className="px-4 py-2.5 font-mono text-xs text-[var(--text-secondary)]">
                   <div className="flex items-center gap-2">
@@ -598,6 +650,18 @@ export default function Proxies() {
                 </td>
                 <td className="px-4 py-2.5">
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => checkOne(Number(p.id))}
+                      disabled={checking || checkingProxyIds.has(Number(p.id))}
+                      className="table-action-btn"
+                    >
+                      {checkingProxyIds.has(Number(p.id)) ? (
+                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <SearchCheck className="mr-1.5 h-4 w-4" />
+                      )}
+                      检测
+                    </button>
                     <button onClick={() => toggle(p.id)} className="table-action-btn">
                       {p.is_active ? <ToggleRight className="mr-1.5 h-4 w-4" /> : <ToggleLeft className="mr-1.5 h-4 w-4" />}
                       {p.is_active ? t('proxies.disable') : t('common.enabled')}

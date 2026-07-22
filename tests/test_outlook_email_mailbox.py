@@ -8,7 +8,7 @@ import requests
 
 from core import outlook_email_mailbox as outlook_module
 from core.base_mailbox import MailboxAccount, create_mailbox
-from core.outlook_email_mailbox import OutlookEmailMailbox
+from core.outlook_email_mailbox import OutlookEmailMailbox, list_outlook_email_group_options
 from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
 
 
@@ -160,6 +160,69 @@ def test_outlook_email_remote_api_keeps_explicit_proxy(monkeypatch):
         "https": "http://proxy.example.test:8080",
     }
     assert session.proxies == mailbox.proxy
+
+
+def test_outlook_email_group_options_load_from_admin_groups(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse({"success": True}),
+            FakeResponse({"success": True, "csrf_token": "csrf-token"}),
+            FakeResponse(
+                {
+                    "success": True,
+                    "groups": [
+                        {"id": 5, "name": "OpenAI 注册", "account_count": 12},
+                        {"id": 6, "name": "备用"},
+                    ],
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    options = list_outlook_email_group_options(
+        api_url="https://mail.example.test",
+        admin_password="fake-admin-password",
+    )
+
+    assert options == [
+        {"value": "5", "label": "OpenAI 注册 · 12 个邮箱", "id": "5", "name": "OpenAI 注册"},
+        {"value": "6", "label": "备用", "id": "6", "name": "备用"},
+    ]
+    assert session.calls[0]["url"] == "https://mail.example.test/login"
+    assert session.calls[2]["url"] == "https://mail.example.test/api/groups"
+    assert session.calls[2]["headers"]["X-CSRFToken"] == "csrf-token"
+
+
+def test_outlook_email_group_options_fallback_to_external_accounts(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "accounts": [
+                        {"id": 1, "email": "a@outlook.com", "group_id": 5, "group_name": "OpenAI 注册"},
+                        {"id": 2, "email": "b@outlook.com", "group_id": 5, "group_name": "OpenAI 注册"},
+                        {"id": 3, "email": "c@outlook.com", "group_id": 6, "group_name": "备用"},
+                    ],
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+
+    options = list_outlook_email_group_options(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+    )
+
+    assert options == [
+        {"value": "5", "label": "OpenAI 注册", "id": "5", "name": "OpenAI 注册"},
+        {"value": "6", "label": "备用", "id": "6", "name": "备用"},
+    ]
+    assert session.calls[0]["url"] == "https://mail.example.test/api/external/accounts"
+    assert session.calls[0]["headers"]["X-API-Key"] == "fake-api-key"
+    assert session.calls[0]["kwargs"]["params"] == {"limit": 1000, "offset": 0}
     assert session.trust_env is False
 
 
@@ -1246,5 +1309,9 @@ def test_outlook_email_provider_definition_and_factory_are_wired():
 
     assert definition is not None
     assert definition.driver_type == "outlook_email_api"
+    group_field = next(field for field in definition.get_fields() if field["key"] == "outlook_email_group_id")
+    assert group_field["type"] == "async-select"
+    assert group_field["asyncUrl"] == "/provider-settings/outlook-email/groups"
+    assert group_field["asyncMethod"] == "POST"
     assert isinstance(mailbox, OutlookEmailMailbox)
     assert mailbox.get_email().email == "fixed@outlook.com"

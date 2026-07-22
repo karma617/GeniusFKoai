@@ -15,6 +15,7 @@ export type ProviderField = {
   type?: 'text' | 'select' | 'textarea' | 'toggle' | 'async-select'
   options?: Array<{ value: string; label: string }>
   asyncUrl?: string
+  asyncMethod?: 'GET' | 'POST'
   asyncValueKey?: string
   asyncLabelKey?: string
 }

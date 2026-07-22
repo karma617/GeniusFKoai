@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlmodel import Session, select
 
+import core.config_store  # noqa: F401  ensure ConfigItem is registered before test DB create_all
 from core.db import ProxyModel, engine
 from core.proxy_pool import PROXY_CHECK_URL, normalize_proxy_url, proxy_pool
 
@@ -64,6 +65,47 @@ def test_proxy_pool_check_all_uses_registration_http_client_and_checks_every_pro
     assert rows["http://good.proxy:3128"].region == "US"
     assert rows["http://bad.proxy:3128"].success_count == 0
     assert rows["http://bad.proxy:3128"].fail_count == 1
+
+
+def test_proxy_pool_check_one_uses_same_registration_http_client(monkeypatch):
+    with Session(engine) as session:
+        session.add(ProxyModel(url="http://one.proxy:3128", region="JP"))
+        session.commit()
+
+    calls = []
+
+    class FakeOpenAIHTTPClient:
+        def __init__(self, proxy_url=None, config=None):
+            self.proxy_url = proxy_url
+            self.config = config
+
+        def get(self, url, *, timeout=None):
+            calls.append((url, self.proxy_url, self.config, timeout))
+            return _Response(200, "ip=1.2.3.4\nloc=US\n")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("platforms.chatgpt.http_client.OpenAIHTTPClient", FakeOpenAIHTTPClient)
+
+    result = proxy_pool.check_one("http://one.proxy:3128", timeout=5)
+
+    assert result["total"] == 1
+    assert result["ok"] == 1
+    assert result["fail"] == 0
+    assert result["result"]["url"] == "http://one.proxy:3128"
+    assert calls[0][0] == PROXY_CHECK_URL
+    assert calls[0][1] == "http://one.proxy:3128"
+    assert calls[0][2].timeout == 5
+    assert calls[0][2].max_retries == 1
+    assert calls[0][2].impersonate == "chrome136"
+    assert calls[0][3] == 5
+
+    with Session(engine) as session:
+        row = session.exec(select(ProxyModel).where(ProxyModel.url == "http://one.proxy:3128")).first()
+    assert row.success_count == 1
+    assert row.fail_count == 0
+    assert row.region == "US"
 
 
 def test_normalize_proxy_url_matches_registration_runtime_formats():

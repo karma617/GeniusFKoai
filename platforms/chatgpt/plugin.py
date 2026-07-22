@@ -1289,7 +1289,7 @@ class ChatGPTPlatform(BasePlatform):
                 extra=mailbox_account_extra,
             )
             try:
-                mailbox = create_mailbox(provider_name, extra=runtime_extra, proxy=proxy)
+                mailbox = create_mailbox(provider_name, extra=runtime_extra, proxy=None)
             except Exception as exc:
                 last_error = f"{raw_provider_name or provider_name} -> {provider_name}: {exc}"
                 log_fn(f"  获取rt: 跳过不可用邮箱资源 {last_error}")
@@ -1589,7 +1589,7 @@ class ChatGPTPlatform(BasePlatform):
                 extra=mailbox_account_extra,
             )
             try:
-                mailbox = create_mailbox(provider_name, extra=runtime_extra, proxy=proxy)
+                mailbox = create_mailbox(provider_name, extra=runtime_extra, proxy=None)
             except Exception as exc:
                 last_error = f"{raw_provider_name or provider_name} -> {provider_name}: {exc}"
                 log_fn(f"  重新登录: 邮箱资源不可用，跳过: {last_error}")

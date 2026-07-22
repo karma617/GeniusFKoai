@@ -335,6 +335,24 @@ def delete_icloud_hme_alias(anonymous_id: str, body: ICloudHMEAliasActionRequest
         raise HTTPException(502, str(exc))
 
 
+@router.post("/outlook-email/groups")
+def list_outlook_email_groups(body: ProviderTestRequest):
+    if body.provider_type != "mailbox" or body.provider_key not in {"outlook_email_api", "outlook_email"}:
+        return {"ok": False, "error": f"不支持的 outlookEmail provider: {body.provider_key}"}
+    extra = {**body.config, **body.auth}
+    try:
+        from core.outlook_email_mailbox import list_outlook_email_group_options
+
+        options = list_outlook_email_group_options(
+            api_url=extra.get("outlook_email_api_url", ""),
+            api_key=extra.get("outlook_email_api_key", ""),
+            admin_password=extra.get("outlook_email_admin_password", ""),
+        )
+        return {"ok": True, "options": options}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "options": []}
+
+
 @router.post("/test")
 def test_provider(body: ProviderTestRequest):
     """测试 provider 配置是否正确 — 尝试创建/获取一个邮箱地址。"""

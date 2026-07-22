@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.base_mailbox import CFWorkerMailbox, MailboxAccount
+from core.base_mailbox import CFWorkerMailbox, MailboxAccount, _create_cfworker
 
 
 class FakeResponse:
@@ -17,6 +17,36 @@ class FakeResponse:
         if self._json_error:
             raise self._json_error
         return self.payload
+
+
+def test_cfworker_factory_ignores_registration_proxy_pool_proxy():
+    mailbox = _create_cfworker(
+        {
+            "cfworker_api_url": "https://mail.edu.hsxhome.com",
+            "cfworker_admin_token": "public-token",
+            "cfworker_domain": "edu.hsxhome.com",
+        },
+        "http://pool.proxy:1000",
+    )
+
+    assert mailbox.proxy is None
+
+
+def test_cfworker_factory_uses_explicit_mailbox_proxy_only():
+    mailbox = _create_cfworker(
+        {
+            "cfworker_api_url": "https://mail.edu.hsxhome.com",
+            "cfworker_admin_token": "public-token",
+            "cfworker_domain": "edu.hsxhome.com",
+            "mailbox_proxy": "http://127.0.0.1:7897",
+        },
+        "http://pool.proxy:1000",
+    )
+
+    assert mailbox.proxy == {
+        "http": "http://127.0.0.1:7897",
+        "https": "http://127.0.0.1:7897",
+    }
 
 
 def test_cfworker_falls_back_to_cloud_mail_public_api(monkeypatch):
@@ -206,7 +236,165 @@ def test_cfworker_wait_for_code_skips_messages_before_otp_sent_at(monkeypatch):
 
     account = MailboxAccount(email="user@edu.hsxhome.com", account_id="user@edu.hsxhome.com")
 
-    assert mailbox.wait_for_code(account, timeout=1, otp_sent_at=2_100.0) == "222222"
+    assert mailbox.wait_for_code(
+        account,
+        timeout=1,
+        before_ids={"99"},
+        otp_sent_at=2_100.0,
+    ) == "222222"
+
+
+def test_cfworker_wait_for_code_keeps_new_id_even_if_provider_timestamp_is_old(monkeypatch):
+    def fake_post(url, **kwargs):
+        assert url.endswith("/api/public/emailList")
+        return FakeResponse(
+            {
+                "code": 200,
+                "message": "success",
+                "data": [
+                    {
+                        "emailId": 99,
+                        "subject": "Old code",
+                        "timestamp": 2_000.0,
+                        "content": "<p>Code 111111</p>",
+                    },
+                    {
+                        "emailId": 2,
+                        "subject": "New code",
+                        "timestamp": 2_000.0,
+                        "content": "<p>Code 222222</p>",
+                    },
+                ],
+            }
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    mailbox = CFWorkerMailbox(
+        api_url="https://mail.edu.hsxhome.com",
+        admin_token="public-token",
+        domain="edu.hsxhome.com",
+    )
+    mailbox._api_mode = "cloud_mail"
+
+    account = MailboxAccount(email="user@edu.hsxhome.com", account_id="user@edu.hsxhome.com")
+
+    assert mailbox.wait_for_code(
+        account,
+        timeout=1,
+        before_ids={"99"},
+        otp_sent_at=2_100.0,
+    ) == "222222"
+
+
+def test_cfworker_wait_for_code_prefers_contextual_openai_code(monkeypatch):
+    def fake_post(url, **kwargs):
+        assert url.endswith("/api/public/emailList")
+        return FakeResponse(
+            {
+                "code": 200,
+                "message": "success",
+                "data": [
+                    {
+                        "emailId": 2,
+                        "subject": "OpenAI",
+                        "content": "<div data-id='353740'>Your verification code is <b>222333</b></div>",
+                    },
+                ],
+            }
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    mailbox = CFWorkerMailbox(
+        api_url="https://mail.edu.hsxhome.com",
+        admin_token="public-token",
+        domain="edu.hsxhome.com",
+    )
+    mailbox._api_mode = "cloud_mail"
+
+    account = MailboxAccount(email="user@edu.hsxhome.com", account_id="user@edu.hsxhome.com")
+
+    assert mailbox.wait_for_code(account, timeout=1) == "222333"
+
+
+def test_cfworker_wait_for_code_keeps_only_mail_when_baseline_empty_even_if_timestamp_old(monkeypatch):
+    def fake_post(url, **kwargs):
+        assert url.endswith("/api/public/emailList")
+        return FakeResponse(
+            {
+                "code": 200,
+                "message": "success",
+                "data": [
+                    {
+                        "emailId": 99,
+                        "subject": "OpenAI code",
+                        "timestamp": 2_000.0,
+                        "content": "<p>Code 111111</p>",
+                        "text": "Code 111111",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    mailbox = CFWorkerMailbox(
+        api_url="https://mail.edu.hsxhome.com",
+        admin_token="public-token",
+        domain="edu.hsxhome.com",
+    )
+    mailbox._api_mode = "cloud_mail"
+
+    account = MailboxAccount(email="user@edu.hsxhome.com", account_id="user@edu.hsxhome.com")
+
+    assert mailbox.wait_for_code(account, timeout=1, otp_sent_at=2_100.0) == "111111"
+
+
+def test_cfworker_cloud_mail_public_credential_error_falls_back_to_admin_mails(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(("GET", url))
+        assert url.endswith("/admin/mails")
+        return FakeResponse(
+            {
+                "results": [
+                    {
+                        "id": "msg-new",
+                        "subject": "OpenAI verification",
+                        "body": {"content": "<html>Your code is <b>333444</b></html>"},
+                    }
+                ]
+            }
+        )
+
+    def fake_post(url, **kwargs):
+        calls.append(("POST", url))
+        assert url.endswith("/api/public/emailList")
+        return FakeResponse(text="Invalid address credential", status_code=401, json_error=ValueError("not json"))
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    mailbox = CFWorkerMailbox(
+        api_url="https://mail.edu.hsxhome.com",
+        admin_token="public-token",
+        domain="edu.hsxhome.com",
+    )
+    mailbox._api_mode = "cloud_mail"
+
+    account = MailboxAccount(email="user@edu.hsxhome.com", account_id="user@edu.hsxhome.com")
+
+    assert mailbox.wait_for_code(account, timeout=1, otp_sent_at=2_100.0) == "333444"
+    assert calls == [
+        ("POST", "https://mail.edu.hsxhome.com/api/public/emailList"),
+        ("GET", "https://mail.edu.hsxhome.com/admin/mails"),
+    ]
 
 
 def test_cfworker_legacy_wait_for_code_extracts_nested_body_content(monkeypatch):

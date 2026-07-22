@@ -277,6 +277,7 @@ function EditModal({
   const [testResult, setTestResult] = useState<{ ok: boolean; message?: string; error?: string } | null>(null)
   const [asyncOptions, setAsyncOptions] = useState<Record<string, Array<{ value: string; label: string }>>>({})
   const [asyncLoading, setAsyncLoading] = useState<Record<string, boolean>>({})
+  const [asyncErrors, setAsyncErrors] = useState<Record<string, string>>({})
   const [gmailAuthCode, setGmailAuthCode] = useState('')
   const [gmailCodeVerifier, setGmailCodeVerifier] = useState('')
   const [gmailAuthMotherId, setGmailAuthMotherId] = useState('')
@@ -341,34 +342,68 @@ function EditModal({
     document.body.removeChild(el)
   }
 
+  const buildProviderPayload = () => {
+    const config: Record<string, string> = {}
+    const auth: Record<string, string> = {}
+    for (const field of fields) {
+      const value = provider.value === 'gmail_oauth_fission' && field.key === 'gmail_oauth_pool_json'
+        ? serializeGmailPool(gmailMothers)
+        : form[field.key] || ''
+      if (field.category === 'auth') auth[field.key] = value
+      else config[field.key] = value
+    }
+    return { provider_type: providerType, provider_key: provider.value, config, auth }
+  }
+
+  const loadAsyncFieldOptions = async (field: any) => {
+    if (!field.asyncUrl) return
+    setAsyncLoading(prev => ({ ...prev, [field.key]: true }))
+    setAsyncErrors(prev => ({ ...prev, [field.key]: '' }))
+    try {
+      const init = (field.asyncMethod || 'GET').toUpperCase() === 'POST'
+        ? { method: 'POST', body: JSON.stringify(buildProviderPayload()) }
+        : undefined
+      const data = await apiFetch(field.asyncUrl, init)
+      if (data?.ok === false) throw new Error(data.error || '加载选项失败')
+      const valueKey = field.asyncValueKey || 'value'
+      const labelKey = field.asyncLabelKey || 'label'
+      let items: any[] = []
+      if (Array.isArray(data)) items = data
+      else if (data?.options) items = Array.isArray(data.options) ? data.options : []
+      else if (data?.countries) items = data.countries
+      else if (data?.services) items = data.services
+      else if (data?.data) items = Array.isArray(data.data) ? data.data : []
+
+      let options = items.map((item: any) => {
+        if (typeof item === 'object') {
+          const v = String(item[valueKey] ?? item.id ?? item.country ?? '')
+          const l = String(item[labelKey] ?? item.name ?? item.title ?? item.eng ?? v)
+          return { value: v, label: l ? (l.includes(`(${v})`) || l.includes(`（${v}）`) ? l : `${l} (${v})`) : v }
+        }
+        return { value: String(item), label: String(item) }
+      }).filter(o => o.value)
+      if (field.key === 'outlook_email_group_id') {
+        options = [{ value: '', label: '不限制分组' }, ...options]
+      }
+      const current = String(form[field.key] || '')
+      if (current && !options.some(o => o.value === current)) {
+        options = [{ value: current, label: `当前值 ${current}` }, ...options]
+      }
+      setAsyncOptions(prev => ({ ...prev, [field.key]: options }))
+    } catch (e: any) {
+      const current = String(form[field.key] || '')
+      setAsyncErrors(prev => ({ ...prev, [field.key]: e.message || '加载选项失败' }))
+      setAsyncOptions(prev => ({ ...prev, [field.key]: current ? [{ value: current, label: `当前值 ${current}` }] : [] }))
+    } finally {
+      setAsyncLoading(prev => ({ ...prev, [field.key]: false }))
+    }
+  }
+
   // 加载 async-select 字段的选项
   useEffect(() => {
     for (const field of fields) {
       if (field.type === 'async-select' && field.asyncUrl && !asyncOptions[field.key]) {
-        setAsyncLoading(prev => ({ ...prev, [field.key]: true }))
-        apiFetch(field.asyncUrl)
-          .then((data: any) => {
-            const valueKey = field.asyncValueKey || 'value'
-            const labelKey = field.asyncLabelKey || 'label'
-            // 支持多种响应格式
-            let items: any[] = []
-            if (Array.isArray(data)) items = data
-            else if (data?.countries) items = data.countries
-            else if (data?.services) items = data.services
-            else if (data?.data) items = Array.isArray(data.data) ? data.data : []
-
-            const options = items.map((item: any) => {
-              if (typeof item === 'object') {
-                const v = String(item[valueKey] ?? item.id ?? item.country ?? '')
-                const l = String(item[labelKey] ?? item.name ?? item.title ?? item.eng ?? v)
-                return { value: v, label: l ? `${l} (${v})` : v }
-              }
-              return { value: String(item), label: String(item) }
-            }).filter(o => o.value)
-            setAsyncOptions(prev => ({ ...prev, [field.key]: options }))
-          })
-          .catch(() => setAsyncOptions(prev => ({ ...prev, [field.key]: [] })))
-          .finally(() => setAsyncLoading(prev => ({ ...prev, [field.key]: false })))
+        loadAsyncFieldOptions(field)
       }
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -847,12 +882,19 @@ function EditModal({
                     asyncLoading[field.key] ? (
                       <div className="control-surface text-[var(--text-muted)] text-sm py-2">{t('common.loading')}</div>
                     ) : (
-                      <SearchableSelect
-                        value={form[field.key] || ''}
-                        options={asyncOptions[field.key] || []}
-                        placeholder={field.placeholder}
-                        onChange={v => setForm(f => ({ ...f, [field.key]: v }))}
-                      />
+                      <div className="flex gap-2">
+                        <div className="min-w-0 flex-1">
+                          <SearchableSelect
+                            value={form[field.key] || ''}
+                            options={asyncOptions[field.key] || []}
+                            placeholder={field.placeholder}
+                            onChange={v => setForm(f => ({ ...f, [field.key]: v }))}
+                          />
+                        </div>
+                        <Button type="button" variant="outline" size="sm" onClick={() => loadAsyncFieldOptions(field)}>
+                          刷新
+                        </Button>
+                      </div>
                     )
                   ) : field.type === 'select' && field.options?.length ? (
                     <select value={form[field.key] || ''} onChange={e => setForm(f => ({ ...f, [field.key]: e.target.value }))} className="control-surface appearance-none">
@@ -883,6 +925,9 @@ function EditModal({
                     </>
                   )}
                 </div>
+                {field.type === 'async-select' && asyncErrors[field.key] ? (
+                  <p className="mt-1.5 text-xs text-amber-300">{asyncErrors[field.key]}</p>
+                ) : null}
               </div>
             )
           })}

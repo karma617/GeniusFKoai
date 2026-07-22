@@ -5177,3 +5177,163 @@
 - `D:\work\ai\GeniusFKoai\docs\chatgpt-register-flow.md`：补充 CFWorker/Cloud Mail 取码字段和诊断说明。
 - `D:\work\ai\GeniusFKoai\progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：撤销上述文件本轮改动，并删除本条 `progress.md` 记录，即可恢复到本轮前行为。
+
+## 2026-07-22 - Task: 后台任务按类型隔离执行
+### What was done
+- 调整任务调度互斥粒度：从“同平台只能同时跑 1 个任务”改为“同平台 + 同任务类型只能同时跑 1 个任务”。
+- 注册任务、批量测活、刷新 session、Agents 上传等不同任务类型现在可并行启动，不再因为同属 ChatGPT 平台而排队。
+- 保留账号级互斥：命中同一账号 ID 的任务仍会等待，避免同一账号被并发操作。
+- 保留批量 ChatGPT 测活之间的互斥键，避免多个批量测活任务同时打上游。
+- 新增任务隔离回归测试和本地说明文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py services\task_runtime.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_task_runtime_isolation.py -q` 通过：2 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_task_runtime_isolation.py tests\test_platform_action_task.py::test_task_logger_finish_waits_for_smspool_release_queue -q` 通过：3 passed, 1 warning。
+- `git diff --check -- application/tasks.py services/task_runtime.py tests/test_task_runtime_isolation.py` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\application\tasks.py`：新增任务并发隔离 key，并让 claim 阶段按 `platform:task_type` 计数。
+- `D:\work\ai\GeniusFKoai\services\task_runtime.py`：worker 状态记录任务类型/隔离通道，调度循环按任务通道而不是平台统计运行中任务。
+- `D:\work\ai\GeniusFKoai\tests\test_task_runtime_isolation.py`：覆盖同平台不同类型可并行、同平台同类型继续排队。
+- `D:\work\ai\GeniusFKoai\docs\task-runtime-isolation.md`：记录任务类型隔离规则。
+- `D:\work\ai\GeniusFKoai\progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：撤销上述文件本轮改动，并删除本条 `progress.md` 记录，即可恢复为同平台任务全局排队行为。
+
+## 2026-07-22 - Task: 修复 Cloud Mail 已收信但 OTP 被时间过滤/401 拦住
+### What was done
+- 调整 CFWorker/Cloud Mail 取码时间过滤：邮箱基线为空时，不再仅因邮件时间戳早于 `otp_sent_at` 就跳过唯一邮件，避免自建域名服务端时间/时区不准导致已收邮件被当旧邮件丢弃。
+- Cloud Mail `/api/public/emailList` 返回 `Invalid address credential`、401 或临时 SSL 异常时，增加回退读取 `/admin/mails` 旧接口的路径。
+- 保留有基线时的旧邮件过滤：`before_ids` 命中的旧邮件仍会跳过，避免误取历史验证码。
+- 更新本地注册流程文档，补充 Cloud Mail public API 失败回退和空基线时间过滤规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\base_mailbox.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_cfworker_cloud_mail.py -q` 通过：9 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_cfworker_cloud_mail.py -q` 通过：44 passed, 1 warning。
+- `git diff --check -- core/base_mailbox.py tests/test_cfworker_cloud_mail.py` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\core\base_mailbox.py`：Cloud Mail public API 失败时回退旧 CFWorker admin 邮件列表；空基线时不过度按 `otp_sent_at` 丢弃邮件。
+- `D:\work\ai\GeniusFKoai\tests\test_cfworker_cloud_mail.py`：新增 public credential 错误回退 admin mails、空基线保留唯一旧时间戳邮件的回归测试。
+- `D:\work\ai\GeniusFKoai\docs\chatgpt-register-flow.md`：补充 Cloud Mail 取码回退和时间过滤说明。
+- `D:\work\ai\GeniusFKoai\progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：撤销上述文件本轮改动，并删除本条 `progress.md` 记录，即可恢复到本轮前行为。
+
+## 2026-07-22 - Task: 注册邮箱请求与代理池注册代理隔离
+### What was done
+- 调整 ChatGPT 注册任务的邮箱初始化路径：创建邮箱、读取邮箱基线和轮询 OTP 不再传入代理池分配的注册代理。
+- 保留注册链路代理：ChatGPT 账号注册、OAuth、session 获取仍继续使用代理池代理。
+- CFWorker/cloud-mail 工厂默认忽略注册代理池代理；只有显式配置 `cfworker_proxy` 或 `mailbox_proxy` 时才给邮箱 provider 单独设置代理。
+- ChatGPT get_rt/refresh_session 的邮箱 OTP 回调也不再把账号操作代理传给邮箱 provider，避免邮箱接口被 Kookeey 等出口代理影响。
+- 更新本地注册流程文档，记录邮箱请求与账号注册请求的代理边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py core\base_mailbox.py platforms\chatgpt\plugin.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_cfworker_cloud_mail.py tests\test_platform_action_task.py::test_build_platform_instance_keeps_mailbox_off_registration_proxy -q` 通过：12 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_build_platform_instance_keeps_mailbox_off_registration_proxy tests\test_platform_action_task.py::test_register_task_precreated_mailbox_does_not_use_registration_proxy -q` 通过：2 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_cfworker_cloud_mail.py tests\test_platform_action_task.py::test_build_platform_instance_keeps_mailbox_off_registration_proxy tests\test_platform_action_task.py::test_register_task_precreated_mailbox_does_not_use_registration_proxy -q` 通过：13 passed, 1 warning。
+- `git diff --check -- application/tasks.py core/base_mailbox.py platforms/chatgpt/plugin.py tests/test_cfworker_cloud_mail.py tests/test_platform_action_task.py` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\application\tasks.py`：注册任务预创建 mailbox 和平台实例内创建 mailbox 均不再传注册代理。
+- `D:\work\ai\GeniusFKoai\core\base_mailbox.py`：CFWorker/cloud-mail 默认不使用调用方传入代理，只接受显式邮箱代理字段。
+- `D:\work\ai\GeniusFKoai\platforms\chatgpt\plugin.py`：get_rt/refresh_session 邮箱 OTP provider 初始化不再接收账号操作代理。
+- `D:\work\ai\GeniusFKoai\tests\test_cfworker_cloud_mail.py`：覆盖 CFWorker 工厂忽略注册代理、显式邮箱代理仍生效。
+- `D:\work\ai\GeniusFKoai\tests\test_platform_action_task.py`：覆盖平台注册代理仍进 ChatGPT 注册配置，但 mailbox proxy 为空；注册任务预创建 mailbox 也不使用注册代理。
+- `D:\work\ai\GeniusFKoai\docs\chatgpt-register-flow.md`：补充邮箱请求与账号注册请求的代理隔离说明。
+- 回滚方式：撤销上述文件本轮改动，并删除本条 `progress.md` 记录，即可恢复邮箱请求跟随注册代理池代理的旧行为。
+
+## 2026-07-22 - Task: 修复 Cloud Mail 错码和重发后新邮件被跳过
+### What was done
+- 对照 `D:\work\ai\chatgpt_register` 注册链路，确认参考流程在初始化前记录 `since`，并只接受初始化后到达的验证码；当前项目在 CFWorker/cloud-mail 上还叠加了 `before_ids` 和 `otp_sent_at` 过滤。
+- 修正 CFWorker/Cloud Mail 取码过滤：有 `before_ids` 时，以新邮件 ID 为准；新 ID 不再因为 provider 返回的时间戳早于 `otp_sent_at` 被跳过，避免自建域名服务端时间/时区不准导致“最后取信 2 封，新邮件 0 封”。
+- 优化验证码提取：优先匹配 `verification code`、`security code`、`验证码` 等上下文附近的 6 位数字，再回退普通 6 位数字，降低 HTML 隐藏字段或追踪字段被当成 OTP 后提交出 `wrong_email_otp_code` 的概率。
+- 更新本地注册流程文档，记录 Cloud Mail 时间戳不可靠时以 `before_ids` 新 ID 为准，以及上下文优先提码规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\base_mailbox.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_cfworker_cloud_mail.py -q` 通过：13 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_cfworker_cloud_mail.py -q` 通过：48 passed, 1 warning。
+- `git diff --check -- core/base_mailbox.py tests/test_cfworker_cloud_mail.py` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\core\base_mailbox.py`：CFWorker/Cloud Mail 新邮件不再被不可靠时间戳过滤，并新增上下文优先 OTP 提取。
+- `D:\work\ai\GeniusFKoai\tests\test_cfworker_cloud_mail.py`：新增 provider 时间戳偏旧仍读取新 ID、隐藏 6 位数字不抢占真正验证码的回归测试。
+- `D:\work\ai\GeniusFKoai\docs\chatgpt-register-flow.md`：补充 Cloud Mail `before_ids` 和上下文取码规则。
+- `D:\work\ai\GeniusFKoai\progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：撤销上述文件本轮改动，并删除本条 `progress.md` 记录，即可恢复到本轮前行为。
+
+## 2026-07-22 - Task: Outlook 邮箱分组下拉
+### What was done
+- 将 outlookEmail 邮箱池的分组配置从手输 ID 调整为配置弹窗内自动读取分组并下拉选择。
+- 新增后端分组选项接口，优先用管理员密码读取 `/api/groups`，缺少管理员密码时用 API Key 从 `/api/external/accounts` 推断已有分组。
+- 前端 async-select 支持 POST 当前 provider 表单配置，并保留刷新按钮、加载失败提示和旧分组值。
+- 补充 outlookEmail provider 使用文档与分组加载回退说明。
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py api\provider_settings.py infrastructure\provider_definitions_repository.py`
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py -q` -> 33 passed, 1 warning
+- `npm --prefix frontend run build` -> passed（Vite chunk size warning only）
+- `git diff --check -- core\outlook_email_mailbox.py api\provider_settings.py infrastructure\provider_definitions_repository.py frontend\src\components\settings\ProviderCards.tsx frontend\src\lib\config-options.ts tests\test_outlook_email_mailbox.py docs\outlook-email-provider.md` -> passed（仅 Git 换行提示）
+### Notes
+- `core/outlook_email_mailbox.py`：新增 outlookEmail 分组选项读取与账号列表推断逻辑。
+- `api/provider_settings.py`：新增 `/provider-settings/outlook-email/groups` 接口。
+- `infrastructure/provider_definitions_repository.py`：将 `outlook_email_group_id` 定义为异步下拉字段。
+- `frontend/src/components/settings/ProviderCards.tsx`：async-select 支持 POST 当前表单、刷新、错误提示和当前值保留。
+- `frontend/src/lib/config-options.ts`：补充 async-select 的 `asyncMethod` 类型。
+- `tests/test_outlook_email_mailbox.py`：覆盖管理端分组读取、外部账号分组推断和 provider 字段定义。
+- `docs/outlook-email-provider.md`：记录 Outlook 分组下拉的使用与回退规则。
+- 回滚方式：还原以上文件到本轮修改前版本，并删除本段 `progress.md` 追加记录。
+
+## 2026-07-22 - Task: 代理池单行检测按钮
+### What was done
+- 在代理池列表每一行操作区增加“检测”按钮，点击后只检测当前代理。
+- 新增单条代理检测 API，并复用“检测全部”的 `OpenAIHTTPClient` / Cloudflare trace 检测链路。
+- 单条检测成功/失败后沿用原有成功次数、失败次数、地区回写和连续失败禁用规则。
+- 单行检测期间只在当前代理行显示 loading，结束后刷新代理列表。
+- 更新代理池检测说明文档，补充单行检测与检测全部的行为边界。
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile api\proxies.py application\proxies.py core\proxy_pool.py infrastructure\proxies_repository.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_proxy_pool_check.py -q` 通过：4 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_proxies.py::test_check_one_proxy -q -vv` 通过：1 passed, 1 warning。
+- `npm --prefix frontend run build` 通过；仅 Vite chunk size warning。
+- `git diff --check -- api\proxies.py application\proxies.py core\proxy_pool.py infrastructure\proxies_repository.py frontend\src\pages\Proxies.tsx tests\test_proxy_pool_check.py tests\test_api_proxies.py docs\proxy-pool-check.md` 通过；仅 Git 换行提示。
+- 备注：`tests\test_api_proxies.py -q` 整文件执行在 124s 超时；已改跑本轮新增接口的定向用例并通过。
+### Notes
+- `api/proxies.py`：新增 `POST /proxies/{proxy_id}/check`。
+- `application/proxies.py`：新增按代理 ID 调用单条检测的服务方法。
+- `core/proxy_pool.py`：新增 `check_one()`，复用 `_check_one()` 与原有结果上报逻辑。
+- `infrastructure/proxies_repository.py`：新增按 ID 读取代理记录。
+- `frontend/src/pages/Proxies.tsx`：每行增加“检测”按钮和单行 loading 状态。
+- `tests/test_proxy_pool_check.py`：覆盖单条检测与全量检测使用同一注册 HTTPClient 链路。
+- `tests/test_api_proxies.py`：覆盖单条代理检测 API。
+- `docs/proxy-pool-check.md`：补充单行检测说明；该目录当前为 ignored，本地保留文档即可。
+- 回滚方式：撤销上述文件本轮改动，并删除本段 `progress.md` 追加记录，即可恢复为仅支持“检测全部”。
+
+## 2026-07-22 - Task: ChatGPT 协议注册代理预检换池优化
+### What was done
+- 将 ChatGPT 注册前代理预检按执行器区分处理：浏览器注册保留真实浏览器兜底，协议邮箱注册在同一代理刷新本地 Clash 节点后仍出现 curl 56 / TLS / Proxy CONNECT 类异常时，先标记当前代理失败并切换代理池下一条。
+- 预检阶段在创建邮箱之前完成代理换池，减少邮箱已创建后才在 `chatgpt_register` 初始化阶段因同一 HTTP 链路失败导致整号失败。
+- 补充代理检测文档，说明协议注册与浏览器注册在传输异常后的不同落点。
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_chatgpt_proxy_preflight.py` -> passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_proxy_preflight.py -q` -> 7 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_prepares_dynamic_proxy_by_concurrency tests\test_chatgpt_proxy_preflight.py -q` -> 8 passed, 1 warning；warning 为既有 StarletteDeprecationWarning。
+### Notes
+- application/tasks.py: 为 ChatGPT 代理预检增加协议注册专用换池分支，并在注册任务调用处按执行器传入兜底策略。
+- tests/test_chatgpt_proxy_preflight.py: 增加协议注册遇到持续传输/TLS异常后刷新一次本地节点、随后切换代理池下一条的回归测试。
+- docs/proxy-pool-check.md: 更新 ChatGPT 注册前代理预检的协议/浏览器差异说明。
+- 回滚方式：恢复 application/tasks.py 中 `_resolve_chatgpt_reachable_proxy()` 的 `continue_on_transient_failure` 参数与协议换池分支，删除 tests/test_chatgpt_proxy_preflight.py 新增测试，恢复 docs/proxy-pool-check.md 本轮新增说明，并移除 progress.md 本轮追加内容。
+
+## 2026-07-22 - Task: 代理池列表分页显示 50 条
+### What was done
+- 代理资源页的代理列表改为前端分页展示，每页固定显示 50 条。
+- 列表标题右侧增加当前显示范围、总数、当前页/总页数，以及上一页/下一页按钮。
+- 删除或刷新代理后会自动夹取到有效页码，避免停留在空白页。
+### Testing
+- `npm --prefix frontend run build` -> passed；仅 Vite chunk size warning。
+- `git diff --check -- frontend\src\pages\Proxies.tsx progress.md` -> passed；仅 Git 换行提示。
+### Notes
+- frontend/src/pages/Proxies.tsx: 为代理列表增加 50 条分页状态、切片渲染和页码控制。
+- progress.md: 追加本轮施工记录与验证结果。
+- 回滚方式：撤销 frontend/src/pages/Proxies.tsx 中 `PROXY_PAGE_SIZE`、`proxyPage`、分页派生变量、页码控制区和 `pagedProxies` 渲染改动，并移除 progress.md 本轮追加内容。
