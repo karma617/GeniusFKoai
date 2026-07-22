@@ -628,6 +628,7 @@ def _normalize_import_result(result: Any) -> dict:
         "updated": max(0, int(result.get("updated") or 0)),
         "skipped": max(0, int(result.get("skipped") or 0)),
         "failed": max(0, int(result.get("failed") or 0)),
+        "items": result.get("items") if isinstance(result.get("items"), list) else [],
         "errors": result.get("errors") if isinstance(result.get("errors"), list) else [],
         "warnings": result.get("warnings") if isinstance(result.get("warnings"), list) else [],
     }
@@ -649,6 +650,97 @@ def _import_error_detail(result: dict) -> str:
             if isinstance(item, str) and item:
                 return item
     return _import_summary(result)
+
+
+def _build_agent_identity_import_payload(
+    auth_jsons: list[dict[str, Any]],
+    *,
+    group_ids: list[int],
+    proxy_id: int | None,
+    priority: int,
+) -> dict:
+    contents = []
+    for auth_json in auth_jsons:
+        item = dict(auth_json or {})
+        item["auth_mode"] = "agentIdentity"
+        contents.append(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+    payload = {
+        "contents": contents,
+        "group_ids": group_ids,
+        "priority": priority,
+        "auto_pause_on_expired": False,
+        "update_existing": True,
+        "extra": {
+            "source": "geniusfkoai_agent_identity",
+            "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+    }
+    if proxy_id:
+        payload["proxy_id"] = proxy_id
+    return payload
+
+
+def upload_agent_identity_auths_to_sub2api(
+    auth_jsons: list[dict[str, Any]],
+    *,
+    api_url: str | None = None,
+    email: str | None = None,
+    password: str | None = None,
+    group_name: str | None = None,
+    account_priority: Any = None,
+    default_proxy_name: str | None = None,
+    timeout: int = 30,
+) -> tuple[bool, str, dict]:
+    """批量导入 Agent Identity auth.json 到 SUB2API 的 codex-session 导入接口。"""
+    api_url = api_url or _get_config_value("sub2api_url")
+    email = email or _get_config_value("sub2api_email")
+    password = password if password not in (None, "") else _get_config_value("sub2api_password")
+    group_name = group_name or _get_config_value("sub2api_group_name") or DEFAULT_SUB2API_GROUP_NAME
+    default_proxy_name = default_proxy_name if default_proxy_name is not None else _get_config_value("sub2api_default_proxy_name")
+
+    if not auth_jsons:
+        result = _normalize_import_result({})
+        return False, "没有可上传的 Agent Identity auth.json", result
+
+    try:
+        priority = _account_priority(account_priority)
+        origin, token = login_sub2api(api_url, email or "", password or "", timeout=timeout)
+        groups = get_groups_by_names(origin, token, group_name, timeout=timeout)
+        group_ids = [
+            int(group.get("id"))
+            for group in groups
+            if _normalize_proxy_id(group.get("id"))
+        ]
+        if not group_ids:
+            result = _normalize_import_result({})
+            return False, "SUB2API 返回的目标分组 ID 无效", result
+
+        proxy_id = None
+        if _normalize_string(default_proxy_name):
+            proxy = resolve_sub2api_proxy(origin, token, default_proxy_name or "", timeout=timeout)
+            proxy_id = _normalize_proxy_id((proxy or {}).get("id"))
+
+        import_payload = _build_agent_identity_import_payload(
+            auth_jsons,
+            group_ids=group_ids,
+            proxy_id=proxy_id,
+            priority=priority,
+        )
+        result = _normalize_import_result(_request_json(
+            origin,
+            "/api/v1/admin/accounts/import/codex-session",
+            method="POST",
+            token=token,
+            body=import_payload,
+            timeout=timeout,
+        ))
+        ok = result["failed"] == 0 and (result["created"] + result["updated"] + result["skipped"] > 0)
+        return ok, _import_summary(result) if ok else _import_error_detail(result), result
+    except Exception as exc:
+        logger.warning("[SUB2API] Agent Identity 上传失败: %s", exc)
+        result = _normalize_import_result({})
+        result["failed"] = len(auth_jsons)
+        return False, str(exc), result
 
 
 def upload_to_sub2api(

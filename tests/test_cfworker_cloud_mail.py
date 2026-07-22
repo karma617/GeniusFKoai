@@ -166,3 +166,108 @@ def test_cfworker_cloud_mail_email_list_falls_back_to_fuzzy_match(monkeypatch):
         "user@edu.hsxhome.com",
         "%user@edu.hsxhome.com%",
     ]
+
+
+def test_cfworker_wait_for_code_skips_messages_before_otp_sent_at(monkeypatch):
+    def fake_post(url, **kwargs):
+        assert url.endswith("/api/public/emailList")
+        return FakeResponse(
+            {
+                "code": 200,
+                "message": "success",
+                "data": [
+                    {
+                        "emailId": 99,
+                        "subject": "Old code",
+                        "timestamp": 2_000.0,
+                        "content": "<p>Code 111111</p>",
+                        "text": "Code 111111",
+                    },
+                    {
+                        "emailId": 2,
+                        "subject": "New code",
+                        "timestamp": 2_100.0,
+                        "content": "<p>Code 222222</p>",
+                        "text": "Code 222222",
+                    },
+                ],
+            }
+        )
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    mailbox = CFWorkerMailbox(
+        api_url="https://mail.edu.hsxhome.com",
+        admin_token="public-token",
+        domain="edu.hsxhome.com",
+    )
+    mailbox._api_mode = "cloud_mail"
+
+    account = MailboxAccount(email="user@edu.hsxhome.com", account_id="user@edu.hsxhome.com")
+
+    assert mailbox.wait_for_code(account, timeout=1, otp_sent_at=2_100.0) == "222222"
+
+
+def test_cfworker_legacy_wait_for_code_extracts_nested_body_content(monkeypatch):
+    def fake_get(url, **kwargs):
+        assert url.endswith("/admin/mails")
+        return FakeResponse(
+            {
+                "results": [
+                    {
+                        "id": "msg-new",
+                        "subject": "OpenAI verification",
+                        "body": {"content": "<html>Your code is <b>333444</b></html>"},
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    mailbox = CFWorkerMailbox(
+        api_url="https://mail.edu.hsxhome.com",
+        admin_token="admin-token",
+        domain="edu.hsxhome.com",
+    )
+    mailbox._api_mode = "cfworker"
+
+    account = MailboxAccount(email="user@edu.hsxhome.com", account_id="token")
+
+    assert mailbox.wait_for_code(account, timeout=1) == "333444"
+
+
+def test_cfworker_wait_for_code_timeout_reports_mail_count(monkeypatch):
+    def fake_get(url, **kwargs):
+        assert url.endswith("/admin/mails")
+        return FakeResponse(
+            {
+                "results": [
+                    {
+                        "id": "msg-no-code",
+                        "subject": "OpenAI notice",
+                        "body": {"content": "No numeric code here"},
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    mailbox = CFWorkerMailbox(
+        api_url="https://mail.edu.hsxhome.com",
+        admin_token="admin-token",
+        domain="edu.hsxhome.com",
+    )
+    mailbox._api_mode = "cfworker"
+
+    account = MailboxAccount(email="user@edu.hsxhome.com", account_id="token")
+
+    with pytest.raises(TimeoutError) as exc:
+        mailbox.wait_for_code(account, timeout=1)
+
+    assert "最后取信 1 封" in str(exc.value)
+    assert "最近主题: OpenAI notice" in str(exc.value)

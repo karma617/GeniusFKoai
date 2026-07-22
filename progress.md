@@ -5043,3 +5043,137 @@
 - 新增 scripts/pp_account_header_matrix.json、pp_backup_token_probe.json 及探测脚本
 - 正式入口：scripts/pp_complete_extract.py（US 出 BA）；BR+JP 需新 live token 且 create 时 paypal+zero
 - 回滚：还原 pp_complete_extract.py account header 改动；删除本轮探测结果
+
+## 2026-07-22 - Task: ChatGPT Agents上传到Sub2Api
+
+### What was done
+- 在 ChatGPT 账号注册表“一键刷新套餐”左侧新增“Agents上传到Sub2Api”按钮，点击后创建后台任务。
+- 后台任务自动筛选状态正常的 ChatGPT 账号，逐个用账号 access_token 生成 Codex Agent Identity auth.json，并按 10 个一批导入远端 Sub2Api。
+- Sub2Api 上传走远端 `Agent Identity auth.json` 模式，对接 `/api/v1/admin/accounts/import/codex-session`，复用现有 Sub2Api 地址、登录、分组和默认代理配置。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\codex_agent_identity.py platforms\chatgpt\sub2api_upload.py application\tasks.py application\task_commands.py api\task_commands.py` -> 无输出，编译通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_codex_agent_identity.py tests\test_sub2api_upload.py -q` -> 12 passed，1 个 StarletteDeprecationWarning。
+- `npm --prefix frontend run build` -> tsc 与 vite build 通过；仅保留既有 chunk size 提示和 npm 版本提示。
+- `git diff --check -- platforms/chatgpt/codex_agent_identity.py platforms/chatgpt/sub2api_upload.py application/tasks.py application/task_commands.py api/task_commands.py frontend/src/pages/Accounts.tsx tests/test_codex_agent_identity.py tests/test_sub2api_upload.py docs/account-actions.md requirements.txt progress.md` -> 无空白错误；仅提示部分文件 LF/CRLF 工作区换行警告。
+
+### Notes
+- api/task_commands.py：新增 Agents 上传任务请求模型和 `/tasks/agents-upload-sub2api` 创建入口。
+- application/task_commands.py：新增任务创建服务方法并唤醒任务运行器。
+- application/tasks.py：新增状态正常账号筛选、任务类型、任务创建和执行逻辑，按账号生成 Agent Identity 并分批上传。
+- frontend/src/pages/Accounts.tsx：新增“Agents上传到Sub2Api”按钮、忙碌状态和任务日志弹窗接入。
+- platforms/chatgpt/codex_agent_identity.py：新增 Codex Agent Identity 注册、task 验证和 auth.json 生成逻辑。
+- platforms/chatgpt/sub2api_upload.py：新增 Agent Identity auth.json 批量导入 payload 和上传函数。
+- requirements.txt：补充 cryptography 依赖，匹配 Agent Identity Ed25519 密钥生成。
+- tests/test_codex_agent_identity.py：新增 JWT claim 解析和 auth.json 结构测试。
+- tests/test_sub2api_upload.py：新增 Agent Identity 导入 payload 与远端导入调用测试。
+- docs/account-actions.md：补充“Agents上传到Sub2Api”的入口、筛选范围和远端导入模式说明。
+- progress.md：追加本轮实现、验证和回滚记录。
+- 回滚方式：撤销上述新增任务/API/frontend/Agent Identity/sub2api 上传改动，删除 `platforms/chatgpt/codex_agent_identity.py` 和 `tests/test_codex_agent_identity.py`，移除 requirements.txt 中 cryptography 依赖及 docs/progress 本轮追加内容，即可恢复到本轮前行为。
+
+## 2026-07-22 - Task: 修复 Agent Identity 上传后 Sub2Api 403 task_id 问题
+### What was done
+- 调整 ChatGPT Agents 上传生成逻辑：auth.json 不再写入 `task_id`，让 Sub2Api 首次对话时自行注册并保存可用于 AgentAssertion 的 task。
+- 将 Agents 上传任务默认 `verify_task` 改为关闭，避免继续触发并传播上游 `encrypted_task_id`。
+- 补充回归测试，确认即使调用方传入 `task_id` 或 `verify_task=True`，生成结果也不会携带 `task_id`。
+- 更新账号操作文档，说明旧的远端坏记录需要删除后重传或清空 credentials.task_id 后再使用。
+
+### Testing
+- `\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\codex_agent_identity.py platforms\chatgpt\sub2api_upload.py application\tasks.py application\task_commands.py api\task_commands.py` 通过。
+- `\.venv\Scripts\python.exe -m pytest tests\test_codex_agent_identity.py tests\test_sub2api_upload.py -q` 通过：13 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/codex_agent_identity.py tests/test_codex_agent_identity.py api/task_commands.py application/tasks.py docs/account-actions.md progress.md` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\platforms\chatgpt\codex_agent_identity.py`：生成 Agent Identity auth.json 时不再输出 `task_id`，创建流程只注册 runtime。
+- `D:\work\ai\GeniusFKoai\tests\test_codex_agent_identity.py`：新增/调整断言覆盖不输出 `task_id` 的行为。
+- `D:\work\ai\GeniusFKoai\api\task_commands.py`：Agents 上传请求默认关闭 `verify_task`。
+- `D:\work\ai\GeniusFKoai\application\tasks.py`：后台任务默认关闭 `verify_task`。
+- `D:\work\ai\GeniusFKoai\docs\account-actions.md`：补充 Sub2Api 首次注册 task 和旧坏记录处理说明。
+- 回滚方式：撤销以上文件本轮改动，并删除本条 `progress.md` 记录；旧远端记录如已清理则需按 Sub2Api 备份恢复。
+
+## 2026-07-22 - Task: 注册弹窗新增 Agent Identity auth.json 模式
+### What was done
+- 在 ChatGPT 自动注册弹窗中，于“强入K12空间”上方新增 “Agent Identity auth.json” 复选模式。
+- 注册任务接收 `agent_identity_auth_json_mode` 后，在账号注册并保存成功后立即生成 Agent Identity auth.json 并上传远端 Sub2Api。
+- 该模式下只有 Agent Identity auth.json 上传成功才把当前账号计入任务成功；上传失败会让当前账号失败，并跳过普通 session/CPA 上传，避免重复导入。
+- 保留账号列表顶部“Agents上传到Sub2Api”批量入口，并补回其后台任务执行路径。
+
+### Testing
+- `\.venv\Scripts\python.exe -m py_compile application\tasks.py application\task_commands.py api\task_commands.py platforms\chatgpt\codex_agent_identity.py platforms\chatgpt\sub2api_upload.py` 通过。
+- `\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_agent_identity_auth_json_mode_upload_success_counts_success tests\test_platform_action_task.py::test_chatgpt_register_agent_identity_auth_json_mode_upload_failure_fails_task tests\test_codex_agent_identity.py tests\test_sub2api_upload.py -q` 通过：15 passed, 1 warning。
+- `\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -q` 通过：91 passed, 1 warning。
+- `npm --prefix frontend run build` 通过；仅保留 Vite chunk size 提示。
+- `git diff --check -- application/tasks.py frontend/src/pages/Accounts.tsx tests/test_platform_action_task.py docs/account-actions.md api/task_commands.py application/task_commands.py platforms/chatgpt/codex_agent_identity.py platforms/chatgpt/sub2api_upload.py tests/test_codex_agent_identity.py tests/test_sub2api_upload.py requirements.txt` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\frontend\src\pages\Accounts.tsx`：新增注册弹窗复选框，并把模式字段写入注册任务 extra。
+- `D:\work\ai\GeniusFKoai\application\tasks.py`：新增注册后 Agent Identity 上传判定、批量 Agents 上传任务执行器和相关账号筛选逻辑。
+- `D:\work\ai\GeniusFKoai\tests\test_platform_action_task.py`：覆盖 Agent Identity auth.json 模式上传成功/失败对注册任务成功判定的影响。
+- `D:\work\ai\GeniusFKoai\docs\account-actions.md`：补充注册弹窗 Agent Identity auth.json 模式说明。
+- 回滚方式：撤销以上文件本轮改动，并删除本条 `progress.md` 记录；远端 Sub2Api 已成功导入的账号需在 Sub2Api 后台单独删除。
+
+## 2026-07-22 - Task: Agent Identity 注册后上传状态落库调整
+### What was done
+- 调整 ChatGPT 注册后 Agent Identity auth.json 模式的状态落库：上传失败时保留本地账号并标记为 `registered`（仅注册），上传成功时标记为 `agent_identity_uploaded`（免码已上传）。
+- 新增 `agent_identity_uploaded` 账号状态、前端状态筛选项和中英文显示文案。
+- 补充注册任务测试，覆盖 Agent Identity 上传成功/失败后的账号图谱状态。
+- 更新账号操作文档，明确上传失败保留账号、上传成功标记免码已上传。
+
+### Testing
+- `\.venv\Scripts\python.exe -m py_compile application\tasks.py core\base_platform.py core\account_graph.py` 通过。
+- `\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_chatgpt_register_agent_identity_auth_json_mode_upload_success_counts_success tests\test_platform_action_task.py::test_chatgpt_register_agent_identity_auth_json_mode_upload_failure_fails_task -q` 通过：2 passed, 1 warning。
+- `\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -q` 通过：91 passed, 1 warning。
+- `\.venv\Scripts\python.exe -m pytest tests\test_api_accounts.py::test_batch_status_update_marks_chatgpt_rt_states tests\test_api_accounts.py::test_batch_status_update_can_reset_to_registered_without_dropping_credentials -q` 通过：2 passed, 1 warning。
+- `npm --prefix frontend run build` 通过；仅保留 Vite chunk size 提示。
+- `git diff --check -- application/tasks.py core/base_platform.py core/account_graph.py frontend/src/pages/Accounts.tsx frontend/src/lib/i18n.ts tests/test_platform_action_task.py docs/account-actions.md progress.md` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+- `\.venv\Scripts\python.exe -m pytest tests\test_api_accounts.py -q` 曾超过 180 秒未结束，已改用相关账号状态用例验证。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\application\tasks.py`：Agent Identity 上传成功/失败后写入对应账号状态，失败不删除账号。
+- `D:\work\ai\GeniusFKoai\core\base_platform.py`：新增 `AGENT_IDENTITY_UPLOADED` 状态枚举。
+- `D:\work\ai\GeniusFKoai\core\account_graph.py`：让 `agent_identity_uploaded` 可作为展示状态透出。
+- `D:\work\ai\GeniusFKoai\frontend\src\pages\Accounts.tsx`：账号筛选和状态样式支持 `agent_identity_uploaded`。
+- `D:\work\ai\GeniusFKoai\frontend\src\lib\i18n.ts`：新增“免码已上传”状态文案。
+- `D:\work\ai\GeniusFKoai\tests\test_platform_action_task.py`：补充状态断言。
+- `D:\work\ai\GeniusFKoai\docs\account-actions.md`：补充注册后上传状态规则。
+- 回滚方式：撤销以上文件本轮改动，并删除本条 `progress.md` 记录；已上传到远端 Sub2Api 的账号需在远端后台单独处理。
+
+## 2026-07-22 - Task: 优化 ChatGPT 注册邮箱 OTP wrong_email_otp_code 恢复
+### What was done
+- 修正最新版注册链的 `email_otp_send` 处理：当 `continue_url` 已经是 `/api/accounts/email-otp/send` 时，不再先把该 API 当邮箱验证页预加载，避免同一会话连续触发两封 OTP 后读到已失效的旧码。
+- 对 `wrong_email_otp_code` 增加有限恢复：刷新邮箱已见邮件集合、重发 OTP、只读取新验证码并重新提交，最多 3 轮，避免单个旧码/错码直接终止注册。
+- 为 CFWorker/Cloud Mail 邮箱取码补充 `otp_sent_at` 过滤，能跳过发码时间之前的旧邮件。
+- 更新 ChatGPT 注册流程文档，记录本次 OTP 发送与错误恢复规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py core\base_mailbox.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_cfworker_cloud_mail.py -q` 通过：40 passed, 1 warning。
+- `git diff --check -- platforms/chatgpt/register.py core/base_mailbox.py tests/test_chatgpt_protocol_otp.py tests/test_cfworker_cloud_mail.py` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\platforms\chatgpt\register.py`：避免预加载 `email-otp/send` API 造成重复发码，并新增 `wrong_email_otp_code` 后刷新基线、重发、重提交流程。
+- `D:\work\ai\GeniusFKoai\core\base_mailbox.py`：CFWorker/Cloud Mail 取码支持按 `otp_sent_at` 跳过发码前旧邮件。
+- `D:\work\ai\GeniusFKoai\tests\test_chatgpt_protocol_otp.py`：新增 wrong_email_otp_code 重发恢复和 send API 不预加载回归测试。
+- `D:\work\ai\GeniusFKoai\tests\test_cfworker_cloud_mail.py`：新增 Cloud Mail 按发码时间跳过旧邮件测试。
+- `D:\work\ai\GeniusFKoai\docs\chatgpt-register-flow.md`：补充最新版主链 OTP 发送和错码恢复说明。
+- 回滚方式：撤销上述文件本轮改动，并删除本条 `progress.md` 记录，即可恢复到本轮前行为。
+
+## 2026-07-22 - Task: 修复 CFWorker 邮箱已收到但注册取不到 OTP
+### What was done
+- 扩展 CFWorker/Cloud Mail 邮件列表归一化：正文不再只依赖 `raw` 字段，会展开 `content`、`text`、`html`、`body.content`、`snippet` 等常见结构后再匹配验证码。
+- 修正 CFWorker 邮件排序和无 id 邮件处理，避免混合字符串/数字 id 或缺少 id 时内部异常被轮询吞掉。
+- 增强 CFWorker OTP 超时诊断：超时错误会带出最后取信数量、新邮件数量、最近主题和最后异常，下一次日志可直接判断是接口没取到邮件还是正文没匹配。
+- 更新 ChatGPT 注册流程文档，补充 CFWorker/Cloud Mail 取码诊断规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\base_mailbox.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_cfworker_cloud_mail.py -q` 通过：7 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_cfworker_cloud_mail.py -q` 通过：42 passed, 1 warning。
+- `git diff --check -- core/base_mailbox.py tests/test_cfworker_cloud_mail.py` 通过；仅提示 LF 将按工作区规则替换为 CRLF。
+
+### Notes
+- `D:\work\ai\GeniusFKoai\core\base_mailbox.py`：CFWorker/Cloud Mail 邮件正文归一化、稳定排序和超时诊断增强。
+- `D:\work\ai\GeniusFKoai\tests\test_cfworker_cloud_mail.py`：新增嵌套正文验证码提取和超时诊断测试。
+- `D:\work\ai\GeniusFKoai\docs\chatgpt-register-flow.md`：补充 CFWorker/Cloud Mail 取码字段和诊断说明。
+- `D:\work\ai\GeniusFKoai\progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：撤销上述文件本轮改动，并删除本条 `progress.md` 记录，即可恢复到本轮前行为。

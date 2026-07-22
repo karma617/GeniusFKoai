@@ -1576,6 +1576,17 @@ class RegistrationEngine:
             raise RuntimeError("invalid_state_retry_no_otp")
         return code
 
+    def _latest_chatgpt_resend_email_otp_after_rejected_code(self, reason: str) -> Optional[str]:
+        """验证码被服务端拒绝后，刷新邮箱基线、重发并只读取新验证码。"""
+        self._log(f"chatgpt_register OTP validate 返回 {reason}，刷新邮箱基线后重发验证码...", "warning")
+        self._refresh_mailbox_before_ids()
+        if not self._send_verification_code():
+            raise RuntimeError(f"{reason}_retry_send_otp_failed")
+        code = self._get_verification_code(mark_invalid_on_timeout=False, resend_on_timeout=False)
+        if not code:
+            raise RuntimeError(f"{reason}_retry_no_otp")
+        return code
+
 
     def _latest_chatgpt_open_about_you(self, url: str) -> bool:
         self._last_about_you_error = ""
@@ -1836,14 +1847,26 @@ class RegistrationEngine:
                 return result
 
             self._log("6. 提交邮箱验证码...")
-            try:
-                validate_payload = self._latest_chatgpt_validate_email_otp(code)
-            except RuntimeError as exc:
-                if str(exc) != "invalid_state":
+            validate_payload = None
+            last_otp_error = ""
+            for otp_validate_attempt in range(1, 4):
+                try:
+                    if otp_validate_attempt > 1:
+                        self._log(f"重新提交邮箱验证码 ({otp_validate_attempt}/3)...")
+                    validate_payload = self._latest_chatgpt_validate_email_otp(code)
+                    break
+                except RuntimeError as exc:
+                    last_otp_error = str(exc)
+                    if last_otp_error == "invalid_state":
+                        code = self._latest_chatgpt_refresh_email_otp_after_invalid_state()
+                        self._log("invalid_state 恢复: 重新提交刷新后的邮箱验证码...")
+                        continue
+                    if last_otp_error == "wrong_email_otp_code" and otp_validate_attempt < 3:
+                        code = self._latest_chatgpt_resend_email_otp_after_rejected_code(last_otp_error)
+                        continue
                     raise
-                code = self._latest_chatgpt_refresh_email_otp_after_invalid_state()
-                self._log("invalid_state 恢复: 重新提交刷新后的邮箱验证码...")
-                validate_payload = self._latest_chatgpt_validate_email_otp(code)
+            if validate_payload is None:
+                raise RuntimeError(last_otp_error or "email_otp_validate_failed")
             callback_url = self._chatgpt_callback_url_from_payload(validate_payload)
             if callback_url:
                 self._create_account_continue_url = callback_url
@@ -2614,13 +2637,24 @@ class RegistrationEngine:
 
         try:
 
-            email_verification_url = self._email_otp_continue_url or "https://auth.openai.com/email-verification"
+            raw_continue_url = str(self._email_otp_continue_url or "").strip()
+            email_verification_url = raw_continue_url or "https://auth.openai.com/email-verification"
+            continue_is_send_api = "/api/accounts/email-otp/send" in email_verification_url
+            if continue_is_send_api:
+                email_verification_url = "https://auth.openai.com/email-verification"
 
             self._log(f"邮箱验证页 URL: {email_verification_url}")
 
-            send_url = OPENAI_API_ENDPOINTS["send_otp"]
+            send_url = (
+                urllib.parse.urljoin("https://auth.openai.com/", raw_continue_url)
+                if continue_is_send_api
+                else OPENAI_API_ENDPOINTS["send_otp"]
+            )
             password_referer = "https://auth.openai.com/create-account/password"
             csrf_token = ""
+
+            if continue_is_send_api:
+                self._email_otp_page_loaded = True
 
             if not self._email_otp_page_loaded:
 

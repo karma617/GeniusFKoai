@@ -1050,6 +1050,56 @@ def test_latest_chatgpt_register_refreshes_otp_once_after_invalid_state(monkeypa
     assert calls["validate"] == ["111111", "222222"]
 
 
+def test_latest_chatgpt_register_resends_after_wrong_email_otp_code(monkeypatch):
+    engine = _bare_engine()
+    calls = {"refresh": 0, "send": 0, "otp": [], "validate": []}
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "cfworker_admin_api"})()
+
+        def create_email(self):
+            return {"email": "new@example.com", "service_id": "mailbox-1"}
+
+    engine.email_service = EmailService()
+    engine._init_latest_chatgpt_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: calls.__setitem__("refresh", calls["refresh"] + 1)
+    engine._latest_chatgpt_init_email_oauth = lambda: (True, "")
+    engine._send_verification_code = lambda: calls.__setitem__("send", calls["send"] + 1) or True
+
+    def get_verification_code(*, mark_invalid_on_timeout=True, resend_on_timeout=True):
+        calls["otp"].append((mark_invalid_on_timeout, resend_on_timeout))
+        return "111111" if len(calls["otp"]) == 1 else "222222"
+
+    def validate_email_otp(code):
+        calls["validate"].append(code)
+        if code == "111111":
+            raise RuntimeError("wrong_email_otp_code")
+        return {"continue_url": "https://auth.openai.com/about-you"}
+
+    def finish(result):
+        result.success = True
+        result.email = engine.email
+        result.account_id = "acct_123"
+        result.access_token = "access-token"
+        return result
+
+    engine._get_verification_code = get_verification_code
+    engine._latest_chatgpt_validate_email_otp = validate_email_otp
+    engine._latest_chatgpt_open_about_you = lambda url: True
+    engine._latest_chatgpt_create_account_with_retry = lambda: True
+    engine._latest_chatgpt_fetch_session_result = finish
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    result = engine.run_chatgpt_register_latest()
+
+    assert result.success is True
+    assert calls["refresh"] == 2
+    assert calls["send"] == 1
+    assert calls["otp"] == [(True, False), (False, False)]
+    assert calls["validate"] == ["111111", "222222"]
+    assert any("wrong_email_otp_code" in message and "重发验证码" in message for message in engine.logs)
+
+
 def test_send_verification_code_uses_password_referer_like_reference_flow():
     engine = _bare_engine()
     calls = []
@@ -1064,6 +1114,24 @@ def test_send_verification_code_uses_password_referer_like_reference_flow():
     assert engine._send_verification_code() is True
     assert calls[-1][0].endswith("/api/accounts/email-otp/send")
     assert calls[-1][1]["referer"] == "https://auth.openai.com/create-account/password"
+
+
+def test_send_verification_code_does_not_preload_continue_send_api():
+    engine = _bare_engine()
+    engine._email_otp_continue_url = "https://auth.openai.com/api/accounts/email-otp/send"
+    engine._email_otp_page_loaded = False
+    calls = []
+
+    class SendSession:
+        def get(self, url, headers=None, timeout=None, **kwargs):
+            calls.append((url, headers or {}, kwargs))
+            return _SendOtpResponse()
+
+    engine.session = SendSession()
+
+    assert engine._send_verification_code() is True
+    assert [call[0] for call in calls] == ["https://auth.openai.com/api/accounts/email-otp/send"]
+    assert engine._email_otp_page_loaded is True
 
 
 def test_send_verification_code_visits_email_verification_page_before_send():

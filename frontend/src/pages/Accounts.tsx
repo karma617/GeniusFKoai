@@ -16,7 +16,7 @@ import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
 import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search, ListChecks } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
-  registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', trial: 'success', subscribed: 'success',
+  registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', agent_identity_uploaded: 'success', trial: 'success', subscribed: 'success',
   expired: 'warning', relogin_required: 'warning', invalid: 'danger', banned: 'danger',
   free: 'secondary', eligible: 'secondary', valid: 'success', unknown: 'secondary',
 }
@@ -72,6 +72,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'registered',
   'rt_pending_upload',
   'rt_uploaded',
+  'agent_identity_uploaded',
   'subscribed',
   'eligible',
   'expired',
@@ -84,6 +85,7 @@ const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
   'rt_uploaded',
+  'agent_identity_uploaded',
   'trial',
   'subscribed',
   'expired',
@@ -606,6 +608,7 @@ function RegisterModal({
   // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
   const [autoPaymentLink, setAutoPaymentLink] = useState(false)
   const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
+  const [agentIdentityAuthJsonMode, setAgentIdentityAuthJsonMode] = useState(false)
   const [k12BatchUploadEnabled, setK12BatchUploadEnabled] = useState(false)
   const [bugfreeMode, setBugfreeMode] = useState(false)
   const [k12Join, setK12Join] = useState(false)
@@ -911,6 +914,7 @@ function RegisterModal({
       }
       if (platform === 'chatgpt') {
         extra.remote_upload_enabled = remoteUploadEnabled
+        extra.agent_identity_auth_json_mode = agentIdentityAuthJsonMode
         extra.k12_batch_upload_enabled = k12BatchUploadEnabled
         extra.bugfree_mode = bugfreeMode
       }
@@ -1211,6 +1215,25 @@ function RegisterModal({
                       留空时分别回退到环境变量 OPAI_HEROSMS_API_KEY / OPAI_GOPAY_DEFAULT_PIN / OPAI_GOPAY_REGISTER_PROXY / OPAI_HEROSMS_MAX_PRICE_USD。maxPrice 设 0 不限价。
                     </div>
                   </div>
+                )}
+
+                {platform === 'chatgpt' && (
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                    <input
+                      type="checkbox"
+                      checked={agentIdentityAuthJsonMode}
+                      onChange={(e) => setAgentIdentityAuthJsonMode(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                    />
+                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                      <div className="text-sm font-medium text-[var(--text-primary)]">
+                        Agent Identity auth.json
+                      </div>
+                      <div className="mt-0.5">
+                        勾选后账号注册成功会生成 Agent Identity auth.json 并上传到远端 Sub2Api；上传成功后当前账号才计入任务成功。
+                      </div>
+                    </div>
+                  </label>
                 )}
 
                 {/* chatgpt 平台特定：强入 K12 空间（注册后跳过接码，取 session 上传 sub2api + 向 workspace 发加入申请） */}
@@ -2731,6 +2754,7 @@ export default function Accounts() {
   const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchHealthChecking, setBatchHealthChecking] = useState(false)
   const [batchPlanRefreshing, setBatchPlanRefreshing] = useState(false)
+  const [agentsUploadBusy, setAgentsUploadBusy] = useState(false)
   const [rowActionBusy, setRowActionBusy] = useState('')
   const [copyingAccessTokenId, setCopyingAccessTokenId] = useState<number | null>(null)
   const [planRefreshDialog, setPlanRefreshDialog] = useState<PlanRefreshDialogState>({
@@ -3147,6 +3171,32 @@ export default function Accounts() {
     }
   }
 
+  const startAgentsUploadSub2Api = async () => {
+    setError('')
+    setAgentsUploadBusy(true)
+    try {
+      const data = await apiFetch('/tasks/agents-upload-sub2api', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids: [],
+          batch_size: 10,
+          verify_task: true,
+          timeout: 30,
+        }),
+      })
+      const taskId = String(data?.task_id || data?.id || '')
+      if (taskId) {
+        setBatchTask({ taskId, title: 'Agents上传到Sub2Api' })
+        setBatchTaskStatus(null)
+      }
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setAgentsUploadBusy(false)
+    }
+  }
+
   const startCodexOAuth = async () => {
     setError('')
     const ids = [...selectedIds].map(Number)
@@ -3416,12 +3466,14 @@ export default function Accounts() {
             setBatchTaskStatus(null)
             setBatchRefreshing(false)
             setBatchHealthChecking(false)
+            setAgentsUploadBusy(false)
             load()
           }}
           onDone={(status) => {
             setBatchTaskStatus(status)
             setBatchRefreshing(false)
             setBatchHealthChecking(false)
+            setAgentsUploadBusy(false)
             load()
           }}
         />
@@ -4149,7 +4201,24 @@ export default function Accounts() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={batchPlanRefreshing || batchHealthChecking || batchRefreshing || loading}
+                    disabled={agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || batchRefreshing || loading}
+                    className="h-8 rounded-lg border-0 bg-blue-500/10 px-3 text-[12px] font-medium text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
+                    title="为所有状态正常的 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api"
+                    onClick={startAgentsUploadSub2Api}
+                  >
+                    {agentsUploadBusy ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {agentsUploadBusy ? 'Agents上传中' : 'Agents上传到Sub2Api'}
+                  </Button>
+                )}
+                {tab === 'chatgpt' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={batchPlanRefreshing || agentsUploadBusy || batchHealthChecking || batchRefreshing || loading}
                     className="h-8 rounded-lg border-0 bg-emerald-500/10 px-3 text-[12px] font-medium text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
                     title="全量刷新当前平台所有账号的订阅套餐类型"
                     onClick={refreshPlanForAllAccounts}

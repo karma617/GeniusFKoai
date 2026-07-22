@@ -14,6 +14,7 @@ class AccountStatus(str, Enum):
     REGISTERED   = "registered"
     RT_PENDING_UPLOAD = "rt_pending_upload"
     RT_UPLOADED  = "rt_uploaded"
+    AGENT_IDENTITY_UPLOADED = "agent_identity_uploaded"
     TRIAL        = "trial"
     SUBSCRIBED   = "subscribed"
     EXPIRED      = "expired"

@@ -1323,24 +1323,69 @@ class CFWorkerMailbox(BaseMailbox):
             },
         )
 
-    def _normalize_cloud_mail_mails(self, data: dict) -> list:
-        items = data.get("data", data)
+    @classmethod
+    def _collect_mail_text(cls, value) -> str:
+        """展开常见邮件正文结构，兼容 raw/content/body.content/html/text 等字段。"""
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float)):
+            return str(value)
+        if isinstance(value, list):
+            return " ".join(cls._collect_mail_text(item) for item in value)
+        if isinstance(value, dict):
+            parts = []
+            for key in (
+                "raw",
+                "content",
+                "text",
+                "html",
+                "body",
+                "bodyText",
+                "bodyHtml",
+                "snippet",
+                "intro",
+                "subject",
+            ):
+                if key in value:
+                    parts.append(cls._collect_mail_text(value.get(key)))
+            return " ".join(part for part in parts if part)
+        return str(value)
+
+    @classmethod
+    def _normalize_mail_item(cls, item: dict, *, index: int = 0) -> dict:
+        if not isinstance(item, dict):
+            return {}
+        mid = (
+            item.get("id")
+            or item.get("emailId")
+            or item.get("msgid")
+            or item.get("message_id")
+            or item.get("messageId")
+            or item.get("uid")
+            or ""
+        )
+        raw = cls._collect_mail_text(item)
+        if not mid:
+            mid = f"mail:{hash((str(item.get('subject') or ''), raw[:200], index))}"
+        return {**item, "id": mid, "raw": raw}
+
+    def _normalize_mail_list(self, data) -> list:
+        items = data.get("data", data) if isinstance(data, dict) else data
         if isinstance(items, dict):
-            items = items.get("list", [])
+            items = items.get("list") or items.get("results") or items.get("items") or []
         if not isinstance(items, list):
             return []
 
         normalized = []
-        for item in items:
-            if not isinstance(item, dict):
+        for index, item in enumerate(items):
+            normalized_item = self._normalize_mail_item(item, index=index)
+            if not normalized_item:
                 continue
-            mid = item.get("emailId", item.get("id", ""))
-            raw = " ".join(
-                str(item.get(field) or "")
-                for field in ("subject", "sendEmail", "sendName", "content", "text")
-            )
-            normalized.append({**item, "id": mid, "raw": raw})
+            normalized.append(normalized_item)
         return normalized
+
+    def _normalize_cloud_mail_mails(self, data: dict) -> list:
+        return self._normalize_mail_list(data)
 
     def _get_cloud_mail_mails(self, email: str) -> list:
         import requests
@@ -1432,7 +1477,8 @@ class CFWorkerMailbox(BaseMailbox):
                 params={"limit": 20, "offset": 0, "address": email},
                 headers=self._headers(), proxies=self.proxy, timeout=10)
             data = r.json()
-            return data.get("results", data) if isinstance(data, dict) else data
+            items = data.get("results", data) if isinstance(data, dict) else data
+            return self._normalize_mail_list(items)
         except Exception:
             return self._get_cloud_mail_mails(email)
 
@@ -1443,18 +1489,100 @@ class CFWorkerMailbox(BaseMailbox):
         except Exception:
             return set()
 
+    @staticmethod
+    def _mail_epoch(mail: dict) -> float | None:
+        import datetime as _dt
+        import email.utils as _email_utils
+
+        for key in (
+            "timestamp",
+            "time",
+            "date",
+            "created_at",
+            "createdAt",
+            "createTime",
+            "received_at",
+            "receivedAt",
+            "receiveTime",
+        ):
+            raw = mail.get(key)
+            if raw in (None, ""):
+                continue
+            if isinstance(raw, (int, float)):
+                value = float(raw)
+                return value / 1000 if value > 1_000_000_000_000 else value
+            text = str(raw).strip()
+            if not text:
+                continue
+            try:
+                value = float(text)
+                return value / 1000 if value > 1_000_000_000_000 else value
+            except Exception:
+                pass
+            try:
+                parsed = _email_utils.parsedate_to_datetime(text)
+                if parsed:
+                    return parsed.timestamp()
+            except Exception:
+                pass
+            try:
+                parsed = _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+                return parsed.timestamp()
+            except Exception:
+                pass
+
+        raw = str(mail.get("raw", "") or "")
+        if raw:
+            match = re.search(r"^Date:\s*(.+)$", raw, flags=re.IGNORECASE | re.MULTILINE)
+            if match:
+                try:
+                    parsed = _email_utils.parsedate_to_datetime(match.group(1).strip())
+                    if parsed:
+                        return parsed.timestamp()
+                except Exception:
+                    pass
+        return None
+
     def wait_for_code(self, account: MailboxAccount, keyword: str = "",
-                      timeout: int = 120, before_ids: set = None, code_pattern: str = None) -> str:
+                      timeout: int = 120, before_ids: set = None, code_pattern: str = None,
+                      otp_sent_at: float | None = None) -> str:
         import re, time
-        seen = set(before_ids or [])
+        baseline_ids = set(before_ids or [])
+        seen = set(baseline_ids)
         start = time.time()
         new_mail_count = 0
+        last_mail_count = 0
+        last_subjects: list[str] = []
+        last_error = ""
+
+        def _sort_key(mail: dict):
+            epoch = self._mail_epoch(mail)
+            mid = str(mail.get("id", "") or "")
+            try:
+                mid_num = float(mid)
+            except Exception:
+                mid_num = -1.0
+            return (epoch or -1.0, mid_num, mid)
+
         while time.time() - start < timeout:
             try:
                 mails = self._get_mails(account.email)
-                for mail in sorted(mails, key=lambda x: x.get("id", 0), reverse=True):
+                last_mail_count = len(mails or [])
+                last_subjects = [
+                    str(mail.get("subject", "") or "")[:60]
+                    for mail in (mails or [])[:3]
+                    if isinstance(mail, dict)
+                ]
+                for mail in sorted(mails, key=_sort_key, reverse=True):
                     mid = str(mail.get("id", ""))
-                    if not mid or mid in seen:
+                    if not mid:
+                        continue
+                    mail_epoch = self._mail_epoch(mail) if otp_sent_at else None
+                    if mid in seen:
+                        if not (mid in baseline_ids and mail_epoch is not None and mail_epoch >= float(otp_sent_at) - 30):
+                            continue
+                    elif mail_epoch is not None and otp_sent_at and mail_epoch < float(otp_sent_at) - 30:
+                        seen.add(mid)
                         continue
                     seen.add(mid)
                     new_mail_count += 1
@@ -1480,11 +1608,16 @@ class CFWorkerMailbox(BaseMailbox):
                         return code_val
                     # 没有匹配到验证码，打印 raw 前 150 字符帮助诊断
                     print(f"[CFWorker] 邮件未匹配验证码 raw[:150]={raw[:150]}")
-            except Exception:
-                pass
+            except Exception as exc:
+                last_error = str(exc)
             time.sleep(3)
-        print(f"[CFWorker] 轮询超时 ({timeout}s)，共收到 {new_mail_count} 封新邮件")
-        raise TimeoutError(f"等待验证码超时 ({timeout}s)")
+        detail = f"等待验证码超时 ({timeout}s)，最后取信 {last_mail_count} 封，新邮件 {new_mail_count} 封"
+        if last_subjects:
+            detail += f"，最近主题: {' | '.join(last_subjects)}"
+        if last_error:
+            detail += f"，最后错误: {last_error}"
+        print(f"[CFWorker] 轮询超时: {detail}")
+        raise TimeoutError(detail)
 
     def wait_for_link(self, account: MailboxAccount, keyword: str = "",
                       timeout: int = 120, before_ids: set = None) -> str:

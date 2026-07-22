@@ -193,6 +193,19 @@ def create_refresh_session_task(body: RefreshSessionTaskRequest):
     return command_service.create_refresh_session_task(body.model_dump())
 
 
+class AgentsUploadSub2ApiTaskRequest(BaseModel):
+    platform: str = "chatgpt"
+    ids: list[int] = Field(default_factory=list)
+    batch_size: int = 10
+    verify_task: bool = False
+    timeout: int = 30
+
+
+@router.post("/agents-upload-sub2api")
+def create_agents_upload_sub2api_task(body: AgentsUploadSub2ApiTaskRequest):
+    return command_service.create_agents_upload_sub2api_task(body.model_dump())
+
+
 @router.post("/gopay-pay-chatgpt")
 def create_gopay_pay_chatgpt_task(body: GoPayPayChatGptTaskRequest):
     return command_service.create_gopay_pay_chatgpt_task(body.model_dump())

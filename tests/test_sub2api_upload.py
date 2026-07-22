@@ -126,6 +126,73 @@ def test_normal_account_without_refresh_token_can_force_import_payload():
     assert payload["content"] == account.credentials["access_token"]
 
 
+def test_build_agent_identity_import_payload_uses_contents():
+    auth_json = {
+        "auth_mode": "agent_identity",
+        "agent_identity": {
+            "agent_runtime_id": "runtime-1",
+            "agent_private_key": "pk",
+            "account_id": "account-1",
+            "chatgpt_user_id": "user-1",
+        },
+    }
+
+    payload = sub2api_upload._build_agent_identity_import_payload(
+        [auth_json],
+        group_ids=[1],
+        proxy_id=2,
+        priority=7,
+    )
+
+    assert payload["group_ids"] == [1]
+    assert payload["proxy_id"] == 2
+    assert payload["priority"] == 7
+    content = json.loads(payload["contents"][0])
+    assert content["auth_mode"] == "agentIdentity"
+    assert content["agent_identity"]["agent_runtime_id"] == "runtime-1"
+
+
+def test_upload_agent_identity_auths_calls_codex_session_import(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(sub2api_upload, "login_sub2api", lambda *args, **kwargs: ("https://sub2api.test", "token"))
+    monkeypatch.setattr(sub2api_upload, "get_groups_by_names", lambda *args, **kwargs: [{"id": 1, "name": "codex"}])
+
+    def fake_request_json(origin, path, **kwargs):
+        calls.append((origin, path, kwargs))
+        return {
+            "total": 1,
+            "created": 1,
+            "updated": 0,
+            "skipped": 0,
+            "failed": 0,
+            "items": [{"index": 1, "action": "created"}],
+        }
+
+    monkeypatch.setattr(sub2api_upload, "_request_json", fake_request_json)
+
+    ok, message, result = sub2api_upload.upload_agent_identity_auths_to_sub2api(
+        [{
+            "auth_mode": "agentIdentity",
+            "agent_identity": {
+                "agent_runtime_id": "runtime-1",
+                "agent_private_key": "pk",
+                "account_id": "account-1",
+                "chatgpt_user_id": "user-1",
+            },
+        }],
+        api_url="https://sub2api.test",
+        email="admin@example.com",
+        password="secret",
+    )
+
+    assert ok is True
+    assert "新建 1" in message
+    assert result["items"][0]["action"] == "created"
+    assert calls[0][1] == "/api/v1/admin/accounts/import/codex-session"
+    assert json.loads(calls[0][2]["body"]["contents"][0])["auth_mode"] == "agentIdentity"
+
+
 def test_request_json_retries_transient_request_exception(monkeypatch):
     calls = {"count": 0}
 

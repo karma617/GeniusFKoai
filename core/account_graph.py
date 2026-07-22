@@ -80,6 +80,7 @@ NON_LEGACY_EXTRA_KEYS = {
 }
 
 RT_LIFECYCLE_STATUSES = {"rt_pending_upload", "rt_uploaded"}
+AGENT_IDENTITY_LIFECYCLE_STATUSES = {"agent_identity_uploaded"}
 LEGACY_RT_LIFECYCLE_STATUSES = {"registered", "authorized"}
 REGISTRATION_ONLY_CREDENTIAL_KEYS = {"refresh_token", "refreshToken"}
 REGISTRATION_ONLY_EXTRA_KEYS = {
@@ -222,7 +223,7 @@ def _derive_display_status(
     validity_status: str,
     plan_state: str,
 ) -> str:
-    if lifecycle_status in RT_LIFECYCLE_STATUSES:
+    if lifecycle_status in RT_LIFECYCLE_STATUSES or lifecycle_status in AGENT_IDENTITY_LIFECYCLE_STATUSES:
         return lifecycle_status
     if lifecycle_status == "banned":
         return "banned"

@@ -435,6 +435,120 @@ def test_chatgpt_register_remote_upload_checkbox_keeps_remote_upload(monkeypatch
     assert calls == {"remote": 1, "local": 0}
 
 
+def test_chatgpt_register_agent_identity_auth_json_mode_upload_success_counts_success(monkeypatch):
+    calls = {"agent": 0, "remote": 0, "local": 0}
+    email_value = "agent-identity-success-status@example.com"
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            return Account(
+                platform="chatgpt",
+                email=email or email_value,
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token", "refresh_token": "refresh-token"},
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: calls.__setitem__("remote", calls["remote"] + 1))
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1))
+
+    def fake_agent_upload(account, logger):
+        calls["agent"] += 1
+        return True, "created=1"
+
+    monkeypatch.setattr(tasks_module, "_run_agent_identity_auth_json_post_register_upload", fake_agent_upload)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": email_value,
+            "password": "Secret123!",
+            "extra": {"identity_provider": "oauth_browser", "agent_identity_auth_json_mode": True},
+        },
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+    assert calls == {"agent": 1, "remote": 0, "local": 0}
+    assert any(event[0] == "success" for event in logger.events)
+    with Session(engine) as session:
+        model = session.exec(
+            select(AccountModel)
+            .where(AccountModel.email == email_value)
+            .order_by(AccountModel.id.desc())
+        ).first()
+        graph = load_account_graphs(session, [int(model.id)]).get(int(model.id), {})
+    assert graph["lifecycle_status"] == "agent_identity_uploaded"
+    assert graph["display_status"] == "agent_identity_uploaded"
+    assert graph["overview"]["agent_identity_upload_status"] == "uploaded"
+
+
+def test_chatgpt_register_agent_identity_auth_json_mode_upload_failure_fails_task(monkeypatch):
+    calls = {"agent": 0, "remote": 0, "local": 0}
+    email_value = "agent-identity-failed-status@example.com"
+
+    class FakePlatform:
+        def register(self, email=None, password=None):
+            return Account(
+                platform="chatgpt",
+                email=email or email_value,
+                password=password or "Secret123!",
+                user_id="acct_123",
+                extra={"access_token": "access-token", "refresh_token": "refresh-token"},
+            )
+
+    monkeypatch.setattr(tasks_module, "get", lambda platform_name: object)
+    monkeypatch.setattr(tasks_module, "_resolve_registration_proxy_for_platform", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_build_platform_instance", lambda *args, **kwargs: FakePlatform())
+    monkeypatch.setattr(tasks_module, "_auto_push_any2api", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks_module, "_auto_upload_cpa", lambda *args, **kwargs: calls.__setitem__("remote", calls["remote"] + 1))
+    monkeypatch.setattr(tasks_module, "_save_local_upload_jsons", lambda *args, **kwargs: calls.__setitem__("local", calls["local"] + 1))
+    monkeypatch.setattr(tasks_module, "_save_task_log", lambda *args, **kwargs: None)
+
+    def fake_agent_upload(account, logger):
+        calls["agent"] += 1
+        return False, "remote rejected"
+
+    monkeypatch.setattr(tasks_module, "_run_agent_identity_auth_json_post_register_upload", fake_agent_upload)
+
+    logger = _FakeLogger()
+
+    tasks_module._execute_register_task(
+        {
+            "platform": "chatgpt",
+            "count": 1,
+            "concurrency": 1,
+            "email": email_value,
+            "password": "Secret123!",
+            "extra": {"identity_provider": "oauth_browser", "agent_identity_auth_json_mode": True},
+        },
+        logger,
+    )
+
+    assert logger.finished[0] == tasks_module.TASK_STATUS_FAILED
+    assert "Agent Identity auth.json 上传到 Sub2Api 失败" in logger.finished[1]
+    assert calls == {"agent": 1, "remote": 0, "local": 0}
+    assert not any(event[0] == "success" for event in logger.events)
+    with Session(engine) as session:
+        model = session.exec(
+            select(AccountModel)
+            .where(AccountModel.email == email_value)
+            .order_by(AccountModel.id.desc())
+        ).first()
+        graph = load_account_graphs(session, [int(model.id)]).get(int(model.id), {})
+    assert graph["lifecycle_status"] == "registered"
+    assert graph["display_status"] == "registered"
+    assert graph["overview"]["agent_identity_upload_status"] == "failed"
+
+
 def test_chatgpt_register_bugfree_mode_skips_until_seven_day_account(monkeypatch):
     registered = []
     local_saved = []

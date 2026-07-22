@@ -36,11 +36,12 @@ TASK_TYPE_ACCOUNT_CHECK_ALL = "account_check_all"
 TASK_TYPE_ACCOUNT_HEALTH_CHECK = "account_health_check"
 TASK_TYPE_PLATFORM_ACTION = "platform_action"
 TASK_TYPE_PHONE_BIND = "phone_bind"
-TASK_TYPE_CODEX_OAUTH = "codex_oauth"
-TASK_TYPE_GET_RT = "get_rt"
+TASK_TYPE_CODEX_OAUTH = "codex_oauth"
+TASK_TYPE_GET_RT = "get_rt"
 TASK_TYPE_GET_RT_BYPASS = "get_rt_bypass"
 TASK_TYPE_REFRESH_SESSION = "refresh_session"
-TASK_TYPE_GOPAY_PAY_CHATGPT = "gopay_pay_chatgpt"
+TASK_TYPE_AGENTS_UPLOAD_SUB2API = "agents_upload_sub2api"
+TASK_TYPE_GOPAY_PAY_CHATGPT = "gopay_pay_chatgpt"
 TASK_TYPE_GOPAY_REGISTER_ACCOUNT = "gopay_register_account"
 
 TASK_DB_WRITE_ATTEMPTS = 5
@@ -223,6 +224,35 @@ def _list_account_ids_by_status(*, platform: str, status: str) -> list[int]:
             or (graphs.get(account_id, {}) or {}).get("lifecycle_status")
             or AccountStatus.REGISTERED.value
         ).strip().lower() == status
+    ]
+
+
+AGENTS_UPLOAD_EXCLUDED_STATUSES = {"invalid", "banned", "expired", "relogin_required"}
+
+
+def _is_normal_chatgpt_account_for_agents_upload(model: AccountModel, graph: dict[str, Any]) -> bool:
+    statuses = {
+        str(graph.get("display_status") or AccountStatus.REGISTERED.value).strip().lower(),
+        str(graph.get("lifecycle_status") or AccountStatus.REGISTERED.value).strip().lower(),
+        str(graph.get("validity_status") or "unknown").strip().lower(),
+    }
+    return not (statuses & AGENTS_UPLOAD_EXCLUDED_STATUSES)
+
+
+def _list_agents_upload_account_ids(platform: str = "chatgpt") -> list[int]:
+    platform = str(platform or "chatgpt").strip() or "chatgpt"
+    with Session(engine) as session:
+        models = session.exec(
+            select(AccountModel)
+            .where(AccountModel.platform == platform)
+            .order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
+        ).all()
+        model_map = {int(model.id or 0): model for model in models if model.id}
+        graphs = load_account_graphs(session, list(model_map.keys()))
+    return [
+        account_id
+        for account_id, model in model_map.items()
+        if _is_normal_chatgpt_account_for_agents_upload(model, graphs.get(account_id, {}) or {})
     ]
 
 _task_locks: dict[str, threading.Lock] = {}
@@ -692,6 +722,24 @@ def create_refresh_session_task(payload: dict[str, Any]) -> dict[str, Any]:
     return create_task(
         task_type=TASK_TYPE_REFRESH_SESSION,
         platform=str(payload.get("platform", "chatgpt") or "chatgpt"),
+        payload=payload,
+        progress_total=max(len(ids), 1),
+    )
+
+
+def create_agents_upload_sub2api_task(payload: dict[str, Any]) -> dict[str, Any]:
+    """为状态正常的 ChatGPT 账号生成 Agent Identity 并上传 SUB2API。"""
+
+    payload = dict(payload or {})
+    platform = str(payload.get("platform", "chatgpt") or "chatgpt")
+    ids = _normalize_task_ids(payload.get("ids"))
+    if not ids:
+        ids = _list_agents_upload_account_ids(platform)
+    payload["ids"] = ids
+    payload["batch_size"] = max(int(payload.get("batch_size") or 10), 1)
+    return create_task(
+        task_type=TASK_TYPE_AGENTS_UPLOAD_SUB2API,
+        platform=platform,
         payload=payload,
         progress_total=max(len(ids), 1),
     )
@@ -1836,6 +1884,64 @@ def _finalize_k12_deferred_sub2api_uploads(paths: list[str], task_logger: TaskLo
         task_logger.log(f"[K12] SUB2API 统一上传异常: {exc}", level="warning")
 
 
+def _run_agent_identity_auth_json_post_register_upload(account, logger: TaskLogger) -> tuple[bool, str]:
+    target = _build_chatgpt_upload_account(account)
+    access_token = str(getattr(target, "access_token", "") or "").strip()
+    if not access_token:
+        return False, "账号缺少 access_token，无法生成 Agent Identity auth.json"
+
+    from platforms.chatgpt.codex_agent_identity import create_codex_agent_identity
+    from platforms.chatgpt.sub2api_upload import upload_agent_identity_auths_to_sub2api
+
+    logger.log(f"  [Agent Identity] {getattr(account, 'email', '')}: 生成 auth.json")
+    auth_json = create_codex_agent_identity(
+        access_token,
+        verify_task=False,
+        timeout=30,
+    )
+    ok, message, _result = upload_agent_identity_auths_to_sub2api(
+        [auth_json],
+        timeout=30,
+    )
+    if ok:
+        logger.log(f"  [Agent Identity] 上传到 Sub2Api 成功：{message}")
+        return True, message
+    return False, message or "上传到 Sub2Api 失败"
+
+
+def _mark_agent_identity_auth_json_upload_status(
+    account_id: int,
+    *,
+    uploaded: bool,
+    upload_message: str = "",
+) -> None:
+    lifecycle_status = "agent_identity_uploaded" if uploaded else AccountStatus.REGISTERED.value
+    with Session(engine) as session:
+        model = session.get(AccountModel, int(account_id or 0))
+        if not model:
+            return
+        now_text = _utcnow_iso()
+        summary_updates = {
+            "lifecycle_status": lifecycle_status,
+            "display_status": lifecycle_status,
+            "valid": True,
+            "agent_identity_upload_status": "uploaded" if uploaded else "failed",
+            "agent_identity_upload_message": str(upload_message or ""),
+            "agent_identity_upload_checked_at": now_text,
+        }
+        if uploaded:
+            summary_updates["agent_identity_uploaded_at"] = now_text
+        patch_account_graph(
+            session,
+            model,
+            lifecycle_status=lifecycle_status,
+            summary_updates=summary_updates,
+        )
+        model.updated_at = datetime.now(timezone.utc)
+        session.add(model)
+        session.commit()
+
+
 def _mark_get_rt_upload_status(
     account_id: int,
     *,
@@ -2566,11 +2672,12 @@ def execute_task(task_id: str) -> None:
         TASK_TYPE_ACCOUNT_HEALTH_CHECK: _execute_account_health_check_task,
         TASK_TYPE_PLATFORM_ACTION: _execute_platform_action_task,
         TASK_TYPE_PHONE_BIND: _execute_phone_bind_task,
-        TASK_TYPE_CODEX_OAUTH: _execute_codex_oauth_task,
-        TASK_TYPE_GET_RT: _execute_get_rt_task,
+        TASK_TYPE_CODEX_OAUTH: _execute_codex_oauth_task,
+        TASK_TYPE_GET_RT: _execute_get_rt_task,
         TASK_TYPE_GET_RT_BYPASS: _execute_get_rt_bypass_task,
         TASK_TYPE_REFRESH_SESSION: _execute_refresh_session_task,
-        TASK_TYPE_GOPAY_PAY_CHATGPT: _execute_gopay_pay_chatgpt_task,
+        TASK_TYPE_AGENTS_UPLOAD_SUB2API: _execute_agents_upload_sub2api_task,
+        TASK_TYPE_GOPAY_PAY_CHATGPT: _execute_gopay_pay_chatgpt_task,
         TASK_TYPE_GOPAY_REGISTER_ACCOUNT: _execute_gopay_register_account_task,
     }
     handler = handlers.get(task_type)
@@ -4141,6 +4248,28 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             )
             if chatgpt_plus_enabled:
                 _mark_outlook_mailbox_event(shared_mailbox, account, "plus_success", logger)
+            agent_identity_auth_json_mode_enabled = (
+                platform_name == "chatgpt"
+                and _bool_config(extra.get("agent_identity_auth_json_mode"), False)
+            )
+            if agent_identity_auth_json_mode_enabled:
+                upload_ok, upload_message = _run_agent_identity_auth_json_post_register_upload(account, logger)
+                if not upload_ok:
+                    _mark_agent_identity_auth_json_upload_status(
+                        saved_account_id,
+                        uploaded=False,
+                        upload_message=upload_message,
+                    )
+                    error_message = f"Agent Identity auth.json 上传到 Sub2Api 失败: {upload_message}"
+                    logger.record_error(error_message)
+                    logger.log(error_message, level="error")
+                    _save_task_log(platform_name, account.email, "failed", error=error_message)
+                    return error_message
+                _mark_agent_identity_auth_json_upload_status(
+                    saved_account_id,
+                    uploaded=True,
+                    upload_message=upload_message,
+                )
             if resolved_proxy:
                 proxy_pool.report_success(resolved_proxy)
             logger.record_success()
@@ -4151,7 +4280,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if collected_k12_paths:
                 with k12_deferred_sub2api_lock:
                     k12_deferred_sub2api_paths.extend(collected_k12_paths)
-            if _bool_config(extra.get("remote_upload_enabled"), False):
+            if agent_identity_auth_json_mode_enabled:
+                logger.log("  [Agent Identity] 已按 auth.json 模式上传，跳过普通 session/CPA 上传")
+            elif _bool_config(extra.get("remote_upload_enabled"), False):
                 if collected_k12_paths:
                     logger.log("  [K12] 已保存待统一上传的 SUB2API JSON，跳过当前账号即时远端上传")
                 elif _bool_config(account_extra.get("k12_remote_upload_handled"), False):
@@ -5357,6 +5488,121 @@ def _execute_refresh_session_task(payload: dict[str, Any], logger: TaskLogger) -
         logger.finish(TASK_STATUS_SUCCEEDED)
     else:
         logger.finish(TASK_STATUS_FAILED, error="全部账号重新登录失败")
+
+
+def _execute_agents_upload_sub2api_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    platform = str(payload.get("platform") or "chatgpt").strip() or "chatgpt"
+    if platform != "chatgpt":
+        logger.finish(TASK_STATUS_FAILED, error="Agents上传到Sub2Api 仅支持 ChatGPT")
+        return
+
+    account_ids = _normalize_task_ids(payload.get("ids"))
+    if not account_ids:
+        account_ids = _list_agents_upload_account_ids(platform)
+    total = len(account_ids)
+    if total <= 0:
+        logger.finish(TASK_STATUS_FAILED, error="没有可上传的状态正常 ChatGPT 账号")
+        return
+
+    batch_size = max(int(payload.get("batch_size") or 10), 1)
+    verify_task = _bool_config(payload.get("verify_task"), False)
+    timeout = max(int(payload.get("timeout") or 30), 1)
+
+    from platforms.chatgpt.codex_agent_identity import create_codex_agent_identity
+    from platforms.chatgpt.sub2api_upload import upload_agent_identity_auths_to_sub2api
+
+    logger.log(f"开始 Agents上传到Sub2Api：账号 {total} 个，批大小 {batch_size}")
+    logger.set_progress(0, total)
+    success_count = 0
+    failed_count = 0
+    processed_count = 0
+    pending_batch: list[dict[str, Any]] = []
+
+    def _finish_one(email: str, ok: bool, message: str) -> None:
+        nonlocal success_count, failed_count, processed_count
+        processed_count += 1
+        if ok:
+            success_count += 1
+            logger.record_success()
+            _save_task_log(platform, email, "success", detail={"action": "agents_upload_sub2api", "message": message})
+            logger.log(f"{email}: Agent Identity 已上传到 Sub2Api（{message}）")
+        else:
+            failed_count += 1
+            logger.record_error(f"{email}: {message}")
+            _save_task_log(platform, email, "failed", error=message, detail={"action": "agents_upload_sub2api"})
+            logger.log(f"{email}: Agent Identity 上传失败：{message}", level="error")
+        logger.set_progress(processed_count, total)
+
+    def _flush_batch() -> None:
+        nonlocal pending_batch
+        if not pending_batch:
+            return
+        batch = pending_batch
+        pending_batch = []
+        logger.log(f"上传 Agent Identity 批次：{len(batch)} 个账号")
+        ok, message, result = upload_agent_identity_auths_to_sub2api(
+            [item["auth_json"] for item in batch],
+            timeout=timeout,
+        )
+        item_map = {
+            int(item.get("index") or 0): item
+            for item in result.get("items", [])
+            if isinstance(item, dict)
+        }
+        if item_map:
+            for index, entry in enumerate(batch, start=1):
+                item = item_map.get(index) or {}
+                action = str(item.get("action") or "").strip().lower()
+                item_message = str(item.get("message") or message or action or "unknown")
+                if action in {"created", "updated"}:
+                    _finish_one(entry["email"], True, action)
+                else:
+                    _finish_one(entry["email"], False, item_message)
+            return
+        for entry in batch:
+            _finish_one(entry["email"], ok, message)
+
+    for index, account_id in enumerate(account_ids, start=1):
+        if logger.is_cancel_requested():
+            logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+            return
+        logger.set_subtask(f"agents_upload_{index}", f"账号 {account_id}")
+        with Session(engine) as session:
+            model = session.get(AccountModel, account_id)
+            account = build_platform_account(session, model) if model and model.platform == platform else None
+        if not account:
+            _finish_one(str(account_id), False, "账号不存在或平台不是 ChatGPT")
+            continue
+        email = str(getattr(account, "email", "") or account_id)
+        try:
+            target = _build_chatgpt_upload_account(account)
+            access_token = str(getattr(target, "access_token", "") or "").strip()
+            if not access_token:
+                raise ValueError("账号缺少 access_token")
+            logger.log(f"[{index}/{total}] {email}: 生成 Codex Agent Identity auth.json")
+            auth_json = create_codex_agent_identity(
+                access_token,
+                verify_task=verify_task,
+                timeout=timeout,
+            )
+            pending_batch.append({"email": email, "auth_json": auth_json})
+            if len(pending_batch) >= batch_size:
+                _flush_batch()
+        except Exception as exc:
+            _finish_one(email, False, str(exc))
+
+    _flush_batch()
+    logger.clear_subtask()
+    logger.set_result_data({
+        "total": total,
+        "success": success_count,
+        "failed": failed_count,
+        "batch_size": batch_size,
+    })
+    if success_count > 0:
+        logger.finish(TASK_STATUS_SUCCEEDED)
+    else:
+        logger.finish(TASK_STATUS_FAILED, error="Agents上传到Sub2Api 全部失败")
 
 
 def _execute_get_rt_bypass_task(payload: dict[str, Any], logger: TaskLogger) -> None:
