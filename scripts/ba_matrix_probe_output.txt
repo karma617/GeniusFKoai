@@ -1,0 +1,19 @@
+=== US proxy + different checkout countries ===
+US/USD: ent=openai_llc amt=2128 zero=False paypal=True pmt=['card', 'paypal']
+BR/USD: ent=openai_llc amt=2128 zero=False paypal=False pmt=['card']
+BR/BRL: ent=openai_llc amt=10629 zero=False paypal=False pmt=['card']
+JP/JPY: ent=openai_llc amt=2902 zero=False paypal=False pmt=['card']
+JP/USD: ent=openai_llc amt=2128 zero=False paypal=False pmt=['card']
+GB/GBP: ent=openai_llc amt=1774 zero=False paypal=False pmt=['card']
+DE/EUR: ent=openai_ie amt=1933 zero=False paypal=True pmt=['card', 'paypal']
+FR/EUR: ent=openai_ie amt=1917 zero=False paypal=True pmt=['card', 'paypal']
+IE/EUR: ent=openai_ie amt=1870 zero=False paypal=True pmt=['card', 'paypal']
+NL/EUR: ent=openai_ie amt=1901 zero=False paypal=True pmt=['card', 'paypal']
+SG/USD: ent=openai_llc amt=2128 zero=False paypal=False pmt=['card']
+AU/AUD: ent=openai_llc amt=2902 zero=False paypal=False pmt=['card']
+CA/CAD: ent=openai_llc amt=2660 zero=False paypal=False pmt=['card']
+KR/USD: ent=openai_llc amt=2128 zero=False paypal=False pmt=['card']
+MX/USD: ent=openai_llc amt=2128 zero=False paypal=False pmt=['card']
+IN/USD: ent=openai_llc amt=2128 zero=False paypal=False pmt=['card']
+
+=== DONE ===

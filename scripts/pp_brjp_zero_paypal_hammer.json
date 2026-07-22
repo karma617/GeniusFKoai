@@ -1,0 +1,1663 @@
+[
+  {
+    "n": 1,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": null,
+    "trial": null,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000"
+    }
+  },
+  {
+    "n": 2,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1jXsx2toessKq0yLFP7Scc6wHLtYqJwXsj6rd9baVmi1sqUNJBMnLDkZK",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 3,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1Be26JcaGpSIxMndHEco0i0AmgoNrdMI1qd9TdwwqEL0GB6ETbFfXjTGv/init → status=400 request-id='req_j81SqRTYgehlUr' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1Be26JcaGpSIxMndHEco0i0AmgoNrdMI1qd9TdwwqEL0GB6ETbFfXjTGv",
+    "checkout_pmt": null
+  },
+  {
+    "n": 4,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1M696dBWpyhu21ye85EdUWkft5lZqkuuWJwPZwSRarbZ07YQKdDobSoW6",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 5,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1dU1utSmzyGTlfKXnSjPxxyjM4JIYVNwp2Ekb48Ie4tegNN2Bo3rFNg94",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 6,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax_err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1XBhluXfh9JncLyC8nRMEKyll7rMj6IWTP08JHh0hyc4X5QPtJqNWdRqW →"
+    },
+    "cs": "cs_live_a1XBhluXfh9JncLyC8nRMEKyll7rMj6IWTP08JHh0hyc4X5QPtJqNWdRqW",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 7,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1npGpXl1hDfWDIZlJqYPVAtSauVL9MmWZN67X3RSmUXb1M1UYuKBrnVPD",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 8,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1ryV28ZhypSXQZ1bXPvshuvsi99CtazDmqQvP8QU1NjAj9tiykBlA68Lt",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 9,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1DdpvamDWgOvzmFra1fmxJs9ISWuRKlUDhhVs80ziylOoVQAaxs08oUbm",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 10,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1cPz4UZCIqggUsbspIspG51IyBvsRsHAZ8iREZNGKkzZu6zw9dKNJValh",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 11,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1XQ0h5Y17tMcswQ4AzG1QG6OTQtwpfIbwp3FIyFlFyt7YxH0JoioQckwi",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 12,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a18XmUkrKe64N3GqH0rTb2x5FotiZyFu7dRv1A5fRPl8InCiwQ1BPv0BSX",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 13,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1Pw2EO4IJ634rLFjp9vIjhw3S38gacPA1eYOq8vvYPz4aIZKBlUCgUbuO",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 14,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1SOb1ILiCk8VLeymi9kzr1ohkCmlTV0uNrbLfnScqAnuyHTQ2htHYdDgd",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 15,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1ZbHroSThqpIMfF4gvzM7Ek96Itx9nVLmzRGucNBIH13a6wuBT9LUOHYE",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 16,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1ktUwXQz12nDOudp1cEycQvecaHEgIXxOAlmWnjSJqFoBVKRk002zPCcE",
+    "checkout_pmt": null
+  },
+  {
+    "n": 17,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1ZXor2olZQyPE0flXbm27jJBr1z1c6XBVRMLWeAf617VpP90ZhPxRBVas/init → status=400 request-id='req_jfLSe5Ri8gpAsS' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1ZXor2olZQyPE0flXbm27jJBr1z1c6XBVRMLWeAf617VpP90ZhPxRBVas",
+    "checkout_pmt": null
+  },
+  {
+    "n": 18,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1aEyoCnl8rOsfFcGWMfPr9iiVVvvpa0bRHwIb0cHGtOsrbhR15VZxHmop/init → status=400 request-id='req_imgIUXreNVB9Se' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1aEyoCnl8rOsfFcGWMfPr9iiVVvvpa0bRHwIb0cHGtOsrbhR15VZxHmop",
+    "checkout_pmt": null
+  },
+  {
+    "n": 19,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1SQKdYIeaco3R3iUyoiZKDlqbTWkPZCFVahVe3EWKqyAIOlS9i3qzagfH/init → status=400 request-id='req_yN5as8zjfW7RWP' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1SQKdYIeaco3R3iUyoiZKDlqbTWkPZCFVahVe3EWKqyAIOlS9i3qzagfH",
+    "checkout_pmt": null
+  },
+  {
+    "n": 20,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": null,
+    "trial": null,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000"
+    }
+  },
+  {
+    "n": 21,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1XVi298VwDQcdf4qSZ3yO4KQjHBK0JDhNRk856tev3ZmfzL9Gs9uWLAAv/init → status=400 request-id='req_ZZLHVXZX9b7dEI' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1XVi298VwDQcdf4qSZ3yO4KQjHBK0JDhNRk856tev3ZmfzL9Gs9uWLAAv",
+    "checkout_pmt": null
+  },
+  {
+    "n": 22,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1IuzA4i0qPJNigx2n8annzizPy3DqiU9fFZdvfP1ml7Jflhc4cwFMpAtL/init → status=400 request-id='req_tTS3V3qLa6kYxr' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1IuzA4i0qPJNigx2n8annzizPy3DqiU9fFZdvfP1ml7Jflhc4cwFMpAtL",
+    "checkout_pmt": null
+  },
+  {
+    "n": 23,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1P5zs88uWbfinVhUzLoJOgUWrv5ZZFiCuxLRwk61mPbFJFiOKnVdKWWPV/init → status=400 request-id='req_hEHx8CzT4Xqahr' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1P5zs88uWbfinVhUzLoJOgUWrv5ZZFiCuxLRwk61mPbFJFiOKnVdKWWPV",
+    "checkout_pmt": null
+  },
+  {
+    "n": 24,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": null,
+    "trial": null,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000"
+    }
+  },
+  {
+    "n": 25,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1JNkSrLlj10T3qjgOT8TYvtmQ88SP9xFKk5RxXbHUcatRRYTgN7K7e6Bd",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 26,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1u6FpRN0hAKCfmgfBjMKnvkmB9KVIsksjL3otUy4Vo0QiH6uXatA7ab2L",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 27,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1nE3CqIWZw7u3NPiNeTsAnlQBgTZQeczirjugOwWT2v7IJ0wCD6KX1hEa",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 28,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1135dgNtHs6iAprNqNtHGWsVKARHjNlTTzpKJuSNGmbKk3FzGiXIK6pWh",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 29,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1SvjzGo4dSU3uMw0Xt2f65K2Xh9khqMdCBksHx8EPOKYD4K65zwTWl7Ey",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 30,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1RiYP9VBKE7Ibxur9BddeKFqSS91JmDTiAbKm6FiKrEoLUC8gDlnvz8ei/init → status=400 request-id='req_YHdOk3H5UrzjyE' body='{\\n  \"error\": {\\n    \"cod",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1RiYP9VBKE7Ibxur9BddeKFqSS91JmDTiAbKm6FiKrEoLUC8gDlnvz8ei",
+    "checkout_pmt": null
+  },
+  {
+    "n": 31,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1TSvK0jw2jgvrv0WMv30A6EXgBGI3OUJOBpl4x0sW10URFwtlSNKkDsql",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 32,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1sAtSCxFujISkb95jSh4lNej85qgA7y0fiHgsGAeubyDIVrlhrUw4NEvU",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 33,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1PLOgOKTx0qUruFuaXKWb9pEIKmaW49fd8BCbEC39pGcxE9gJRco4am7M",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 34,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1kMW4n9RoScx9LndXUbFcnCY1XxDwAGaodpr7MIPB4vWmCq9OwLdi8IjP",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 35,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a13LOJk35Mr3oM4X9BzvyMphDPciE3xfTDp7v1cHvL5jdo3H2qKGUcpEmh",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 36,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1Nd5am71yCOPQEQkkEuOb58sIvzhCVYgXapQBkC5F3bAAI8w6ggtIGKBs",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 37,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1JpHnWEM9FuiSlF3ULKSmGEwu2hzOiF0b1hefFQ839dFofWaxpsBUp1Cv",
+    "checkout_pmt": null
+  },
+  {
+    "n": 38,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1T3ewJFjgc8PmBjYEuCO3e70NKxMaOLoab2VshQICR6PpznXdbBSUWwc2",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 39,
+    "region": "BR",
+    "bill": "BR/BRL",
+    "tax": "BR",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1g0DoACFUvIz7s8eYxPgle5Pa3iQgCMZXQbCM7YwuQuTghV2UZkLDje7e",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "n": 40,
+    "region": "JP",
+    "bill": "US/USD",
+    "tax": "US",
+    "ui": "hosted",
+    "proxy_ip": "gate.kookeey.info:1000",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "trial": false,
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "approve": "",
+    "err": "gate_fail zero=True paypal=False pmt=['card', 'link']",
+    "steps": {
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "tax": 200
+    },
+    "cs": "cs_live_a1F1Uv8UMAQVxpKQ7I52LmMVwn00Uqw0KLnQ1fqiTxK2XxSrhafG8s4oZq",
+    "checkout_pmt": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  }
+]

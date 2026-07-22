@@ -1,0 +1,14 @@
+[
+  {
+    "attempt": 1,
+    "proxy_region": "US",
+    "checkout_country": "US",
+    "checkout_currency": "USD",
+    "approve_result": "approved",
+    "ba_ok": true,
+    "ba": "BA-73R31779MA378912N",
+    "ba_url": "https://www.paypal.com/agreements/approve?ba_token=BA-73R31779MA378912N",
+    "amt": "2178",
+    "err": ""
+  }
+]

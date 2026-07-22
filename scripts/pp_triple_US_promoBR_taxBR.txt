@@ -1,0 +1,11 @@
+=== triple extract chk=US stripe=US approve=US promo=BR bill=US/USD ui=custom promo_when=after_init promo_addr=BR full=True max=2 ===
+  [01] approve=approved         ba_ok=False amt=2000   zero=False paypal=True  pmt=['card', 'paypal'] err=failed:checkout_upcoming_invoice_mismatch
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200, 'approve_path': '/backend-api/payments/checkout/approve'}
+  [02] approve=approved         ba_ok=False amt=2000   zero=False paypal=True  pmt=['card', 'paypal'] err=failed:checkout_upcoming_invoice_mismatch
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200, 'approve_path': '/backend-api/payments/checkout/approve'}
+
+=== SUMMARY ===
+  approved: 2 total, 0 ba_ok
+  overall_ba_ok=0/2 zero_and_paypal=0
+  saved=scripts/pp_triple_US_promoBR_taxBR.json
+=== DONE ===

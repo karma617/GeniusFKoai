@@ -1,0 +1,124 @@
+[
+  {
+    "name": "US_pm",
+    "rc": 0,
+    "ba_ok": true,
+    "ba": "BA-9S739213FN003800M",
+    "amt": "2178",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve": "approved",
+    "err": "",
+    "attempts": 1
+  },
+  {
+    "name": "US_direct",
+    "rc": 0,
+    "ba_ok": true,
+    "ba": "BA-82T04438SS1701512",
+    "amt": "2178",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve": "approved",
+    "err": "",
+    "attempts": 1
+  },
+  {
+    "name": "BRJP_pm_US_bill",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve": "",
+    "err": "no paypal pmt=['card', 'link']",
+    "attempts": 3
+  },
+  {
+    "name": "BRJP_direct_US_bill",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.s",
+    "attempts": 3
+  },
+  {
+    "name": "BRJP_pm_BR_bill",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (56) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "attempts": 3
+  },
+  {
+    "name": "JPBR_pm_JP_bill",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve": "",
+    "err": "no paypal pmt=['card', 'link']",
+    "attempts": 3
+  },
+  {
+    "name": "US_pm_promoJP",
+    "rc": 0,
+    "ba_ok": true,
+    "ba": "BA-1V825217FX069033A",
+    "amt": "2178",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve": "approved",
+    "err": "",
+    "attempts": 1
+  },
+  {
+    "name": "US_direct_promoBR",
+    "rc": 0,
+    "ba_ok": true,
+    "ba": "BA-15427080S26291638",
+    "amt": "2178",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve": "approved",
+    "err": "",
+    "attempts": 1
+  }
+]

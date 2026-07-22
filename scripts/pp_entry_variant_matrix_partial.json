@@ -1,0 +1,578 @@
+[
+  {
+    "label": "BR_all_plans_pricing_modal_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_all_plans_pricing_modal_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_all_plans_pricing_modal_nopromo_hosted",
+    "http": 200,
+    "amt": "10964",
+    "zero": false,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "pix"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_all_plans_pricing_modal_nopromo_custom",
+    "http": 200,
+    "amt": "10964",
+    "zero": false,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "pix"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_pricing_modal_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_pricing_modal_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_pricing_modal_nopromo_hosted",
+    "http": 200,
+    "amt": null,
+    "zero": null,
+    "paypal": null,
+    "pmt": null,
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a16CsbTLIFR4EgDWtSCs8PdK1NT78qdyMqCRTs1XpJiD0xwUb44GZ53vqQ/init  status=400 req"
+  },
+  {
+    "label": "BR_pricing_modal_nopromo_custom",
+    "http": 200,
+    "amt": null,
+    "zero": null,
+    "paypal": null,
+    "pmt": null,
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a14TFoh8RlgyEnFjveVfhzqJv9CPVMsmUN5yxV3Au9WfzdRA37DYOMJh5T/init  status=400 req"
+  },
+  {
+    "label": "BR_settings_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1ux64aAmYZielHU3tFgWuaHiv0npwO70h2OKNoE07i9K9Fdg7H2NxLdGy/init  status=400 req"
+  },
+  {
+    "label": "BR_settings_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_settings_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_settings_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_side_nav_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_side_nav_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_side_nav_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_side_nav_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_gift_code_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_gift_code_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1sBdHSp621wHGGTIx2CS7kZ1SL1EgJuFULUQx7c11B6K8y82abbO6MMag/init  status=400 req"
+  },
+  {
+    "label": "BR_gift_code_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1NznBpCiMfcmMWLb971JyCiPa8d0D2u6WlM6xM1eBCPtEJttXutxA1U1f/init  status=400 req"
+  },
+  {
+    "label": "BR_gift_code_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "Failed to perform, curl: (35) TLS connect error: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER. See https://curl.se/libc"
+  },
+  {
+    "label": "BR_plus_upsell_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_plus_upsell_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_plus_upsell_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.s"
+  },
+  {
+    "label": "BR_plus_upsell_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_account_payment_method_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_account_payment_method_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_account_payment_method_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "BR_account_payment_method_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "Failed to perform, curl: (56) BoringSSL SSL_read: BoringSSL: error:1e000065:Cipher functions:OPENSSL_internal:BAD_DECRYPT, errno 0. See http"
+  },
+  {
+    "label": "JP_all_plans_pricing_modal_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_all_plans_pricing_modal_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_all_plans_pricing_modal_nopromo_hosted",
+    "http": 200,
+    "amt": "2993",
+    "zero": false,
+    "paypal": false,
+    "pmt": [
+      "card"
+    ],
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.s"
+  },
+  {
+    "label": "JP_all_plans_pricing_modal_nopromo_custom",
+    "http": 200,
+    "amt": "2993",
+    "zero": false,
+    "paypal": false,
+    "pmt": [
+      "card"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_pricing_modal_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_pricing_modal_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_pricing_modal_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_pricing_modal_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_settings_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_settings_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "Failed to perform, curl: (56) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+  },
+  {
+    "label": "JP_settings_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_settings_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_side_nav_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_side_nav_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_side_nav_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_side_nav_nopromo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_gift_code_promo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_gift_code_promo_custom",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_gift_code_nopromo_hosted",
+    "http": 200,
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_gift_code_nopromo_custom",
+    "http": 200,
+    "amt": "2993",
+    "zero": false,
+    "paypal": false,
+    "pmt": [
+      "card"
+    ],
+    "err": null
+  },
+  {
+    "label": "JP_plus_upsell_promo_hosted",
+    "http": null,
+    "amt": null,
+    "zero": null,
+    "paypal": null,
+    "pmt": null,
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.s"
+  }
+]

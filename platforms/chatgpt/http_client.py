@@ -1,7 +1,7 @@
 """OpenAI 专用 HTTP 客户端"""
 from typing import Any, Dict, Optional, Tuple
 
-from core.http_client import HTTPClient, HTTPClientError, RequestConfig
+from core.http_client import HTTPClient, HTTPClientError, RequestConfig, preferred_proxy_upstream
 from core.proxy_pool import get_proxy_runtime_config, normalize_proxy_url
 from .constants import ERROR_MESSAGES
 import logging
@@ -15,6 +15,10 @@ def _is_local_proxy_url(value: str | None) -> bool:
 
 def _with_runtime_proxy_upstream(proxy_url: str | None, config: RequestConfig | None) -> RequestConfig | None:
     if config and str(getattr(config, "proxy_upstream_url", "") or "").strip():
+        route_upstream = str(config.proxy_upstream_url or "").strip()
+        config.proxy_route_upstream_url = route_upstream
+        config.proxy_upstream_url = preferred_proxy_upstream(proxy_url, route_upstream)
+        config.proxy_upstream_fallback_direct = True
         return config
     if not proxy_url or _is_local_proxy_url(proxy_url):
         return config
@@ -22,7 +26,9 @@ def _with_runtime_proxy_upstream(proxy_url: str | None, config: RequestConfig | 
     if not upstream_url:
         return config
     next_config = config or RequestConfig()
-    next_config.proxy_upstream_url = upstream_url
+    next_config.proxy_route_upstream_url = upstream_url
+    next_config.proxy_upstream_url = preferred_proxy_upstream(proxy_url, upstream_url)
+    next_config.proxy_upstream_fallback_direct = True
     return next_config
 
 

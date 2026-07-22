@@ -1,0 +1,92 @@
+def stripe_poll_redirect_url(
+    proxy: str,
+    publishable_key: str,
+    checkout_session_id: str,
+    *,
+    timeout_seconds: float = 25.0,
+) -> str:
+    session = proxy_requests_session(proxy)
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    params = {
+        "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
+        "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
+        "elements_session_client[elements_init_source]": "custom_checkout",
+        "elements_session_client[referrer_host]": "chatgpt.com",
+        "elements_session_client[session_id]": f"elements_session_{uuid.uuid4().hex[:11]}",
+        "elements_session_client[stripe_js_id]": str(uuid.uuid4()),
+        "elements_session_client[locale]": "en",
+        "elements_session_client[is_aggregation_expected]": "false",
+        "elements_options_client[saved_payment_method][enable_save]": "never",
+        "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+        "key": publishable_key,
+        "_stripe_version": STRIPE_INIT_VERSION,
+    }
+    try:
+        last_status = 0
+        while time.monotonic() < deadline:
+            response = session.get(
+                f"https://api.stripe.com/v1/payment_pages/{checkout_session_id}",
+                params=params,
+                timeout=5,
+            )
+            last_status = response.status_code
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                except Exception:
+                    data = {}
+                redirect_url = extract_redirect_to_url(data)
+                if redirect_url:
+                    return redirect_url
+            time.sleep(0.75)
+        raise PublicApiError(
+            "stripe_redirect_poll_timeout",
+            "Stripe redirect 轮询超时",
+            HTTPStatus.BAD_GATEWAY,
+            {"status": last_status},
+        )
+    finally:
+        session.close()
+
+
+def schedule_background_redirect_poll(
+    *,
+    proxy: str,
+    publishable_key: str,
+    checkout_session_id: str,
+    token_hash: str,
+    proxy_geo: dict[str, Any] | None,
+    amount_gate: dict[str, Any],
+    billing: dict[str, str],
+    processor_entity: str,
+    reason: str,
+) -> None:
+    if not checkout_session_id or not publishable_key or APPROVE_BACKGROUND_POLL_SECONDS <= 0:
+        return
+    job_key = hashlib.sha256(f"{token_hash}:{checkout_session_id}:{publishable_key[:16]}".encode("utf-8")).hexdigest()
+    with BACKGROUND_JOB_LOCK:
+        if job_key in BACKGROUND_JOB_KEYS:
+            return
+        BACKGROUND_JOB_KEYS.add(job_key)
+
+    def job() -> None:
+        try:
+            redirect_url = stripe_poll_redirect_url(
+                proxy,
+                publishable_key,
+                checkout_session_id,
+                timeout_seconds=APPROVE_BACKGROUND_POLL_SECONDS,
+            )
+            if not REAL_PAYPAL_AUTHORIZE_RE.match(redirect_url):
+                return
+            elapsed_ms = int(APPROVE_BACKGROUND_POLL_SECONDS * 1000)
+            record_city_stat(proxy_geo, True, elapsed_ms)
+            increment_counter()
+            append_background_link(
+                {
+                    "ok": True,
+                    "code": "paypal_authorize_ready_background",
+                    "token_hash": token_hash,
+                    "checkout_session_id": checkout_session_id,
+                    "processor_entity": processor_entity,
+                  

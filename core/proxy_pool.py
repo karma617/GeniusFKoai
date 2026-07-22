@@ -25,6 +25,11 @@ PROXY_STRATEGIES = {
 }
 
 
+def is_local_proxy_url(value: str | None) -> bool:
+    proxy = str(normalize_proxy_url(value) or value or "").strip().lower()
+    return any(marker in proxy for marker in ("127.0.0.1", "localhost", "[::1]", "0.0.0.0"))
+
+
 def normalize_proxy_scheme(value: str | None) -> str:
     scheme = str(value or "").strip().lower()
     return scheme if scheme in PROXY_IMPORT_SCHEMES else "http"
@@ -93,6 +98,8 @@ def get_proxy_runtime_config() -> dict[str, str]:
     upstream_url = normalize_proxy_url(
         config_store.get("proxy_upstream_url", DEFAULT_PROXY_UPSTREAM_URL)
     ) or ""
+    if not upstream_url and is_local_proxy_url(fallback_url):
+        upstream_url = fallback_url
     return {"strategy": strategy, "fallback_url": fallback_url, "upstream_url": upstream_url}
 
 

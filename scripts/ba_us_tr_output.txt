@@ -1,0 +1,29 @@
+=== US+TR probe (free-trial token) ===
+--- matrix ---
+{"proxy": "US", "country": "TR", "currency": "TRY", "amt": "", "zero": false, "paypal": false, "pmt": null, "one_click": null, "promo": null, "err": "checkout 422"}
+{"proxy": "US", "country": "TR", "currency": "USD", "amt": "", "zero": false, "paypal": false, "pmt": null, "one_click": null, "promo": null, "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library "}
+{"proxy": "TR", "country": "TR", "currency": "TRY", "amt": "", "zero": false, "paypal": false, "pmt": null, "one_click": null, "promo": null, "err": "checkout 422"}
+{"proxy": "TR", "country": "US", "currency": "USD", "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "one_click": false, "promo": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": ""}
+{"proxy": "US", "country": "US", "currency": "USD", "amt": "2210", "zero": false, "paypal": true, "pmt": ["card", "paypal"], "one_click": false, "promo": null, "err": ""}
+
+--- hammer US proxy + TR checkout x12 ---
+  [01] cur=TRY amt=       zero=False pp=False approve=                 ba_ok=False ba= err=checkout 422
+  [02] cur=TRY amt=       zero=False pp=False approve=                 ba_ok=False ba= err=checkout 422
+  [03] cur=TRY amt=       zero=False pp=False approve=                 ba_ok=False ba= err=checkout 422
+  [04] cur=TRY amt=       zero=False pp=False approve=                 ba_ok=False ba= err=checkout 422
+  [05] cur=TRY amt=       zero=False pp=False approve=                 ba_ok=False ba= err=checkout 422
+  [06] cur=TRY amt=       zero=False pp=False approve=                 ba_ok=False ba= err=checkout 422
+  [07] cur=TRY amt=       zero=False pp=False approve=                 ba_ok=False ba= err=checkout 422
+  [08] cur=TRY amt=       zero=False pp=False approve=network_error    ba_ok=False ba= err=Failed to perform, curl: (35) TLS connect error: e
+  [09] cur=USD amt=2210   zero=False pp=False approve=                 ba_ok=False ba= err=no paypal
+  [10] cur=USD amt=2210   zero=False pp=False approve=                 ba_ok=False ba= err=no paypal
+  [11] cur=USD amt=       zero=False pp=False approve=network_error    ba_ok=False ba= err=Failed to perform, curl: (35) TLS connect error: e
+  [12] cur=USD amt=2210   zero=False pp=False approve=                 ba_ok=False ba= err=no paypal
+
+=== SUMMARY ===
+hammer_total=12 ba_ok=0 zero=0 zero_and_ba=0
+approve counts: {'empty': 10, 'network_error': 2}
+amt counts: {'': 9, '2210': 3}
+paypal counts: {'False': 12}
+saved scripts/ba_us_tr_results.json
+=== DONE ===

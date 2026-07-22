@@ -730,6 +730,7 @@ class RegistrationEngine:
 
         self._user_already_exists: bool = False
         self._last_create_account_error_code: str = ""
+        self._last_create_account_transport_error: str = ""
 
         self._platform_authorize_final_url: str = ""
 
@@ -1382,22 +1383,42 @@ class RegistrationEngine:
         text = str(message or "").strip().lower()
         if not text:
             return False
-        retry_markers = (
-            "signin_no_authorize_url_http_403",
-            "tls connect error",
-            "openssl_internal",
-            "curl: (35)",
-            "connection reset",
-            "connection aborted",
-            "remote end closed connection",
-            "connect timeout",
-            "connection timeout",
-            "timed out",
-            "timeout",
-            "network error",
-            "failed to perform",
-        )
+        retry_markers = ("signin_no_authorize_url_http_403",) + RegistrationEngine._CHATGPT_TRANSPORT_RETRY_MARKERS
         return any(marker in text for marker in retry_markers)
+
+
+    _CHATGPT_TRANSPORT_RETRY_MARKERS: tuple[str, ...] = (
+        "tls connect error",
+        "openssl_internal",
+        "boringssl",
+        "bad_decrypt",
+        "curl: (28)",
+        "curl: (35)",
+        "curl: (55)",
+        "curl: (56)",
+        "curl: (97)",
+        "connection reset",
+        "connection aborted",
+        "connection closed",
+        "remote end closed connection",
+        "connect timeout",
+        "connection timeout",
+        "timed out",
+        "timeout",
+        "proxyerror",
+        "proxy error",
+        "network error",
+        "failed to perform",
+        "ssl_read",
+    )
+
+
+    @classmethod
+    def _is_chatgpt_transport_retryable_error(cls, message: str) -> bool:
+        text = str(message or "").strip().lower()
+        if not text:
+            return False
+        return any(marker in text for marker in cls._CHATGPT_TRANSPORT_RETRY_MARKERS)
 
 
     def _reset_latest_chatgpt_session_for_retry(self) -> None:
@@ -1416,6 +1437,7 @@ class RegistrationEngine:
         self._otp_page_type = None
         self._latest_chatgpt_init_final_url = ""
         self._last_about_you_error = ""
+        self._last_create_account_transport_error = ""
 
 
     def _latest_chatgpt_init_email_oauth(self) -> tuple[bool, str]:
@@ -1595,6 +1617,7 @@ class RegistrationEngine:
         """按 chatgpt_register 最新链路创建账号资料，不插入旧状态推进请求。"""
         try:
             self._last_create_account_error_code = ""
+            self._last_create_account_transport_error = ""
             user_info = generate_random_user_info()
             self._log(f"生成用户信息: {user_info['name']}, 生日: {user_info['birthdate']}")
             headers = {
@@ -1642,6 +1665,7 @@ class RegistrationEngine:
                 self._log(f"create_account continue_url: {self._create_account_continue_url}")
             return True
         except Exception as exc:
+            self._last_create_account_transport_error = str(exc)
             self._log(f"创建账户失败: {exc}", "error")
             return False
 
@@ -1649,8 +1673,14 @@ class RegistrationEngine:
     def _latest_chatgpt_create_account_with_retry(self) -> bool:
         for attempt in range(1, 4):
             self._last_create_account_error_code = ""
+            self._last_create_account_transport_error = ""
             if self._latest_chatgpt_create_user_account():
                 return True
+            transport_error = str(getattr(self, "_last_create_account_transport_error", "") or "")
+            if transport_error and self._is_chatgpt_transport_retryable_error(transport_error) and attempt < 3:
+                self._log(f"create_account 网络/TLS失败，重试 ({attempt + 1}/3)...", "warning")
+                time.sleep(2)
+                continue
             error_code = str(getattr(self, "_last_create_account_error_code", "") or "")
             if error_code == "registration_disallowed" and attempt < 3:
                 self._log(f"registration_disallowed，按最新版流程重试创建账号 ({attempt}/3)", "warning")

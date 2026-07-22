@@ -1,0 +1,203 @@
+[
+  {
+    "label": "US_bill_BR",
+    "region": "US",
+    "bill": "BR/BRL",
+    "http": 200,
+    "trial": false,
+    "promo": null,
+    "pmt": [
+      "card"
+    ],
+    "amt": "10964",
+    "paypal": false,
+    "zero": false,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "974",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "10964"
+    }
+  },
+  {
+    "label": "US_bill_JP",
+    "region": "US",
+    "bill": "JP/JPY",
+    "http": 200,
+    "trial": false,
+    "promo": null,
+    "pmt": [
+      "card"
+    ],
+    "amt": "2993",
+    "paypal": false,
+    "zero": false,
+    "amts": {
+      "subtotal": "2727",
+      "total_exclusive_tax": "266",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2993"
+    }
+  },
+  {
+    "label": "US_bill_TR",
+    "region": "US",
+    "bill": "TR/TRY",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first fo"
+  },
+  {
+    "label": "TR_bill_US",
+    "region": "TR",
+    "bill": "US/USD",
+    "http": 200,
+    "trial": false,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "TR_bill_TR",
+    "region": "TR",
+    "bill": "TR/TRY",
+    "http": 422,
+    "err": "{\"detail\":[{\"type\":\"enum\",\"loc\":[\"body\",\"billing_details\",\"currency\"],\"msg\":\"Input should be 'USD', 'AUD', 'CAD', 'GBP', 'EUR', 'CLP', 'JPY', 'INR', 'IDR', 'PKR"
+  },
+  {
+    "label": "VN_bill_US",
+    "region": "VN",
+    "bill": "US/USD",
+    "http": 200,
+    "trial": false,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "TH_bill_US",
+    "region": "TH",
+    "bill": "US/USD",
+    "http": 200,
+    "trial": false,
+    "promo": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "IE_bill_US",
+    "region": "IE",
+    "bill": "US/USD",
+    "http": 200,
+    "trial": false,
+    "promo": null,
+    "pmt": [
+      "card"
+    ],
+    "amt": "2195",
+    "paypal": false,
+    "zero": false,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "195",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2195"
+    }
+  },
+  {
+    "label": "BR_bill_US_nopromo",
+    "region": "BR",
+    "bill": "US/USD",
+    "http": 200,
+    "trial": false,
+    "promo": null,
+    "pmt": [
+      "card"
+    ],
+    "amt": "2195",
+    "paypal": false,
+    "zero": false,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "195",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2195"
+    }
+  },
+  {
+    "label": "JP_bill_US_nopromo",
+    "region": "JP",
+    "bill": "US/USD",
+    "http": 200,
+    "trial": false,
+    "promo": null,
+    "pmt": [
+      "card"
+    ],
+    "amt": "2195",
+    "paypal": false,
+    "zero": false,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "195",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2195"
+    }
+  }
+]

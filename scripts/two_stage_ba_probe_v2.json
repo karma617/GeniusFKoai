@@ -1,0 +1,55 @@
+[
+  {
+    "test": "D_BR_create_US_init_US_tax",
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "ba": "",
+    "ba_ok": false,
+    "err": "{\n  \"error\": {\n    \"code\": \"checkout_confirm_error\",\n    \"extra_fields\": {\n      \"payment_method_type\": \"paypal\",\n      \"confirm_error_reason\": \"payment_method_types_mismatch\"\n    },\n    \"message\": \"A"
+  },
+  {
+    "test": "E_BR_create_US_init_BR_tax",
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "ba": "",
+    "ba_ok": false,
+    "err": "{\n  \"error\": {\n    \"code\": \"checkout_confirm_error\",\n    \"extra_fields\": {\n      \"payment_method_type\": \"paypal\",\n      \"confirm_error_reason\": \"payment_method_types_mismatch\"\n    },\n    \"message\": \"A"
+  },
+  {
+    "test": "F_US_full",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt": 2178,
+    "ba": "",
+    "ba_ok": false
+  },
+  {
+    "test": "G_BR_create_BR_init_BR_tax",
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "ba": "",
+    "ba_ok": false,
+    "err": "{\n  \"error\": {\n    \"code\": \"checkout_confirm_error\",\n    \"extra_fields\": {\n      \"payment_method_type\": \"paypal\",\n      \"confirm_error_reason\": \"payment_method_types_mismatch\"\n    },\n    \"message\": \"A"
+  },
+  {
+    "test": "H_US_create_US_init_BR_tax",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt": 2000,
+    "ba": "",
+    "ba_ok": false
+  }
+]

@@ -1,0 +1,23 @@
+{
+  "attempts": 40,
+  "stats": {
+    "network": 5,
+    "zero_no_paypal": 27
+  },
+  "ba_ok": 0,
+  "zero_paypal_hits": 0,
+  "sample_gate_fail": [
+    [
+      "gate_fail zero=True paypal=False pmt=['c",
+      27
+    ],
+    [
+      "Stripe POST https://api.stripe.com/v1/pa",
+      8
+    ],
+    [
+      "Failed to perform, curl: (35) TLS connec",
+      5
+    ]
+  ]
+}

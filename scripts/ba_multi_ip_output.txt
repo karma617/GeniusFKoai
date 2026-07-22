@@ -1,0 +1,29 @@
+=== US x10 ===
+  [ 1] ba=True  ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=
+       BA=BA-7BG57291P8817241T
+  [ 2] ba=True  ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=
+       BA=BA-7VL49643792211622
+  [ 3] ba=True  ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=
+       BA=BA-4LJ05065DF811603T
+  [ 4] ba=False ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=Failed to perform, curl: (35) TLS connec
+  [ 5] ba=True  ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=
+       BA=BA-8VS00071MV685234J
+  [ 6] ba=False ip=gate.kookeey.info amt=       approve=0 sa=                     err=Failed to perform, curl: (56) Proxy CONN
+  [ 7] ba=True  ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=
+       BA=BA-1EN61177V36801359
+  [ 8] ba=False ip=gate.kookeey.info amt=       approve=0 sa=                     err=Failed to perform, curl: (35) TLS connec
+  [ 9] ba=True  ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=
+       BA=BA-4JC966777V125373B
+  [10] ba=True  ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=
+       BA=BA-9RK80724M90118708
+
+=== BR x5 ===
+  [ 1] ba=False ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=timeout sa=requires_approval
+  [ 2] ba=False ip=gate.kookeey.info amt=       approve=0 sa=                     err=Failed to perform, curl: (35) TLS connec
+  [ 3] ba=False ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=timeout sa=requires_approval
+  [ 4] ba=False ip=gate.kookeey.info amt=2178   approve=0 sa=                     err=Failed to perform, curl: (28) Operation 
+  [ 5] ba=False ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=timeout sa=requires_approval
+
+=== JP x5 ===
+  [ 1] ba=False ip=gate.kookeey.info amt=       approve=0 sa=                     err=Failed to perform, curl: (35) TLS connec
+  [ 2] ba=False ip=gate.kookeey.info amt=2178   approve=200 sa=requires_approval    err=timeout sa=requires_approval

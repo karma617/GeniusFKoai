@@ -1,0 +1,50 @@
+def checkout_pairs_for_proxy(payload: dict[str, Any], geo: dict[str, Any] | None) -> list[tuple[str, str]]:
+    pairs = parse_checkout_matrix(payload)
+    limit = int(payload.get("checkout_pair_limit") or CHECKOUT_PAIR_LIMIT or len(pairs))
+    return pairs[: max(1, min(limit, len(pairs)))]
+
+
+def validate_billing_identity(billing: dict[str, str]) -> dict[str, str]:
+    name = str(billing.get("name") or "").strip()
+    email = str(billing.get("email") or "").strip()
+    country = str(billing.get("country") or "").strip().upper()
+    postal_code = str(billing.get("postal_code") or "").strip()
+    if not NAME_RE.fullmatch(name):
+        raise PublicApiError("billing_invalid_name", "账单姓名格式异常", HTTPStatus.BAD_GATEWAY, {"country": country})
+    if not EMAIL_RE.fullmatch(email):
+        raise PublicApiError("billing_invalid_email", "账单邮箱格式异常", HTTPStatus.BAD_GATEWAY, {"country": country})
+    if not re.fullmatch(r"[A-Z]{2}", country):
+        raise PublicApiError("billing_invalid_country", "账单国家格式异常", HTTPStatus.BAD_GATEWAY, {"country": country})
+    postal_re = POSTAL_CODE_PATTERNS.get(country, DEFAULT_POSTAL_RE)
+    if not postal_re.fullmatch(postal_code):
+        raise PublicApiError(
+            "billing_invalid_postal_code",
+            "账单邮编格式异常",
+            HTTPStatus.BAD_GATEWAY,
+            {"country": country, "postal_code": postal_code},
+        )
+    return billing
+
+
+def billing_email_for_name(name: str) -> str:
+    local = re.sub(r"[^a-z0-9]+", ".", name.lower()).strip(".")
+    return f"{local}.{uuid.uuid4().hex[:6]}@example.com"
+
+
+def billing_from_proxy_geo(info: dict[str, Any] | None, fallback_country: str = "US") -> dict[str, str]:
+    country = country_code_from_geo(info) or normalize_country_for_billing(fallback_country)
+    city = str((info or {}).get("city") or "").strip().lower()
+    if country == "JP":
+        template = next((value for key, value in JP_CITY_BILLING_TEMPLATES.items() if key in city), COUNTRY_BILLING_TEMPLATES["JP"])
+    else:
+        template = COUNTRY_BILLING_TEMPLATES.get(country, COUNTRY_BILLING_TEMPLATES["US"])
+        if country not in COUNTRY_BILLING_TEMPLATES:
+            country = "US"
+    names = COUNTRY_BILLING_NAMES.get(country, COUNTRY_BILLING_NAMES["US"])
+    name = names[uuid.uuid4().int % len(names)]
+    line1, template_city, state, postal_code = template
+    return validate_billing_identity(
+        {
+            "name": name,
+            "email": billing_email_for_name(name),
+            "country": country,

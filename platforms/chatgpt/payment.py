@@ -235,10 +235,19 @@ def _patch_playwright_firefox_pageerror_location_bug(
         return False
 
 
+def _build_proxy_request_kwargs(proxy: Optional[str]) -> dict:
+    from core.http_client import build_cffi_proxy_request_kwargs
+    from core.proxy_pool import get_proxy_runtime_config, normalize_proxy_url
+
+    runtime_config = get_proxy_runtime_config()
+    return build_cffi_proxy_request_kwargs(
+        normalize_proxy_url(proxy) or proxy,
+        proxy_upstream_url=runtime_config.get("upstream_url", ""),
+    )
+
+
 def _build_proxies(proxy: Optional[str]) -> Optional[dict]:
-    if proxy:
-        return {"http": proxy, "https": proxy}
-    return None
+    return _build_proxy_request_kwargs(proxy).get("proxies")
 
 
 def _normalize_card_expiry(value: str) -> tuple[str, str]:
@@ -650,9 +659,9 @@ def _fetch_usage_data(account, proxy: Optional[str] = None) -> dict:
     resp = cffi_requests.get(
         WHAM_USAGE_URL,
         headers=headers,
-        proxies=_build_proxies(proxy),
         timeout=20,
         impersonate="chrome124",
+        **_build_proxy_request_kwargs(proxy),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -8804,9 +8813,9 @@ def _stripe_init_long_url(
         f"https://api.stripe.com/v1/payment_pages/{cs_id}/init",
         data=body,
         headers=headers,
-        proxies=_build_proxies(proxy),
         timeout=30,
         impersonate="chrome110",
+        **_build_proxy_request_kwargs(proxy),
     )
     if resp.status_code != 200:
         raise ValueError(f"Stripe init 失败 HTTP {resp.status_code}: {resp.text[:300]}")
@@ -8886,9 +8895,9 @@ def generate_plus_link(
         PAYMENT_CHECKOUT_URL,
         headers=headers,
         json=payload,
-        proxies=_build_proxies(proxy),
         timeout=30,
         impersonate="chrome110",
+        **_build_proxy_request_kwargs(proxy),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -8967,9 +8976,9 @@ def generate_team_link(
         PAYMENT_CHECKOUT_URL,
         headers=headers,
         json=payload,
-        proxies=_build_proxies(proxy),
         timeout=30,
         impersonate="chrome110",
+        **_build_proxy_request_kwargs(proxy),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -9030,9 +9039,9 @@ def fetch_subscription_status_details(account: Account, proxy: Optional[str] = N
         resp = cffi_requests.get(
             "https://chatgpt.com/backend-api/me",
             headers=headers,
-            proxies=_build_proxies(proxy),
             timeout=20,
             impersonate="chrome110",
+            **_build_proxy_request_kwargs(proxy),
         )
         resp.raise_for_status()
         data = resp.json()

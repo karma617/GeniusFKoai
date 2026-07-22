@@ -1,0 +1,5 @@
+=== FR/EUR + BE/EUR full flow ===
+FR: amt=2300 approve=approved ba=BA-6XW20660XD0777353
+BE: amt=2300 approve=approved ba=BA-30J48921FU482902S
+
+=== DONE ===

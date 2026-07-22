@@ -1,0 +1,100 @@
+def billing_from_proxy_geo(info: dict[str, Any] | None, fallback_country: str = "US") -> dict[str, str]:
+    country = country_code_from_geo(info) or normalize_country_for_billing(fallback_country)
+    city = str((info or {}).get("city") or "").strip().lower()
+    if country == "JP":
+        template = next((value for key, value in JP_CITY_BILLING_TEMPLATES.items() if key in city), COUNTRY_BILLING_TEMPLATES["JP"])
+    else:
+        template = COUNTRY_BILLING_TEMPLATES.get(country, COUNTRY_BILLING_TEMPLATES["US"])
+        if country not in COUNTRY_BILLING_TEMPLATES:
+            country = "US"
+    names = COUNTRY_BILLING_NAMES.get(country, COUNTRY_BILLING_NAMES["US"])
+    name = names[uuid.uuid4().int % len(names)]
+    line1, template_city, state, postal_code = template
+    return validate_billing_identity(
+        {
+            "name": name,
+            "email": billing_email_for_name(name),
+            "country": country,
+            "line1": line1,
+            "city": template_city,
+            "state": state,
+            "postal_code": postal_code,
+        }
+    )
+
+
+def normalize_country_for_billing(country: str) -> str:
+    country = str(country or "").strip().upper()
+    return country if re.fullmatch(r"[A-Z]{2}", country) else "US"
+
+
+def proxy_requests_session(proxy: str):
+    from curl_cffi.requests import Session as CurlCffiSession
+
+    session = CurlCffiSession(impersonate=CURL_IMPERSONATE_PROFILE)
+    session.headers.update(
+        {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+    )
+    if proxy:
+        session.proxies = {"http": proxy, "https": proxy}
+    return session
+
+
+def chatgpt_requests_session(proxy: str, access_token: str):
+    device_id = str(uuid.uuid4())
+    session = proxy_requests_session(proxy)
+    session.headers.update(
+        {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+            "Origin": "https://chatgpt.com",
+            "Referer": "https://chatgpt.com/",
+            "oai-device-id": device_id,
+            "oai-language": "en-US",
+            "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "Cookie": f"oai-did={device_id}",
+        }
+    )
+    return session
+
+
+def create_checkout(
+    access_token: str,
+    proxy: str,
+    country: str,
+    currency: str,
+    timeout_seconds: int = 30,
+    chatgpt_session: Any | None = None,
+) -> dict[str, Any]:
+    session = chatgpt_session or chatgpt_requests_session(proxy, access_token)
+    path = "/backend-api/payments/checkout"
+    payload = {
+        "entry_point": "all_plans_pricing_modal",
+        "plan_name": "chatgptplusplan",
+        "billing_details": {
+            "country": country,
+            "currency": currency,
+        },
+        "promo_campaign": {
+            "promo_campaign_id": "plus-1-month-free",
+            "is_coupon_from_query_param": False,
+        },
+        "checkout_ui_mode": "hosted",
+    }
+    try:
+        response = session.post(
+            "https://chatgpt.com" + path,
+            json=payload,
+            headers={
+                "Referer": "https://chatgpt.com/",
+                "x-openai-target-path": path,
+                "x-openai-ta

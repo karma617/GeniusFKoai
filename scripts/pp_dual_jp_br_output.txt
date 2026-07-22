@@ -1,0 +1,11 @@
+=== dual proxy extract checkout=JP promo=BR bill=JP/JPY ui=custom promo_when=after_init promo_addr=BR full=True max=2 ===
+  [01] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200}
+
+=== SUMMARY ===
+  empty: 2 total, 0 ba_ok
+  overall_ba_ok=0/2 zero_and_paypal=0
+  saved=scripts/pp_dual_jp_br_results.json
+=== DONE ===

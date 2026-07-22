@@ -358,6 +358,12 @@ function getTokenStatusLabel(acc: any) {
   return getPrimaryToken(acc) ? 'AT可用' : '无AT'
 }
 
+function getAccessTokenCopyCount(acc: any) {
+  const raw = getAccountOverview(acc)?.access_token_copy_count
+  const count = typeof raw === 'number' ? raw : Number(raw || 0)
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
+}
+
 function resolveTimeMs(value: any) {
   if (value === null || value === undefined || value === '') return 0
   if (typeof value === 'number') return value > 1000000000000 ? value : value * 1000
@@ -2726,6 +2732,7 @@ export default function Accounts() {
   const [batchHealthChecking, setBatchHealthChecking] = useState(false)
   const [batchPlanRefreshing, setBatchPlanRefreshing] = useState(false)
   const [rowActionBusy, setRowActionBusy] = useState('')
+  const [copyingAccessTokenId, setCopyingAccessTokenId] = useState<number | null>(null)
   const [planRefreshDialog, setPlanRefreshDialog] = useState<PlanRefreshDialogState>({
     open: false,
     running: false,
@@ -2933,6 +2940,29 @@ export default function Accounts() {
   const copy = (text: string) => {
     if (navigator.clipboard) { navigator.clipboard.writeText(text) }
     else { const el = document.createElement('textarea'); el.value = text; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) }
+  }
+
+  const copyAccessToken = async (acc: any, token: string) => {
+    const accountId = Number(acc.id)
+    if (!token || copyingAccessTokenId === accountId) return
+    const overview = { ...getAccountOverview(acc) }
+    const nextCount = getAccessTokenCopyCount(acc) + 1
+    setCopyingAccessTokenId(accountId)
+    setError('')
+    try {
+      copy(token)
+      overview.access_token_copy_count = nextCount
+      const updated = await apiFetch(`/accounts/${accountId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ overview }),
+      })
+      setAccounts(items => items.map(item => Number(item.id) === accountId ? updated : item))
+      setDetail((current: any | null) => Number(current?.id) === accountId ? updated : current)
+    } catch (exc: any) {
+      setError(`AT 已复制，但复制次数保存失败: ${exc?.message || exc}`)
+    } finally {
+      setCopyingAccessTokenId(null)
+    }
   }
   const startHealthCheck = async () => {
     setBatchHealthChecking(true)
@@ -4269,6 +4299,7 @@ export default function Accounts() {
                   {accounts.map(acc => (
                     (() => {
                       const primaryToken = getPrimaryToken(acc)
+                      const accessTokenCopyCount = getAccessTokenCopyCount(acc)
                       const cashierUrl = getCashierUrl(acc)
                       const planLabel = getAccountPlanLabel(acc)
                       const tokenOk = Boolean(primaryToken)
@@ -4406,12 +4437,12 @@ export default function Accounts() {
                               )}
                               <button onClick={() => setDetail(acc)} className="table-action-btn">查看</button>
                               <button
-                                onClick={() => copy(primaryToken)}
-                                disabled={!primaryToken}
+                                onClick={() => copyAccessToken(acc, primaryToken)}
+                                disabled={!primaryToken || copyingAccessTokenId === acc.id}
                                 className="table-action-btn border-emerald-500/25 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500/45 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
-                                title={primaryToken ? '复制 access_token' : '当前账号没有 AT'}
+                                title={primaryToken ? `复制 access_token，已复制 ${accessTokenCopyCount} 次` : '当前账号没有 AT'}
                               >
-                                复制 AT
+                                {copyingAccessTokenId === acc.id ? '保存中' : `复制 AT${accessTokenCopyCount > 0 ? ` · ${accessTokenCopyCount}` : ''}`}
                               </button>
                               {tab === 'chatgpt' && (
                                 <button

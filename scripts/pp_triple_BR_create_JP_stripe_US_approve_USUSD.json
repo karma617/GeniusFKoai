@@ -1,0 +1,190 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": "",
+    "tax_country": "US",
+    "billing_country": "US",
+    "billing_currency": "USD",
+    "promo_addr_country": "US",
+    "ui_mode": "custom",
+    "promo_when": "none",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    },
+    "cs": "cs_live_a1mQMSNTz6xfDLuMysr6FmTZme36pD5jjiHAfsvPog2F4vhKCa6G9uRc3v",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2000
+    }
+  },
+  {
+    "attempt": 2,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": "",
+    "tax_country": "US",
+    "billing_country": "US",
+    "billing_currency": "USD",
+    "promo_addr_country": "US",
+    "ui_mode": "custom",
+    "promo_when": "none",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    },
+    "cs": "cs_live_a1GPOY8B3BCaXs3smh2VWzGB8L8FYLe6hlDp5af2b9CL0m2vEY1B0oHvqH",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2000
+    }
+  },
+  {
+    "attempt": 3,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": "",
+    "tax_country": "US",
+    "billing_country": "US",
+    "billing_currency": "USD",
+    "promo_addr_country": "US",
+    "ui_mode": "custom",
+    "promo_when": "none",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    },
+    "cs": "cs_live_a1NDMxYo3TQKx2bdQtsGAv2fqI6zuFELlxcXjZzcQjsVnmk6UTiJYYjxPR",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2000
+    }
+  },
+  {
+    "attempt": 4,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": "",
+    "tax_country": "US",
+    "billing_country": "US",
+    "billing_currency": "USD",
+    "promo_addr_country": "US",
+    "ui_mode": "custom",
+    "promo_when": "none",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    },
+    "cs": "cs_live_a12PM0J9OZpbNLfVXf79exo3rqYAyynZNrzH24B9T7j4u16hUUulzZrcFv",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2000
+    }
+  }
+]

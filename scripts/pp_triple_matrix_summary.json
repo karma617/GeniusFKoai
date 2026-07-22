@@ -1,0 +1,127 @@
+[
+  {
+    "name": "US_all_USUSD",
+    "returncode": 0,
+    "ba_ok": true,
+    "ba": "BA-7F851123D9176370E",
+    "amt": "2178",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve": "approved",
+    "err": "",
+    "attempts": 2
+  },
+  {
+    "name": "BR_create_US_stripe_US_approve_USUSD",
+    "returncode": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve": "",
+    "err": "no paypal",
+    "attempts": 3
+  },
+  {
+    "name": "JP_create_US_stripe_US_approve_USUSD",
+    "returncode": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve": "",
+    "err": "no paypal",
+    "attempts": 3
+  },
+  {
+    "name": "BR_create_JP_stripe_US_approve_USUSD",
+    "returncode": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve": "",
+    "err": "no paypal",
+    "attempts": 4
+  },
+  {
+    "name": "BR_create_JP_stripe_US_approve_BRBRL",
+    "returncode": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve": "",
+    "err": "no paypal",
+    "attempts": 3
+  },
+  {
+    "name": "JP_create_BR_stripe_US_approve_JPJPY",
+    "returncode": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "approve": "network_error",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0)",
+    "attempts": 3
+  },
+  {
+    "name": "US_create_US_stripe_promoBR_taxUS",
+    "returncode": 0,
+    "ba_ok": true,
+    "ba": "BA-0H2183042U2609939",
+    "amt": "2178",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve": "approved",
+    "err": "",
+    "attempts": 1
+  },
+  {
+    "name": "US_create_US_stripe_promoJP_taxUS",
+    "returncode": 0,
+    "ba_ok": true,
+    "ba": "BA-0CA05810B4314960G",
+    "amt": "2178",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve": "approved",
+    "err": "",
+    "attempts": 1
+  }
+]

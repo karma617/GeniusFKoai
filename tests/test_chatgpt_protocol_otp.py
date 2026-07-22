@@ -165,6 +165,8 @@ def _bare_engine() -> RegistrationEngine:
     engine._email_otp_exhausted = False
     engine._email_otp_failure_reason = ""
     engine._last_about_you_error = ""
+    engine._last_create_account_error_code = ""
+    engine._last_create_account_transport_error = ""
     engine.protocol_fingerprint = register_module.ProtocolFingerprint.create()
     return engine
 
@@ -832,6 +834,25 @@ def test_latest_chatgpt_register_retries_init_transport_error(monkeypatch):
     assert calls["init"] == 2
     assert calls["reset"] == 1
     assert calls["refresh"] == 2
+
+
+def test_latest_chatgpt_create_account_retries_transport_error(monkeypatch):
+    engine = _bare_engine()
+    calls = {"create": 0}
+
+    def create_account():
+        calls["create"] += 1
+        if calls["create"] == 1:
+            engine._last_create_account_transport_error = "curl: (55) BAD_DECRYPT"
+            return False
+        engine._create_account_continue_url = "https://chatgpt.com/api/auth/callback/openai?code=abc"
+        return True
+
+    engine._latest_chatgpt_create_user_account = create_account
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    assert engine._latest_chatgpt_create_account_with_retry() is True
+    assert calls["create"] == 2
 
 
 def test_latest_chatgpt_init_signin_403_records_response_hint():

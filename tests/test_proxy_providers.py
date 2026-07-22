@@ -5,11 +5,13 @@ import json
 from unittest.mock import patch, MagicMock
 
 import pytest
+import core.proxy_providers as proxy_providers_module
 from core.proxy_providers import (
     ApiExtractProvider,
     ClashProxyProvider,
     RotatingProxyProvider,
     create_proxy_provider,
+    refresh_local_proxy_node,
 )
 
 
@@ -146,6 +148,60 @@ class TestClashProxyProvider:
         assert put.call_args.kwargs["json"] == {"name": "node-a"}
         assert put.call_args.kwargs["headers"] == {"Authorization": "Bearer secret"}
 
+    def test_refresh_local_node_switches_to_different_node(self):
+        provider = ClashProxyProvider(
+            api_url="http://clash-refresh.test",
+            secret="secret",
+            proxy_url="http://127.0.0.1:7897",
+            selector="GLOBAL",
+            check_url="",
+        )
+        payload = {
+            "proxies": {
+                "GLOBAL": {"type": "Selector", "now": "node-a", "all": ["node-a", "node-b"]},
+                "node-a": {"type": "Shadowsocks"},
+                "node-b": {"type": "Vmess"},
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = payload
+        mock_resp.raise_for_status = lambda: None
+        mock_put = MagicMock()
+        mock_put.raise_for_status = lambda: None
+
+        with patch("providers.proxy.clash.requests.get", return_value=mock_resp), patch(
+            "providers.proxy.clash.requests.put",
+            return_value=mock_put,
+        ) as put:
+            result = provider.refresh_local_node(reason="network error")
+
+        assert result["ok"] is True
+        assert result["previous_node"] == "node-a"
+        assert result["selected_node"] == "node-b"
+        assert result["proxy"] == "http://127.0.0.1:7897"
+        put.assert_called_once()
+        assert put.call_args.kwargs["json"] == {"name": "node-b"}
+
+    def test_refresh_local_node_rolls_back_when_exit_check_fails(self):
+        provider = ClashProxyProvider(
+            api_url="http://clash-refresh.test",
+            secret="secret",
+            proxy_url="http://127.0.0.1:7897",
+            selector="GLOBAL",
+            check_url="https://exit-check.test",
+        )
+        switches: list[tuple[str, str]] = []
+        provider.list_nodes = lambda: ("GLOBAL", ["node-a", "node-b"])
+        provider.current_node = lambda selector=None: "node-a"
+        provider._choose_node_after = lambda nodes, current: "node-b"
+        provider.switch_node = lambda selector, node: switches.append((selector, node))
+        provider._check_proxy_exit = MagicMock(side_effect=RuntimeError("exit check failed"))
+
+        with pytest.raises(RuntimeError, match="exit check failed"):
+            provider.refresh_local_node(reason="network error")
+
+        assert switches == [("GLOBAL", "node-b"), ("GLOBAL", "node-a")]
+
     def test_excludes_nodes_by_name_filter(self):
         provider = ClashProxyProvider(
             api_url="http://clash-filter.test",
@@ -174,7 +230,6 @@ class TestClashProxyProvider:
 
         assert proxy == "http://127.0.0.1:7897"
         assert provider.last_node == "US-1"
-
     def test_multi_port_preparation_shuffles_nodes(self, tmp_path, monkeypatch):
         provider = ClashProxyProvider(
             api_url="http://clash-multi.test",
@@ -246,3 +301,36 @@ class TestCreateProxyProvider:
     def test_unknown_provider(self):
         with pytest.raises(RuntimeError, match="未知"):
             create_proxy_provider("unknown", {})
+
+
+def test_refresh_local_proxy_node_uses_configured_clash_for_matching_upstream(monkeypatch):
+    setting = MagicMock()
+    setting.id = 10
+    setting.provider_key = "clash"
+    setting.get_config.return_value = {"clash_proxy_url": "http://127.0.0.1:7897"}
+    setting.get_auth.return_value = {}
+    provider = MagicMock()
+    provider.refresh_local_node.return_value = {"ok": True, "selected_node": "node-b"}
+    repo = MagicMock()
+    repo.list_enabled.return_value = []
+    repo.get_by_key.return_value = setting
+
+    monkeypatch.setattr(
+        "infrastructure.provider_settings_repository.ProviderSettingsRepository",
+        lambda: repo,
+    )
+    monkeypatch.setattr(proxy_providers_module, "create_proxy_provider", lambda *_args, **_kwargs: provider)
+    monkeypatch.setattr(proxy_providers_module, "_LAST_LOCAL_NODE_REFRESH_AT", 0.0)
+    monkeypatch.setattr(proxy_providers_module, "_LAST_LOCAL_NODE_REFRESH_RESULT", None)
+
+    result = refresh_local_proxy_node(
+        proxy_url="socks5h://127.0.0.1:7897",
+        reason="network error",
+        min_interval_seconds=0,
+    )
+
+    assert result["ok"] is True
+    provider.refresh_local_node.assert_called_once_with(
+        proxy_url="socks5h://127.0.0.1:7897",
+        reason="network error",
+    )

@@ -29,10 +29,19 @@ CODEX_PROBE_USER_AGENT = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256
 CODEX_PROBE_INSTRUCTIONS = "You are Codex, a coding agent. Answer briefly."
 
 
+def _build_proxy_request_kwargs(proxy: Optional[str]) -> dict:
+    from core.http_client import build_cffi_proxy_request_kwargs
+    from core.proxy_pool import get_proxy_runtime_config, normalize_proxy_url
+
+    runtime_config = get_proxy_runtime_config()
+    return build_cffi_proxy_request_kwargs(
+        normalize_proxy_url(proxy) or proxy,
+        proxy_upstream_url=runtime_config.get("upstream_url", ""),
+    )
+
+
 def _build_proxies(proxy: Optional[str]) -> dict | None:
-    if not proxy:
-        return None
-    return {"http": proxy, "https": proxy}
+    return _build_proxy_request_kwargs(proxy).get("proxies")
 
 
 def _mask_secret(value: str) -> str:
@@ -352,9 +361,9 @@ def _probe_codex_usage(
         CODEX_RESPONSES_URL,
         headers=headers,
         json=_build_codex_probe_payload(model),
-        proxies=_build_proxies(proxy),
         timeout=20,
         stream=True,
+        **_build_proxy_request_kwargs(proxy),
     )
     try:
         updates = _extract_codex_probe_updates(response)
@@ -677,9 +686,9 @@ def _fetch_profile(access_token: str, proxy: str | None = None) -> tuple[bool, d
                 "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
             },
-            proxies=_build_proxies(proxy),
             timeout=20,
             impersonate="chrome124",
+            **_build_proxy_request_kwargs(proxy),
         )
         if response.status_code == 200:
             return True, response.json()

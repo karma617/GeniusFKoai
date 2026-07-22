@@ -1,0 +1,11 @@
+=== complete extract chk=US stripe=US approve=US promo=JP bill=US/USD tax=US promo_tax=JP skip_main_tax=1 ui=custom confirm=pm full=True max=2 ===
+  [01] approve=approved         ba_ok=False amt=2200   zero=False paypal=True  pmt=['card', 'paypal'] err=failed:checkout_upcoming_invoice_mismatch
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_tax': 200, 'tax': 'skipped', 'pm': 200, 'confirm': 200, 'confirm_keys': ['id', 'object', 'account_settings', 'application', 'approval_method', 'automatic_payment_method_types', 'beta_versions', 'billing_address_collection', 'blob', 'blocked_billing_address_countries', 'bnpl_in_link_ui_enabled', 'bnpl_link_experiment_payment_method_type', 'cancel_url', 'capture_method', 'card_brand_choice', 'card_brands', 'checkout_multistep_ui', 'client_reference_id', 'config_id', 'consent'], 'confirm_sa': 'requires_approval', 'approve_http': 200, 'poll_sa': 'failed'}
+  [02] approve=approved         ba_ok=False amt=2200   zero=False paypal=True  pmt=['card', 'paypal'] err=failed:checkout_upcoming_invoice_mismatch
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_tax': 200, 'tax': 'skipped', 'pm': 200, 'confirm': 200, 'confirm_keys': ['id', 'object', 'account_settings', 'application', 'approval_method', 'automatic_payment_method_types', 'beta_versions', 'billing_address_collection', 'blob', 'blocked_billing_address_countries', 'bnpl_in_link_ui_enabled', 'bnpl_link_experiment_payment_method_type', 'cancel_url', 'capture_method', 'card_brand_choice', 'card_brands', 'checkout_multistep_ui', 'client_reference_id', 'config_id', 'consent'], 'confirm_sa': 'requires_approval', 'approve_http': 200, 'poll_sa': 'failed'}
+
+=== SUMMARY ===
+  approved: 2 total, 0 ba_ok
+  overall_ba_ok=0/2 zero_and_paypal=0
+  saved=scripts/pp_complete_US_promoJP_skipTax_pm.json
+=== DONE ===

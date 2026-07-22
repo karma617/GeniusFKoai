@@ -1,0 +1,16 @@
+=== dual proxy extract checkout=US promo=TR bill=US/USD ui=custom promo_when=after_init promo_addr=US full=True max=3 ===
+  [01] approve=                 ba_ok=False amt=2178   zero=False paypal=False pmt=['card'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200}
+  [02] approve=network_error    ba_ok=False amt=       zero=False paypal=False pmt=None err=Failed to perform, curl: (35) TLS connect error: error:00000000:invali
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000'}
+  [03] approve=approved         ba_ok=True  amt=2178   zero=False paypal=True  pmt=['card', 'paypal'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200, 'approve_path': '/backend-api/payments/checkout/approve'}
+  BA_URL=https://www.paypal.com/agreements/approve?ba_token=BA-5G58731462449854P
+
+=== SUMMARY ===
+  empty: 1 total, 0 ba_ok
+  network_error: 1 total, 0 ba_ok
+  approved: 1 total, 1 ba_ok
+  overall_ba_ok=1/3 zero_and_paypal=0
+  saved=scripts/pp_dual_us_tr_results3.json
+=== DONE ===

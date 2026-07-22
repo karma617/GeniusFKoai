@@ -1,0 +1,68 @@
+def run_extraction_with_proxy(access_token: str, proxy: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _run_extraction_with_proxy_inner(access_token, proxy, payload)
+
+
+def run_extraction_race(access_token: str, candidates: list[str], payload: dict[str, Any]) -> dict[str, Any]:
+    if not candidates:
+        raise PublicApiError("missing_proxy", "请填写代理，系统不会直连")
+
+    if not CHECKOUT_RACE_ENABLED:
+        ordered = list(candidates) if payload.get("_preflight_done") else preflight_proxy_candidates(candidates)
+        errors: list[dict[str, Any]] = []
+        attempted: list[str] = []
+        token_unauthorized_count = 0
+        token_unauthorized_threshold = max(1, min(TOKEN_UNAUTHORIZED_CONFIRMATIONS, len(ordered)))
+        approve_blocked_count = 0
+        approve_blocked_threshold = max(1, min(APPROVE_BLOCKED_CONFIRMATIONS, len(ordered)))
+        proxy_unstable_count = 0
+        proxy_unstable_threshold = max(1, min(PROXY_UNSTABLE_CONFIRMATIONS, len(ordered)))
+        with lock_for_token(access_token):
+            for proxy in ordered:
+                attempted.append(proxy)
+                try:
+                    result = run_extraction_with_proxy(access_token, proxy, payload)
+                    if result.get("ok") and result.get("paypal_authorize_url"):
+                        result["proxy_attempts"] = len(attempted)
+                        result["candidate_count"] = len(ordered)
+                        result["checkout_mode"] = "serial_per_token"
+                        mark_proxy_good(proxy)
+                        return result
+                except PublicApiError as exc:
+                    failure = classify_failure(exc.code, exc.details or {})
+                    item = (
+                        {
+                            "proxy": mask_proxy(proxy),
+                            "code": exc.code,
+                            "message": exc.message,
+                            "failure": failure,
+                            "details": sanitize_error_value(exc.details or {}),
+                        }
+                    )
+                    errors.append(item)
+                    if failure == "proxy_unstable":
+                        proxy_unstable_count += 1
+                        mark_proxy_bad(proxy, 2.0)
+                        if proxy_unstable_count >= proxy_unstable_threshold:
+                            break
+                        continue
+                    if failure == "token_unauthorized":
+                        token_unauthorized_count += 1
+                        mark_proxy_bad(proxy, 0.25)
+                        if token_unauthorized_count >= token_unauthorized_threshold:
+                            break
+                        continue
+                    elif failure in {"approve_blocked", "non_zero_checkout"}:
+                        mark_proxy_bad(proxy, 0.5)
+                        if failure == "approve_blocked":
+                            approve_blocked_count += 1
+                            if approve_blocked_count >= approve_blocked_threshold:
+                                break
+                        continue
+                except Exception as exc:
+                    normalized_code = normalize_transport_error(exc)
+                    failure = classify_failure(normalized_code, {"error": str(exc)})
+                    errors.append(
+                        {
+                            "proxy": mask_proxy(proxy),
+                            "code": normalized_code,
+       

@@ -1,0 +1,14 @@
+=== complete extract chk=JP stripe=US approve=US promo=- bill=JP/JPY tax=JP promo_tax=- skip_main_tax=0 ui=custom confirm=pm full=False max=3 ===
+  [01] approve=network_error    ba_ok=False amt=       zero=False paypal=False pmt=None err=Failed to perform, curl: (56) CONNECT tunnel failed, response 407. See https://curl.se/lib
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000'}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [03] approve=network_error    ba_ok=False amt=       zero=False paypal=False pmt=None err=Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSS
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200}
+
+=== SUMMARY ===
+  network_error: 2 total, 0 ba_ok
+  empty: 1 total, 0 ba_ok
+  overall_ba_ok=0/3 zero_and_paypal=0
+  saved=scripts/pp_complete_JP_create_JP_bill_probe.json
+=== DONE ===

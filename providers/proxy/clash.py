@@ -234,6 +234,15 @@ class ClashProxyProvider(BaseProxyProvider):
             self._state.index += 1
             return proxy
 
+    def _choose_node_after(self, nodes: list[str], current: str) -> str:
+        if not nodes:
+            raise RuntimeError("Clash 策略组内没有可用节点")
+        for _ in range(len(nodes)):
+            node = self._choose_node(nodes)
+            if node != current or len(nodes) == 1:
+                return node
+        return nodes[0]
+
     def current_node(self, selector: str | None = None) -> str:
         proxies = self._get_proxies()
         selector_name = selector or self._resolve_selector(proxies)
@@ -536,6 +545,46 @@ class ClashProxyProvider(BaseProxyProvider):
             raise RuntimeError(
                 f"Clash 多入口端口刷新失败: selector={selector}, port={port}, error={last_error}"
             )
+
+    def refresh_local_node(self, *, proxy_url: str = "", reason: str = "") -> dict:
+        if self.allocation_mode == "multi_port":
+            target_proxy = str(proxy_url or "").strip()
+            if not target_proxy:
+                proxies = self.prepare_for_concurrency(1)
+                target_proxy = proxies[0] if proxies else ""
+            refreshed = self.refresh_prepared_proxy(target_proxy)
+            return {
+                "ok": True,
+                "mode": "multi_port",
+                "proxy": refreshed,
+                "reason": reason,
+            }
+
+        if not self.proxy_url:
+            raise RuntimeError("Clash 未配置本地代理地址")
+        with self._state.lock:
+            selector, nodes = self.list_nodes()
+            before = self.current_node(selector)
+            node = self._choose_node_after(nodes, before)
+            self.switch_node(selector, node)
+        result = {
+            "ok": True,
+            "mode": "rotate_selector",
+            "selector": selector,
+            "previous_node": before,
+            "selected_node": node,
+            "node_count": len(nodes),
+            "proxy": self.proxy_url,
+            "reason": reason,
+        }
+        if self.check_url:
+            try:
+                result["exit_check"] = self._check_proxy_exit(self.proxy_url)
+            except Exception:
+                if node != before:
+                    self.switch_node(selector, before)
+                raise
+        return result
 
     def get_proxy(self) -> Optional[str]:
         if self.allocation_mode == "multi_port":

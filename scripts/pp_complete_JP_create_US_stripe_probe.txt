@@ -1,0 +1,13 @@
+=== complete extract chk=JP stripe=US approve=US promo=- bill=US/USD tax=US promo_tax=- skip_main_tax=0 ui=custom confirm=pm full=False max=3 ===
+  [01] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [03] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+
+=== SUMMARY ===
+  empty: 3 total, 0 ba_ok
+  overall_ba_ok=0/3 zero_and_paypal=0
+  saved=scripts/pp_complete_JP_create_US_stripe_probe.json
+=== DONE ===

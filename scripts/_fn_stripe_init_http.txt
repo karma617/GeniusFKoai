@@ -1,0 +1,100 @@
+def stripe_init_http(proxy: str, publishable_key: str, checkout_session_id: str) -> dict[str, Any]:
+    if not publishable_key:
+        raise PublicApiError("stripe_publishable_key_missing", "checkout 未返回 Stripe publishable key，无法纯 HTTP init", HTTPStatus.BAD_GATEWAY)
+    session = proxy_requests_session(proxy)
+    try:
+        body = {
+            "browser_locale": "en-US",
+            "browser_timezone": "Asia/Shanghai",
+            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
+            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
+            "elements_session_client[elements_init_source]": "custom_checkout",
+            "elements_session_client[referrer_host]": "chatgpt.com",
+            "elements_session_client[stripe_js_id]": str(uuid.uuid4()),
+            "elements_session_client[locale]": "en",
+            "elements_session_client[is_aggregation_expected]": "false",
+            "elements_options_client[saved_payment_method][enable_save]": "never",
+            "elements_options_client[saved_payment_method][enable_redisplay]": "never",
+            "key": publishable_key,
+            "_stripe_version": STRIPE_INIT_VERSION,
+        }
+        response = session.post(
+            f"https://api.stripe.com/v1/payment_pages/{checkout_session_id}/init",
+            data=body,
+            headers={
+                "Origin": "https://pay.openai.com",
+                "Referer": "https://pay.openai.com/",
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            timeout=STRIPE_INIT_TIMEOUT_SECONDS,
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {"raw": response.text[:500]}
+        if response.status_code >= 400:
+            raise PublicApiError(
+                "stripe_init_failed",
+                "Stripe init 失败",
+                HTTPStatus.BAD_GATEWAY,
+                {"status": response.status_code, "raw_error": data},
+            )
+        return data
+    finally:
+        session.close()
+
+
+def confirm_paypal_authorize_http(
+    proxy: str,
+    publishable_key: str,
+    checkout_session_id: str,
+    init: dict[str, Any],
+    *,
+    country: str,
+) -> dict[str, Any]:
+    amount_gate = checkout_amount_guard(init, require_zero=REQUIRE_ZERO_AMOUNT)
+    session = proxy_requests_session(proxy)
+    try:
+        hosted_url = str(init.get("url") or init.get("stripe_hosted_url") or "")
+        return_url = hosted_url or f"https://pay.openai.com/c/pay/{checkout_session_id}"
+        endpoint = f"https://api.stripe.com/v1/payment_pages/{checkout_session_id}/confirm"
+        payload = build_confirm_payload(
+            publishable_key,
+            init,
+            return_url,
+            require_zero=REQUIRE_ZERO_AMOUNT,
+            country=country,
+        )
+        response = session.post(
+            endpoint,
+            data=payload,
+            headers={
+                "Origin": "https://pay.openai.com",
+                "Referer": return_url.split("#", 1)[0],
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            timeout=STRIPE_INIT_TIMEOUT_SECONDS,
+        )
+        text = response.text or ""
+        try:
+            body = response.json()
+        except Exception:
+            body = {"raw": text[:1000]}
+        authorize_url = find_url(body) or find_url(text)
+        ok = 200 <= response.status_code < 300 and bool(REAL_PAYPAL_AUTHORIZE_RE.match(authorize_url))
+        return {
+            "ok": ok,
+            "status": response.status_code,
+            "response": body,
+            "pm_authorize_url": authorize_url if ok else "",
+            "zero_gate": amount_gate,
+            "billing_country": country,
+        }
+    finally:
+        session.close()
+
+
+def extract_redirect_to_url(payload: Any) -> str:
+    if not isinstance(payload, dict)

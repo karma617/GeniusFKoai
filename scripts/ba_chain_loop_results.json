@@ -1,0 +1,519 @@
+[
+  {
+    "r1": "US",
+    "r2": "US",
+    "ba": "BA-0U008052AV406850U",
+    "ba_ok": true,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "pm_redirect": "https://pm-redirects.stripe.com/authorize/acct_1HOrSwC6h1nxGoI3/pa_nonce_Utn5YyusvwZmMesjtyhdcXf3zBeHCLB?useWebAuthSession=true&followRedirectsInSDK=true",
+    "ba_url": "https://www.paypal.com/agreements/approve?ba_token=BA-0U008052AV406850U"
+  },
+  {
+    "r1": "US",
+    "r2": "BR",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "Failed to perform, curl: (28) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+  },
+  {
+    "r1": "US",
+    "r2": "JP",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "VN",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "TH",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "Failed to perform, curl: (28) Operation timed out after 5015 milliseconds with 15208 out of 21649 bytes received. See https://curl.se/libcurl/c/libcur"
+  },
+  {
+    "r1": "US",
+    "r2": "KR",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "TW",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "",
+    "pmt": null,
+    "error": "Failed to perform, curl: (28) Connection timed out after 30013 milliseconds. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+  },
+  {
+    "r1": "US",
+    "r2": "HK",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 403,
+    "error": "approve 403"
+  },
+  {
+    "r1": "US",
+    "r2": "KH",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "ID",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "",
+    "pmt": null,
+    "error": "checkout 403: <html>\n  <head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-s"
+  },
+  {
+    "r1": "US",
+    "r2": "PH",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "MY",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "SG",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "AU",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "",
+    "pmt": null,
+    "error": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/"
+  },
+  {
+    "r1": "US",
+    "r2": "GB",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "CA",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "DE",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "",
+    "pmt": null,
+    "error": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/"
+  },
+  {
+    "r1": "US",
+    "r2": "FR",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "IT",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "",
+    "pmt": null,
+    "error": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/"
+  },
+  {
+    "r1": "US",
+    "r2": "ES",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "NL",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "",
+    "pmt": null,
+    "error": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/"
+  },
+  {
+    "r1": "US",
+    "r2": "IE",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "PT",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "BE",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "FI",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "AT",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "CH",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "SE",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "NO",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "DK",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "error": "Failed to perform, curl: (28) Operation timed out after 30007 milliseconds with 0 bytes received. See https://curl.se/libcurl/c/libcurl-errors.html fi"
+  },
+  {
+    "r1": "US",
+    "r2": "PL",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "CZ",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "MX",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  },
+  {
+    "r1": "US",
+    "r2": "NZ",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "Failed to perform, curl: (28) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+  },
+  {
+    "r1": "US",
+    "r2": "LU",
+    "ba": "",
+    "ba_ok": false,
+    "amt": "2178",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "sa": "requires_approval",
+    "approve": 200,
+    "error": "poll timeout sa=requires_approval"
+  }
+]

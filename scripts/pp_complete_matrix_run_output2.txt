@@ -1,0 +1,16 @@
+
+##### US_pm #####
+=== complete extract chk=US stripe=US approve=US promo=- bill=US/USD tax=US promo_tax=- ui=custom confirm=pm full=True max=2 ===
+  [01] approve=approved         ba_ok=False amt=2178   zero=False paypal=True  pmt=['card', 'paypal'] err=timeout approved but no redirect
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200}
+  [02] approve=approved         ba_ok=False amt=2178   zero=False paypal=True  pmt=['card', 'paypal'] err=timeout approved but no redirect
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200}
+
+=== SUMMARY ===
+  approved: 2 total, 0 ba_ok
+  overall_ba_ok=0/2 zero_and_paypal=0
+  saved=scripts/pp_complete_US_pm.json
+=== DONE ===
+
+
+##### US_direct #####

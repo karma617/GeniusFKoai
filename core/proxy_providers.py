@@ -9,12 +9,31 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
+from urllib.parse import urlsplit
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_NODE_REFRESH_LOCK = threading.Lock()
+_LAST_LOCAL_NODE_REFRESH_AT = 0.0
+_LAST_LOCAL_NODE_REFRESH_RESULT: dict | None = None
+
+
+def _same_proxy_endpoint(left: str | None, right: str | None) -> bool:
+    def _endpoint(value: str | None) -> tuple[str, int]:
+        raw = str(value or "").strip()
+        if raw and "://" not in raw:
+            raw = f"http://{raw}"
+        parsed = urlsplit(raw)
+        return str(parsed.hostname or "").lower(), int(parsed.port or 0)
+
+    left_endpoint = _endpoint(left)
+    return bool(left_endpoint[0] and left_endpoint[1] and left_endpoint == _endpoint(right))
 
 
 class BaseProxyProvider(ABC):
@@ -161,3 +180,63 @@ def refresh_dynamic_proxy(proxy: str, extra: dict | None = None) -> str:
     except Exception:
         raise
     return proxy_value
+
+
+def refresh_local_proxy_node(
+    *,
+    reason: str = "",
+    proxy_url: str | None = "",
+    extra: dict | None = None,
+    min_interval_seconds: float = 1.5,
+) -> dict:
+    """Ask the provider controlling the configured local upstream to switch nodes."""
+    global _LAST_LOCAL_NODE_REFRESH_AT, _LAST_LOCAL_NODE_REFRESH_RESULT
+
+    with _LOCAL_NODE_REFRESH_LOCK:
+        now = time.monotonic()
+        if (
+            _LAST_LOCAL_NODE_REFRESH_RESULT
+            and min_interval_seconds > 0
+            and now - _LAST_LOCAL_NODE_REFRESH_AT < min_interval_seconds
+        ):
+            cached = dict(_LAST_LOCAL_NODE_REFRESH_RESULT)
+            cached["reused_recent"] = True
+            return cached
+
+        last_error = ""
+        try:
+            from infrastructure.provider_settings_repository import ProviderSettingsRepository
+
+            repo = ProviderSettingsRepository()
+            settings = list(repo.list_enabled("proxy"))
+            configured_clash = repo.get_by_key("proxy", "clash")
+            if configured_clash and not any(item.id == configured_clash.id for item in settings):
+                clash_proxy_url = str(configured_clash.get_config().get("clash_proxy_url") or "")
+                if _same_proxy_endpoint(proxy_url, clash_proxy_url):
+                    settings.append(configured_clash)
+            for setting in settings:
+                config = setting.get_config()
+                auth = setting.get_auth()
+                merged = {**config, **auth, **(extra or {})}
+                try:
+                    provider = create_proxy_provider(setting.provider_key, merged)
+                    refresh = getattr(provider, "refresh_local_node", None)
+                    if not callable(refresh):
+                        continue
+                    result = dict(refresh(proxy_url=proxy_url or "", reason=reason) or {})
+                    if result.get("ok"):
+                        _LAST_LOCAL_NODE_REFRESH_AT = time.monotonic()
+                        _LAST_LOCAL_NODE_REFRESH_RESULT = result
+                        return result
+                    last_error = str(result.get("error") or "本地代理节点刷新失败")
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.debug(f"[ProxyProvider] {setting.provider_key} 本地节点刷新失败: {exc}")
+                    continue
+        except Exception as exc:
+            last_error = str(exc)
+
+        result = {"ok": False, "error": last_error or "没有可刷新节点的本地代理 Provider"}
+        _LAST_LOCAL_NODE_REFRESH_AT = time.monotonic()
+        _LAST_LOCAL_NODE_REFRESH_RESULT = result
+        return result

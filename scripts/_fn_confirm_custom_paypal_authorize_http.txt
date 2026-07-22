@@ -1,0 +1,139 @@
+def confirm_custom_paypal_authorize_http(
+    proxy: str,
+    access_token: str,
+    publishable_key: str,
+    checkout_session_id: str,
+    init: dict[str, Any],
+    *,
+    country: str,
+    processor_entity: str,
+    proxy_geo: dict[str, Any] | None = None,
+    chatgpt_session: Any | None = None,
+) -> dict[str, Any]:
+    amount_gate = checkout_amount_guard(init, require_zero=REQUIRE_ZERO_AMOUNT)
+    ctx = stripe_context(init)
+    billing = payment_method_billing(country, proxy_geo)
+    payment_method_id = stripe_create_paypal_payment_method(
+        proxy,
+        publishable_key,
+        checkout_session_id,
+        init,
+        country,
+        ctx,
+        proxy_geo,
+    )
+    confirm = stripe_confirm_custom_paypal(
+        proxy,
+        publishable_key,
+        checkout_session_id,
+        init,
+        payment_method_id,
+        ctx,
+        billing_country=billing["country"],
+        processor_entity=processor_entity,
+    )
+    redirect_url = extract_redirect_to_url(confirm)
+    submission = confirm.get("submission_attempt") if isinstance(confirm, dict) else None
+    confirm_state = str(submission.get("state") or "") if isinstance(submission, dict) else ""
+    approve_error: dict[str, Any] | None = None
+    approve_raw_result = ""
+    if not redirect_url and confirm_state == "requires_approval":
+        try:
+            approve = chatgpt_approve_checkout(proxy, access_token, checkout_session_id, processor_entity, chatgpt_session=chatgpt_session)
+            redirect_url = extract_redirect_to_url(approve)
+        except PublicApiError as exc:
+            # 部分节点 approve 会返回 blocked，但 Stripe confirm 侧可能已经生成 redirect；
+            # 不能在这里直接熔断账号，先继续轮询 Stripe，再把该节点归类为可换节点失败。
+            approve_error = {
+                "code": exc.code,
+                "message": exc.message,
+                "details": sanitize_error_value(exc.details or {}),
+            }
+            raw_result = ""
+            raw_error = (exc.details or {}).get("raw_error") if isinstance(exc.details, dict) else None
+            if isinstance(raw_error, dict):
+                raw_result = str(raw_error.get("result") or "").lower()
+            approve_raw_result = raw_result
+            # approve 返回 blocked/expired 不立刻判死；confirm 侧可能已经异步生成 redirect。
+            # 继续轮询 payment_pages，只有没有 redirect 时才把该节点归类为可换节点失败。
+        except Exception as exc:
+            # approve 请求在 TLS/timeout/connection reset 时也可能已经被上游接收；
+            # 先继续同步轮询 Stripe，避免把可出链的节点提前判死。
+            normalized_code = normalize_transport_error(exc)
+            approve_error = {
+                "code": normalized_code,
+                "message": translate_exception(exc),
+                "details": {
+                    "error_type": type(exc).__name__,
+                    "raw_error": sanitize_error_value(str(exc)[:240]),
+                },
+            }
+    if not redirect_url:
+        try:
+            if approve_error:
+                poll_seconds = max(BLOCKED_REDIRECT_POLL_SECONDS, REDIRECT_POLL_SECONDS)
+            else:
+                poll_seconds = REDIRECT_POLL_SECONDS
+            redirect_url = stripe_poll_redirect_url(
+                proxy,
+                publishable_key,
+                checkout_session_id,
+                timeout_seconds=poll_seconds,
+            )
+        except PublicApiError as exc:
+            if approve_error:
+                approve_failure = classify_failure(
+                    str(approve_error.get("code") or ""),
+                    approve_error.get("details") if isinstance(approve_error.get("details"), dict) else {},
+                )
+                schedule_background_redirect_poll(
+                    proxy=proxy,
+                    publishable_key=publishable_key,
+                    checkout_session_id=checkout_session_id,
+                    token_hash=hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16],
+                    proxy_geo=proxy_geo,
+                    amount_gate=amount_gate,
+                    billing=billing,
+                    processor_entity=processor_entity,
+                    reason=str(approve_error.get("code") or "approve_blocked"),
+                )
+                if approve_failure == "proxy_unstable":
+                    raise PublicApiError(
+                        "proxy_unstable",
+                        "approve 阶段出现 TLS/连接/超时，已同步等候 Stripe redirect 后切换下一个代理节点",
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "confirm_state": confirm_state,
+                            "poll_seconds": poll_seconds,
+                            "approve_error": approve_error,
+                            "poll_error": {
+                                "code": exc.code,
+                                "message": exc.message,
+                                "details": sanitize_error_value(exc.details or {}),
+                            },
+                        },
+                    ) from exc
+                raise PublicApiError(
+                    "paypal_authorize_approve_blocked",
+                    "ChatGPT approve blocked/expired 且 Stripe redirect 未就绪，已切换下一个代理节点",
+                    HTTPStatus.BAD_GATEWAY,
+                    {
+                        "confirm_state": confirm_state,
+                        "poll_seconds": poll_seconds,
+                        "background_poll_seconds": APPROVE_BACKGROUND_POLL_SECONDS,
+                        "approve_error": approve_error,
+                        "poll_error": {
+                            "code": exc.code,
+                            "message": exc.message,
+                            "details": sanitize_error_value(exc.details or {}),
+                        },
+                    },
+                ) from exc
+            raise
+    ok = bool(REAL_PAYPAL_AUTHORIZE_RE.match(redirect_url))
+    return {
+        "ok": ok,
+        "status": 200 if ok else 502,
+        "payment_method_id": payment_method_id,
+        "pm_authorize_url": redirect_url if ok else "",
+        "ze

@@ -1,0 +1,240 @@
+[
+  {
+    "label": "USBR-LP1",
+    "r1": "US",
+    "r2": "BR",
+    "poll_duration": 70,
+    "checkout_status": 200,
+    "cs": "cs_live_a1M1rl2p9jgM",
+    "init_status": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2128",
+    "tax_status": 200,
+    "amt_tax": "2178",
+    "pm_status": 200,
+    "confirm_status": 200,
+    "confirm_sa_state": "requires_approval",
+    "redirect_in_confirm": false,
+    "approve_status": 200,
+    "approve_body": "{\"result\": \"blocked\"}",
+    "poll_log": [
+      "1:sa=requires_approval",
+      "2:sa=requires_approval",
+      "3:sa=requires_approval",
+      "4:sa=requires_approval",
+      "5:sa=requires_approval",
+      "10:sa=requires_approval",
+      "20:sa=requires_approval"
+    ],
+    "poll_count": 25,
+    "result": "TIMEOUT_70S_NO_REDIRECT"
+  },
+  {
+    "label": "USBR-LP2",
+    "r1": "US",
+    "r2": "BR",
+    "poll_duration": 70,
+    "checkout_status": 200,
+    "cs": "cs_live_a1z8hSYT6sDt",
+    "init_status": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2128",
+    "tax_status": 200,
+    "amt_tax": "2178",
+    "pm_status": 200,
+    "confirm_status": 200,
+    "confirm_sa_state": "requires_approval",
+    "redirect_in_confirm": false,
+    "approve_status": 200,
+    "approve_body": "{\"result\": \"blocked\"}",
+    "poll_log": [
+      "1:sa=requires_approval",
+      "2:sa=requires_approval",
+      "3:sa=requires_approval",
+      "4:sa=requires_approval",
+      "5:sa=requires_approval",
+      "10:sa=requires_approval",
+      "20:sa=requires_approval"
+    ],
+    "poll_count": 24,
+    "result": "TIMEOUT_70S_NO_REDIRECT"
+  },
+  {
+    "label": "USBR-LP3",
+    "r1": "US",
+    "r2": "BR",
+    "poll_duration": 70,
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+  },
+  {
+    "label": "USBR-LP4",
+    "r1": "US",
+    "r2": "BR",
+    "poll_duration": 70,
+    "checkout_status": 200,
+    "cs": "cs_live_a1dOJ04HTfGi",
+    "init_status": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2128",
+    "tax_status": 200,
+    "amt_tax": "2178",
+    "pm_status": 200,
+    "confirm_status": 200,
+    "confirm_sa_state": "requires_approval",
+    "redirect_in_confirm": false,
+    "approve_status": 200,
+    "approve_body": "{\"result\": \"blocked\"}",
+    "poll_log": [
+      "1:sa=requires_approval",
+      "2:sa=requires_approval",
+      "3:sa=requires_approval",
+      "4:sa=requires_approval",
+      "5:sa=requires_approval",
+      "10:sa=requires_approval",
+      "20:sa=requires_approval"
+    ],
+    "poll_count": 26,
+    "result": "TIMEOUT_70S_NO_REDIRECT"
+  },
+  {
+    "label": "USBR-LP5",
+    "r1": "US",
+    "r2": "BR",
+    "poll_duration": 70,
+    "checkout_status": 200,
+    "cs": "cs_live_a1N68kTTfchd",
+    "init_status": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2128",
+    "tax_status": 200,
+    "amt_tax": "2178",
+    "pm_status": 200,
+    "confirm_status": 200,
+    "confirm_sa_state": "requires_approval",
+    "redirect_in_confirm": false,
+    "approve_status": 200,
+    "approve_body": "{\"result\": \"blocked\"}",
+    "poll_log": [
+      "1:sa=requires_approval",
+      "2:sa=requires_approval",
+      "3:sa=requires_approval",
+      "4:sa=requires_approval",
+      "5:sa=requires_approval",
+      "10:sa=requires_approval",
+      "20:sa=requires_approval"
+    ],
+    "poll_count": 27,
+    "result": "TIMEOUT_70S_NO_REDIRECT"
+  },
+  {
+    "label": "USJP-LP1",
+    "r1": "US",
+    "r2": "JP",
+    "poll_duration": 70,
+    "checkout_status": 200,
+    "cs": "cs_live_a14svCtEjQSM",
+    "init_status": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2128",
+    "tax_status": 200,
+    "amt_tax": "2178",
+    "pm_status": 200,
+    "confirm_status": 200,
+    "confirm_sa_state": "requires_approval",
+    "redirect_in_confirm": false,
+    "approve_status": 200,
+    "approve_body": "{\"result\": \"blocked\"}",
+    "poll_log": [
+      "1:sa=requires_approval",
+      "2:sa=requires_approval",
+      "3:sa=requires_approval",
+      "4:sa=requires_approval",
+      "5:sa=requires_approval",
+      "10:sa=requires_approval",
+      "20:sa=requires_approval"
+    ],
+    "poll_count": 20,
+    "result": "TIMEOUT_70S_NO_REDIRECT"
+  },
+  {
+    "label": "USJP-LP2",
+    "r1": "US",
+    "r2": "JP",
+    "poll_duration": 70,
+    "checkout_status": 200,
+    "cs": "cs_live_a1kjuwnV1Br3",
+    "init_status": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2128",
+    "tax_status": 200,
+    "amt_tax": "2178",
+    "pm_status": 200,
+    "confirm_status": 200,
+    "confirm_sa_state": "requires_approval",
+    "redirect_in_confirm": false,
+    "approve_status": 200,
+    "approve_body": "{\"result\": \"blocked\"}",
+    "poll_log": [
+      "1:sa=requires_approval",
+      "2:sa=requires_approval",
+      "3:sa=requires_approval",
+      "4:sa=requires_approval",
+      "5:sa=requires_approval",
+      "10:sa=requires_approval",
+      "20:sa=requires_approval",
+      "30:sa=requires_approval"
+    ],
+    "poll_count": 30,
+    "result": "TIMEOUT_70S_NO_REDIRECT"
+  },
+  {
+    "label": "USJP-LP3",
+    "r1": "US",
+    "r2": "JP",
+    "poll_duration": 70,
+    "checkout_status": 200,
+    "cs": "cs_live_a1Bl83Qar1OL",
+    "init_status": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2128",
+    "tax_status": 200,
+    "amt_tax": "2178",
+    "pm_status": 200,
+    "confirm_status": 200,
+    "confirm_sa_state": "requires_approval",
+    "redirect_in_confirm": false,
+    "approve_status": 200,
+    "approve_body": "{\"result\": \"blocked\"}",
+    "poll_log": [
+      "1:sa=requires_approval",
+      "2:err:Failed to perform, curl: (28) ",
+      "3:sa=requires_approval",
+      "4:err:Failed to perform, curl: (28) ",
+      "5:err:Failed to perform, curl: (28) ",
+      "10:sa=requires_approval"
+    ],
+    "poll_count": 10,
+    "result": "TIMEOUT_70S_NO_REDIRECT"
+  }
+]

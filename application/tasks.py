@@ -51,6 +51,14 @@ CHATGPT_RELOGIN_REQUIRED_STATUS = "relogin_required"
 CHATGPT_FREE_PLUS_CAMPAIGN_ID = "plus-1-month-free"
 CHATGPT_ACCOUNTS_CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480"
 CHATGPT_TRIAL_CHECK_MAX_ATTEMPTS = 3
+CHATGPT_HEALTH_CHECK_NETWORK_RETRIES = 3
+CHATGPT_HEALTH_CHECK_GLOBAL_CONCURRENCY = 1
+CHATGPT_HEALTH_CHECK_MIN_INTERVAL_SECONDS = 1.2
+CHATGPT_HEALTH_NODE_SWITCH_FAILURE_THRESHOLD = 3
+CHATGPT_HEALTH_NODE_SWITCH_COOLDOWN_SECONDS = 30.0
+_CHATGPT_HEALTH_CHECK_GATE = threading.BoundedSemaphore(CHATGPT_HEALTH_CHECK_GLOBAL_CONCURRENCY)
+_CHATGPT_HEALTH_CHECK_SPACING_LOCK = threading.Lock()
+_CHATGPT_HEALTH_CHECK_LAST_REQUEST_AT = 0.0
 BUGFREE_SKIP_RESULT = "__bugfree_skip__"
 BUGFREE_TARGET_SECONDS = 7 * 24 * 60 * 60
 BUGFREE_TARGET_TOLERANCE_SECONDS = 24 * 60 * 60
@@ -406,7 +414,12 @@ def _task_account_keys(task_type: str, payload: dict[str, Any]) -> list[str]:
             return [f"account:{account_id}"]
     if task_type == TASK_TYPE_ACCOUNT_HEALTH_CHECK:
         ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
-        return [f"account:{account_id}" for account_id in ids]
+        keys = [f"account:{account_id}" for account_id in ids]
+        platform = str(payload.get("platform", "") or "").strip().lower()
+        if not platform or platform == "chatgpt":
+            # 防止多个批量测活任务同时打 ChatGPT，触发 WAF/IP 403。
+            keys.append("chatgpt-health-check")
+        return keys
     if task_type in {TASK_TYPE_PHONE_BIND, TASK_TYPE_CODEX_OAUTH}:
         ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
         if not ids and int(payload.get("account_id") or 0) > 0:
@@ -848,6 +861,18 @@ def claim_next_runnable_task(
     running_platform_counts = dict(running_platform_counts or {})
     busy_account_keys = set(busy_account_keys or set())
     with Session(engine) as session:
+        # 读取数据库里全局运行中任务，避免多个后端进程/重载实例同时
+        # 启动 ChatGPT 测活任务，触发 WAF/IP 403。
+        active_tasks = session.exec(
+            select(TaskModel).where(TaskModel.status.in_(ACTIVE_TASK_STATUSES))  # type: ignore[attr-defined]
+        ).all()
+        for active in active_tasks:
+            active_payload = active.get_payload()
+            active_platform = active.platform or str(active_payload.get("platform", "") or "")
+            if active_platform:
+                running_platform_counts[active_platform] = running_platform_counts.get(active_platform, 0) + 1
+            busy_account_keys.update(_task_account_keys(active.type, active_payload))
+
         tasks = session.exec(
             select(TaskModel)
             .where(TaskModel.status == TASK_STATUS_PENDING)
@@ -1084,7 +1109,7 @@ def _extract_chatgpt_cookies(account) -> str:
 
 def _inspect_chatgpt_bugfree_usage(account, *, proxy: str | None = None, timeout: int = 20) -> dict[str, Any]:
     from curl_cffi import requests as cffi_requests
-    from platforms.chatgpt.payment import WHAM_USAGE_URL, _build_proxies
+    from platforms.chatgpt.payment import WHAM_USAGE_URL, _build_proxy_request_kwargs
 
     access_token = _extract_chatgpt_access_token(account)
     if not access_token:
@@ -1112,9 +1137,9 @@ def _inspect_chatgpt_bugfree_usage(account, *, proxy: str | None = None, timeout
         response = cffi_requests.get(
             WHAM_USAGE_URL,
             headers=headers,
-            proxies=_build_proxies(proxy),
             timeout=timeout,
             impersonate="chrome124",
+            **_build_proxy_request_kwargs(proxy),
         )
         status_code = int(getattr(response, "status_code", 0) or 0)
         if not (200 <= status_code < 300):
@@ -1270,6 +1295,79 @@ def _is_chatgpt_trial_check_retryable_error(error: Any) -> bool:
     )
 
 
+def _is_chatgpt_health_check_retryable_error(status_code: int, error: Any) -> bool:
+    code = int(status_code or 0)
+    if code in {403, 408, 409, 425, 429} or 500 <= code <= 599:
+        return True
+    if code != 0:
+        return False
+    return _is_chatgpt_trial_check_retryable_error(error)
+
+
+def _call_chatgpt_health_check(fetch_fn: Callable[..., dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+    """Serialize ChatGPT health probes across concurrent tasks in this process.
+
+    Python threads share process/network resources; they are not isolated browser
+    environments. If several batch-health tasks probe ChatGPT at once, the same
+    local proxy/upstream IP can trigger WAF 403. This gate keeps health probes
+    globally low-rate even when multiple tasks are running.
+    """
+    global _CHATGPT_HEALTH_CHECK_LAST_REQUEST_AT
+    with _CHATGPT_HEALTH_CHECK_GATE:
+        with _CHATGPT_HEALTH_CHECK_SPACING_LOCK:
+            elapsed = time.monotonic() - _CHATGPT_HEALTH_CHECK_LAST_REQUEST_AT
+            delay = max(CHATGPT_HEALTH_CHECK_MIN_INTERVAL_SECONDS - elapsed, 0.0)
+            if delay > 0:
+                time.sleep(delay)
+            _CHATGPT_HEALTH_CHECK_LAST_REQUEST_AT = time.monotonic()
+        try:
+            return fetch_fn(**kwargs)
+        finally:
+            with _CHATGPT_HEALTH_CHECK_SPACING_LOCK:
+                _CHATGPT_HEALTH_CHECK_LAST_REQUEST_AT = time.monotonic()
+
+
+class _ChatGPTHealthNetworkCoordinator:
+    """Coordinate global Clash node changes across one concurrent health-check task."""
+
+    def __init__(
+        self,
+        *,
+        failure_threshold: int = CHATGPT_HEALTH_NODE_SWITCH_FAILURE_THRESHOLD,
+        cooldown_seconds: float = CHATGPT_HEALTH_NODE_SWITCH_COOLDOWN_SECONDS,
+    ) -> None:
+        self.failure_threshold = max(int(failure_threshold or 1), 1)
+        self.cooldown_seconds = max(float(cooldown_seconds or 0), 0.0)
+        self._lock = threading.Lock()
+        self._failed_accounts: set[int] = set()
+        self._last_switch_at = 0.0
+        self._refresh_unavailable = False
+
+    def report_failure(
+        self,
+        *,
+        account_id: int,
+        reason: str,
+        logger: "TaskLogger" | None,
+    ) -> bool:
+        with self._lock:
+            if self._refresh_unavailable:
+                return False
+            self._failed_accounts.add(int(account_id))
+            if len(self._failed_accounts) < self.failure_threshold:
+                return False
+            now = time.monotonic()
+            if self._last_switch_at and now - self._last_switch_at < self.cooldown_seconds:
+                return False
+            self._failed_accounts.clear()
+            refreshed = _refresh_chatgpt_local_proxy_node(reason=reason, logger=logger)
+            if refreshed:
+                self._last_switch_at = time.monotonic()
+            else:
+                self._refresh_unavailable = True
+            return refreshed
+
+
 def _is_local_proxy_url(value: Any) -> bool:
     proxy = str(value or "").strip().lower()
     return any(marker in proxy for marker in ("127.0.0.1", "localhost", "[::1]", "0.0.0.0"))
@@ -1359,7 +1457,12 @@ def _inspect_chatgpt_free_plus_trial(
         except Exception as exc:
             last_error = f"{exc.__class__.__name__}: {exc}"
             if attempt < attempts and _is_chatgpt_trial_check_retryable_error(last_error):
-                delay = min(0.5 * attempt, 2.0)
+                if proxy:
+                    try:
+                        proxy_pool.report_fail(proxy)
+                    except Exception:
+                        pass
+                delay = min(1.5 * attempt, 5.0)
                 if retry_log:
                     retry_log(attempt, attempts, delay, last_error)
                 time.sleep(delay)
@@ -2050,6 +2153,20 @@ def _is_chatgpt_relogin_required_health_error(status_code: int, error_text: str)
     )
 
 
+def _is_chatgpt_banned_health_error(status_code: int, error_text: str) -> bool:
+    """Return True only for explicit account-ban signals.
+
+    ChatGPT/Cloudflare can return HTTP 403 for IP/WAF/proxy pressure,
+    especially during concurrent probes. Health-check probes cannot reliably
+    distinguish real bans from WAF 403s, so this path never mutates lifecycle
+    status to `banned`; generic 403 stays transient.
+    """
+    # Health-check probes cannot reliably distinguish account bans from WAF/IP
+    # 403s. Do not mutate lifecycle_status to `banned` from this path; users can
+    # still set banned manually or through stronger login/action errors.
+    return False
+
+
 def _sanitize_chatgpt_state_for_health_result(state: dict[str, Any]) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     for key in (
@@ -2123,7 +2240,11 @@ def _resolve_chatgpt_subscription_status(
     return ""
 
 
-def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None = None) -> dict[str, Any]:
+def _run_single_chatgpt_health_check(
+    account_id: int,
+    logger: TaskLogger | None = None,
+    network_coordinator: _ChatGPTHealthNetworkCoordinator | None = None,
+) -> dict[str, Any]:
     with Session(engine) as session:
         model = session.get(AccountModel, account_id)
         if not model:
@@ -2152,30 +2273,91 @@ def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None 
 
     proxy = None
     proxy_pool = None
-    try:
-        from platforms.chatgpt.plugin import _resolve_action_proxy, proxy_pool
-        proxy = _resolve_action_proxy(
-            None,
-            region=str(account.region or extra.get("region") or ""),
-            log_fn=logger.log if logger else None,
-            action_label="批量测活",
-        )
-    except Exception as exc:
-        if logger:
-            logger.log(f"{account.email}: 代理解析失败，改用直连: {exc}", level="warning")
+    region = str(account.region or extra.get("region") or "")
+
+    def _resolve_probe_proxy(*, retry: bool = False) -> str | None:
+        nonlocal proxy_pool
+        try:
+            from platforms.chatgpt.plugin import _resolve_action_proxy, proxy_pool
+            return _resolve_action_proxy(
+                None,
+                region=region,
+                log_fn=logger.log if logger else None,
+                action_label="批量测活重试换代理" if retry else "批量测活",
+            )
+        except Exception as exc:
+            if logger:
+                logger.log(f"{account.email}: 代理解析失败，改用直连: {exc}", level="warning")
+            return None
 
     try:
         from platforms.chatgpt.switch import fetch_chatgpt_account_state
 
-        state = fetch_chatgpt_account_state(
-            access_token=access_token,
-            session_token=session_token,
-            cookies=cookies,
-            proxy=proxy,
-            chatgpt_account_id=chatgpt_account_id,
-            existing_extra=extra,
-            force_usage=True,
-        )
+        attempts = max(int(CHATGPT_HEALTH_CHECK_NETWORK_RETRIES or 0), 0) + 1
+        state: dict[str, Any] | None = None
+        for attempt in range(1, attempts + 1):
+            proxy = _resolve_probe_proxy(retry=attempt > 1)
+            try:
+                state = _call_chatgpt_health_check(
+                    fetch_chatgpt_account_state,
+                    access_token=access_token,
+                    session_token=session_token,
+                    cookies=cookies,
+                    proxy=proxy,
+                    chatgpt_account_id=chatgpt_account_id,
+                    existing_extra=extra,
+                    force_usage=True,
+                )
+            except Exception as exc:
+                error_text = f"{exc.__class__.__name__}: {exc}"
+                if attempt < attempts and _is_chatgpt_health_check_retryable_error(0, error_text):
+                    if network_coordinator:
+                        network_coordinator.report_failure(
+                            account_id=account_id,
+                            reason=f"批量测活连续网络错误: {error_text[:160]}",
+                            logger=logger,
+                        )
+                    delay = min(1.5 * attempt, 5.0)
+                    if logger:
+                        logger.log(
+                            f"{account.email}: 测活网络错误第 {attempt}/{attempts} 次: {error_text[:240]}，{delay:g}s 后重试",
+                            level="warning",
+                        )
+                    time.sleep(delay)
+                    continue
+                raise
+
+            if not isinstance(state, dict):
+                raise ValueError("账号状态/订阅响应格式异常")
+            if bool(state.get("valid")):
+                break
+            retry_error = _chatgpt_health_state_error(state)
+            retry_status_code = _chatgpt_health_status_code(retry_error)
+            retry_error_text = _chatgpt_health_error_text(retry_error)
+            if (
+                attempt < attempts
+                and _is_chatgpt_health_check_retryable_error(retry_status_code, retry_error_text)
+            ):
+                if network_coordinator:
+                    network_coordinator.report_failure(
+                        account_id=account_id,
+                        reason=f"批量测活连续网络错误: {retry_error_text[:160]}",
+                        logger=logger,
+                    )
+                if proxy:
+                    try:
+                        proxy_pool.report_fail(proxy)
+                    except Exception:
+                        pass
+                delay = min(1.5 * attempt, 5.0)
+                if logger:
+                    logger.log(
+                        f"{account.email}: 测活网络错误第 {attempt}/{attempts} 次: {retry_error_text[:240]}，{delay:g}s 后重试",
+                        level="warning",
+                    )
+                time.sleep(delay)
+                continue
+            break
         if not isinstance(state, dict):
             raise ValueError("账号状态/订阅响应格式异常")
 
@@ -2204,7 +2386,8 @@ def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None 
         status_code = _chatgpt_health_status_code(state_error)
         error_text = _chatgpt_health_error_text(state_error) or "账号状态/订阅查询失败"
         relogin_required = _is_chatgpt_relogin_required_health_error(status_code, error_text)
-        invalid = status_code in {400, 403, 404} or "缺少 access_token" in error_text
+        banned = _is_chatgpt_banned_health_error(status_code, error_text)
+        invalid = status_code in {400, 404} or banned or "缺少 access_token" in error_text
         result = {
             "account_id": account_id,
             "email": account.email,
@@ -2216,6 +2399,8 @@ def _run_single_chatgpt_health_check(account_id: int, logger: TaskLogger | None 
         }
         if relogin_required:
             result["relogin_required"] = True
+        if banned:
+            result["banned"] = True
         if proxy:
             try:
                 proxy_pool.report_fail(proxy)
@@ -2325,7 +2510,10 @@ def _persist_chatgpt_health_result(account_id: int, result: dict[str, Any]) -> N
                     }
                 )
                 lifecycle_status = CHATGPT_RELOGIN_REQUIRED_STATUS
-            elif int(result.get("status_code") or 0) == 403:
+            elif _is_chatgpt_banned_health_error(
+                int(result.get("status_code") or 0),
+                str(result.get("error") or ""),
+            ):
                 summary_updates.update(
                     {
                         "validity_status": "invalid",
@@ -3034,25 +3222,32 @@ def _mask_proxy_for_log(proxy: str | None) -> str:
     return value
 
 
-def _chatgpt_proxy_preflight(proxy: str | None, *, timeout: int = 12) -> tuple[bool, str]:
-    if not proxy:
-        return True, "direct"
-    try:
-        from curl_cffi import requests as curl_requests
-
-        response = curl_requests.get(
-            "https://chatgpt.com/",
-            proxies={"http": proxy, "https": proxy},
-            timeout=timeout,
-            impersonate="chrome120",
-        )
-        if response.status_code >= 500:
-            return False, f"HTTP {response.status_code}"
-        return True, f"HTTP {response.status_code}"
-    except Exception as exc:
-        return False, f"{exc.__class__.__name__}: {str(exc)[:180]}"
-
-
+def _chatgpt_proxy_preflight(proxy: str | None, *, timeout: int = 12) -> tuple[bool, str]:
+    if not proxy:
+        return True, "direct"
+    try:
+        from core.http_client import RequestConfig
+        from platforms.chatgpt.http_client import OpenAIHTTPClient
+
+        client = OpenAIHTTPClient(
+            proxy_url=proxy,
+            config=RequestConfig(
+                timeout=timeout,
+                max_retries=2,
+                impersonate="chrome120",
+            ),
+        )
+        try:
+            response = client.get("https://chatgpt.com/cdn-cgi/trace", timeout=timeout)
+            route = "本地中转" if client.config.proxy_upstream_url else "目标代理直连"
+            if response.status_code >= 500:
+                return False, f"HTTP {response.status_code} ({route})"
+            return True, f"HTTP {response.status_code} ({route})"
+        finally:
+            client.close()
+    except Exception as exc:
+        return False, f"{exc.__class__.__name__}: {str(exc)[:180]}"
+
 def _is_chatgpt_proxy_preflight_transient_error(value: Any) -> bool:
     text = str(value or "").lower()
     return any(
@@ -3065,8 +3260,58 @@ def _is_chatgpt_proxy_preflight_transient_error(value: Any) -> bool:
             "invalid library",
             "sslerror",
             "ssl error",
+            "proxy connect",
+            "connection reset",
+            "connection refused",
+            "connection closed",
+            "couldn't connect",
+            "timed out",
+            "timeout",
+            "name resolution",
+            "dns",
+            "empty reply",
         )
     )
+
+
+def _refresh_chatgpt_local_proxy_node(
+    *,
+    reason: str,
+    logger: "TaskLogger" | None,
+    extra: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        from core.proxy_providers import refresh_local_proxy_node
+        from core.proxy_pool import get_proxy_runtime_config
+
+        result = refresh_local_proxy_node(
+            reason=reason,
+            proxy_url=get_proxy_runtime_config().get("upstream_url", ""),
+            extra=extra,
+        )
+    except Exception as exc:
+        if logger:
+            logger.log(f"本地 Clash 节点自动切换失败: {exc}", level="warning")
+        return False
+
+    if not result.get("ok"):
+        if logger:
+            logger.log(
+                f"本地 Clash 节点自动切换失败: {result.get('error') or 'unknown'}",
+                level="warning",
+            )
+        return False
+
+    if logger and not result.get("reused_recent"):
+        selected = str(result.get("selected_node") or "").strip()
+        previous = str(result.get("previous_node") or "").strip()
+        if selected and previous and selected != previous:
+            logger.log(f"已自动切换本地 Clash 节点: {previous} -> {selected}")
+        elif selected:
+            logger.log(f"已自动切换本地 Clash 节点: {selected}")
+        else:
+            logger.log("已自动刷新本地 Clash 代理节点")
+    return True
 
 
 
@@ -3087,33 +3332,64 @@ def _resolve_chatgpt_reachable_proxy(
     if platform_name != "chatgpt" or not resolved:
         return resolved
 
-    attempts = 1 if str(explicit_proxy or "").strip() else max_attempts
-    seen: set[str] = set()
-    last_detail = ""
-    for attempt in range(1, attempts + 1):
-        if not resolved:
-            break
-        if resolved in seen:
-            if str(explicit_proxy or "").strip():
-                break
-            resolved = _resolve_registration_proxy_for_platform(
-                platform_name,
-                explicit_proxy=None,
-                proxy_getter=proxy_getter,
-            )
-            continue
-        seen.add(resolved)
-        ok, detail = _chatgpt_proxy_preflight(resolved)
-        if ok:
-            if attempt > 1:
-                logger.log(
-                    f"\u5df2\u5207\u6362\u5230\u53ef\u8bbf\u95ee ChatGPT \u7684\u4ee3\u7406: {_mask_proxy_for_log(resolved)}"
-                )
-            return resolved
-
+    explicit = bool(str(explicit_proxy or "").strip())
+
+    attempts = max_attempts
+    seen: set[str] = set()
+
+    last_detail = ""
+    retry_same_resolved = False
+    for attempt in range(1, attempts + 1):
+
+        if not resolved:
+
+            break
+
+        if not explicit and resolved in seen and not retry_same_resolved:
+            resolved = _resolve_registration_proxy_for_platform(
+
+                platform_name,
+
+                explicit_proxy=None,
+
+                proxy_getter=proxy_getter,
+
+            )
+
+            continue
+
+        retry_same_resolved = False
+        seen.add(resolved)
+        ok, detail = _chatgpt_proxy_preflight(resolved)
+
+        if ok:
+
+            if attempt > 1:
+
+                logger.log(
+
+                    f"\u5df2\u5207\u6362\u5230\u53ef\u8bbf\u95ee ChatGPT \u7684\u4ee3\u7406: {_mask_proxy_for_log(resolved)}"
+
+                )
+
+            return resolved
+
+
+
         last_detail = detail
 
         if _is_chatgpt_proxy_preflight_transient_error(detail):
+            if attempt < attempts and _refresh_chatgpt_local_proxy_node(
+                reason=f"ChatGPT 代理预检网络异常: {detail[:160]}",
+                logger=logger,
+            ):
+                logger.log(
+                    "ChatGPT 代理预检遇到传输/TLS异常，已切换本地 Clash 节点后重试: "
+                    f"{_mask_proxy_for_log(resolved)}: {detail}",
+                    level="warning",
+                )
+                retry_same_resolved = True
+                continue
             logger.log(
                 "ChatGPT 代理预检遇到传输/TLS异常，无法确认代理不可用，"
                 f"将继续使用浏览器真实流程: {_mask_proxy_for_log(resolved)}: {detail}",
@@ -5854,7 +6130,10 @@ def _execute_account_check_all_task(payload: dict[str, Any], logger: TaskLogger)
 def _execute_account_health_check_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     platform = str(payload.get("platform", "") or "")
     ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
-    max_workers = max(min(int(payload.get("concurrency", 10) or 10), 20), 1)
+    # 串行执行：与单个账号「检测存活」走完全相同的验证逻辑，避免并发触发
+    # ChatGPT/Cloudflare IP/WAF 限流返回 403，被误判为 banned。
+    # （原 max_workers=10 并发时同一 IP 短时间大量请求易触发 WAF 403。）
+    max_workers = 1
 
     with Session(engine) as session:
         q = select(AccountModel)
@@ -5876,12 +6155,18 @@ def _execute_account_health_check_task(payload: dict[str, Any], logger: TaskLogg
     items: list[dict[str, Any] | None] = [None] * len(account_ids)
     completed = 0
     counts = {"valid": 0, "invalid": 0, "error": 0}
-
+    # 串行模式下不需要 network_coordinator：每个账号独立解析代理，
+    # 与单个账号「检测存活」行为一致。
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         future_map = {}
         next_index = 0
         while next_index < len(account_ids) and len(future_map) < max_workers and not logger.is_cancel_requested():
-            future = pool.submit(_run_single_chatgpt_health_check, account_ids[next_index], logger)
+            future = pool.submit(
+                _run_single_chatgpt_health_check,
+                account_ids[next_index],
+                logger,
+                None,
+            )
             future_map[future] = next_index
             next_index += 1
 
@@ -5914,7 +6199,12 @@ def _execute_account_health_check_task(payload: dict[str, Any], logger: TaskLogg
                 return
 
             while next_index < len(account_ids) and len(future_map) < max_workers and not logger.is_cancel_requested():
-                future = pool.submit(_run_single_chatgpt_health_check, account_ids[next_index], logger)
+                future = pool.submit(
+                    _run_single_chatgpt_health_check,
+                    account_ids[next_index],
+                    logger,
+                    None,
+                )
                 future_map[future] = next_index
                 next_index += 1
 

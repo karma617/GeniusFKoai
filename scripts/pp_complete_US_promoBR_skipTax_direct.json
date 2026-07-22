@@ -1,0 +1,82 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "US",
+    "stripe_proxy": "US",
+    "approve_proxy": "US",
+    "promo_proxy": "BR",
+    "billing": "US/USD",
+    "tax_country": "US",
+    "promo_tax_country": "BR",
+    "ui": "custom",
+    "confirm_mode": "direct",
+    "approve_result": "approved",
+    "ba_ok": true,
+    "ba": "BA-06B932872G682051W",
+    "ba_url": "https://www.paypal.com/agreements/approve?ba_token=BA-06B932872G682051W",
+    "amt": "2000",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "err": "",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_promo": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "promo_tax": 200,
+      "tax": "skipped",
+      "confirm": 200,
+      "confirm_keys": [
+        "id",
+        "object",
+        "account_settings",
+        "application",
+        "automatic_payment_method_types",
+        "beta_versions",
+        "billing_address_collection",
+        "blob",
+        "blocked_billing_address_countries",
+        "bnpl_in_link_ui_enabled",
+        "bnpl_link_experiment_payment_method_type",
+        "cancel_url",
+        "capture_method",
+        "card_brand_choice",
+        "card_brands",
+        "checkout_multistep_ui",
+        "client_reference_id",
+        "config_id",
+        "consent",
+        "consent_collection"
+      ],
+      "confirm_sa": null,
+      "approve_http": 200
+    },
+    "cs": "cs_live_b196J9WL70OqY24hp0xn8i6sBR2nwM2xzLUhrPoG5ktM5xjo2fH7xruJnQ",
+    "ent": "openai_llc",
+    "trial": false,
+    "promo_campaign": null,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "300",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2300"
+    },
+    "amt_after_promo": "2000",
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2000"
+    },
+    "expected_amount": "2000",
+    "expected_amount_on_bca": ""
+  }
+]

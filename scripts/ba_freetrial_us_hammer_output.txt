@@ -1,0 +1,9 @@
+=== multi-IP hammer: proxy=US checkout=US/USD max=5 stop_on_first=True ===
+  [01] approve=approved         ba_ok=True  amt=2178   ba=BA-73R31779MA378912N err=
+  BA_URL=https://www.paypal.com/agreements/approve?ba_token=BA-73R31779MA378912N
+
+=== SUMMARY ===
+  approved: 1 total, 1 ba_ok
+  overall_ba_ok=1/1
+  saved=scripts/ba_multi_ip_hammer_results.json
+=== DONE ===

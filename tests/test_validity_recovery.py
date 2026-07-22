@@ -89,6 +89,21 @@ def test_single_account_check_recovers_previously_invalid_account(monkeypatch):
     assert overview.checked_at
 
 
+def test_single_account_check_recovers_previously_banned_account(monkeypatch):
+    account_id = _create_account(lifecycle_status="banned")
+    monkeypatch.setattr("application.tasks.get", lambda _platform: _AlwaysValidPlatform)
+
+    valid, result = _run_single_account_check(account_id)
+
+    assert valid is True
+    assert result["valid"] is True
+    overview = _overview(account_id)
+    assert overview.lifecycle_status == "registered"
+    assert overview.validity_status == "valid"
+    assert overview.display_status == "registered"
+    assert overview.checked_at
+
+
 def test_lifecycle_validity_check_does_not_overwrite_lifecycle_status(monkeypatch):
     account_id = _create_account(lifecycle_status="registered")
     monkeypatch.setattr("core.lifecycle.get", lambda _platform: _AlwaysInvalidPlatform)
@@ -103,7 +118,7 @@ def test_lifecycle_validity_check_does_not_overwrite_lifecycle_status(monkeypatc
     assert overview.checked_at
 
 
-def test_chatgpt_health_check_uses_account_state_and_marks_403_banned(monkeypatch):
+def test_chatgpt_health_check_treats_generic_403_as_transient(monkeypatch):
     account_id = _create_chatgpt_health_account()
     captured: dict = {}
 
@@ -126,15 +141,14 @@ def test_chatgpt_health_check_uses_account_state_and_marks_403_banned(monkeypatc
     assert captured["force_usage"] is True
     assert result["valid"] is False
     assert result["status_code"] == 403
-    assert result.get("transient") is False
+    assert result.get("transient") is True
 
     overview = _overview(account_id)
     summary = overview.get_summary()
-    assert overview.lifecycle_status == "banned"
-    assert overview.validity_status == "invalid"
-    assert overview.display_status == "banned"
-    assert summary["health_status_code"] == 403
-    assert "Forbidden" in summary["health_error"]
+    assert overview.lifecycle_status == "registered"
+    assert overview.validity_status == "valid"
+    assert overview.display_status == "registered"
+    assert "health_status_code" not in summary
 
 
 def test_chatgpt_health_check_marks_401_token_expired_relogin_required(monkeypatch):
@@ -235,6 +249,118 @@ def test_chatgpt_health_check_prefers_paid_usage_plan_over_free_subscription(mon
     assert summary["chatgpt_usage"]["plan_type"] == "plus"
 
 
+def test_chatgpt_health_check_retries_network_error_and_succeeds(monkeypatch):
+    account_id = _create_chatgpt_health_account()
+    calls: list[dict] = []
+    logs: list[tuple[str, str]] = []
+    refreshes: list[dict] = []
+
+    def _fake_fetch_state(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 4:
+            return {
+                "valid": False,
+                "profile_error": {"error": "Failed to perform, curl: (56) Proxy CONNECT aborted"},
+            }
+        return {"valid": True, "account_id": "acct-health", "subscription_status": "free"}
+
+    class _Logger:
+        def log(self, message, level="info"):
+            logs.append((level, message))
+
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("platforms.chatgpt.plugin._resolve_action_proxy", lambda *args, **kwargs: None)
+    monkeypatch.setattr("platforms.chatgpt.switch.fetch_chatgpt_account_state", _fake_fetch_state)
+    monkeypatch.setattr(
+        tasks_module,
+        "_refresh_chatgpt_local_proxy_node",
+        lambda **kwargs: refreshes.append(kwargs) or True,
+    )
+    coordinator = tasks_module._ChatGPTHealthNetworkCoordinator(
+        failure_threshold=1,
+        cooldown_seconds=30,
+    )
+
+    result = _run_single_chatgpt_health_check(account_id, _Logger(), coordinator)
+
+    assert result["valid"] is True
+    assert len(calls) == 4
+    assert len(refreshes) == 1
+    assert len([item for item in logs if item[0] == "warning" and "测活网络错误第" in item[1]]) == 3
+
+
+def test_chatgpt_health_network_coordinator_switches_after_three_distinct_accounts(monkeypatch):
+    refreshes: list[dict] = []
+    now = [100.0]
+    coordinator = tasks_module._ChatGPTHealthNetworkCoordinator(
+        failure_threshold=3,
+        cooldown_seconds=30,
+    )
+
+    monkeypatch.setattr(tasks_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        tasks_module,
+        "_refresh_chatgpt_local_proxy_node",
+        lambda **kwargs: refreshes.append(kwargs) or True,
+    )
+
+    assert coordinator.report_failure(account_id=1, reason="one", logger=None) is False
+    assert coordinator.report_failure(account_id=1, reason="one-again", logger=None) is False
+    assert coordinator.report_failure(account_id=2, reason="two", logger=None) is False
+    assert coordinator.report_failure(account_id=3, reason="three", logger=None) is True
+    assert len(refreshes) == 1
+
+    assert coordinator.report_failure(account_id=4, reason="four", logger=None) is False
+    assert coordinator.report_failure(account_id=5, reason="five", logger=None) is False
+    assert coordinator.report_failure(account_id=6, reason="six", logger=None) is False
+    assert len(refreshes) == 1
+
+    now[0] = 131.0
+    assert coordinator.report_failure(account_id=7, reason="seven", logger=None) is True
+    assert len(refreshes) == 2
+
+
+def test_chatgpt_health_network_coordinator_stops_after_refresh_unavailable(monkeypatch):
+    refreshes: list[dict] = []
+    coordinator = tasks_module._ChatGPTHealthNetworkCoordinator(failure_threshold=1)
+
+    monkeypatch.setattr(
+        tasks_module,
+        "_refresh_chatgpt_local_proxy_node",
+        lambda **kwargs: refreshes.append(kwargs) or False,
+    )
+
+    assert coordinator.report_failure(account_id=1, reason="one", logger=None) is False
+    assert coordinator.report_failure(account_id=2, reason="two", logger=None) is False
+    assert len(refreshes) == 1
+
+
+def test_chatgpt_health_check_network_error_stays_transient_after_retries(monkeypatch):
+    account_id = _create_chatgpt_health_account()
+    calls: list[dict] = []
+
+    def _fake_fetch_state(**kwargs):
+        calls.append(kwargs)
+        return {
+            "valid": False,
+            "profile_error": {"error": "Failed to perform, curl: (56) Proxy CONNECT aborted"},
+        }
+
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("platforms.chatgpt.plugin._resolve_action_proxy", lambda *args, **kwargs: None)
+    monkeypatch.setattr("platforms.chatgpt.switch.fetch_chatgpt_account_state", _fake_fetch_state)
+    monkeypatch.setattr(tasks_module, "_refresh_chatgpt_local_proxy_node", lambda **kwargs: True)
+
+    result = _run_single_chatgpt_health_check(account_id)
+
+    assert len(calls) == 4
+    assert result["valid"] is False
+    assert result["status_code"] == 0
+    assert result["transient"] is True
+    assert "Proxy CONNECT aborted" in result["error"]
+    assert _overview(account_id).get_summary()["valid"] is True
+
+
 def test_account_health_check_task_counts_invalid_as_failure(monkeypatch):
     with Session(engine) as session:
         invalid = AccountModel(platform="chatgpt", email="invalid-health@example.com", password="secret")
@@ -247,7 +373,7 @@ def test_account_health_check_task_counts_invalid_as_failure(monkeypatch):
         invalid_id = int(invalid.id or 0)
         valid_id = int(valid.id or 0)
 
-    def _fake_health_check(account_id: int, logger=None):
+    def _fake_health_check(account_id: int, logger=None, network_coordinator=None):
         if account_id == invalid_id:
             return {
                 "account_id": account_id,

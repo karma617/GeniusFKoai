@@ -1,0 +1,38 @@
+account_id cfff961e-dd73-4523-8106-5250a59d8871 plan free signup True
+{"label": "BR_acct_on_promo", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "BR_acct_off_promo", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "JP_acct_on_promo", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "JP_acct_off_promo", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "BR_device_promo", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "JP_device_promo", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "BR_cancel_hosted", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "JP_cancel_hosted", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "BR_create_JP_stripe", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": "0", "paypal_tax": false, "pmt_tax": ["card", "link"]}
+{"label": "JP_create_BR_stripe", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": "Failed to perform, curl: (56) Proxy CONNECT aborted. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.", "amt_tax": "0", "paypal_tax": false, "pmt_tax": ["card", "link"]}
+{"label": "BR_create_US_stripe", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "JP_create_US_stripe", "checkout": 200, "amt": "0", "zero": true, "paypal": false, "pmt": ["card", "link"], "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "US_acct_on_promo", "checkout": 200, "amt": "2195", "zero": false, "paypal": true, "pmt": ["card", "paypal"], "trial": false, "promo_resp": null, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "US_acct_off_promo", "checkout": 200, "amt": "2195", "zero": false, "paypal": true, "pmt": ["card", "paypal"], "trial": false, "promo_resp": null, "err": null, "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "US_IE_EUR", "checkout": 200, "amt": null, "zero": null, "paypal": null, "pmt": null, "trial": false, "promo_resp": null, "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a14HfBgq7GVZdMQzY6SZOdwq3aO14Ou0DjGfgcygxHZjJe5fsRLinU8p7j/init ¡ú status=404 request-id='req_2dzswJCJtHZxaZ' body='{\\n  \"error\": {\\n    \"cod", "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "BR_IE_EUR", "checkout": 200, "amt": null, "zero": null, "paypal": null, "pmt": null, "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1IXe2PVRlkW6TsbBWrvAmbDkACiFJ7u1gezJzoM7LkCauZoVBbVDwvjaC/init ¡ú status=404 request-id='req_M3SFQWGD4XFeAg' body='{\\n  \"error\": {\\n    \"cod", "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+{"label": "JP_IE_EUR", "checkout": 200, "amt": null, "zero": null, "paypal": null, "pmt": null, "trial": false, "promo_resp": {"promo_campaign_id": "plus-1-month-free", "is_coupon_from_query_param": false}, "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a123KOmrXcoo0UIwZPFPqz0kOglyYZnqX290KdU3FHNW0pwCsvy4IMaesa/init ¡ú status=404 request-id='req_OL9DLHFCOCWRlJ' body='{\\n  \"error\": {\\n    \"cod", "amt_tax": null, "paypal_tax": null, "pmt_tax": null}
+
+=== SUMMARY ===
+BR_acct_on_promo: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+BR_acct_off_promo: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+JP_acct_on_promo: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+JP_acct_off_promo: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+BR_device_promo: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+JP_device_promo: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+BR_cancel_hosted: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+JP_cancel_hosted: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+BR_create_JP_stripe: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+JP_create_BR_stripe: amt=0 zero=True paypal=False pmt=['card', 'link'] err=Failed to perform, curl: (56) Proxy CONNECT aborte
+BR_create_US_stripe: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+JP_create_US_stripe: amt=0 zero=True paypal=False pmt=['card', 'link'] err=
+US_acct_on_promo: amt=2195 zero=False paypal=True pmt=['card', 'paypal'] err=
+US_acct_off_promo: amt=2195 zero=False paypal=True pmt=['card', 'paypal'] err=
+US_IE_EUR: amt=None zero=None paypal=None pmt=None err=Stripe POST https://api.stripe.com/v1/payment_page
+BR_IE_EUR: amt=None zero=None paypal=None pmt=None err=Stripe POST https://api.stripe.com/v1/payment_page
+JP_IE_EUR: amt=None zero=None paypal=None pmt=None err=Stripe POST https://api.stripe.com/v1/payment_page
+paypal_any 2 zero_paypal 0

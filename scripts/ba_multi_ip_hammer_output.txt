@@ -1,0 +1,20 @@
+=== multi-IP hammer: proxy=US checkout=US/USD max=12 stop_on_first=False ===
+  [01] approve=approved         ba_ok=True  amt=2178   ba=BA-7BK06327LA962815W err=
+  [02] approve=network_error    ba_ok=False amt=       ba= err=Failed to perform, curl: (35) TLS connect error: e
+  [03] approve=network_error    ba_ok=False amt=       ba= err=Failed to perform, curl: (35) TLS connect error: e
+  [04] approve=approved         ba_ok=True  amt=2178   ba=BA-30730897H0809974L err=
+  [05] approve=approved         ba_ok=True  amt=2178   ba=BA-5YY80077KM0174427 err=
+  [06] approve=approved         ba_ok=True  amt=2178   ba=BA-1DP78459038869939 err=
+  [07] approve=approved         ba_ok=True  amt=2178   ba=BA-65H99718X8097205U err=
+  [08] approve=approved         ba_ok=True  amt=2178   ba=BA-9VE09208WL393304D err=
+  [09] approve=approved         ba_ok=True  amt=2178   ba=BA-0R8303877H762522L err=
+  [10] approve=approved         ba_ok=True  amt=2178   ba=BA-0P971364MR125711Y err=
+  [11] approve=approved         ba_ok=True  amt=2178   ba=BA-96R95827SG231900H err=
+  [12] approve=approved         ba_ok=True  amt=2178   ba=BA-1SU78027VS592073X err=
+
+=== SUMMARY ===
+  approved: 10 total, 10 ba_ok
+  network_error: 2 total, 0 ba_ok
+  overall_ba_ok=10/12
+  saved=scripts/ba_multi_ip_hammer_results.json
+=== DONE ===

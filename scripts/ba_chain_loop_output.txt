@@ -1,0 +1,148 @@
+
+--- r1=US r2=US ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=True err=
+  BA URL: BA-0U008052AV406850U
+
+--- r1=US r2=BR ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=Failed to perform, curl: (28) Connection closed abruptly. See https://curl.se/li
+
+--- r1=US r2=JP ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=VN ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=TH ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=Failed to perform, curl: (28) Operation timed out after 5015 milliseconds with 1
+
+--- r1=US r2=KR ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=TW ---
+  amt= pmt=None zero=False pp=False ba=False err=Failed to perform, curl: (28) Connection timed out after 30013 milliseconds. See
+
+--- r1=US r2=HK ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=approve 403
+
+--- r1=US r2=KH ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=ID ---
+  amt= pmt=None zero=False pp=False ba=False err=checkout 403: <html>
+  <head>
+    <meta name="viewport" content="width=device-wi
+
+--- r1=US r2=PH ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=MY ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=SG ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=AU ---
+  amt= pmt=None zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library 
+
+--- r1=US r2=GB ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=CA ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=DE ---
+  amt= pmt=None zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library 
+
+--- r1=US r2=FR ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=IT ---
+  amt= pmt=None zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library 
+
+--- r1=US r2=ES ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=NL ---
+  amt= pmt=None zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library 
+
+--- r1=US r2=IE ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=PT ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=BE ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=FI ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=AT ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=CH ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=SE ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=NO ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=DK ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=Failed to perform, curl: (28) Operation timed out after 30007 milliseconds with 
+
+--- r1=US r2=PL ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=CZ ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=MX ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+--- r1=US r2=NZ ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=Failed to perform, curl: (28) Connection closed abruptly. See https://curl.se/li
+
+--- r1=US r2=LU ---
+  amt=2178 pmt=['card', 'paypal'] zero=False pp=True ba=False err=poll timeout sa=requires_approval
+
+
+=== 汇总 ===
+r2=US   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=True  err=
+r2=BR   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=Failed to perform, curl: (28) Connection closed abruptly. Se
+r2=JP   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=VN   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=TH   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=Failed to perform, curl: (28) Operation timed out after 5015
+r2=KR   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=TW   amt=       pmt=None                      zero=False pp=False ba=False err=Failed to perform, curl: (28) Connection timed out after 300
+r2=HK   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=approve 403
+r2=KH   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=ID   amt=       pmt=None                      zero=False pp=False ba=False err=checkout 403: <html>
+  <head>
+    <meta name="viewport" cont
+r2=PH   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=MY   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=SG   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=AU   amt=       pmt=None                      zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000
+r2=GB   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=CA   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=DE   amt=       pmt=None                      zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000
+r2=FR   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=IT   amt=       pmt=None                      zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000
+r2=ES   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=NL   amt=       pmt=None                      zero=False pp=False ba=False err=Failed to perform, curl: (35) TLS connect error: error:00000
+r2=IE   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=PT   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=BE   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=FI   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=AT   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=CH   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=SE   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=NO   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=DK   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=Failed to perform, curl: (28) Operation timed out after 3000
+r2=PL   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=CZ   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=MX   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval
+r2=NZ   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=Failed to perform, curl: (28) Connection closed abruptly. Se
+r2=LU   amt=2178   pmt=['card', 'paypal']        zero=False pp=True  ba=False err=poll timeout sa=requires_approval

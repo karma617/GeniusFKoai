@@ -1,0 +1,124 @@
+[
+  {
+    "label": "US_init_promo_BR_only",
+    "promo": "BR",
+    "re_tax_us": false,
+    "checkout": 200,
+    "init": 200,
+    "amt0": "2210",
+    "pmt0": [
+      "card",
+      "paypal"
+    ],
+    "paypal0": true,
+    "zero0": false,
+    "promo_tax": 200,
+    "amt1": "2000",
+    "pmt1": [
+      "card",
+      "paypal"
+    ],
+    "paypal1": true,
+    "zero1": false,
+    "final_amt": "2000",
+    "final_paypal": true,
+    "final_zero": false,
+    "pm": 200,
+    "confirm": 200,
+    "err": "auth_headers() takes 0 positional arguments but 1 was given"
+  },
+  {
+    "label": "US_init_promo_BR_then_US",
+    "promo": "BR",
+    "re_tax_us": true,
+    "checkout": 200,
+    "init": 200,
+    "amt0": "2210",
+    "pmt0": [
+      "card",
+      "paypal"
+    ],
+    "paypal0": true,
+    "zero0": false,
+    "promo_tax": 200,
+    "amt1": "2000",
+    "pmt1": [
+      "card",
+      "paypal"
+    ],
+    "paypal1": true,
+    "zero1": false,
+    "tax_us": 200,
+    "amt2": "2178",
+    "pmt2": [
+      "card",
+      "paypal"
+    ],
+    "paypal2": true,
+    "zero2": false,
+    "final_amt": "2178",
+    "final_paypal": true,
+    "final_zero": false
+  },
+  {
+    "label": "US_init_promo_JP_only",
+    "promo": "JP",
+    "re_tax_us": false,
+    "checkout": 200,
+    "init": 200,
+    "amt0": "2210",
+    "pmt0": [
+      "card",
+      "paypal"
+    ],
+    "paypal0": true,
+    "zero0": false,
+    "promo_tax": 200,
+    "amt1": "2200",
+    "pmt1": [
+      "card",
+      "paypal"
+    ],
+    "paypal1": true,
+    "zero1": false,
+    "final_amt": "2200",
+    "final_paypal": true,
+    "final_zero": false,
+    "pm": 200,
+    "confirm": 200,
+    "err": "auth_headers() takes 0 positional arguments but 1 was given"
+  },
+  {
+    "label": "US_init_promo_JP_then_US",
+    "promo": "JP",
+    "re_tax_us": true,
+    "checkout": 200,
+    "init": 200,
+    "amt0": "2210",
+    "pmt0": [
+      "card",
+      "paypal"
+    ],
+    "paypal0": true,
+    "zero0": false,
+    "promo_tax": 200,
+    "amt1": "2200",
+    "pmt1": [
+      "card",
+      "paypal"
+    ],
+    "paypal1": true,
+    "zero1": false,
+    "tax_us": 200,
+    "amt2": "2178",
+    "pmt2": [
+      "card",
+      "paypal"
+    ],
+    "paypal2": true,
+    "zero2": false,
+    "final_amt": "2178",
+    "final_paypal": true,
+    "final_zero": false
+  }
+]

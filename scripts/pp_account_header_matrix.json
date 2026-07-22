@@ -1,0 +1,547 @@
+[
+  {
+    "label": "BR_acct_on_promo",
+    "region": "BR",
+    "bill": "BR/BRL",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1nbViDsX9C6w9w61d1u",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "BR_acct_off_promo",
+    "region": "BR",
+    "bill": "BR/BRL",
+    "with_account": false,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1EfaNT21C7kbzKtYnb8",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "JP_acct_on_promo",
+    "region": "JP",
+    "bill": "JP/JPY",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1cyrLWktXg5iI95Pn6k",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2727",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2727",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "JP_acct_off_promo",
+    "region": "JP",
+    "bill": "JP/JPY",
+    "with_account": false,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1SrRyAeppc9Xl75tPbi",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2727",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2727",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "BR_device_promo",
+    "region": "BR",
+    "bill": "BR/BRL",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1Gkx9zDwuhErnIvtipy",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "JP_device_promo",
+    "region": "JP",
+    "bill": "JP/JPY",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1VEueZn2dIAquIZPtlL",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2727",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2727",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "BR_cancel_hosted",
+    "region": "BR",
+    "bill": "BR/BRL",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1kFt4QDa39nshXkAo7d",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "JP_cancel_hosted",
+    "region": "JP",
+    "bill": "JP/JPY",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1XwMDkepADsf5LMkJrE",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2727",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2727",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "BR_create_JP_stripe",
+    "region": "BR",
+    "bill": "BR/BRL",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a13XhjgboOt5PBuSzTmt",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "pmt_tax": [
+      "card",
+      "link"
+    ],
+    "amt_tax": "0",
+    "paypal_tax": false,
+    "zero_tax": true
+  },
+  {
+    "label": "JP_create_BR_stripe",
+    "region": "JP",
+    "bill": "JP/JPY",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check_err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0)",
+    "checkout": 200,
+    "cs": "cs_live_a1Xmwytonj9VvvnFjzBQ",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "err": "Failed to perform, curl: (56) Proxy CONNECT aborted. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "accounts_check": 405,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2727",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2727",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "pmt_tax": [
+      "card",
+      "link"
+    ],
+    "amt_tax": "0",
+    "paypal_tax": false,
+    "zero_tax": true
+  },
+  {
+    "label": "BR_create_US_stripe",
+    "region": "BR",
+    "bill": "US/USD",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1WePFDPMbDH0V48jVVv",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "JP_create_US_stripe",
+    "region": "JP",
+    "bill": "US/USD",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1XO60zM4a7odJhifcqS",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt": "0",
+    "paypal": false,
+    "zero": true,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "label": "US_acct_on_promo",
+    "region": "US",
+    "bill": "US/USD",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_b1ehWWPWlCdakkFuiudu",
+    "trial": false,
+    "promo_resp": null,
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt": "2195",
+    "paypal": true,
+    "zero": false,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "195",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2195"
+    }
+  },
+  {
+    "label": "US_acct_off_promo",
+    "region": "US",
+    "bill": "US/USD",
+    "with_account": false,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_b1lk7el20Z8oNWuSoFGI",
+    "trial": false,
+    "promo_resp": null,
+    "checkout_pmt": null,
+    "ent": "openai_llc",
+    "requires_manual_approval": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt": "2195",
+    "paypal": true,
+    "zero": false,
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "195",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2195"
+    }
+  },
+  {
+    "label": "US_IE_EUR",
+    "region": "US",
+    "bill": "IE/EUR",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a14HfBgq7GVZdMQzY6SZ",
+    "trial": false,
+    "promo_resp": null,
+    "checkout_pmt": null,
+    "ent": "openai_ie",
+    "requires_manual_approval": true,
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a14HfBgq7GVZdMQzY6SZOdwq3aO14Ou0DjGfgcygxHZjJe5fsRLinU8p7j/init → status=404 request-id='req_2dzswJCJtHZxaZ' body='{\\n  \"error\": {\\n    \"cod",
+    "accounts_check_err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0)"
+  },
+  {
+    "label": "BR_IE_EUR",
+    "region": "BR",
+    "bill": "IE/EUR",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a1IXe2PVRlkW6TsbBWrv",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_ie",
+    "requires_manual_approval": true,
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1IXe2PVRlkW6TsbBWrvAmbDkACiFJ7u1gezJzoM7LkCauZoVBbVDwvjaC/init → status=404 request-id='req_M3SFQWGD4XFeAg' body='{\\n  \"error\": {\\n    \"cod",
+    "accounts_check_err": "Failed to perform, curl: (56) Connection closed abruptly. See https://curl.se/libcurl/c/libcurl-errors.html first for mo"
+  },
+  {
+    "label": "JP_IE_EUR",
+    "region": "JP",
+    "bill": "IE/EUR",
+    "with_account": true,
+    "promo": true,
+    "ui": "hosted",
+    "accounts_check": 405,
+    "checkout": 200,
+    "cs": "cs_live_a123KOmrXcoo0UIwZPFP",
+    "trial": false,
+    "promo_resp": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "checkout_pmt": null,
+    "ent": "openai_ie",
+    "requires_manual_approval": true,
+    "err": "Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a123KOmrXcoo0UIwZPFPqz0kOglyYZnqX290KdU3FHNW0pwCsvy4IMaesa/init → status=404 request-id='req_OL9DLHFCOCWRlJ' body='{\\n  \"error\": {\\n    \"cod"
+  }
+]

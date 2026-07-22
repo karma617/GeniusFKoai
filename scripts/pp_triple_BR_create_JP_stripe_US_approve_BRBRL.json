@@ -1,0 +1,133 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": "",
+    "tax_country": "BR",
+    "billing_country": "BR",
+    "billing_currency": "BRL",
+    "promo_addr_country": "BR",
+    "ui_mode": "custom",
+    "promo_when": "none",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    },
+    "cs": "cs_live_a1W9vR31jQxeU59RC4RLjDWxnNzqcSZ8AdAZKDE4ZqM91lmWLHPMRt1rsM",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 9990
+    }
+  },
+  {
+    "attempt": 2,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": "",
+    "tax_country": "BR",
+    "billing_country": "BR",
+    "billing_currency": "BRL",
+    "promo_addr_country": "BR",
+    "ui_mode": "custom",
+    "promo_when": "none",
+    "approve_result": "network_error",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "",
+    "amt_after_promo": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1Zi62nY0yPeJ3xbherfzXTL9VYlPJXtr9Vhoaet5455bcToRzzlDP5Ci1",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom"
+  },
+  {
+    "attempt": 3,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": "",
+    "tax_country": "BR",
+    "billing_country": "BR",
+    "billing_currency": "BRL",
+    "promo_addr_country": "BR",
+    "ui_mode": "custom",
+    "promo_when": "none",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    },
+    "cs": "cs_live_a1GUqTnYKirTnil2EJgR9P3gLMsSomAnrFsNHByYc8Wf3ahMXYjeFWbjyQ",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 9990
+    }
+  }
+]

@@ -1,0 +1,63 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "US",
+    "stripe_proxy": "US",
+    "approve_proxy": "US",
+    "promo_proxy": "BR",
+    "tax_country": "US",
+    "billing_country": "US",
+    "billing_currency": "USD",
+    "promo_addr_country": "BR",
+    "ui_mode": "custom",
+    "promo_when": "after_init",
+    "approve_result": "approved",
+    "ba_ok": true,
+    "ba": "BA-0H2183042U2609939",
+    "ba_url": "https://www.paypal.com/agreements/approve?ba_token=BA-0H2183042U2609939",
+    "amt": "2178",
+    "amt_after_promo": "2000",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": null,
+    "err": "",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_promo": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "promo_update": 200,
+      "tax": 200,
+      "pm": 200,
+      "confirm": 200,
+      "approve_http": 200,
+      "approve_path": "/backend-api/payments/checkout/approve"
+    },
+    "cs": "cs_live_a1EFCifEOQIYy1nown8PI1C4kV1YcL5e5j6fVXEGRrM3Wv20FGbh9ImONM",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 2140,
+      "inv_due": 2140,
+      "inv_total": 2140,
+      "inv_subtotal": 2000
+    },
+    "amts_after_promo": {
+      "eo_amount": 2000,
+      "inv_due": 2000,
+      "inv_total": 2000,
+      "inv_subtotal": 2000
+    },
+    "amts_tax": {
+      "eo_amount": 2178,
+      "inv_due": 2178,
+      "inv_total": 2178,
+      "inv_subtotal": 2000
+    }
+  }
+]

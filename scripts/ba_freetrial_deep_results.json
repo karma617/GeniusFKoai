@@ -1,0 +1,416 @@
+{
+  "account_flags": {
+    "/backend-api/accounts/check": {
+      "status": 405,
+      "body": "{\"detail\":\"Method Not Allowed\"}"
+    },
+    "/backend-api/accounts/check/v4-2023-04-27": {
+      "status": 200,
+      "interesting": {
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.account.is_most_recent_expired_subscription_gratis": false,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.account.has_previously_paid_subscription": false,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.account.plan_type": "free",
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.account.eligible_for_reactivation": true,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.account.promo_data": {},
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.subscription_id": null,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.has_active_subscription": false,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.is_active_subscription_gratis": false,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.subscription_plan": "chatgptfreeplan",
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.billing_period": null,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.scheduled_plan_change": null,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.billing_currency": null,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.discount": null,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.trial": null,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.entitlement.is_eligible_for_cp": false,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.last_active_subscription": {
+          "subscription_id": null,
+          "purchase_origin_platform": "chatgpt_not_purchased",
+          "will_renew": false,
+          "cancellation_outcome": null
+        },
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.last_active_subscription.subscription_id": null,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.is_eligible_for_yearly_plus_subscription": false,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.is_eligible_for_yearly_plus_new_user_subscription": true,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.is_eligible_for_yearly_plus_existing_user_subscription": false,
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.eligible_promo_campaigns": {},
+        "accounts.cfff961e-dd73-4523-8106-5250a59d8871.eligible_offers": {
+          "default_offer_id": "chatgptplusplan"
+        },
+        "accounts.default.account.is_most_recent_expired_subscription_gratis": false,
+        "accounts.default.account.has_previously_paid_subscription": false,
+        "accounts.default.account.plan_type": "free",
+        "accounts.default.account.eligible_for_reactivation": true,
+        "accounts.default.account.promo_data": {},
+        "accounts.default.entitlement.subscription_id": null,
+        "accounts.default.entitlement.has_active_subscription": false,
+        "accounts.default.entitlement.is_active_subscription_gratis": false,
+        "accounts.default.entitlement.subscription_plan": "chatgptfreeplan",
+        "accounts.default.entitlement.billing_period": null,
+        "accounts.default.entitlement.scheduled_plan_change": null,
+        "accounts.default.entitlement.billing_currency": null,
+        "accounts.default.entitlement.discount": null,
+        "accounts.default.entitlement.trial": null,
+        "accounts.default.entitlement.is_eligible_for_cp": false,
+        "accounts.default.last_active_subscription": {
+          "subscription_id": null,
+          "purchase_origin_platform": "chatgpt_not_purchased",
+          "will_renew": false,
+          "cancellation_outcome": null
+        },
+        "accounts.default.last_active_subscription.subscription_id": null,
+        "accounts.default.is_eligible_for_yearly_plus_subscription": false,
+        "accounts.default.is_eligible_for_yearly_plus_new_user_subscription": true,
+        "accounts.default.is_eligible_for_yearly_plus_existing_user_subscription": false,
+        "accounts.default.eligible_promo_campaigns": {},
+        "accounts.default.eligible_offers": {
+          "default_offer_id": "chatgptplusplan"
+        }
+      },
+      "has_trial_word": true,
+      "has_eligible_word": true
+    },
+    "/backend-api/subscriptions": {
+      "status": 400,
+      "body": "{\"detail\":\"must specify either organization_id or account_id\"}"
+    },
+    "/backend-api/payments/customer_portal_url": {
+      "status": 404,
+      "body": "{\"detail\":\"Not Found\"}"
+    },
+    "/backend-api/settings/user": {
+      "status": 200,
+      "interesting": {
+        "eligible_announcement_strings": {},
+        "settings.precise_location_eligible": true
+      },
+      "has_trial_word": false,
+      "has_eligible_word": true
+    }
+  },
+  "amount_rows": [
+    {
+      "proxy": "US",
+      "country": "US",
+      "currency": "usd",
+      "checkout": 200,
+      "init": 200,
+      "ent": "openai_llc",
+      "cs": "cs_live_a1pgRyDrDuYJ3a4K",
+      "pmt": [
+        "card",
+        "paypal"
+      ],
+      "amount_candidates": [
+        [
+          "elements_options.amount",
+          2000
+        ],
+        [
+          "invoice.amount_due",
+          2000
+        ],
+        [
+          "invoice.total",
+          2000
+        ],
+        [
+          "invoice.subtotal",
+          2000
+        ]
+      ],
+      "promo_keys_checkout": {
+        "scheduled_discount_preview": null,
+        "immediate_discount_settings": null,
+        "promo_campaign": null,
+        "promo_credit_grant": null,
+        "credit_discount_offer": null,
+        "one_click_trial_eligible": false
+      },
+      "keyword_hits": [
+        "trial",
+        "promo",
+        "coupon",
+        "discount",
+        "amount_due",
+        "total",
+        "line_item"
+      ],
+      "invoice_keys": [
+        "object",
+        "amount_due",
+        "amount_due_applied_to_balance",
+        "applied_balance",
+        "billing_cycle_anchor",
+        "currency",
+        "ending_balance",
+        "frozen",
+        "has_prorations",
+        "lines",
+        "pre_payment_credit_notes_amount",
+        "subtotal",
+        "total",
+        "total_discount_amounts",
+        "total_tax_amounts"
+      ],
+      "elements_options_keys": [
+        "__checkout_automatic_payment_method_types",
+        "__checkout_config_id",
+        "__checkout_session_id",
+        "__disable_link_in_session",
+        "__link_consumer_data",
+        "__payment_pages_experiments",
+        "amount",
+        "currency",
+        "mode",
+        "payment_method_types"
+      ]
+    },
+    {
+      "proxy": "US",
+      "country": "IE",
+      "currency": "eur",
+      "checkout": 200,
+      "init": 200,
+      "ent": "openai_ie",
+      "cs": "cs_live_a1q5PiFbVoqAnOMd",
+      "pmt": [
+        "card",
+        "paypal"
+      ],
+      "amount_candidates": [
+        [
+          "elements_options.amount",
+          1870
+        ],
+        [
+          "invoice.amount_due",
+          1870
+        ],
+        [
+          "invoice.total",
+          1870
+        ],
+        [
+          "invoice.subtotal",
+          1870
+        ]
+      ],
+      "promo_keys_checkout": {
+        "scheduled_discount_preview": null,
+        "immediate_discount_settings": null,
+        "promo_campaign": null,
+        "promo_credit_grant": null,
+        "credit_discount_offer": null,
+        "one_click_trial_eligible": false
+      },
+      "keyword_hits": [
+        "trial",
+        "promo",
+        "coupon",
+        "discount",
+        "amount_due",
+        "total",
+        "line_item"
+      ],
+      "invoice_keys": [
+        "object",
+        "amount_due",
+        "amount_due_applied_to_balance",
+        "applied_balance",
+        "billing_cycle_anchor",
+        "currency",
+        "ending_balance",
+        "frozen",
+        "has_prorations",
+        "lines",
+        "pre_payment_credit_notes_amount",
+        "subtotal",
+        "total",
+        "total_discount_amounts",
+        "total_tax_amounts"
+      ],
+      "elements_options_keys": [
+        "__checkout_automatic_payment_method_types",
+        "__checkout_config_id",
+        "__checkout_session_id",
+        "__disable_link_in_session",
+        "__link_consumer_data",
+        "__payment_pages_experiments",
+        "amount",
+        "currency",
+        "mode",
+        "payment_method_configuration",
+        "payment_method_types"
+      ]
+    },
+    {
+      "proxy": "JP",
+      "country": "JP",
+      "currency": "jpy",
+      "checkout": 200,
+      "init": 200,
+      "ent": "openai_llc",
+      "cs": "cs_live_a1ZvvdTx9sNlXE9o",
+      "pmt": [
+        "card",
+        "link"
+      ],
+      "amount_candidates": [
+        [
+          "elements_options.amount",
+          0
+        ],
+        [
+          "invoice.amount_due",
+          0
+        ],
+        [
+          "invoice.total",
+          0
+        ],
+        [
+          "invoice.subtotal",
+          2727
+        ]
+      ],
+      "promo_keys_checkout": {
+        "scheduled_discount_preview": null,
+        "immediate_discount_settings": null,
+        "promo_campaign": {
+          "promo_campaign_id": "plus-1-month-free",
+          "is_coupon_from_query_param": false
+        },
+        "promo_credit_grant": null,
+        "credit_discount_offer": null,
+        "one_click_trial_eligible": false
+      },
+      "keyword_hits": [
+        "trial",
+        "promo",
+        "coupon",
+        "discount",
+        "free",
+        "amount_due",
+        "total",
+        "line_item"
+      ],
+      "invoice_keys": [
+        "object",
+        "amount_due",
+        "amount_due_applied_to_balance",
+        "applied_balance",
+        "billing_cycle_anchor",
+        "currency",
+        "ending_balance",
+        "frozen",
+        "has_prorations",
+        "lines",
+        "pre_payment_credit_notes_amount",
+        "subtotal",
+        "total",
+        "total_discount_amounts",
+        "total_tax_amounts"
+      ],
+      "elements_options_keys": [
+        "__checkout_automatic_payment_method_types",
+        "__checkout_config_id",
+        "__checkout_session_id",
+        "__disable_link_in_session",
+        "__link_consumer_data",
+        "__payment_pages_experiments",
+        "amount",
+        "currency",
+        "mode",
+        "payment_method_types"
+      ]
+    },
+    {
+      "proxy": "BR",
+      "country": "BR",
+      "currency": "BRL",
+      "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-"
+    },
+    {
+      "proxy": "US",
+      "country": "JP",
+      "currency": "JPY",
+      "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-"
+    },
+    {
+      "proxy": "US",
+      "country": "BR",
+      "currency": "brl",
+      "checkout": 200,
+      "init": 200,
+      "ent": "openai_llc",
+      "cs": "cs_live_a1EN4Zu4KGnYHXvr",
+      "pmt": [
+        "card"
+      ],
+      "amount_candidates": [
+        [
+          "elements_options.amount",
+          9990
+        ],
+        [
+          "invoice.amount_due",
+          9990
+        ],
+        [
+          "invoice.total",
+          9990
+        ],
+        [
+          "invoice.subtotal",
+          9990
+        ]
+      ],
+      "promo_keys_checkout": {
+        "scheduled_discount_preview": null,
+        "immediate_discount_settings": null,
+        "promo_campaign": null,
+        "promo_credit_grant": null,
+        "credit_discount_offer": null,
+        "one_click_trial_eligible": false
+      },
+      "keyword_hits": [
+        "trial",
+        "promo",
+        "coupon",
+        "discount",
+        "amount_due",
+        "total",
+        "line_item"
+      ],
+      "invoice_keys": [
+        "object",
+        "amount_due",
+        "amount_due_applied_to_balance",
+        "applied_balance",
+        "billing_cycle_anchor",
+        "currency",
+        "ending_balance",
+        "frozen",
+        "has_prorations",
+        "lines",
+        "pre_payment_credit_notes_amount",
+        "subtotal",
+        "total",
+        "total_discount_amounts",
+        "total_tax_amounts"
+      ],
+      "elements_options_keys": [
+        "__checkout_automatic_payment_method_types",
+        "__checkout_config_id",
+        "__checkout_session_id",
+        "__disable_link_in_session",
+        "__link_consumer_data",
+        "__payment_pages_experiments",
+        "amount",
+        "currency",
+        "mode",
+        "payment_method_types"
+      ]
+    }
+  ]
+}

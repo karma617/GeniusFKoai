@@ -1,0 +1,26 @@
+[
+  {
+    "ok": false,
+    "ba_url": "",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt": "2178",
+    "inv_amt": "2178",
+    "err": "Stripe /confirm 响应缺少 pm-redirects.stripe.com/authorize URL (已扫描 setup_intent / payment_intent / nested response); response top keys=['id', 'object', '",
+    "test": "F3_US_full"
+  },
+  {
+    "ok": false,
+    "ba_url": "",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt": "2178",
+    "inv_amt": "2178",
+    "err": "Stripe /confirm 响应缺少 pm-redirects.stripe.com/authorize URL (已扫描 setup_intent / payment_intent / nested response); response top keys=['id', 'object', '",
+    "test": "B3_US_create_BR_stripe"
+  }
+]

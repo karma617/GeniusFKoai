@@ -1,0 +1,120 @@
+[
+  {
+    "r2": "TH",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "61.7.132.209"
+  },
+  {
+    "r2": "VN",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "58.187.60.73"
+  },
+  {
+    "r2": "JP",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "14.132.48.210"
+  },
+  {
+    "r2": "KH",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "119.13.56.152"
+  },
+  {
+    "r2": "ID",
+    "error": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/"
+  },
+  {
+    "r2": "LA",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "183.182.121.101"
+  },
+  {
+    "r2": "TW",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "27.53.50.68"
+  },
+  {
+    "r2": "KR",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "211.194.41.34"
+  },
+  {
+    "r2": "HK",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "61.92.127.250"
+  },
+  {
+    "r2": "PH",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "136.158.79.189"
+  },
+  {
+    "r2": "MY",
+    "error": "Failed to perform, curl: (35) TLS connect error: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER. See https://curl.se/libcurl/c/libc"
+  },
+  {
+    "r2": "US",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "72.229.10.179"
+  },
+  {
+    "r2": "BR",
+    "init": "0",
+    "tax": "0",
+    "ba": "",
+    "ba_ok": false,
+    "trial": true,
+    "status": "BA_FAILED",
+    "ip": "201.71.36.191"
+  }
+]

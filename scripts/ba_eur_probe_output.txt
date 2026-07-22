@@ -1,0 +1,7 @@
+=== US proxy + EUR checkout countries ===
+DE: amt=1933 ent=openai_ie confirm_sa=requires_approval approve=approved ba=
+FR: amt=1917 ent=openai_ie confirm_sa=requires_approval approve=approved ba=
+IE: amt=1870 ent=openai_ie confirm_sa=requires_approval approve=approved ba=
+NL: amt=1901 ent=openai_ie confirm_sa=requires_approval approve=approved ba=
+
+=== DONE ===

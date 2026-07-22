@@ -1,0 +1,10 @@
+picked 8
+{"email": "VanessaBeck9153@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "{\n  \"error\": {\n    \"message\": \"Provided authentication token is expired. Please try signing in again"}
+{"email": "TimothyMullins5812@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0)"}
+{"email": "DaleWatkins6007@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "{\n  \"error\": {\n    \"message\": \"Provided authentication token is expired. Please try signing in again"}
+{"email": "JoeFrench7478@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "{\n  \"error\": {\n    \"message\": \"Provided authentication token is expired. Please try signing in again"}
+{"email": "KelseyRodriguez4390@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "{\n  \"error\": {\n    \"message\": \"Provided authentication token is expired. Please try signing in again"}
+{"email": "DanielleWinters7404@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "{\n  \"error\": {\n    \"message\": \"Provided authentication token is expired. Please try signing in again"}
+{"email": "NathanTran9329@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "{\n  \"error\": {\n    \"message\": \"Provided authentication token is expired. Please try signing in again"}
+{"email": "beverlyjones2432+bc316kvf@outlook.com", "expired": true, "US": null, "BR": null, "JP": null, "err": "{\n  \"error\": {\n    \"message\": \"Provided authentication token is expired. Please try signing in again"}
+saved 8 zero_paypal_hits 0

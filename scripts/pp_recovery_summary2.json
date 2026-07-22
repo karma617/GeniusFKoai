@@ -1,0 +1,188 @@
+[
+  {
+    "name": "US_promoJP_skipTax_direct",
+    "rc": 0,
+    "ba_ok": true,
+    "ba": "BA-9SJ41158LV577511W",
+    "amt": "2200",
+    "zero": false,
+    "paypal": true,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "approve_result": "approved",
+    "err": "",
+    "trial": false,
+    "promo_campaign": null,
+    "expected_amount": "2200",
+    "amt_after_promo": "2200",
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "128",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2128"
+    },
+    "amts_tax": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "200",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "0",
+      "shipping_rate_amount": "0",
+      "due": "2200"
+    },
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_promo": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "promo_tax": 200,
+      "tax": "skipped",
+      "confirm": 200,
+      "confirm_keys": [
+        "id",
+        "object",
+        "account_settings",
+        "application",
+        "automatic_payment_method_types",
+        "beta_versions",
+        "billing_address_collection",
+        "blob",
+        "blocked_billing_address_countries",
+        "bnpl_in_link_ui_enabled",
+        "bnpl_link_experiment_payment_method_type",
+        "cancel_url",
+        "capture_method",
+        "card_brand_choice",
+        "card_brands",
+        "checkout_multistep_ui",
+        "client_reference_id",
+        "config_id",
+        "consent",
+        "consent_collection"
+      ],
+      "confirm_sa": null,
+      "approve_http": 200
+    }
+  },
+  {
+    "name": "BR_create_US_stripe_probe",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve_result": "",
+    "err": "",
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    }
+  },
+  {
+    "name": "JP_create_US_stripe_probe",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve_result": "",
+    "err": "",
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "amts": {
+      "subtotal": "2000",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2000",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    }
+  },
+  {
+    "name": "BR_create_BR_bill_probe",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "approve_result": "",
+    "err": "",
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "amts": {
+      "subtotal": "9990",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "9990",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    },
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    }
+  },
+  {
+    "name": "JP_create_JP_bill_probe",
+    "rc": 0,
+    "ba_ok": false,
+    "ba": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "approve_result": "network_error",
+    "err": "Failed to perform, curl: (56) CONNECT tunnel failed, response 407. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000"
+    }
+  }
+]

@@ -300,15 +300,19 @@ export function TaskLogPanel({
   const healthTotal = Number(resultData?.total || 0);
   const progressTotal = Number(healthTotal || progress.total || 0);
   const progressCurrent = Number(progress.current || 0);
-  const successCount = isAccountHealthCheck
+  const hasFinalHealthResult =
+    isAccountHealthCheck &&
+    healthTotal > 0 &&
+    isTerminalTaskStatus(currentStatus);
+  const successCount = hasFinalHealthResult
     ? healthValidCount
     : Number(task?.success || 0);
-  const failureCount = isAccountHealthCheck
+  const failureCount = hasFinalHealthResult
     ? healthInvalidCount + healthErrorCount
     : Number(task?.error_count || 0);
   const handledCount =
-    isAccountHealthCheck && progressTotal > 0
-      ? Math.min(successCount + failureCount, progressTotal)
+    progressCurrent > 0
+      ? Math.min(progressCurrent, progressTotal || progressCurrent)
       : successCount + failureCount > 0
       ? successCount + failureCount
       : progressCurrent;

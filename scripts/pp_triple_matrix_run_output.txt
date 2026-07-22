@@ -1,0 +1,136 @@
+
+##### RUN US_all_USUSD #####
+=== triple extract chk=US stripe=US approve=US promo=- bill=US/USD ui=custom promo_when=none promo_addr=US full=True max=2 ===
+  [01] approve=network_error    ba_ok=False amt=       zero=False paypal=False pmt=None err=Failed to perform, curl: (56) Connection closed abruptly. See https://
+       steps={'proxy_checkout': 'gate.kookeey.info:1000'}
+  [02] approve=approved         ba_ok=True  amt=2178   zero=False paypal=True  pmt=['card', 'paypal'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200, 'approve_path': '/backend-api/payments/checkout/approve'}
+  BA_URL=https://www.paypal.com/agreements/approve?ba_token=BA-7F851123D9176370E
+
+=== SUMMARY ===
+  network_error: 1 total, 0 ba_ok
+  approved: 1 total, 1 ba_ok
+  overall_ba_ok=1/2 zero_and_paypal=0
+  saved=scripts/pp_triple_US_all_USUSD.json
+=== DONE ===
+
+
+##### RUN BR_create_US_stripe_US_approve_USUSD #####
+=== triple extract chk=BR stripe=US approve=US promo=- bill=US/USD ui=custom promo_when=none promo_addr=US full=True max=3 ===
+  [01] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [03] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+
+=== SUMMARY ===
+  empty: 3 total, 0 ba_ok
+  overall_ba_ok=0/3 zero_and_paypal=0
+  saved=scripts/pp_triple_BR_create_US_stripe_US_approve_USUSD.json
+=== DONE ===
+
+
+##### RUN JP_create_US_stripe_US_approve_USUSD #####
+=== triple extract chk=JP stripe=US approve=US promo=- bill=US/USD ui=custom promo_when=none promo_addr=US full=True max=3 ===
+  [01] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [03] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+
+=== SUMMARY ===
+  empty: 3 total, 0 ba_ok
+  overall_ba_ok=0/3 zero_and_paypal=0
+  saved=scripts/pp_triple_JP_create_US_stripe_US_approve_USUSD.json
+=== DONE ===
+
+
+##### RUN BR_create_JP_stripe_US_approve_USUSD #####
+=== triple extract chk=BR stripe=JP approve=US promo=- bill=US/USD ui=custom promo_when=none promo_addr=US full=True max=4 ===
+  [01] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [03] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [04] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+
+=== SUMMARY ===
+  empty: 4 total, 0 ba_ok
+  overall_ba_ok=0/4 zero_and_paypal=0
+  saved=scripts/pp_triple_BR_create_JP_stripe_US_approve_USUSD.json
+=== DONE ===
+
+
+##### RUN BR_create_JP_stripe_US_approve_BRBRL #####
+=== triple extract chk=BR stripe=JP approve=US promo=- bill=BR/BRL ui=custom promo_when=none promo_addr=BR full=True max=3 ===
+  [01] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [02] approve=network_error    ba_ok=False amt=       zero=False paypal=False pmt=None err=Failed to perform, curl: (35) TLS connect error: error:00000000:invali
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200}
+  [03] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+
+=== SUMMARY ===
+  empty: 2 total, 0 ba_ok
+  network_error: 1 total, 0 ba_ok
+  overall_ba_ok=0/3 zero_and_paypal=0
+  saved=scripts/pp_triple_BR_create_JP_stripe_US_approve_BRBRL.json
+=== DONE ===
+
+
+##### RUN JP_create_BR_stripe_US_approve_JPJPY #####
+=== triple extract chk=JP stripe=BR approve=US promo=- bill=JP/JPY ui=custom promo_when=none promo_addr=JP full=True max=3 ===
+  [01] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200}
+  [03] approve=network_error    ba_ok=False amt=       zero=False paypal=False pmt=None err=Failed to perform, curl: (35) TLS connect error: error:00000000:invali
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000'}
+
+=== SUMMARY ===
+  empty: 2 total, 0 ba_ok
+  network_error: 1 total, 0 ba_ok
+  overall_ba_ok=0/3 zero_and_paypal=0
+  saved=scripts/pp_triple_JP_create_BR_stripe_US_approve_JPJPY.json
+=== DONE ===
+
+
+##### RUN US_create_US_stripe_promoBR_taxUS #####
+=== triple extract chk=US stripe=US approve=US promo=BR bill=US/USD ui=custom promo_when=after_init promo_addr=BR full=True max=2 ===
+  [01] approve=approved         ba_ok=True  amt=2178   zero=False paypal=True  pmt=['card', 'paypal'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200, 'approve_path': '/backend-api/payments/checkout/approve'}
+  BA_URL=https://www.paypal.com/agreements/approve?ba_token=BA-0H2183042U2609939
+
+=== SUMMARY ===
+  approved: 1 total, 1 ba_ok
+  overall_ba_ok=1/1 zero_and_paypal=0
+  saved=scripts/pp_triple_US_create_US_stripe_promoBR_taxUS.json
+=== DONE ===
+
+
+##### RUN US_create_US_stripe_promoJP_taxUS #####
+=== triple extract chk=US stripe=US approve=US promo=JP bill=US/USD ui=custom promo_when=after_init promo_addr=JP full=True max=2 ===
+  [01] approve=approved         ba_ok=True  amt=2178   zero=False paypal=True  pmt=['card', 'paypal'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_promo': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'promo_update': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'approve_http': 200, 'approve_path': '/backend-api/payments/checkout/approve'}
+  BA_URL=https://www.paypal.com/agreements/approve?ba_token=BA-0CA05810B4314960G
+
+=== SUMMARY ===
+  approved: 1 total, 1 ba_ok
+  overall_ba_ok=1/1 zero_and_paypal=0
+  saved=scripts/pp_triple_US_create_US_stripe_promoJP_taxUS.json
+=== DONE ===
+
+
+=== MATRIX SUMMARY ===
+{'name': 'US_all_USUSD', 'returncode': 0, 'ba_ok': True, 'ba': 'BA-7F851123D9176370E', 'amt': '2178', 'zero': False, 'paypal': True, 'pmt': ['card', 'paypal'], 'approve': 'approved', 'err': '', 'attempts': 2}
+{'name': 'BR_create_US_stripe_US_approve_USUSD', 'returncode': 0, 'ba_ok': False, 'ba': '', 'amt': '0', 'zero': True, 'paypal': False, 'pmt': ['card', 'link'], 'approve': '', 'err': 'no paypal', 'attempts': 3}
+{'name': 'JP_create_US_stripe_US_approve_USUSD', 'returncode': 0, 'ba_ok': False, 'ba': '', 'amt': '0', 'zero': True, 'paypal': False, 'pmt': ['card', 'link'], 'approve': '', 'err': 'no paypal', 'attempts': 3}
+{'name': 'BR_create_JP_stripe_US_approve_USUSD', 'returncode': 0, 'ba_ok': False, 'ba': '', 'amt': '0', 'zero': True, 'paypal': False, 'pmt': ['card', 'link'], 'approve': '', 'err': 'no paypal', 'attempts': 4}
+{'name': 'BR_create_JP_stripe_US_approve_BRBRL', 'returncode': 0, 'ba_ok': False, 'ba': '', 'amt': '0', 'zero': True, 'paypal': False, 'pmt': ['card', 'link'], 'approve': '', 'err': 'no paypal', 'attempts': 3}
+{'name': 'JP_create_BR_stripe_US_approve_JPJPY', 'returncode': 0, 'ba_ok': False, 'ba': '', 'amt': '', 'zero': False, 'paypal': False, 'pmt': None, 'approve': 'network_error', 'err': 'Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0)', 'attempts': 3}
+{'name': 'US_create_US_stripe_promoBR_taxUS', 'returncode': 0, 'ba_ok': True, 'ba': 'BA-0H2183042U2609939', 'amt': '2178', 'zero': False, 'paypal': True, 'pmt': ['card', 'paypal'], 'approve': 'approved', 'err': '', 'attempts': 1}
+{'name': 'US_create_US_stripe_promoJP_taxUS', 'returncode': 0, 'ba_ok': True, 'ba': 'BA-0CA05810B4314960G', 'amt': '2178', 'zero': False, 'paypal': True, 'pmt': ['card', 'paypal'], 'approve': 'approved', 'err': '', 'attempts': 1}

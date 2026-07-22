@@ -1,0 +1,14 @@
+=== complete extract chk=BR stripe=JP approve=US promo=- bill=US/USD tax=US promo_tax=- ui=custom confirm=pm full=True max=3 ===
+  [01] approve=network_error    ba_ok=False amt=       zero=False paypal=False pmt=None err=Failed to perform, curl: (56) BoringSSL SSL_read: BoringSSL: error:100000f7:SSL routines:O
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000'}
+  [02] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal pmt=['card', 'link']
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'tax': 200}
+  [03] approve=                 ba_ok=False amt=0      zero=True  paypal=False pmt=['card', 'link'] err=no paypal pmt=['card', 'link']
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'proxy_stripe': 'gate.kookeey.info:1000', 'proxy_approve': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'tax': 200}
+
+=== SUMMARY ===
+  empty: 2 total, 0 ba_ok
+  network_error: 1 total, 0 ba_ok
+  overall_ba_ok=0/3 zero_and_paypal=0
+  saved=scripts/pp_complete_BRJP_pm_US_bill.json
+=== DONE ===

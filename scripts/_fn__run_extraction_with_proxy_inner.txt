@@ -1,0 +1,241 @@
+def _run_extraction_with_proxy_inner(access_token: str, proxy: str, payload: dict[str, Any]) -> dict[str, Any]:
+    started = time.monotonic()
+    attempts: list[dict[str, Any]] = []
+    geo: dict[str, Any] = {}
+    preheated_geo: dict[str, Any] = get_proxy_lease(proxy) or get_cached_proxy_geo(proxy) or {}
+    verify_live_geo = str(os.getenv("PLUS_LINK_VERIFY_LIVE_GEO", "0")).lower() in {"1", "true", "yes", "on"}
+    if preheated_geo and payload.get("_preflight_done") and not verify_live_geo:
+        geo = dict(preheated_geo)
+    else:
+        try:
+            geo = probe_proxy_geo(proxy, timeout=5, use_cache=not verify_live_geo)
+        except PublicApiError:
+            raise
+        except Exception as exc:
+            raise PublicApiError(
+                "proxy_geo_unavailable",
+                "代理出口国家/城市识别失败，已跳过该节点避免使用假账单地址",
+                HTTPStatus.BAD_GATEWAY,
+                {"error_type": type(exc).__name__},
+            ) from exc
+    preheated_ip = str(preheated_geo.get("ip") or "")
+    live_ip = str(geo.get("ip") or "")
+    if preheated_ip and live_ip and preheated_ip != live_ip:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        record_city_stat(preheated_geo or geo, False, elapsed_ms)
+        raise PublicApiError(
+            "proxy_ip_changed",
+            "预热出口 IP 与实际使用 IP 不一致，已丢弃该粘性代理并继续采样",
+            HTTPStatus.BAD_GATEWAY,
+            {
+                "preheated_ip": preheated_ip,
+                "live_ip": live_ip,
+                "preheated_city": city_key_from_info(preheated_geo),
+                "live_city": city_key_from_info(geo),
+            },
+        )
+    proxy_country = country_code_from_geo(geo)
+    if not proxy_country or not str(geo.get("city") or "").strip():
+        raise PublicApiError(
+            "proxy_geo_unavailable",
+            "代理出口国家/城市识别失败，已跳过该节点避免使用假账单地址",
+            HTTPStatus.BAD_GATEWAY,
+            {"geo": sanitize_error_value(geo)},
+        )
+    checkout_pairs = checkout_pairs_for_proxy(payload, geo)
+
+    chatgpt_session = chatgpt_requests_session(proxy, access_token)
+    try:
+        for country, currency in checkout_pairs:
+            checkout = create_checkout(access_token, proxy, country, currency, timeout_seconds=CHECKOUT_TIMEOUT_SECONDS, chatgpt_session=chatgpt_session)
+            attempt: dict[str, Any] = {
+                "country": country,
+                "currency": currency,
+                "checkout_status": checkout.get("status"),
+                "checkout_ui_mode": checkout.get("checkout_ui_mode"),
+                "requires_manual_approval": checkout.get("requires_manual_approval"),
+                "processor_entity": checkout.get("processor_entity") or "",
+            }
+            if not checkout.get("ok"):
+                attempt.update(
+                    {
+                        "code": "checkout_create_failed",
+                        "error_type": proxy_error_type(checkout, proxy),
+                        "raw_error": (
+                            checkout.get("raw_response", {}).get("detail")
+                            if isinstance(checkout.get("raw_response"), dict)
+                            else None
+                        )
+                        or checkout.get("error"),
+                    }
+                )
+                attempts.append(attempt)
+                status = int(checkout.get("status") or 0)
+                compact = compact_attempt(attempt)
+                if status == 401:
+                    raise PublicApiError(
+                        "token_unauthorized",
+                        "AT 已到达上游但 checkout 返回 401：切换独立代理复核",
+                        HTTPStatus.UNAUTHORIZED,
+                        {"attempts": [compact]},
+                    )
+                if status == 0 or status in {408, 425, 429, 500, 502, 503, 504, 520, 522, 524}:
+                    raise PublicApiError(
+                        "proxy_unstable",
+                        "代理到 ChatGPT/Stripe checkout 关键域不稳定，已串行切换下一个节点",
+                        HTTPStatus.BAD_GATEWAY,
+                        {"attempts": [compact]},
+                    )
+                continue
+
+            checkout_session_id = str(checkout.get("checkout_session_id") or "")
+            publishable_key = str(checkout.get("publishable_key") or "")
+            hosted_url = str(checkout.get("hosted_checkout_url") or "")
+
+            if not (checkout_session_id and publishable_key):
+                attempt.update({"code": "checkout_missing_fields", "hosted_url_present": bool(hosted_url)})
+                attempts.append(attempt)
+                continue
+
+            try:
+                init = stripe_init_http(proxy, publishable_key, checkout_session_id)
+                attempt["init_status"] = 200
+            except PublicApiError as exc:
+                attempt.update({"code": exc.code, "details": sanitize_error_value(exc.details or {})})
+                attempts.append(attempt)
+                continue
+
+            amount_gate = init_amount_summary(init)
+            amount_due_raw = amount_gate.get("amount_due")
+            currency_actual = str(amount_gate.get("currency") or init.get("currency") or currency).lower()
+            methods = init.get("payment_method_types") if isinstance(init.get("payment_method_types"), list) else []
+            attempt.update(
+                {
+                    "code": amount_gate.get("code"),
+                    "amount_due": amount_due_raw,
+                    "currency_actual": currency_actual,
+                    "amount_display": amount_display(int(amount_due_raw), currency_actual) if isinstance(amount_due_raw, int) else "unknown",
+                    "zero_verified": bool(amount_gate.get("zero_verified")),
+                    "paypal_present": "paypal" in {str(item).lower() for item in methods},
+                }
+            )
+            attempts.append(attempt)
+
+            if (REQUIRE_ZERO_AMOUNT and not attempt["zero_verified"]) or not attempt["paypal_present"]:
+                continue
+
+            billing_country = proxy_country or str((init.get("geocoding") or {}).get("country_code") or "").upper() or country
+            country_candidates = [billing_country]
+            confirm: dict[str, Any] = {}
+            confirm_errors: list[dict[str, Any]] = []
+            for billing_country in [item for item in country_candidates if item]:
+                try:
+                    confirm = confirm_custom_paypal_authorize_http(
+                        proxy,
+                        access_token,
+                        publishable_key,
+                        checkout_session_id,
+                        init,
+                        country=billing_country,
+                        processor_entity=processor_entity_for_country(country, str(checkout.get("processor_entity") or "")),
+                        proxy_geo=geo,
+                        chatgpt_session=chatgpt_session,
+                    )
+                except PublicApiError as exc:
+                    confirm_errors.append(
+                        {
+                            "billing_country": billing_country,
+                            "code": exc.code,
+                            "details": sanitize_error_value(exc.details or {}),
+                        }
+                    )
+                    continue
+                authorize_url = str(confirm.get("pm_authorize_url") or "")
+                if confirm.get("ok") and REAL_PAYPAL_AUTHORIZE_RE.match(authorize_url):
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                    record_city_stat(geo, True, elapsed_ms)
+                    return {
+                        "ok": True,
+                        "code": "paypal_authorize_ready",
+                        "message": "真实 PayPal authorize 链已生成",
+                        "zero_verified": bool(attempt["zero_verified"]),
+                        "amount_due": amount_due_raw,
+                        "currency": currency_actual,
+                        "amount_display": attempt["amount_display"],
+                        "payment_method": "paypal",
+                        "checkout_session_id": checkout_session_id,
+                        "processor_entity": checkout.get("processor_entity") or "",
+                        "proxy": mask_proxy(proxy),
+                        "proxy_protocol": proxy.split("://", 1)[0] if "://" in proxy else "unknown",
+                        "proxy_ip": geo.get("ip") or "",
+                        "preheated_proxy_ip": preheated_ip or geo.get("ip") or "",
+                        "proxy_ip_verified": bool(live_ip and (not preheated_ip or preheated_ip == live_ip)),
+                        "proxy_session_locked": True,
+                        "proxy_country": geo.get("country") or "",
+                        "proxy_region": geo.get("region") or "",
+                        "proxy_city": geo.get("city") or "",
+                        "proxy_org": geo.get("org") or "",
+                        "billing_country": billing_country,
+                        "elapsed_ms": elapsed_ms,
+                        "hosted_checkout_url": "",
+                        "paypal_authorize_url": authorize_url,
+                        "checkout_attempts": [compact_attempt(item) for item in attempts],
+                    }
+            attempt.update(
+                {
+                    "code": "paypal_authorize_failed",
+                    "confirm_status": confirm.get("status") if confirm else None,
+                    "confirm_errors": confirm_errors[-3:],
+                }
+            )
+    finally:
+        chatgpt_session.close()
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    record_city_stat(geo, False, elapsed_ms)
+    raise PublicApiError(
+        "paypal_authorize_not_ready",
+        "本次未拿到真实 $0 PayPal authorize 链，已跳过 Hosted/Link 假链；网络类失败会串行换节点继续",
+        HTTPStatus.BAD_GATEWAY,
+        {
+            "proxy": mask_proxy(proxy),
+            "preheated_proxy_ip": str(preheated_geo.get("ip") or ""),
+            "proxy_ip": str(geo.get("ip") or ""),
+            "proxy_ip_verified": bool(str(geo.get("ip") or "") and (not str(preheated_geo.get("ip") or "") or str(preheated_geo.get("ip") or "") == str(geo.get("ip") or ""))),
+            "elapsed_ms": elapsed_ms,
+            "attempts": [compact_attempt(item) for item in attempts[-8:]],
+        },
+    )
+
+
+def run_extraction_with_proxy(access_token: str, proxy: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return _run_extraction_with_proxy_inner(access_token, proxy, payload)
+
+
+def run_extraction_race(access_token: str, candidates: list[str], payload: dict[str, Any]) -> dict[str, Any]:
+    if not candidates:
+        raise PublicApiError("missing_proxy", "请填写代理，系统不会直连")
+
+    if not CHECKOUT_RACE_ENABLED:
+        ordered = list(candidates) if payload.get("_preflight_done") else preflight_proxy_candidates(candidates)
+        errors: list[dict[str, Any]] = []
+        attempted: list[str] = []
+        token_unauthorized_count = 0
+        token_unauthorized_threshold = max(1, min(TOKEN_UNAUTHORIZED_CONFIRMATIONS, len(ordered)))
+        approve_blocked_count = 0
+        approve_blocked_threshold = max(1, min(APPROVE_BLOCKED_CONFIRMATIONS, len(ordered)))
+        proxy_unstable_count = 0
+        proxy_unstable_threshold = max(1, min(PROXY_UNSTABLE_CONFIRMATIONS, len(ordered)))
+        with lock_for_token(access_token):
+            for proxy in ordered:
+                attempted.append(proxy)
+                try:
+                    result = run_extraction_with_proxy(access_token, proxy, payload)
+                    if result.get("ok") and result.get("paypal_authorize_url"):
+                        result["proxy_attempts"] = len(attempted)
+                        result["candidate_count"] = len(ordered)
+                        result["checkout_mode"] = "serial_per_token"
+                        mark_proxy_good(proxy)
+                        return result
+                except PublicApiError as exc:
+              

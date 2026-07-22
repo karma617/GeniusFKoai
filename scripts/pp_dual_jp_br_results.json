@@ -1,0 +1,102 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "JP",
+    "promo_proxy": "BR",
+    "billing_country": "JP",
+    "billing_currency": "JPY",
+    "promo_addr_country": "BR",
+    "ui_mode": "custom",
+    "promo_when": "after_init",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_promo": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "promo_update": 200
+    },
+    "cs": "cs_live_a1DY9Fx5ZsJjLzGkpcINpL2U3rc3DyjD8Q4JY6Ii5vFcjTb97IbitSRirC",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2727
+    },
+    "amts_after_promo": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2727
+    }
+  },
+  {
+    "attempt": 2,
+    "checkout_proxy": "JP",
+    "promo_proxy": "BR",
+    "billing_country": "JP",
+    "billing_currency": "JPY",
+    "promo_addr_country": "BR",
+    "ui_mode": "custom",
+    "promo_when": "after_init",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "amt_after_promo": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "one_click_trial_eligible": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "err": "no paypal",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_promo": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200,
+      "promo_update": 200
+    },
+    "cs": "cs_live_a1CbYoBUe3ljGomh0N3LNWdPXXxzhyvQ0VE4x6tCLXFuLSKf4ZbDqE3BGi",
+    "ent": "openai_llc",
+    "checkout_ui_mode_resp": "custom",
+    "amts": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2727
+    },
+    "amts_after_promo": {
+      "eo_amount": 0,
+      "inv_due": 0,
+      "inv_total": 0,
+      "inv_subtotal": 2727
+    }
+  }
+]

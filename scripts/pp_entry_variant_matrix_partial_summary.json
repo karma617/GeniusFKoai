@@ -1,0 +1,37 @@
+{
+  "count": 49,
+  "zero_paypal": 0,
+  "paypal_any": 0,
+  "zero_no_pp": 41,
+  "patterns": [
+    {
+      "pmt": [
+        "card",
+        "link"
+      ],
+      "amt": "0",
+      "zero": true,
+      "paypal": false,
+      "n": 41
+    },
+    {
+      "pmt": [
+        "card"
+      ],
+      "amt": "2993",
+      "zero": false,
+      "paypal": false,
+      "n": 3
+    },
+    {
+      "pmt": [
+        "card",
+        "pix"
+      ],
+      "amt": "10964",
+      "zero": false,
+      "paypal": false,
+      "n": 2
+    }
+  ]
+}

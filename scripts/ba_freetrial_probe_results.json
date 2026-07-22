@@ -1,0 +1,145 @@
+[
+  {
+    "label": "US_proxy_US_USD",
+    "proxy": "US",
+    "country": "US",
+    "currency": "USD",
+    "checkout": 200,
+    "ent": "openai_llc",
+    "cs": "cs_live_a1hzNHf6XZyB0VHf",
+    "init": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "2000",
+    "paypal": true,
+    "zero": false
+  },
+  {
+    "label": "US_proxy_IE_EUR",
+    "proxy": "US",
+    "country": "IE",
+    "currency": "EUR",
+    "checkout": 200,
+    "ent": "openai_ie",
+    "cs": "cs_live_a1ETpEQzbhGQQpRR",
+    "init": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "1870",
+    "paypal": true,
+    "zero": false
+  },
+  {
+    "label": "US_proxy_JP_JPY",
+    "proxy": "US",
+    "country": "JP",
+    "currency": "JPY",
+    "checkout": 200,
+    "ent": "openai_llc",
+    "cs": "cs_live_a1UbLHQO2a14FHNr",
+    "init": 200,
+    "pmt": [
+      "card"
+    ],
+    "amt_init": "2727",
+    "paypal": false,
+    "zero": false
+  },
+  {
+    "label": "US_proxy_BR_BRL",
+    "proxy": "US",
+    "country": "BR",
+    "currency": "BRL",
+    "checkout": 200,
+    "ent": "openai_llc",
+    "cs": "cs_live_a14qf6v1quLCXYiv",
+    "init": 200,
+    "pmt": [
+      "card"
+    ],
+    "amt_init": "9990",
+    "paypal": false,
+    "zero": false
+  },
+  {
+    "label": "JP_proxy_JP_JPY",
+    "proxy": "JP",
+    "country": "JP",
+    "currency": "JPY",
+    "checkout": 200,
+    "ent": "openai_llc",
+    "cs": "cs_live_a170BfqRDyNVY5QS",
+    "init": 200,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt_init": "?",
+    "paypal": false,
+    "zero": false
+  },
+  {
+    "label": "JP_proxy_US_USD",
+    "proxy": "JP",
+    "country": "US",
+    "currency": "USD",
+    "err": "Failed to perform, curl: (28) Operation timed out after 30003 milliseconds with 0 bytes received. See https://curl.se/libcurl/c/libcurl-errors.html first for mo"
+  },
+  {
+    "label": "BR_proxy_BR_BRL",
+    "proxy": "BR",
+    "country": "BR",
+    "currency": "BRL",
+    "checkout": 200,
+    "ent": "openai_llc",
+    "cs": "cs_live_a1BhSyTUEaL6Dpzt",
+    "init": 200,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "amt_init": "?",
+    "paypal": false,
+    "zero": false
+  },
+  {
+    "label": "FULL_US_US",
+    "proxy": "US",
+    "country": "US",
+    "currency": "USD",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-"
+  },
+  {
+    "label": "FULL_US_IE",
+    "proxy": "US",
+    "country": "IE",
+    "currency": "EUR",
+    "checkout": 200,
+    "ent": "openai_ie",
+    "cs": "cs_live_a1c7yiW5qMrJwDDb",
+    "init": 200,
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "amt_init": "1870",
+    "paypal": true,
+    "zero": false,
+    "tax": 200,
+    "amt_tax": "2300",
+    "pm": 200,
+    "confirm": 200,
+    "confirm_sa": "requires_approval",
+    "redirect_confirm": false,
+    "approve": 200,
+    "approve_result": "approved",
+    "poll_sa": "processing",
+    "ba": "BA-5CP386306S0602739",
+    "ba_url": "https://www.paypal.com/agreements/approve?ba_token=BA-5CP386306S0602739",
+    "result": "SUCCESS"
+  }
+]

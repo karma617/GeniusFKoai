@@ -1,0 +1,54 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "BR",
+    "promo_proxy": "JP",
+    "billing_country": "BR",
+    "billing_currency": "BRL",
+    "promo_addr_country": "JP",
+    "ui_mode": "custom",
+    "promo_when": "after_init",
+    "approve_result": "network_error",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "",
+    "amt_after_promo": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "one_click_trial_eligible": null,
+    "promo_campaign": null,
+    "err": "Failed to perform, curl: (56) BoringSSL SSL_read: BoringSSL: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER, errno 0. See https://curl.se/lib",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_promo": "gate.kookeey.info:1000"
+    }
+  },
+  {
+    "attempt": 2,
+    "checkout_proxy": "BR",
+    "promo_proxy": "JP",
+    "billing_country": "BR",
+    "billing_currency": "BRL",
+    "promo_addr_country": "JP",
+    "ui_mode": "custom",
+    "promo_when": "after_init",
+    "approve_result": "network_error",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "",
+    "amt_after_promo": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "one_click_trial_eligible": null,
+    "promo_campaign": null,
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_promo": "gate.kookeey.info:1000"
+    }
+  }
+]

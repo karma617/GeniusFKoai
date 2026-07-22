@@ -1,0 +1,62 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": null,
+    "billing": "US/USD",
+    "tax_country": "US",
+    "promo_tax_country": null,
+    "ui": "custom",
+    "confirm_mode": "pm",
+    "approve_result": "network_error",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "err": "Failed to perform, curl: (56) BoringSSL SSL_read: BoringSSL: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER, errno 0. See https://curl.se/libcurl/c/libcurl-errors.html first for mor",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000"
+    }
+  },
+  {
+    "attempt": 2,
+    "checkout_proxy": "BR",
+    "stripe_proxy": "JP",
+    "approve_proxy": "US",
+    "promo_proxy": null,
+    "billing": "US/USD",
+    "tax_country": "US",
+    "promo_tax_country": null,
+    "ui": "custom",
+    "confirm_mode": "pm",
+    "approve_result": "network_error",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "proxy_approve": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a1Dku3h3Rhga2foHYF4zJPAbCRtspuah01jn1msnzrlDDPtbreVZLKELwz",
+    "ent": "openai_llc",
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    }
+  }
+]

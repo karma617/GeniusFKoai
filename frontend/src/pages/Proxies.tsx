@@ -340,7 +340,7 @@ export default function Proxies() {
                   className="control-surface control-surface-mono"
                 />
                 <div className="text-xs leading-5 text-[var(--text-muted)]">
-                  这不是兜底代理，而是代理池目标代理的上游中转；留空则直接连接代理池里的代理。
+                  这不是兜底代理，而是代理池目标代理的上游中转；留空时会自动复用上方本地默认代理。
                 </div>
               </div>
               <Button onClick={saveProxyConfig} disabled={savingProxyConfig} className="w-full">

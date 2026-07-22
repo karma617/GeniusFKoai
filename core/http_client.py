@@ -6,9 +6,11 @@ HTTP 客户端封装
 
 import time
 import json
+import threading
 from typing import Optional, Dict, Any, Union, Tuple
 from dataclasses import dataclass
 import logging
+from urllib.parse import urlsplit
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi import CurlOpt
@@ -19,6 +21,45 @@ from curl_cffi.requests import Session, Response
 
 
 logger = logging.getLogger(__name__)
+
+_PROXY_DIRECT_ROUTE_TTL_SECONDS = 600.0
+_PROXY_DIRECT_ROUTE_LOCK = threading.Lock()
+_PROXY_DIRECT_ROUTE_UNTIL: dict[str, float] = {}
+
+
+def _proxy_route_key(proxy_url: str | None) -> str:
+    proxy = _normalize_runtime_proxy_url(proxy_url)
+    if not proxy:
+        return ""
+    parsed = urlsplit(proxy)
+    host = str(parsed.hostname or "").lower()
+    port = int(parsed.port or 0)
+    return f"{host}:{port}" if host and port else proxy.lower()
+
+
+def preferred_proxy_upstream(proxy_url: str | None, upstream_url: str | None) -> str:
+    upstream = str(upstream_url or "").strip()
+    key = _proxy_route_key(proxy_url)
+    if not upstream or not key:
+        return upstream
+    now = time.monotonic()
+    with _PROXY_DIRECT_ROUTE_LOCK:
+        until = float(_PROXY_DIRECT_ROUTE_UNTIL.get(key) or 0)
+        if until > now:
+            return ""
+        _PROXY_DIRECT_ROUTE_UNTIL.pop(key, None)
+    return upstream
+
+
+def remember_proxy_route(proxy_url: str | None, *, use_upstream: bool) -> None:
+    key = _proxy_route_key(proxy_url)
+    if not key:
+        return
+    with _PROXY_DIRECT_ROUTE_LOCK:
+        if use_upstream:
+            _PROXY_DIRECT_ROUTE_UNTIL.pop(key, None)
+        else:
+            _PROXY_DIRECT_ROUTE_UNTIL[key] = time.monotonic() + _PROXY_DIRECT_ROUTE_TTL_SECONDS
 
 
 @dataclass
@@ -31,6 +72,8 @@ class RequestConfig:
     verify_ssl: bool = True
     follow_redirects: bool = True
     proxy_upstream_url: str = ""
+    proxy_upstream_fallback_direct: bool = False
+    proxy_route_upstream_url: str = ""
 
 
 class HTTPClientError(Exception):
@@ -39,10 +82,44 @@ class HTTPClientError(Exception):
 
 
 def _proxy_curl_options(upstream_url: str | None) -> dict:
-    upstream = _normalize_runtime_proxy_url(upstream_url)
+    upstream = _normalize_pre_proxy_url(upstream_url)
     if not upstream:
         return {}
     return {CurlOpt.PRE_PROXY: upstream}
+
+
+def _normalize_pre_proxy_url(value: str | None) -> str:
+    proxy = _normalize_runtime_proxy_url(value)
+    lower = proxy.lower()
+    if (
+        lower.startswith("http://127.0.0.1")
+        or lower.startswith("http://localhost")
+        or lower.startswith("http://[::1]")
+        or lower.startswith("http://0.0.0.0")
+    ):
+        return "socks5h://" + proxy.split("://", 1)[1]
+    return proxy
+
+
+def _is_local_runtime_proxy_url(value: str | None) -> bool:
+    proxy = _normalize_runtime_proxy_url(value).lower()
+    return any(marker in proxy for marker in ("127.0.0.1", "localhost", "[::1]", "0.0.0.0"))
+
+
+def build_cffi_proxy_request_kwargs(
+    proxy_url: str | None,
+    *,
+    proxy_upstream_url: str | None = "",
+) -> dict[str, Any]:
+    proxy = _normalize_runtime_proxy_url(proxy_url)
+    if not proxy:
+        return {}
+    kwargs: dict[str, Any] = {"proxies": {"http": proxy, "https": proxy}}
+    if not _is_local_runtime_proxy_url(proxy):
+        curl_options = _proxy_curl_options(proxy_upstream_url)
+        if curl_options:
+            kwargs["curl_options"] = curl_options
+    return kwargs
 
 
 def _normalize_runtime_proxy_url(value: str | None) -> str:
@@ -91,17 +168,20 @@ class HTTPClient:
     def session(self) -> Session:
         """获取会话对象（单例）"""
         if self._session is None:
-            proxies = self.proxies or {"http": "", "https": ""}
-            self._session = Session(
-                proxies=proxies,
-                impersonate=self.config.impersonate,
-                verify=self.config.verify_ssl,
-                timeout=self.config.timeout,
-                curl_options=_proxy_curl_options(self.config.proxy_upstream_url),
-            )
-            # Avoid implicit Windows/system HTTP(S)_PROXY routing before the selected proxy.
-            self._session.trust_env = False
+            self._session = self._create_session(self.config.proxy_upstream_url)
         return self._session
+
+    def _create_session(self, upstream_url: str | None) -> Session:
+        session = Session(
+            proxies=self.proxies or {"http": "", "https": ""},
+            impersonate=self.config.impersonate,
+            verify=self.config.verify_ssl,
+            timeout=self.config.timeout,
+            curl_options=_proxy_curl_options(upstream_url),
+        )
+        # Avoid implicit Windows/system HTTP(S)_PROXY routing before the selected proxy.
+        session.trust_env = False
+        return session
 
     def request(
         self,
@@ -132,13 +212,16 @@ class HTTPClient:
             kwargs["proxies"] = self.proxies
         elif "proxies" not in kwargs:
             kwargs["proxies"] = {"http": "", "https": ""}
-        if "curl_options" not in kwargs and self.config.proxy_upstream_url:
-            kwargs["curl_options"] = _proxy_curl_options(self.config.proxy_upstream_url)
-
         last_exception = None
+        direct_fallback_attempted = False
         for attempt in range(self.config.max_retries):
             try:
                 response = self.session.request(method, url, **kwargs)
+                if self.config.proxy_upstream_fallback_direct and self.proxy_url:
+                    remember_proxy_route(
+                        self.proxy_url,
+                        use_upstream=bool(str(self.config.proxy_upstream_url or "").strip()),
+                    )
 
                 # 检查响应状态码
                 if response.status_code >= 400:
@@ -159,6 +242,47 @@ class HTTPClient:
                 logger.warning(
                     f"请求失败: {method} {url} (attempt {attempt + 1}/{self.config.max_retries}): {e}"
                 )
+
+                if (
+                    not direct_fallback_attempted
+                    and self.config.proxy_upstream_fallback_direct
+                    and str(self.config.proxy_route_upstream_url or self.config.proxy_upstream_url or "").strip()
+                    and self.proxy_url
+                    and not _is_local_runtime_proxy_url(self.proxy_url)
+                ):
+                    direct_fallback_attempted = True
+                    direct_session = None
+                    current_upstream = str(self.config.proxy_upstream_url or "").strip()
+                    route_upstream = str(
+                        self.config.proxy_route_upstream_url or current_upstream
+                    ).strip()
+                    alternate_upstream = "" if current_upstream else route_upstream
+                    try:
+                        direct_session = self._create_session(alternate_upstream)
+                        response = direct_session.request(method, url, **kwargs)
+                        try:
+                            self.session.close()
+                        except Exception:
+                            pass
+                        self._session = direct_session
+                        self.config.proxy_upstream_url = alternate_upstream
+                        remember_proxy_route(
+                            self.proxy_url,
+                            use_upstream=bool(alternate_upstream),
+                        )
+                        route_label = "本地中转" if alternate_upstream else "目标代理直连"
+                        logger.warning(f"代理链路失败，已自动切换为{route_label}: {method} {url}")
+                        if response.status_code >= 500 and attempt < self.config.max_retries - 1:
+                            time.sleep(self.config.retry_delay * (attempt + 1))
+                            continue
+                        return response
+                    except (cffi_requests.RequestsError, ConnectionError, TimeoutError) as direct_error:
+                        last_exception = direct_error
+                        if direct_session is not None:
+                            try:
+                                direct_session.close()
+                            except Exception:
+                                pass
 
                 if attempt < self.config.max_retries - 1:
                     time.sleep(self.config.retry_delay * (attempt + 1))

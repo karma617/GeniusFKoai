@@ -240,11 +240,17 @@ def _derive_display_status(
 
 
 def recover_lifecycle_status_for_valid_account(graph: dict[str, Any]) -> str:
-    """Recover the active lifecycle state for an account that re-validated."""
+    """Recover the active lifecycle state for an account that re-validated.
+
+    A successful health check must recover accounts that were previously marked
+    invalid/banned/relogin_required by transient API/WAF failures. Otherwise a
+    later single-account check can succeed while the table still shows 已封禁.
+    """
     lifecycle_status = _text(
         graph.get("lifecycle_status") or _safe_dict(graph.get("overview")).get("lifecycle_status")
     )
-    if lifecycle_status and lifecycle_status != "invalid":
+    recoverable_statuses = {"invalid", "banned", "relogin_required"}
+    if lifecycle_status and lifecycle_status not in recoverable_statuses:
         return lifecycle_status
 
     plan_state = _normalize_plan_state(

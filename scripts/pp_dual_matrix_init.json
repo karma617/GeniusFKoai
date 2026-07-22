@@ -1,0 +1,270 @@
+[
+  {
+    "checkout": "US",
+    "promo": "TR",
+    "bill": "US/USD",
+    "promo_addr": "US",
+    "ui": "custom",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": null,
+    "init": 200,
+    "amt": "2000",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "promo_http": 200,
+    "amt2": "2178",
+    "pmt2": [
+      "card",
+      "paypal"
+    ],
+    "paypal2": true,
+    "zero2": false,
+    "tax": 200,
+    "amt_tax": "2178",
+    "pmt_tax": [
+      "card",
+      "paypal"
+    ],
+    "paypal_tax": true,
+    "zero_tax": false
+  },
+  {
+    "checkout": "US",
+    "promo": "TR",
+    "bill": "US/USD",
+    "promo_addr": "TR",
+    "ui": "custom",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": null,
+    "init": 200,
+    "amt": "2000",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "promo_http": 200,
+    "amt2": "2400",
+    "pmt2": [
+      "card",
+      "paypal"
+    ],
+    "paypal2": true,
+    "zero2": false,
+    "tax": 200,
+    "amt_tax": "2178",
+    "pmt_tax": [
+      "card",
+      "paypal"
+    ],
+    "paypal_tax": true,
+    "zero_tax": false
+  },
+  {
+    "checkout": "US",
+    "promo": "-",
+    "bill": "US/USD",
+    "promo_addr": "US",
+    "ui": "custom",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": null,
+    "init": 200,
+    "amt": "2000",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "tax": 200,
+    "amt_tax": "2178",
+    "pmt_tax": [
+      "card",
+      "paypal"
+    ],
+    "paypal_tax": true,
+    "zero_tax": false
+  },
+  {
+    "checkout": "BR",
+    "promo": "JP",
+    "bill": "BR/BRL",
+    "promo_addr": "JP",
+    "ui": "custom",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "init": 200,
+    "amt": "0",
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "paypal": false,
+    "zero": true,
+    "promo_http": 200,
+    "amt2": "0",
+    "pmt2": [
+      "card",
+      "link"
+    ],
+    "paypal2": false,
+    "zero2": true,
+    "tax": 200,
+    "amt_tax": "0",
+    "pmt_tax": [
+      "card",
+      "link"
+    ],
+    "paypal_tax": false,
+    "zero_tax": true
+  },
+  {
+    "checkout": "JP",
+    "promo": "BR",
+    "bill": "JP/JPY",
+    "promo_addr": "BR",
+    "ui": "custom",
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.s"
+  },
+  {
+    "checkout": "BR",
+    "promo": "JP",
+    "bill": "US/USD",
+    "promo_addr": "JP",
+    "ui": "custom",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "init": 200,
+    "amt": "0",
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "paypal": false,
+    "zero": true,
+    "promo_http": 200,
+    "amt2": "0",
+    "pmt2": [
+      "card",
+      "link"
+    ],
+    "paypal2": false,
+    "zero2": true,
+    "tax": 200,
+    "amt_tax": "0",
+    "pmt_tax": [
+      "card",
+      "link"
+    ],
+    "paypal_tax": false,
+    "zero_tax": true
+  },
+  {
+    "checkout": "JP",
+    "promo": "-",
+    "bill": "JP/JPY",
+    "promo_addr": "JP",
+    "ui": "custom",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "init": 200,
+    "amt": "0",
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "paypal": false,
+    "zero": true,
+    "tax": 200,
+    "amt_tax": "0",
+    "pmt_tax": [
+      "card",
+      "link"
+    ],
+    "paypal_tax": false,
+    "zero_tax": true
+  },
+  {
+    "checkout": "BR",
+    "promo": "-",
+    "bill": "BR/BRL",
+    "promo_addr": "BR",
+    "ui": "custom",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "init": 200,
+    "amt": "0",
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "paypal": false,
+    "zero": true,
+    "tax": 200,
+    "amt_tax": "0",
+    "pmt_tax": [
+      "card",
+      "link"
+    ],
+    "paypal_tax": false,
+    "zero_tax": true
+  },
+  {
+    "checkout": "US",
+    "promo": "TR",
+    "bill": "US/USD",
+    "promo_addr": "US",
+    "ui": "hosted",
+    "checkout_http": 200,
+    "trial": false,
+    "promo_campaign": null,
+    "init": 200,
+    "amt": "2000",
+    "pmt": [
+      "card",
+      "paypal"
+    ],
+    "paypal": true,
+    "zero": false,
+    "promo_http": 200,
+    "amt2": "2178",
+    "pmt2": [
+      "card",
+      "paypal"
+    ],
+    "paypal2": true,
+    "zero2": false,
+    "tax": 200,
+    "amt_tax": "2178",
+    "pmt_tax": [
+      "card",
+      "paypal"
+    ],
+    "paypal_tax": true,
+    "zero_tax": false
+  }
+]

@@ -1,0 +1,10 @@
+=== complete extract chk=US stripe=US approve=US promo=- bill=US/USD tax=US promo_tax=- ui=custom confirm=pm full=True max=2 ===
+  [01] approve=approved         ba_ok=True  amt=2178   zero=False paypal=True  pmt=['card', 'paypal'] err=
+       steps={'proxy_checkout': 'gate.kookeey.info:1000', 'checkout': 200, 'init': 200, 'tax': 200, 'pm': 200, 'confirm': 200, 'confirm_keys': ['id', 'object', 'account_settings', 'application', 'approval_method', 'automatic_payment_method_types', 'beta_versions', 'billing_address_collection', 'blob', 'blocked_billing_address_countries', 'bnpl_in_link_ui_enabled', 'bnpl_link_experiment_payment_method_type', 'cancel_url', 'capture_method', 'card_brand_choice', 'card_brands', 'checkout_multistep_ui', 'client_reference_id', 'config_id', 'consent'], 'confirm_sa': 'requires_approval', 'approve_http': 200}
+  BA_URL=https://www.paypal.com/agreements/approve?ba_token=BA-9S739213FN003800M
+
+=== SUMMARY ===
+  approved: 1 total, 1 ba_ok
+  overall_ba_ok=1/1 zero_and_paypal=0
+  saved=scripts/pp_complete_US_pm.json
+=== DONE ===

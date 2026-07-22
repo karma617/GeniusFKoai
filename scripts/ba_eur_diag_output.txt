@@ -1,0 +1,12 @@
+=== US proxy + IE/EUR full diag ===
+checkout: 200
+cs=cs_live_a1t1FEJpr3gDwn01T ent=openai_ie
+init: 200 pmt=['card', 'paypal'] amt=1870
+tax: 400 amt=1870
+pm: 200 id=pm_1Tu0fPKslHRdbaPgTJfWm8L7
+confirm: 200 sa=requires_approval redirect=False
+approve: 200 result=approved
+  poll0: sa=failed redirect=False
+  FAILED: {"code": "checkout_upcoming_invoice_mismatch", "decline_code": null, "payment_error": null}
+
+=== DONE ===

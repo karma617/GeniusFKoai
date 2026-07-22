@@ -1,0 +1,27 @@
+=== US x20 (approve result statistics) ===
+  [ 1] approve_result=approved             ba_ok=True  ba=BA-0RL97588SR909890A err=
+  [ 2] approve_result=approved             ba_ok=True  ba=BA-1M698010K5639234A err=
+  [ 3] approve_result=approved             ba_ok=True  ba=BA-5S722881JG9796803 err=
+  [ 4] approve_result=approved             ba_ok=False ba= err=Failed to perform, curl: (28) Connection
+  [ 5] approve_result=approved             ba_ok=True  ba=BA-6MV53153635551141 err=
+  [ 6] approve_result=approved             ba_ok=True  ba=BA-8NW196566P9671537 err=
+  [ 7] approve_result=approved             ba_ok=True  ba=BA-0PT33588C7938371L err=
+  [ 8] approve_result=approved             ba_ok=True  ba=BA-2AX324761E600671A err=
+  [ 9] approve_result=approved             ba_ok=True  ba=BA-65950110EU7249038 err=
+  [10] approve_result=approved             ba_ok=True  ba=BA-56772121EX837511A err=
+  [11] approve_result=approved             ba_ok=True  ba=BA-9CR26307UX435591F err=
+  [12] approve_result=approved             ba_ok=True  ba=BA-97E52722RY112392Y err=
+  [13] approve_result=approved             ba_ok=True  ba=BA-68B79013CL627245T err=
+  [14] approve_result=approved             ba_ok=True  ba=BA-8SG06401WD389232P err=
+  [15] approve_result=approved             ba_ok=True  ba=BA-16V29140LP4554213 err=
+  [16] approve_result=approved             ba_ok=True  ba=BA-5GE64400LJ678003X err=
+  [17] approve_result=approved             ba_ok=True  ba=BA-8EL28185HC4528031 err=
+  [18] approve_result=approved             ba_ok=False ba= err=Failed to perform, curl: (35) TLS connec
+  [19] approve_result=approved             ba_ok=False ba= err=Failed to perform, curl: (35) TLS connec
+  [20] approve_result=                     ba_ok=False ba= err=Failed to perform, curl: (35) TLS connec
+
+=== SUMMARY ===
+  approved: 19 total, 16 ba_ok
+  : 1 total, 0 ba_ok
+
+=== DONE ===

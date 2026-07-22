@@ -1,0 +1,66 @@
+=== BR/JP zero+paypal hammer regions=['BR', 'JP'] ui=hosted approve=US max=40 ===
+  [01/40] BR bill=BR/BRL amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Failed to perform, curl: (35) TLS connect error: error:00000000:invali
+  [02/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [03/40] BR bill=BR/BRL amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1Be26JcaG
+  [04/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [05/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [06/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [07/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [08/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [09/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [10/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [11/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [12/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [13/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [14/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [15/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [16/40] JP bill=US/USD amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Failed to perform, curl: (35) TLS connect error: error:100000f7:SSL ro
+  [17/40] BR bill=BR/BRL amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1ZXor2olZ
+  [18/40] JP bill=US/USD amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1aEyoCnl8
+  [19/40] BR bill=BR/BRL amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1SQKdYIea
+  [20/40] JP bill=US/USD amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Failed to perform, curl: (35) TLS connect error: error:00000000:invali
+  [21/40] BR bill=BR/BRL amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1XVi298Vw
+  [22/40] JP bill=US/USD amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1IuzA4i0q
+  [23/40] BR bill=BR/BRL amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1P5zs88uW
+  [24/40] JP bill=US/USD amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Failed to perform, curl: (35) TLS connect error: error:00000000:invali
+  [25/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [26/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [27/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [28/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [29/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [30/40] JP bill=US/USD amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1RiYP9VBK
+  [31/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [32/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [33/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [34/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [35/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [36/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [37/40] BR bill=BR/BRL amt=       zero=False paypal=False pmt=None ba=- tag=miss err=Failed to perform, curl: (35) TLS connect error: error:00000000:invali
+  [38/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [39/40] BR bill=BR/BRL amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+  [40/40] JP bill=US/USD amt=0      zero=True paypal=False pmt=['card', 'link'] ba=- tag=miss err=gate_fail zero=True paypal=False pmt=['card', 'link']
+
+=== SUMMARY ===
+{
+  "attempts": 40,
+  "stats": {
+    "network": 5,
+    "zero_no_paypal": 27
+  },
+  "ba_ok": 0,
+  "zero_paypal_hits": 0,
+  "sample_gate_fail": [
+    [
+      "gate_fail zero=True paypal=False pmt=['c",
+      27
+    ],
+    [
+      "Stripe POST https://api.stripe.com/v1/pa",
+      8
+    ],
+    [
+      "Failed to perform, curl: (35) TLS connec",
+      5
+    ]
+  ]
+}

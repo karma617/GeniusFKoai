@@ -1,0 +1,8 @@
+checkout 200
+cs cs_live_a1Cb3DcSInpQIUNIEr6X52Hto8rX9BmbO3pLR7yoNR6sHqi3MJSAOo7o8F promo {'promo_campaign_id': 'plus-1-month-free', 'is_coupon_from_query_param': False} trial False checkout_pmt None
+init pmt ['card', 'link'] amt 0
+CONFIRM_EXC Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1Cb3DcSInpQIUNIEr6X52Hto8rX9BmbO3pLR7yoNR6sHqi3MJSAOo7o8F/confirm ¡ú status=400 request-id='req_k81vTSpREnj4OF' body='{\n  "error": {\n    "code": "checkout_confirm_error",\n    "extra_fields": {\n      "payment_method_type": "paypal",\n      "confirm_error_reason": "payment_method_types_mismatch"\n    },\n    "message": "An error has occurred confirming the Checkout Session.",\n    "param": "payment_method",\n    "type": "invalid_request_error"\n  }\n}\n'
+checkout 200
+cs cs_live_a1lLIe2b6YvEoWF1g0Aus8tgBYrhYnnWY79BiFKakC43zijryWGplv1J4L promo {'promo_campaign_id': 'plus-1-month-free', 'is_coupon_from_query_param': False} trial False checkout_pmt None
+init pmt ['card', 'link'] amt 0
+CONFIRM_EXC Stripe POST https://api.stripe.com/v1/payment_pages/cs_live_a1lLIe2b6YvEoWF1g0Aus8tgBYrhYnnWY79BiFKakC43zijryWGplv1J4L/confirm ¡ú status=400 request-id='req_FApBllqWkALB5A' body='{\n  "error": {\n    "code": "checkout_confirm_error",\n    "extra_fields": {\n      "payment_method_type": "paypal",\n      "confirm_error_reason": "payment_method_types_mismatch"\n    },\n    "message": "An error has occurred confirming the Checkout Session.",\n    "param": "payment_method",\n    "type": "invalid_request_error"\n  }\n}\n'

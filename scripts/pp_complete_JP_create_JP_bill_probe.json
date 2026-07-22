@@ -1,0 +1,105 @@
+[
+  {
+    "attempt": 1,
+    "checkout_proxy": "JP",
+    "stripe_proxy": "US",
+    "approve_proxy": "US",
+    "promo_proxy": null,
+    "billing": "JP/JPY",
+    "tax_country": "JP",
+    "promo_tax_country": null,
+    "ui": "custom",
+    "confirm_mode": "pm",
+    "approve_result": "network_error",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "err": "Failed to perform, curl: (56) CONNECT tunnel failed, response 407. See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000"
+    }
+  },
+  {
+    "attempt": 2,
+    "checkout_proxy": "JP",
+    "stripe_proxy": "US",
+    "approve_proxy": "US",
+    "promo_proxy": null,
+    "billing": "JP/JPY",
+    "tax_country": "JP",
+    "promo_tax_country": null,
+    "ui": "custom",
+    "confirm_mode": "pm",
+    "approve_result": "",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "0",
+    "zero": true,
+    "paypal": false,
+    "pmt": [
+      "card",
+      "link"
+    ],
+    "err": "",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "checkout": 200,
+      "init": 200
+    },
+    "cs": "cs_live_a1v6VRjL1NpYR6OU3JxBickVOVQL2KRn4UM4IIMU8GYFNgNCoXXAZmgYZI",
+    "ent": "openai_llc",
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    },
+    "amts": {
+      "subtotal": "2727",
+      "total_exclusive_tax": "0",
+      "total_inclusive_tax": "0",
+      "total_discount_amount": "2727",
+      "shipping_rate_amount": "0",
+      "due": "0"
+    }
+  },
+  {
+    "attempt": 3,
+    "checkout_proxy": "JP",
+    "stripe_proxy": "US",
+    "approve_proxy": "US",
+    "promo_proxy": null,
+    "billing": "JP/JPY",
+    "tax_country": "JP",
+    "promo_tax_country": null,
+    "ui": "custom",
+    "confirm_mode": "pm",
+    "approve_result": "network_error",
+    "ba_ok": false,
+    "ba": "",
+    "ba_url": "",
+    "amt": "",
+    "zero": false,
+    "paypal": false,
+    "pmt": null,
+    "err": "Failed to perform, curl: (35) TLS connect error: error:00000000:invalid library (0):OPENSSL_internal:invalid library (0). See https://curl.se/libcurl/c/libcurl-errors.html first for more details.",
+    "steps": {
+      "proxy_checkout": "gate.kookeey.info:1000",
+      "proxy_stripe": "gate.kookeey.info:1000",
+      "checkout": 200
+    },
+    "cs": "cs_live_a12RM1HyTZ9FS42EeMdtX101VD8A2EFGG2DCLtV8CKF2WO38RgkSONFKSj",
+    "ent": "openai_llc",
+    "trial": false,
+    "promo_campaign": {
+      "promo_campaign_id": "plus-1-month-free",
+      "is_coupon_from_query_param": false
+    }
+  }
+]
