@@ -37,6 +37,10 @@ _CS_RE = re.compile(r"cs_(?:live|test)_[A-Za-z0-9]+")
 _PM_REDIRECT_RE = re.compile(r"https://pm-redirects\.stripe\.com/authorize/[^\"'\s<>]+")
 
 
+def _stripe_key(publishable_key: str = "") -> str:
+    return str(publishable_key or "").strip() or STRIPE_PUBLISHABLE_KEY
+
+
 def extract_checkout_session_id(url: str) -> str:
     """从 ``pay.openai.com/c/pay/cs_live_...`` 这类 URL 抽出 ``cs_live_xxx`` / ``cs_test_xxx``。"""
     match = _CS_RE.search(str(url or ""))
@@ -170,10 +174,11 @@ def stripe_init(
     cs_id: str,
     browser_locale: str = "en-US",
     browser_timezone: str = "America/Los_Angeles",
+    publishable_key: str = "",
 ) -> dict:
     """``POST /v1/payment_pages/{cs}/init``。返回完整 checkout session 对象。"""
     body = {
-        "key": STRIPE_PUBLISHABLE_KEY,
+        "key": _stripe_key(publishable_key),
         "eid": "NA",
         "browser_locale": browser_locale,
         "browser_timezone": browser_timezone,
@@ -188,6 +193,7 @@ def stripe_update_tax_region(
     cs_id: str,
     address: dict,
     eid: Optional[str] = None,
+    publishable_key: str = "",
 ) -> dict:
     """``POST /v1/payment_pages/{cs}``，提交税务地址（country/state/postal/line1/city）。"""
     body = {
@@ -197,7 +203,7 @@ def stripe_update_tax_region(
         "tax_region[postal_code]": str(address.get("postal_code") or ""),
         "tax_region[line1]": str(address.get("line1") or ""),
         "tax_region[city]": str(address.get("city") or ""),
-        "key": STRIPE_PUBLISHABLE_KEY,
+        "key": _stripe_key(publishable_key),
     }
     return _post(session, f"{STRIPE_API_BASE}/payment_pages/{cs_id}", body)
 
@@ -351,6 +357,7 @@ def stripe_create_paypal_payment_method(
     email: str,
     device: StripeDeviceContext,
     config_id: str = "",
+    publishable_key: str = "",
 ) -> dict:
     """``POST /v1/payment_methods``，建 ``type=paypal`` PaymentMethod，返回 ``pm_xxx``。"""
     body = {
@@ -366,7 +373,7 @@ def stripe_create_paypal_payment_method(
         "muid": device.muid,
         "sid": device.sid,
         "_stripe_version": STRIPE_VERSION,
-        "key": STRIPE_PUBLISHABLE_KEY,
+        "key": _stripe_key(publishable_key),
         "payment_user_agent": STRIPE_PAYMENT_USER_AGENT,
         "client_attribution_metadata[client_session_id]": device.client_session_id,
         "client_attribution_metadata[checkout_session_id]": cs_id,
@@ -654,6 +661,7 @@ def stripe_confirm_paypal_direct(
     expected_amount_on_bca: str = "",
     displayed_amounts: Optional[dict] = None,
     referrer: str = "",
+    publishable_key: str = "",
 ) -> dict:
     """POST `/confirm` with inline PayPal payment_method_data.
 
@@ -664,7 +672,7 @@ def stripe_confirm_paypal_direct(
     amounts = dict(displayed_amounts or {})
     body = {
         "eid": "NA",
-        "key": STRIPE_PUBLISHABLE_KEY,
+        "key": _stripe_key(publishable_key),
         "init_checksum": str(init_checksum or ""),
         "expected_amount": str(expected_amount),
         "expected_payment_method_type": "paypal",
@@ -708,11 +716,12 @@ def stripe_confirm_paypal_with_payment_method(
     displayed_amounts: Optional[dict] = None,
     referrer: str = "",
     config_id: str = "",
+    publishable_key: str = "",
 ) -> dict:
     amounts = dict(displayed_amounts or {})
     body = {
         "eid": "NA",
-        "key": STRIPE_PUBLISHABLE_KEY,
+        "key": _stripe_key(publishable_key),
         "init_checksum": str(init_checksum or ""),
         "expected_amount": str(expected_amount),
         "expected_payment_method_type": "paypal",

@@ -54,7 +54,18 @@ def _quickjs_script_path() -> Path:
     return Path(__file__).resolve().parent / "openai_sentinel_quickjs.js"
 
 
-def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
+def _accept_language_parts(accept_language: str) -> tuple[str, list[str]]:
+    values = []
+    for part in str(accept_language or "").split(","):
+        lang = part.split(";", 1)[0].strip()
+        if lang:
+            values.append(lang)
+    if not values:
+        values = ["en-US", "en"]
+    return values[0], values
+
+
+def _ensure_sdk_file(session: Any, timeout_ms: int, accept_language: str) -> Path:
     """Download OpenAI's actual sdk.js to /tmp cache (one-shot per version)."""
     cache_dir = Path(tempfile.gettempdir()) / "openai-sentinel-demo" / SENTINEL_VERSION
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +77,7 @@ def _ensure_sdk_file(session: Any, timeout_ms: int) -> Path:
         SENTINEL_SDK_URL,
         headers={
             "accept": "*/*",
-            "accept-language": "zh-CN,zh;q=0.9",
+            "accept-language": accept_language or "en-US,en;q=0.5",
             "referer": "https://auth.openai.com/",
             "sec-fetch-dest": "script",
             "sec-fetch-mode": "no-cors",
@@ -166,6 +177,8 @@ def _fetch_sentinel_challenge(
     flow: str,
     request_p: str,
     timeout_ms: int,
+    accept_language: str,
+    user_agent: str,
 ) -> dict:
     body = {"p": request_p, "id": device_id, "flow": flow}
     resp = session.post(
@@ -177,10 +190,11 @@ def _fetch_sentinel_challenge(
             "content-type": "text/plain;charset=UTF-8",
             "accept": "*/*",
             "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": "zh-CN,zh;q=0.9",
+            "accept-language": accept_language or "en-US,en;q=0.5",
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
+            "user-agent": user_agent or "Mozilla/5.0",
         },
         timeout=max(10, int(timeout_ms / 1000)),
     )
@@ -198,6 +212,7 @@ def get_sentinel_tokens_via_quickjs(
     *,
     flow: str = "authorize_continue",
     user_agent: str = "",
+    accept_language: str = "en-US,en;q=0.5",
     timeout_ms: int = 45000,
     log: Optional[Callable[[str], None]] = None,
 ) -> Optional[dict[str, str]]:
@@ -213,13 +228,20 @@ def get_sentinel_tokens_via_quickjs(
 
     did = str(device_id or uuid.uuid4())
     try:
-        sdk_file = _ensure_sdk_file(session, timeout_ms)
+        sdk_file = _ensure_sdk_file(session, timeout_ms, accept_language)
+        language, languages = _accept_language_parts(accept_language)
 
         requirements = _run_quickjs_action(
             action="requirements",
             sdk_file=sdk_file,
             quickjs_script=quickjs_script,
-            payload={"device_id": did, "user_agent": user_agent},
+            payload={
+                "device_id": did,
+                "user_agent": user_agent,
+                "accept_language": accept_language,
+                "language": language,
+                "languages": languages,
+            },
             timeout_ms=timeout_ms,
         )
         request_p = str(requirements.get("request_p") or "").strip()
@@ -228,7 +250,13 @@ def get_sentinel_tokens_via_quickjs(
             return None
 
         challenge = _fetch_sentinel_challenge(
-            session, device_id=did, flow=flow, request_p=request_p, timeout_ms=timeout_ms,
+            session,
+            device_id=did,
+            flow=flow,
+            request_p=request_p,
+            timeout_ms=timeout_ms,
+            accept_language=accept_language,
+            user_agent=user_agent,
         )
         c_value = str(challenge.get("token") or "").strip()
         if not c_value:
@@ -245,6 +273,9 @@ def get_sentinel_tokens_via_quickjs(
                 "request_p": request_p,
                 "challenge": challenge,
                 "user_agent": user_agent,
+                "accept_language": accept_language,
+                "language": language,
+                "languages": languages,
             },
             timeout_ms=timeout_ms,
         )
@@ -282,6 +313,7 @@ def get_sentinel_token_via_quickjs(
     *,
     flow: str = "authorize_continue",
     user_agent: str = "",
+    accept_language: str = "en-US,en;q=0.5",
     timeout_ms: int = 45000,
     log: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
@@ -291,6 +323,7 @@ def get_sentinel_token_via_quickjs(
         device_id,
         flow=flow,
         user_agent=user_agent,
+        accept_language=accept_language,
         timeout_ms=timeout_ms,
         log=log,
     )

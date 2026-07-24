@@ -8,6 +8,7 @@ import re
 import secrets
 import time
 import uuid
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -2255,12 +2256,19 @@ def _start_browser_signup_via_authorize(page, email: str, device_id: str, log) -
     _goto_with_retry(page, f"{CHATGPT_APP}/", wait_until="domcontentloaded", timeout=30000, log=log)
 
     log("获取 CSRF token...")
-    csrf_token = _get_browser_csrf_token(page)
+    csrf_token = _get_browser_csrf_token(page, log=log)
     if not csrf_token:
         raise RuntimeError("获取 CSRF token 失败")
 
-    log(f"提交邮箱: {email}")
-    authorize_url = _start_browser_signin(page, email, device_id, csrf_token)
+    authorize_url = ""
+    for attempt in range(1, 4):
+        log(f"提交邮箱: {email}" + (f"（第 {attempt}/3 次）" if attempt > 1 else ""))
+        authorize_url = _start_browser_signin(page, email, device_id, csrf_token)
+        if authorize_url:
+            break
+        if attempt < 3:
+            time.sleep(1.0 * attempt)
+            csrf_token = _get_browser_csrf_token(page, log=log) or csrf_token
     if not authorize_url:
         raise RuntimeError("提交邮箱失败，未获取 authorize URL")
 
@@ -5449,20 +5457,36 @@ def _seed_browser_device_id(page, device_id: str) -> None:
     )
 
 
-def _get_browser_csrf_token(page) -> str:
-    result = _browser_fetch(
-        page,
-        f"{CHATGPT_APP}/api/auth/csrf",
-        method="GET",
-        headers={
-            "accept": "application/json",
-            "referer": f"{CHATGPT_APP}/",
-            "sec-fetch-site": "same-origin",
-        },
-        redirect="follow",
-    )
-    if result.get("ok") and isinstance(result.get("data"), dict):
-        return str((result.get("data") or {}).get("csrfToken") or "").strip()
+def _get_browser_csrf_token(page, log=None) -> str:
+    _log = log or (lambda *_a, **_k: None)
+    last_text = ""
+    for attempt in range(1, 4):
+        result = _browser_fetch(
+            page,
+            f"{CHATGPT_APP}/api/auth/csrf",
+            method="GET",
+            headers={
+                "accept": "application/json",
+                "referer": f"{CHATGPT_APP}/",
+                "sec-fetch-site": "same-origin",
+            },
+            redirect="follow",
+            timeout_ms=15000,
+        )
+        if result.get("ok") and isinstance(result.get("data"), dict):
+            return str((result.get("data") or {}).get("csrfToken") or "").strip()
+        last_text = str(result.get("text") or result.get("status") or "").strip()
+        try:
+            for cookie in page.context.cookies(f"{CHATGPT_APP}/"):
+                if str(cookie.get("name") or "") == "__Host-next-auth.csrf-token":
+                    csrf_cookie = str(cookie.get("value") or "")
+                    if csrf_cookie:
+                        return csrf_cookie.split("%7C")[0].split("|")[0].strip()
+        except Exception:
+            pass
+        if attempt < 3:
+            _log(f"CSRF token 获取失败，重试 {attempt + 1}/3: {last_text[:120]}")
+            time.sleep(1.0 * attempt)
     return ""
 
 
@@ -5946,7 +5970,14 @@ def _submit_password_via_page(page, password: str, log) -> dict:
     return {"ok": False, "status": 0, "url": last_url, "data": None, "text": "密码页提交后未跳转"}
 
 
-def _submit_otp_via_page(page, code: str, log) -> dict:
+def _submit_otp_via_page(
+    page,
+    code: str,
+    log,
+    *,
+    device_id: str = "",
+    user_agent: str = "",
+) -> dict:
     otp = str(code or "").strip()
     if not otp:
         return {"ok": False, "status": 400, "url": page.url, "data": None, "text": "验证码为空"}
@@ -6080,6 +6111,32 @@ def _submit_otp_via_page(page, code: str, log) -> dict:
         if error_text:
             return {"ok": False, "status": 400, "url": current_url, "data": None, "text": error_text}
         time.sleep(0.5)
+    if device_id and user_agent:
+        log("验证码页点击后未跳转，尝试浏览器上下文直连 validate 接口")
+        api_resp = _validate_browser_email_otp(
+            page,
+            otp,
+            device_id,
+            user_agent,
+            referer=last_url or f"{OPENAI_AUTH}/email-verification",
+        )
+        if api_resp.get("ok"):
+            return {
+                "ok": True,
+                "status": int(api_resp.get("status") or 200),
+                "url": str(api_resp.get("url") or last_url),
+                "data": api_resp.get("data"),
+                "text": "",
+            }
+        api_text = str(api_resp.get("text") or "")
+        if api_text:
+            return {
+                "ok": False,
+                "status": int(api_resp.get("status") or 0),
+                "url": str(api_resp.get("url") or last_url),
+                "data": api_resp.get("data"),
+                "text": api_text,
+            }
     return {"ok": False, "status": 0, "url": last_url, "data": None, "text": "验证码页提交后未跳转"}
 
 
@@ -6157,6 +6214,8 @@ def _submit_email_otp_with_retry(
     max_transient_retries: int = 6,
     label: str = "Email OTP",
     recover_url: str = "",
+    device_id: str = "",
+    user_agent: str = "",
 ) -> dict:
     invalid_retries = max(0, int(max_invalid_retries or 0))
     transient_retries = max(0, int(max_transient_retries or 0))
@@ -6189,7 +6248,16 @@ def _submit_email_otp_with_retry(
             need_new_code = False
 
         submit_attempt += 1
-        otp_resp = _submit_otp_via_page(page, code, log)
+        if device_id or user_agent:
+            otp_resp = _submit_otp_via_page(
+                page,
+                code,
+                log,
+                device_id=device_id,
+                user_agent=user_agent,
+            )
+        else:
+            otp_resp = _submit_otp_via_page(page, code, log)
         log(f"{label}: submit status={otp_resp.get('status', 0)} attempt={submit_attempt}")
         if otp_resp.get("ok"):
             return otp_resp
@@ -6208,6 +6276,10 @@ def _submit_email_otp_with_retry(
             if transient_retry_count >= transient_retries:
                 return last_resp
             transient_retry_count += 1
+            if str(last_resp.get("text") or "") == "验证码页提交后未跳转":
+                transition = _otp_page_transition_result(page)
+                if transition:
+                    return transition
             log(
                 f"{label}: transient submit failure, recovery retry "
                 f"{transient_retry_count}/{transient_retries}: {error_text[:160]}"
@@ -7119,6 +7191,8 @@ def _browser_registration_flow_once(
                 log,
                 max_invalid_retries=3,
                 label="Register email OTP",
+                device_id=device_id,
+                user_agent=user_agent,
             )
             log(f"验证码页提交状态: {otp_resp.get('status', 0)}")
             if not otp_resp.get("ok"):
@@ -7315,6 +7389,29 @@ class ChatGPTBrowserRegister:
             log=self.log,
         )
 
+    @contextmanager
+    def _open_browser_with_geoip_fallback(self, launch_opts: dict):
+        browser_cm = self._open_browser(launch_opts)
+        try:
+            browser = browser_cm.__enter__()
+        except Exception as exc:
+            if launch_opts.get("geoip") and "failed to get ip address" in str(exc).lower():
+                try:
+                    browser_cm.__exit__(None, None, None)
+                except Exception:
+                    pass
+                retry_opts = dict(launch_opts)
+                retry_opts.pop("geoip", None)
+                self.log("Camoufox geoip 获取出口 IP 失败，关闭 geoip 后重试打开浏览器")
+                browser_cm = self._open_browser(retry_opts)
+                browser = browser_cm.__enter__()
+            else:
+                raise
+        try:
+            yield browser
+        finally:
+            browser_cm.__exit__(None, None, None)
+
     def run(self, email: str, password: str) -> dict:
         if self.backend_config.is_bitbrowser:
             # BitBrowser 路径：profile 已配代理/指纹，launch_opts 不传这些。
@@ -7331,7 +7428,7 @@ class ChatGPTBrowserRegister:
                     launch_opts["geoip"] = True
             apply_camoufox_register_window_size(launch_opts)
 
-        with self._open_browser(launch_opts) as browser:
+        with self._open_browser_with_geoip_fallback(launch_opts) as browser:
             har_context = None
             record_har_path = ""
             page = browser.new_page()
@@ -7471,7 +7568,7 @@ class ChatGPTBrowserRegister:
                 launch_opts["proxy"] = proxy
             apply_camoufox_register_window_size(launch_opts)
         try:
-            with self._open_browser(launch_opts) as browser:
+            with self._open_browser_with_geoip_fallback(launch_opts) as browser:
                 page = browser.new_page()
                 set_register_page_viewport(page)
                 self.log("  全新浏览器 OAuth 开始...")

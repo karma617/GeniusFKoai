@@ -204,6 +204,11 @@ cp .env.example .env
 start_with_go_gateway.bat
 ```
 
+启动前会自动：
+
+1. 终止当前占用主项目端口（默认 `8000`）和 Go gateway 端口（默认 `8787`）的旧服务
+2. 检测 `frontend` 源码是否变化；需要时才执行 `npm install` / `npm run build` 更新 `static`
+
 默认端口：
 
 - 主项目：`http://localhost:8000`
@@ -219,6 +224,12 @@ start_with_go_gateway.bat -BackendPort 8000 -GatewayPort 8787 -GatewayAttempts 4
 
 ```bat
 start_with_go_gateway.bat -GoExe C:\Go\bin\go.exe
+```
+
+临时跳过前端构建：
+
+```bat
+start_with_go_gateway.bat -SkipFrontendBuild
 ```
 
 也可以只启动主项目：

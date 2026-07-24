@@ -1,0 +1,375 @@
+
+========================================================================================
+[35] POST 200 https://chatgpt.com/api/auth/signin/openai?prompt=login&ext-oai-did=15a3b48e-c795-4c96-a999-ab526a97901d&auth_session_logging_id=de0dd237-ee8c-4897-b111-2c63e6eec5d0&screen_hint=login_or_signup&login_hint=ArlanBrando080676%40hotmail.com
+  accept: application/json
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  content-length: 125
+  content-type: application/x-www-form-urlencoded
+  cookie_names=['oai-did', 'oai-did', '__cf_bm', '__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', '__cflb', 'oai-mweb-route-desktop', '_cfuvid', '_dd_s']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C __cf_bm=Zv_k5jr2KsIYsiDX.jT0Wqfelc.ABGIbpJzdKdMsLvU-1784912467.8202171-1.0.1.1-MZmKpsOvEqpcQSWy_JAKcDcg2FHMy2J_blDtT4Kx72.2ovUV8nAlWBspq8v72v0EupgRen4p.Kt_qePNBtiUjiwuO
+    C __Host-next-auth.csrf-token=3f35e23e9e8b1537061106fbae3404178b922a6060b34cc5064186fc312ecb3d%7C67fba309b50260565335911ba2d5dc12d8e8091b1148d9c6de2474a474812cb9
+    C __Secure-next-auth.callback-url=https%3A%2F%2Fchatgpt.com
+    C __cflb=04dTofELUVCxHqRn2Xc6EDe5FdXAfnXrUNngzEzTkX
+    C oai-mweb-route-desktop=0
+    C _cfuvid=gBwMEOCGxbvNtBK_xxLvC2fRh2Mgo8oFXCFnJUj9ji8-1784912467.8202171-1.0.1.1-xOmW2FhgwDf3uZylCL88_716RikUAaHA8n6Q85WljSs
+    C _dd_s=aid=c810e5de-0290-4451-b469-291e598e20ff&rum=0&expire=1784913373901
+  host: chatgpt.com
+  origin: https://chatgpt.com
+  referer: https://chatgpt.com/
+  sec-fetch-dest: empty
+  sec-fetch-mode: cors
+  sec-fetch-site: same-origin
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  BODY(125): callbackUrl=https%3A%2F%2Fchatgpt.com%2F&csrfToken=3f35e23e9e8b1537061106fbae3404178b922a6060b34cc5064186fc312ecb3d&json=true
+  RESP(659): {"url":"https://auth.openai.com/api/accounts/authorize?client_id=app_X8zY6vW2pQ9tR3dE7nK1jL5gH&scope=openid%20email%20profile%20offline_access%20model.request%20model.read%20organization.read%20organization.write&response_type=code&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fapi%2Fauth%2Fcallback%2Fopenai&audience=https%3A%2F%2Fapi.openai.com%2Fv1&device_id=15a3b48e-c795-4c96-a999-ab526a97901d&prompt=login&ext-oai-did=15a3b48e-c795-4c96-a999-ab526a97901d&auth_session_logging_id=de0dd237-ee8c-4897-b111-2c63e6eec5d0&screen_hint=login_or_signup&login_hint=ArlanBrando080676%40hotmail.com&ccaps=login_methods&state=pR9iz9GSXkSegx8yO9KqNIjTC2DLcqAJzlXAwkurY5A"}
+  Set-Cookie: __Secure-next-auth.callback-url=https%3A%2F%2Fchatgpt.com%2F; Path=/; HttpOnly; Secure; SameSite=Lax
+  Set-Cookie: __Secure-next-auth.state=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..uSHZrfYmKwyQlNki.fN-02UJQhAO4uIJB7SmVsk6d1G6aeVhp9vMxYMb83KVlKxfGua5u485FnGTdimcKyshtrQIk8IuWavU3whhYAOIAemN0TQ-KGIlQi23r_UWb6Gz1ZZqgNY89JOcK3jO94JA5vVy3rQ0cC-oAvUb0D22fPqZbkYaOAn3oyAPfPONoCVLp7eA.iCLUu3mVbhZbPgDR72ofpw; Max-Age=900; 
+
+========================================================================================
+[154] GET 302 https://auth.openai.com/api/accounts/authorize?client_id=app_X8zY6vW2pQ9tR3dE7nK1jL5gH&scope=openid%20email%20profile%20offline_access%20model.request%20model.read%20organization.read%20organization.write&response_type=code&redirect_uri=htt
+  accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  cookie_names=['oai-did', 'oai-did']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+  host: auth.openai.com
+  sec-fetch-dest: document
+  sec-fetch-mode: navigate
+  sec-fetch-site: none
+  sec-fetch-user: ?1
+  upgrade-insecure-requests: 1
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  Set-Cookie: oai-login-csrf_dev_3772291445=MTc4NDkxMjQ4NnxXN0NiSUhXa2JSdTNIX2xVQ3IxZGNpbThwY3BITWlRckNHcW5vUUVKRmRnYTZtN1g5elp6VzV5RkNnYllFeWpZMWhydS1hU1lxbjRwTTNlbFJTYjk3US1icE5lX0lWSDl4bnVPWVVYY1lKdWRXY2VEQ2JETTZVRng4Q3FUfAOUOA5t9jujy0s2GEmLJLyuWqVCwM6n1fYngW93BcqX; expires=Fri, 24 Jul 2026 18:01:26 GMT; HttpO
+  Set-Cookie: oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; Domain=.openai.com; Max-Age=31536000; Path=/; SameSite=lax
+  Set-Cookie: rg_context=prim; Domain=auth.openai.com; Max-Age=2700; Path=/; SameSite=lax
+  Set-Cookie: iss_context=default; Domain=auth.openai.com; Max-Age=2700; Path=/; SameSite=lax
+  Set-Cookie: auth_provider=:AABwVVeRNUitX8NJqCy+IGvniws3Fo/VZeyrII7Ty9CCBWnX+6mW3Catzmea5gVYsoznOstnq6425vYY41kCtIQihR/0Mgj8KKAUjqbu8mvfYJmUIH9zIzNKEgX7yKJhJprFYUtRSaw+2iMKIsZwBEjKDUrwUCbBxeaONZ9MQROmRDw21rI9k9AIWgObz5b9WSuuS2jGFmfg6ophej///rFcUI3UFkhsdP+0b18KhD+wsn+tj/phZc4gi666OQa0EuBiyeonswfJkFoausnbx2XGHbzQj
+  Set-Cookie: login_session=eyJsb2dpbl9jaGFsbGVuZ2UiOiJkenVKUnc1UzVUV2R3dlNDZW1TUWdSS0c5ZnJEQjV2R1I4UUxvQWQ5bTNtUDVBdEpXZ3BXQkU3R3dxdjl5dFBOY2x5WXc1MVpmd0c5Sm9Ubl9SUFV1MzMyeHlScGpjMFFfTi1hc1NwQXZJNUJuSzdVYnBMUGhJVkNnZzhJMWk1U3JnSTd5cF83QmtBQVFkM2YySWhxbFRJbjI2b1JKNk14V0lpVHZDd1VMNmdmenE1WTRXR1lhN3ZleFZTSFhoT2R4aU
+  Set-Cookie: hydra_redirect=eyJvYWktbG9naW4tY3NyZl9kZXZfMzc3MjI5MTQ0NSI6Ik1UYzRORGt4TWpRNE5ueFhOME5pU1VoWGEySlNkVE5JWDJ4VlEzSXhaR05wYlRod1kzQklUV2xSY2tOSGNXNXZVVVZLUm1SbllUWnROMWc1ZWxwNlZ6VjVSa05uWWxsRmVXcFpNV2h5ZFMxaFUxbHhialJ3VFRObGJGSlRZamszVVMxaWNFNWxYMGxXU0RsNGJuVlBXVlZZWTFsS2RXUlhZMlZFUTJKRVRUWlZSbmc0UTNGV
+  Set-Cookie: oai-client-auth-session=eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiY291bnRyeV9jb2RlX2hpbnQiOiJKUCIsInByb21vIjoiIiwic2lnbnVwX3NvdXJjZSI6IiIsImF1dGhfc2Vzc2lvbl9sb2dnaW5nX2lkIjoiZGUwZGQyMzctZWU4Yy00ODk3LWIxMTEtMmM2M2U2ZWVjNWQwIiwicmVxdWVzdGVkX29hdXRoX3Njb3BlcyI6WyJlbWFpbCIsIm1v
+  Set-Cookie: auth-session-minimized=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiYXV0aF9zZXNzaW9uX2xvZ2dpbmdfaWQiOiJkZTBkZDIzNy1lZThjLTQ4OTctYjExMS0yYzYzZTZlZWM1ZDAiLCJzb3VyY2Vfc3VyZmFjZV9zdGFibGVfaWQiOiIxNWEzYjQ4ZS1jNzk1LTRjOTYtYTk5OS1hYjUyNmE5NzkwMWQi
+  Set-Cookie: auth-session-minimized-client-checksum={"affinity":"eyJyYyI6IDEyLCAiY3MiOiAiZjNjOGFjOTIzMyIsICJ3cyI6IDAsICJ3dCI6IDE3ODQ5MTI0ODZ9"}; path=/; Domain=auth.openai.com; Max-Age=2700; samesite=lax; secure
+  Set-Cookie: oaicom-stable-id=7158c4c5-8de5-41d4-927b-b74d8ca4d177; path=/; Domain=.openai.com; Max-Age=31536000; samesite=lax; secure
+  Set-Cookie: __cf_bm=z5JUi7Ya1V9w.9YQJnR.L.lUta9fABbsbXYnbQx63DI-1784912486.2854533-1.0.1.1-pLp8Hp6wS1wjqzh5ISn0nbvg5dZo58.03KCjClo6rmUNmrp4Vn68lHYdYU1xIOO2qi8TAVg5j4ksVNuo6RNQLi90nnKVdDizleKU3K1ryhu7x5sCuBkwmQU_hrkNbr2C; HttpOnly; SameSite=None; Secure; Path=/; Domain=auth.openai.com; Expires=Fri, 24 Jul 2026 1
+  Set-Cookie: __cflb=0H28w2ZepuU3KZxNdeaWAqyjVgfVFx5s5MovVcJfiXX; HttpOnly; SameSite=None; Secure; Path=/; Expires=Fri, 24 Jul 2026 17:31:26 GMT
+  Set-Cookie: _cfuvid=yfA5Wh_IrZgiHBGgyJlYAbvjIVQWWiGWok4hisFVPLA-1784912486.2854533-1.0.1.1-52GhPEVOkoDwBf.eyj3xpTww.x0MRuYFPGaBiJPAZXc; HttpOnly; SameSite=None; Secure; Path=/; Domain=auth.openai.com
+
+========================================================================================
+[160] GET 200 https://auth.openai.com/email-verification
+  accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  cookie_names=['oai-did', 'oai-did', 'oai-login-csrf_dev_3772291445', 'oai-did', 'rg_context', 'iss_context', 'auth_provider', 'login_session', 'hydra_redirect', 'oai-client-auth-session', 'auth-session-minimized', 'auth-session-minimized-client-checksum', 'oaicom-stable-id', '__cf_bm', '__cflb', '_cfuvid']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-login-csrf_dev_3772291445=MTc4NDkxMjQ4NnxXN0NiSUhXa2JSdTNIX2xVQ3IxZGNpbThwY3BITWlRckNHcW5vUUVKRmRnYTZtN1g5elp6VzV5RkNnYllFeWpZMWhydS1hU1lxbjRwTTNlbFJTYjk3US1icE5lX0lWSDl4bnVPWVVYY1lKdWRX
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C rg_context=prim
+    C iss_context=default
+    C auth_provider=:AABwVVeRNUitX8NJqCy+IGvniws3Fo/VZeyrII7Ty9CCBWnX+6mW3Catzmea5gVYsoznOstnq6425vYY41kCtIQihR/0Mgj8KKAUjqbu8mvfYJmUIH9zIzNKEgX7yKJhJprFYUtRSaw+2iMKIsZwBEjKDUrwUCb
+    C login_session=eyJsb2dpbl9jaGFsbGVuZ2UiOiJkenVKUnc1UzVUV2R3dlNDZW1TUWdSS0c5ZnJEQjV2R1I4UUxvQWQ5bTNtUDVBdEpXZ3BXQkU3R3dxdjl5dFBOY2x5WXc1MVpmd0c5Sm9Ubl9SUFV1MzMyeHlScGpjMFFfTi1h
+    C hydra_redirect=eyJvYWktbG9naW4tY3NyZl9kZXZfMzc3MjI5MTQ0NSI6Ik1UYzRORGt4TWpRNE5ueFhOME5pU1VoWGEySlNkVE5JWDJ4VlEzSXhaR05wYlRod1kzQklUV2xSY2tOSGNXNXZVVVZLUm1SbllUWnROMWc1ZWxwNlZ6
+    C oai-client-auth-session=eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiY291bnRyeV9jb2RlX2hpbnQiOiJKUCIsInByb21vIjoiIiwic2lnbnVwX3NvdXJjZSI6IiIsImF1dGhfc2Vzc2lvbl9s
+    C auth-session-minimized=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiYXV0aF9zZXNzaW9uX2xvZ2dpbmdfaWQiOiJkZTBkZDIzNy1lZThjLTQ
+    C auth-session-minimized-client-checksum={"affinity":"eyJyYyI6IDEyLCAiY3MiOiAiZjNjOGFjOTIzMyIsICJ3cyI6IDAsICJ3dCI6IDE3ODQ5MTI0ODZ9"}
+    C oaicom-stable-id=7158c4c5-8de5-41d4-927b-b74d8ca4d177
+    C __cf_bm=z5JUi7Ya1V9w.9YQJnR.L.lUta9fABbsbXYnbQx63DI-1784912486.2854533-1.0.1.1-pLp8Hp6wS1wjqzh5ISn0nbvg5dZo58.03KCjClo6rmUNmrp4Vn68lHYdYU1xIOO2qi8TAVg5j4ksVNuo6RNQLi90n
+    C __cflb=0H28w2ZepuU3KZxNdeaWAqyjVgfVFx5s5MovVcJfiXX
+    C _cfuvid=yfA5Wh_IrZgiHBGgyJlYAbvjIVQWWiGWok4hisFVPLA-1784912486.2854533-1.0.1.1-52GhPEVOkoDwBf.eyj3xpTww.x0MRuYFPGaBiJPAZXc
+  host: auth.openai.com
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  RESP(65811): <!DOCTYPE html><html lang="en-US"><head><meta charSet="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="dd-trace-id" content="5872122645335587108"/><meta name="dd-trace-time" content="1784912487138"/><link rel="icon" type="image/svg+xml" href="https://auth-cdn.oaistatic.com/assets/favicon-hQZ_bs-n.svg"/><title>Check your inbox - OpenAI</title><link rel="modulepreload" href="https://auth-cdn.oaistatic.com/assets/manifest-d711815e.js"/><link rel="modulepreload" href="https://auth-cdn.oaistatic.com/assets/entry.client-BuXIgZOD.js"/><link rel="modulepreload" href="https://auth-cdn.oaistatic.com/assets/statsig-I35B3fDz.js"/><link rel="modulepreload" href="https://auth-cdn.oaistatic.com/assets/app-core-DZ2Kozs6.js"/><link rel="modulepreload" href="https://auth-cdn.oaistatic.com/assets/react-BogSch7R.js"/><link rel="modulepreload" href="https://auth-cdn.oaistatic.com/assets/react-intl-DHQgPJgF.js"/><link rel="modulepreload" href="https://auth-cdn.oais
+  Set-Cookie: oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; Max-Age=31536000; Domain=openai.com; Path=/; Expires=Sat, 24 Jul 2027 17:01:27 GMT; SameSite=Lax
+  Set-Cookie: oaicom-stable-id=7158c4c5-8de5-41d4-927b-b74d8ca4d177; Max-Age=31536000; Domain=openai.com; Path=/; Expires=Sat, 24 Jul 2027 17:01:27 GMT; Secure; SameSite=Lax
+  Set-Cookie: __cflb=0H28w2ZepuU3KZxNdeQ1aFPy7qqzg8YgrM5tSxbWJNZ; HttpOnly; SameSite=None; Secure; Path=/; Expires=Fri, 24 Jul 2026 17:31:27 GMT
+
+========================================================================================
+[209] POST 200 https://auth.openai.com/api/accounts/email-otp/validate
+  accept: application/json
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  content-length: 17
+  content-type: application/json
+  cookie_names=['oai-did', 'oai-did', 'oai-login-csrf_dev_3772291445', 'oai-did', 'rg_context', 'iss_context', 'auth_provider', 'login_session', 'hydra_redirect', 'oai-client-auth-session', 'auth-session-minimized', 'auth-session-minimized-client-checksum', 'oaicom-stable-id', '__cf_bm', '__cflb', '_cfuvid', '_dd_s', 'cf_clearance']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-login-csrf_dev_3772291445=MTc4NDkxMjQ4NnxXN0NiSUhXa2JSdTNIX2xVQ3IxZGNpbThwY3BITWlRckNHcW5vUUVKRmRnYTZtN1g5elp6VzV5RkNnYllFeWpZMWhydS1hU1lxbjRwTTNlbFJTYjk3US1icE5lX0lWSDl4bnVPWVVYY1lKdWRX
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C rg_context=prim
+    C iss_context=default
+    C auth_provider=:AABwVVeRNUitX8NJqCy+IGvniws3Fo/VZeyrII7Ty9CCBWnX+6mW3Catzmea5gVYsoznOstnq6425vYY41kCtIQihR/0Mgj8KKAUjqbu8mvfYJmUIH9zIzNKEgX7yKJhJprFYUtRSaw+2iMKIsZwBEjKDUrwUCb
+    C login_session=eyJsb2dpbl9jaGFsbGVuZ2UiOiJkenVKUnc1UzVUV2R3dlNDZW1TUWdSS0c5ZnJEQjV2R1I4UUxvQWQ5bTNtUDVBdEpXZ3BXQkU3R3dxdjl5dFBOY2x5WXc1MVpmd0c5Sm9Ubl9SUFV1MzMyeHlScGpjMFFfTi1h
+    C hydra_redirect=eyJvYWktbG9naW4tY3NyZl9kZXZfMzc3MjI5MTQ0NSI6Ik1UYzRORGt4TWpRNE5ueFhOME5pU1VoWGEySlNkVE5JWDJ4VlEzSXhaR05wYlRod1kzQklUV2xSY2tOSGNXNXZVVVZLUm1SbllUWnROMWc1ZWxwNlZ6
+    C oai-client-auth-session=eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiY291bnRyeV9jb2RlX2hpbnQiOiJKUCIsInByb21vIjoiIiwic2lnbnVwX3NvdXJjZSI6IiIsImF1dGhfc2Vzc2lvbl9s
+    C auth-session-minimized=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiYXV0aF9zZXNzaW9uX2xvZ2dpbmdfaWQiOiJkZTBkZDIzNy1lZThjLTQ
+    C auth-session-minimized-client-checksum={"affinity":"eyJyYyI6IDEyLCAiY3MiOiAiZjNjOGFjOTIzMyIsICJ3cyI6IDAsICJ3dCI6IDE3ODQ5MTI0ODZ9"}
+    C oaicom-stable-id=7158c4c5-8de5-41d4-927b-b74d8ca4d177
+    C __cf_bm=1nYZ6e4qex1uXcoNY8AorSl3sBlS5xL_IM7pIB8DHzA-1784912489.3850656-1.0.1.1-jYbgr701XO6fBajsZ1xAd.j0tzoQyksffPRSNChz_oV5lmODrTngXMj6D5GZNuG12VncQnerlmjBNTbcOYUMq5zBo
+    C __cflb=0H28w2ZepuU3KZxNdeQ1aFPy7qqzg8YgrM5tSxbWJNZ
+    C _cfuvid=yfA5Wh_IrZgiHBGgyJlYAbvjIVQWWiGWok4hisFVPLA-1784912486.2854533-1.0.1.1-52GhPEVOkoDwBf.eyj3xpTww.x0MRuYFPGaBiJPAZXc
+    C _dd_s=aid=bf2eaf48-c661-46e3-b893-4470365afb5e&rum=2&id=a652d794-a5ee-4eef-89a1-24cf60984a8a&created=1784912486991&expire=1784913404956
+    C cf_clearance=5BDn2mwnR3xtresk9LFU2fWUlOeK5zQMM8Y22sIMrIA-1784912489-1.2.1.1-9l.Ub6ZYHXXknGQZoiHz1Nqez4SW4_5sBpcDypZMUktsPUV8yZcKewKuP735NJsHt.clWWE5XNiub.BW5Nbp8ibuiunbZyCoP
+  host: auth.openai.com
+  origin: https://auth.openai.com
+  referer: https://auth.openai.com/email-verification
+  sec-fetch-dest: empty
+  sec-fetch-mode: cors
+  sec-fetch-site: same-origin
+  traceparent: 00-0000000000000000a5107ef0b711b7c0-79d17db200f3785b-01
+  tracestate: dd=s:1;o:rum
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  x-access-flow-invocation-id: a377caa2-dfb5-4f79-9cd5-03124435ffd1
+  x-datadog-origin: rum
+  x-datadog-parent-id: 8777935352195414107
+  x-datadog-sampling-priority: 1
+  x-datadog-trace-id: 11894146188214122432
+  BODY(17): {"code":"587428"}
+  RESP(1120): {
+  "continue_url": "https://auth.openai.com/about-you",
+  "method": "GET",
+  "page": {
+    "type": "about_you",
+    "backstack_behavior": "default"
+  },
+  "oai-client-auth-session": {
+    "app_name_enum": "chat",
+    "auth_session_logging_id": "de0dd237-ee8c-4897-b111-2c63e6eec5d0",
+    "country_code_hint": "JP",
+    "destination_app_name": "ChatGPT Web",
+    "email": "ArlanBrando080676@hotmail.com",
+    "email_verification_mode": "passwordless_signup",
+    "openai_client_id": "app_X8zY6vW2pQ9tR3dE7nK1jL5gH",
+    "original_screen_hint": "login_or_signup",
+    "passwordless_disabled": false,
+    "passwordless_otp_from_password_redirect": false,
+    "promo": "",
+    "requested_oauth_scopes": [
+      "email",
+      "model.read",
+      "model.request",
+      "offline_access",
+      "openid",
+      "organization.read",
+      "organization.write",
+      "profile"
+    ],
+    "session_id": "authsess_QeK3dPyNdfq1eNLWSwjzST1s",
+    "signup_mode": "email_signup",
+    "signup_source": "",
+    "us
+  Set-Cookie: auth_provider=:AAC+ypSD2Nps2Buh0y+UMIH4mv3O8LnqM4O3mONzyewziDMPi00hKiYu4POch9CMv4aipAiEZ8g6ARzlrmjq0EmCO8HnmM+AlzZRcszpYWHd3l39X59mUBiBg1+tyv4OA6QgaVCkyf3zLOiePYE4u9bEjQd8FodyckFZILUT0BgCpqETkcJ2akbjlU8JA0SjaTsaBwrd7/ANdRiikfMaJiUgEO+NW5cBMnrlaCF1FsKmcmsmO5qBlq8NdimZNXPh1sCtJD8QRbkJQl4To39u3fyAyoNA+
+  Set-Cookie: login_session=eyJsb2dpbl9jaGFsbGVuZ2UiOiJkenVKUnc1UzVUV2R3dlNDZW1TUWdSS0c5ZnJEQjV2R1I4UUxvQWQ5bTNtUDVBdEpXZ3BXQkU3R3dxdjl5dFBOY2x5WXc1MVpmd0c5Sm9Ubl9SUFV1MzMyeHlScGpjMFFfTi1hc1NwQXZJNUJuSzdVYnBMUGhJVkNnZzhJMWk1U3JnSTd5cF83QmtBQVFkM2YySWhxbFRJbjI2b1JKNk14V0lpVHZDd1VMNmdmenE1WTRXR1lhN3ZleFZTSFhoT2R4aU
+  Set-Cookie: hydra_redirect=eyJvYWktbG9naW4tY3NyZl9kZXZfMzc3MjI5MTQ0NSI6Ik1UYzRORGt4TWpRNE5ueFhOME5pU1VoWGEySlNkVE5JWDJ4VlEzSXhaR05wYlRod1kzQklUV2xSY2tOSGNXNXZVVVZLUm1SbllUWnROMWc1ZWxwNlZ6VjVSa05uWWxsRmVXcFpNV2h5ZFMxaFUxbHhialJ3VFRObGJGSlRZamszVVMxaWNFNWxYMGxXU0RsNGJuVlBXVlZZWTFsS2RXUlhZMlZFUTJKRVRUWlZSbmc0UTNGV
+  Set-Cookie: oai-client-auth-session=eyJhcHBfbmFtZV9lbnVtIjoiY2hhdCIsImF1dGhfc2Vzc2lvbl9sb2dnaW5nX2lkIjoiZGUwZGQyMzctZWU4Yy00ODk3LWIxMTEtMmM2M2U2ZWVjNWQwIiwiY291bnRyeV9jb2RlX2hpbnQiOiJKUCIsImRlc3RpbmF0aW9uX2FwcF9uYW1lIjoiQ2hhdEdQVCBXZWIiLCJlbWFpbCI6IkFybGFuQnJhbmRvMDgwNjc2QGhvdG1haWwuY29tIiwiZW1haWxfdmVyaWZpY2F0
+  Set-Cookie: auth-session-minimized=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiYXV0aF9zZXNzaW9uX2xvZ2dpbmdfaWQiOiJkZTBkZDIzNy1lZThjLTQ4OTctYjExMS0yYzYzZTZlZWM1ZDAiLCJzb3VyY2Vfc3VyZmFjZV9zdGFibGVfaWQiOiIxNWEzYjQ4ZS1jNzk1LTRjOTYtYTk5OS1hYjUyNmE5NzkwMWQi
+  Set-Cookie: auth-session-minimized-client-checksum={"affinity":"eyJyYyI6IDEyLCAiY3MiOiAiZDI2NTdhZGVmYSIsICJ3cyI6IDEsICJ3dCI6IDE3ODQ5MTI1MDh9"}; path=/; Domain=auth.openai.com; Max-Age=2700; samesite=lax; secure
+  Set-Cookie: __cflb=0H28w2ZepuU3KZxNdeDUWL71Qn2r7M27CwnUndbP5HF; HttpOnly; SameSite=None; Secure; Path=/; Expires=Fri, 24 Jul 2026 17:31:48 GMT
+
+========================================================================================
+[215] POST 200 https://sentinel.openai.com/backend-api/sentinel/req
+  accept: */*
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  content-length: 675
+  content-type: text/plain;charset=UTF-8
+  cookie_names=['oai-did', 'oaicom-stable-id', '__cflb', '__cf_bm']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oaicom-stable-id=7158c4c5-8de5-41d4-927b-b74d8ca4d177
+    C __cflb=0H28vzvP5FJafnkHxisyrUFUAuuJgZWNPsceqVKYPJs
+    C __cf_bm=E3PEWuO4qdLOWNLewvVhA5.q2RASjtEm7rLxlCxl1LQ-1784912489.059512-1.0.1.1-DY6GQVYsLLqnANwDSeXwEaXQwTa0ziF0b9nzAMbN20NRrKird7dtT3yJJlS1l9UHYJcxOgXr0_1g4eDzHl3NpkDmPb
+  host: sentinel.openai.com
+  origin: https://sentinel.openai.com
+  referer: https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6
+  sec-fetch-dest: empty
+  sec-fetch-mode: cors
+  sec-fetch-site: same-origin
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  BODY(675): {"p":"gAAAAACWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo0NyBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhcmQgVGltZSkiLG51bGwsMiwiTW96aWxsYS81LjAgKE1hY2ludG9zaDsgSW50ZWwgTWFjIE9TIFggMTAuMTU7IHJ2OjEzNS4wKSBHZWNrby8yMDEwMDEwMSBGaXJlZm94LzEzNS4wIiwiaHR0cHM6Ly9zZW50aW5lbC5vcGVuYWkuY29tL3NlbnRpbmVsLzIwMjYwMjE5ZjlmNi9zZGsuanMiLG51bGwsImVuLVVTIiwiZW4tVVMsZW4iLDU4LCJtb3pHZXRVc2VyTWVkaWHiiJJmdW5jdGlvbiBtb3pHZXRVc2VyTWVkaWEoKSB7XG4gICAgW25hdGl2ZSBjb2RlXVxufSIsIl9yZWFjdExpc3RlbmluZzdlbnNtYTh3a3I4Iiwib25kcmFnc3RhcnQiLDIzMTI1LCI0YjRlNzlmMi1iNmFjLTQ1MmItOGM4ZC1mMjI5NjcyNDE2NTIiLCIiLDEyLDE3ODQ5MTI0ODQxMjAsMCwwLDAsMCwwLDEsMV0=~S","id":"15a3b48e-c795-4c96-a999-ab526a97901d","flow":"oauth_create_account"}
+  RESP(61907): {"persona":"chatgpt-noauth","token":"gAAAAABqY5p97rIsLiOccsrVXTZMDtqZ2ixWZ31eK0Y1ADShA49Otz7HK8-e0JKUQ3sHJ10J6Y5g_vRCOC5RzEnjUNc7duDBnn9nbnVJ7aM-Aa8TOiRDWiKOGdKv7b-oPMKMJS5lkp7WBzxcQfwxccFccX3q8Un2qzaQ9pOOJAhPN3NNdOvzLlyoAxQvrvW9X68IUysERJMZzWLEO3jQu01OYG6zrNVO9QlGbVEd3denCrvZLsF8KIqMXlWLZfFwc5bGgVSff9mOQQN_cw3K73ompsuXB74R-p0nnjMkcurklVEc-1xMRoirrncl7wovsafobEBeYxJJwn-bTYk_HHiENLOFDAXixDpJwlh8h0ERr_ZLbpd5cR_WUPcaCGEpgrDVKtzMMyEyiuk2FRwFRMYnQ2dIE2jhodHRs6bJUaeiRP0AGLLHayiEATl2tytSG_o7VM0TfkPyZq5aCkpLhH9S4DCCDN3x9LbbGuKMOmjiJfKe_sn-0fEV7KlZR2cHzXcECJNxMF96CWUlHEUZEl75GNQQnmmAcGyGq3yAdkERViLEniJji_V9UjwdmfLtNkxeThDt5jZzg4E1erfnDyS7_Hgt4D4EovME2UQizs8Tb_P3zuIJ36xP_vr4L916g2qHeiyiTlk4DrtMLE90lhUAw1uj7c_Su_WFi0BhpMRUf6ZoPcEdn8U4SQAzOrZQlhgl_-_WejASznBfq78RCllBfIEICL5YxIYyKSdmQV1FH9tnS3iABX8K6-EtVzf9Z1Gx4xGl0D-t2ZGX-Y4rP5Bgm_onn2zqdL7Jsxt-o8FYHclU3g7kWaacjxvkyk9N4ViEF1Hk4hY9IOFG9PeTYu0VpnP9Se_XE6j3GaUv1u_dbHFfRBb1BfCTaqU-iEsKK-XkqszC7itFir-rHUS2mP5lgI89Zfo5fh0Bbp3G7j9Tj4oBeywHNzufiQLE54R8EAP
+  Set-Cookie: oai-sc=0gAAAAABqY5p9TP9el308y7ZwYwhqMGFTUCJbhy9hUiFtsc_Tp3Q5vbRYBfla6bQEWfSu_wJIXh2F9a2ivuUPV0DzfZ27xTQRfHeOBUvll-RfzCi9_97Om1sBdnMmH9F53jJu90unepW1WyNp3vfowaQ_4xribBPJwIYzV_5foWIDuQqCivD-IXO4MR_n3X0fq98TBpyU8HrkirWoTMn4nmRZRmyYTD8MnX1FYAkvRH8WoEdJKxcHKOn0welfH3o89r7czy-MM4_s; Domain=.openai.com; Ma
+  Set-Cookie: __cf_bm=eJ4oIIzD.I.3Hv82v07E8rB14yOOF2Tk2qJVcNgjkT8-1784912509.3166955-1.0.1.1-KA8wAhX6tQMyJKr_S5dqaC6fCIxiOcBVfeq9vCQH4.3cwR8IGteSKWqzAwVdBCjRBTs5vM.b2DKoqXI4mV.rZSFFfGJwhzuirdAc2rolBzMbsEyOg3Ca24EpCWHSVzcc; HttpOnly; SameSite=None; Secure; Path=/; Domain=chatgpt.com; Expires=Fri, 24 Jul 2026 17:31
+
+========================================================================================
+[218] POST 200 https://auth.openai.com/api/accounts/create_account
+  accept: application/json
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  content-length: 52
+  content-type: application/json
+  cookie_names=['oai-did', 'oai-did', 'oai-login-csrf_dev_3772291445', 'oai-did', 'rg_context', 'iss_context', 'auth_provider', 'login_session', 'hydra_redirect', 'oai-client-auth-session', 'auth-session-minimized', 'auth-session-minimized-client-checksum', 'oaicom-stable-id', '__cf_bm', '__cflb', '_cfuvid', '_dd_s', 'cf_clearance', 'oai-sc']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-login-csrf_dev_3772291445=MTc4NDkxMjQ4NnxXN0NiSUhXa2JSdTNIX2xVQ3IxZGNpbThwY3BITWlRckNHcW5vUUVKRmRnYTZtN1g5elp6VzV5RkNnYllFeWpZMWhydS1hU1lxbjRwTTNlbFJTYjk3US1icE5lX0lWSDl4bnVPWVVYY1lKdWRX
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C rg_context=prim
+    C iss_context=default
+    C auth_provider=:AAC+ypSD2Nps2Buh0y+UMIH4mv3O8LnqM4O3mONzyewziDMPi00hKiYu4POch9CMv4aipAiEZ8g6ARzlrmjq0EmCO8HnmM+AlzZRcszpYWHd3l39X59mUBiBg1+tyv4OA6QgaVCkyf3zLOiePYE4u9bEjQd8Fod
+    C login_session=eyJsb2dpbl9jaGFsbGVuZ2UiOiJkenVKUnc1UzVUV2R3dlNDZW1TUWdSS0c5ZnJEQjV2R1I4UUxvQWQ5bTNtUDVBdEpXZ3BXQkU3R3dxdjl5dFBOY2x5WXc1MVpmd0c5Sm9Ubl9SUFV1MzMyeHlScGpjMFFfTi1h
+    C hydra_redirect=eyJvYWktbG9naW4tY3NyZl9kZXZfMzc3MjI5MTQ0NSI6Ik1UYzRORGt4TWpRNE5ueFhOME5pU1VoWGEySlNkVE5JWDJ4VlEzSXhaR05wYlRod1kzQklUV2xSY2tOSGNXNXZVVVZLUm1SbllUWnROMWc1ZWxwNlZ6
+    C oai-client-auth-session=eyJhcHBfbmFtZV9lbnVtIjoiY2hhdCIsImF1dGhfc2Vzc2lvbl9sb2dnaW5nX2lkIjoiZGUwZGQyMzctZWU4Yy00ODk3LWIxMTEtMmM2M2U2ZWVjNWQwIiwiY291bnRyeV9jb2RlX2hpbnQiOiJKUCIsImRlc3Rp
+    C auth-session-minimized=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzZXNzaW9uX2lkIjoiYXV0aHNlc3NfUWVLM2RQeU5kZnExZU5MV1N3anpTVDFzIiwiYXV0aF9zZXNzaW9uX2xvZ2dpbmdfaWQiOiJkZTBkZDIzNy1lZThjLTQ
+    C auth-session-minimized-client-checksum={"affinity":"eyJyYyI6IDEyLCAiY3MiOiAiZDI2NTdhZGVmYSIsICJ3cyI6IDEsICJ3dCI6IDE3ODQ5MTI1MDh9"}
+    C oaicom-stable-id=7158c4c5-8de5-41d4-927b-b74d8ca4d177
+    C __cf_bm=1nYZ6e4qex1uXcoNY8AorSl3sBlS5xL_IM7pIB8DHzA-1784912489.3850656-1.0.1.1-jYbgr701XO6fBajsZ1xAd.j0tzoQyksffPRSNChz_oV5lmODrTngXMj6D5GZNuG12VncQnerlmjBNTbcOYUMq5zBo
+    C __cflb=0H28w2ZepuU3KZxNdeDUWL71Qn2r7M27CwnUndbP5HF
+    C _cfuvid=yfA5Wh_IrZgiHBGgyJlYAbvjIVQWWiGWok4hisFVPLA-1784912486.2854533-1.0.1.1-52GhPEVOkoDwBf.eyj3xpTww.x0MRuYFPGaBiJPAZXc
+    C _dd_s=aid=bf2eaf48-c661-46e3-b893-4470365afb5e&rum=2&id=a652d794-a5ee-4eef-89a1-24cf60984a8a&created=1784912486991&expire=1784913414122
+    C cf_clearance=5BDn2mwnR3xtresk9LFU2fWUlOeK5zQMM8Y22sIMrIA-1784912489-1.2.1.1-9l.Ub6ZYHXXknGQZoiHz1Nqez4SW4_5sBpcDypZMUktsPUV8yZcKewKuP735NJsHt.clWWE5XNiub.BW5Nbp8ibuiunbZyCoP
+    C oai-sc=0gAAAAABqY5p9TP9el308y7ZwYwhqMGFTUCJbhy9hUiFtsc_Tp3Q5vbRYBfla6bQEWfSu_wJIXh2F9a2ivuUPV0DzfZ27xTQRfHeOBUvll-RfzCi9_97Om1sBdnMmH9F53jJu90unepW1WyNp3vfowaQ_4xribBP
+  host: auth.openai.com
+  openai-sentinel-so-token: {"so":"QxMZABYGGhACE2pVcVJsRQUMDB4aBxccCgAMCBpybw8FEwIQDwcABg4TFBB7cBMPGh0MCgAfFgcaCwxxeQwTEBQTFgUWBhwQAhNtcwUMDB4aBx0cAQcMCBpybw8FEwIQCwkABgkTFBB7cBMPGh0MBwEfGAEaCwxxeQwTEBQTGwIWCRYQAhNtY2FmbFV9cGZzW3hsWmFzb2MFDAweGgAfHA4HDAgacn9rb3NJd3l5b1Fyc3wKfXVJDwUTAhALBgAGDRMUEHtwEw8aHQwHCR8aARoLDHF5DBMQFBMcABYHFhACE2pzBQwMHhoFGhwJCQwIGnVJYwUTAhALHxwGGgsMcV8MExAUExgAFgYcEAITbXMFDAweGgAeHAEIDAgacm8PBRMCEAofHgoaCwxxeQwTEEU=","c":"gAAAAABqY5p97rIsLiOccsrVXTZMDtqZ2ixWZ31eK0Y1ADShA49Otz7HK8-e0JKUQ3sHJ10J6Y5g_v
+  openai-sentinel-token: {"p":"gAAAAABWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo1NCBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhcmQgVGltZSkiLG51bGwsNTEsIk1vemlsbGEvNS4wIChNYWNpbnRvc2g7IEludGVsIE1hYyBPUyBYIDEwLjE1OyBydjoxMzUuMCkgR2Vja28vMjAxMDAxMDEgRmlyZWZveC8xMzUuMCIsImh0dHBzOi8vc2VudGluZWwub3BlbmFpLmNvbS9iYWNrZW5kLWFwaS9zZW50aW5lbC9zZGsuanMiLG51bGwsImVuLVVTIiwiZW4tVVMsZW4iLDUsInBsdWdpbnPiiJJbb2JqZWN0IFBsdWdpbkFycmF5XSIsImxvY2F0aW9uIiwibWF0Y2hNZWRpYSIsMzAwNTQsIjRiNGU3OWYyLWI2YWMtNDUyYi04YzhkLWYyMjk2NzI0MTY1MiIsIiIsMTIsMTc4NDkxMjQ4NDEyMCw
+  origin: https://auth.openai.com
+  referer: https://auth.openai.com/about-you
+  sec-fetch-dest: empty
+  sec-fetch-mode: cors
+  sec-fetch-site: same-origin
+  traceparent: 00-00000000000000003a53763baf179afd-73e9c048bebca8bf-01
+  tracestate: dd=s:1;o:rum
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  x-access-flow-invocation-id: 70a00160-de04-4af0-9d29-f3f69d157c10
+  x-datadog-origin: rum
+  x-datadog-parent-id: 8352418402605508799
+  x-datadog-sampling-priority: 1
+  x-datadog-trace-id: 4202832875979512573
+  BODY(52): {"name":"Joseph Hernandez","birthdate":"1991-07-25"}
+  RESP(1480): {"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=ac_qupZYGJyigbPtH_bvQ1b9Mt-1AkF5AjKLz8L3pM7TN4.j0rflajHyahFPv4RaVJ-6seJnUk9buzsNo3dowxsFTY&scope=openid+email+profile+offline_access+model.request+model.read+organization.read+organization.write&state=pR9iz9GSXkSegx8yO9KqNIjTC2DLcqAJzlXAwkurY5A","method":"GET","page":{"type":"external_url","backstack_behavior":"default","payload":{"url":"https://chatgpt.com/api/auth/callback/openai?code=ac_qupZYGJyigbPtH_bvQ1b9Mt-1AkF5AjKLz8L3pM7TN4.j0rflajHyahFPv4RaVJ-6seJnUk9buzsNo3dowxsFTY&scope=openid+email+profile+offline_access+model.request+model.read+organization.read+organization.write&state=pR9iz9GSXkSegx8yO9KqNIjTC2DLcqAJzlXAwkurY5A"}},"oai-client-auth-session":{"app_name_enum":"chat","auth_session_logging_id":"de0dd237-ee8c-4897-b111-2c63e6eec5d0","country_code_hint":"JP","destination_app_name":"ChatGPT Web","email":"ArlanBrando080676@hotmail.com","email_verification_mode":"passwordless_signup","email_verified":true,"openai_
+  Set-Cookie: auth_provider=; path=/; Domain=auth.openai.com; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; samesite=lax; secure; httponly
+  Set-Cookie: login_session=; path=/; Domain=auth.openai.com; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; samesite=lax; secure; httponly
+  Set-Cookie: hydra_redirect=eyJvYWktbG9naW4tY3NyZl9kZXZfMzc3MjI5MTQ0NSI6Ik1UYzRORGt4TWpRNE5ueFhOME5pU1VoWGEySlNkVE5JWDJ4VlEzSXhaR05wYlRod1kzQklUV2xSY2tOSGNXNXZVVVZLUm1SbllUWnROMWc1ZWxwNlZ6VjVSa05uWWxsRmVXcFpNV2h5ZFMxaFUxbHhialJ3VFRObGJGSlRZamszVVMxaWNFNWxYMGxXU0RsNGJuVlBXVlZZWTFsS2RXUlhZMlZFUTJKRVRUWlZSbmc0UTNGV
+  Set-Cookie: oai-client-auth-session=eyJhcHBfbmFtZV9lbnVtIjoiY2hhdCIsImF1dGhfc2Vzc2lvbl9sb2dnaW5nX2lkIjoiZGUwZGQyMzctZWU4Yy00ODk3LWIxMTEtMmM2M2U2ZWVjNWQwIiwiY291bnRyeV9jb2RlX2hpbnQiOiJKUCIsImRlc3RpbmF0aW9uX2FwcF9uYW1lIjoiQ2hhdEdQVCBXZWIiLCJlbWFpbCI6IkFybGFuQnJhbmRvMDgwNjc2QGhvdG1haWwuY29tIiwiZW1haWxfdmVyaWZpY2F0
+  Set-Cookie: usc_YiMkmx26sBrHAXMku5CfOajC=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0eXBlIjoidXMiLCJwcm90b2NvbF92ZXJzaW9uIjoiMSIsImNvb2tpZV9pZCI6IllpTWtteDI2c0JySEFYTWt1NUNmT2FqQyIsImVuY3J5cHRlZF9hdXRoZW50aWNhdGVkX2RhdGEiOiJ1c19wNm9obzlxbDlNaWNqeEo2TGp3Tk0yY0EiLCJjbGllbnRfc2VjcmV0IjoidGRRc2ZOaUJTdGZxanRqU1c1UWdsZX
+  Set-Cookie: unified_session_manifest=eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lcyI6WyJ1c2NfWWlNa214MjZzQnJIQVhNa3U1Q2ZPYWpDIl19.bYqlqO77RAeXH_a7SRz8MjmNifl5RqiueM5r4Ms9T1JSKQbgUUSec89ZmudhM3Ea4G43tOOODF-jBKo-Mckg3A; path=/; Domain=auth.openai.com; Max-Age=34560000; samesite=lax; httponly; secure
+  Set-Cookie: unified_session_manifest=; path=/; Domain=openai.com; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; samesite=lax; httponly; secure
+  Set-Cookie: usc_YiMkmx26sBrHAXMku5CfOajC=; path=/; Domain=openai.com; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; samesite=lax; httponly; secure
+  Set-Cookie: auth-session-minimized=; path=/; Domain=auth.openai.com; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; samesite=lax; secure; httponly
+  Set-Cookie: auth-session-minimized-client-checksum=; path=/; Domain=auth.openai.com; expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; samesite=lax; secure
+  Set-Cookie: __cf_bm=J6IPoCdCNHNYE9e_IcET7XIDmb1g_Hn19AToyfAOs20-1784912516.2233424-1.0.1.1-V9zln7.iNEh2HGantyWtw7DiJXX6J0RRxPkCEO6e9CG3Q8428yXtN9iC7x.yakqZyK.LLsGRE3AF69bcddD8k5lfxuPvkxa4CP09WaK4HVNzVmamkVoarN9m0wXZN_lF; HttpOnly; SameSite=None; Secure; Path=/; Domain=auth.openai.com; Expires=Fri, 24 Jul 2026 1
+
+========================================================================================
+[219] GET 302 https://chatgpt.com/api/auth/callback/openai?code=ac_qupZYGJyigbPtH_bvQ1b9Mt-1AkF5AjKLz8L3pM7TN4.j0rflajHyahFPv4RaVJ-6seJnUk9buzsNo3dowxsFTY&scope=openid+email+profile+offline_access+model.request+model.read+organization.read+organization.w
+  accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  cookie_names=['oai-did', 'oai-did', '__cf_bm', '__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', '__cflb', 'oai-mweb-route-desktop', '_cfuvid', '__Secure-next-auth.state', 'oai-sc', 'g_state', 'oai-asli']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C __cf_bm=yTXSQ0sZBXnS26PIu.vPIV5i28ejcss2t7m9BfqYQmY-1784912478.1489687-1.0.1.1-3A0EHrfFy_G8rTZt_RhhV26AEnkey_LXPl7PGcttlKlhnPrBZcYiqkqB3mSxkOZhXiBwrcdFu0qb04WHiDhFG_Q8_
+    C __Host-next-auth.csrf-token=3f35e23e9e8b1537061106fbae3404178b922a6060b34cc5064186fc312ecb3d%7C67fba309b50260565335911ba2d5dc12d8e8091b1148d9c6de2474a474812cb9
+    C __Secure-next-auth.callback-url=https%3A%2F%2Fchatgpt.com%2F
+    C __cflb=04dTofELUVCxHqRn2Xc6EDe5FdXAfnXrUNngzEzTkX
+    C oai-mweb-route-desktop=0
+    C _cfuvid=gBwMEOCGxbvNtBK_xxLvC2fRh2Mgo8oFXCFnJUj9ji8-1784912467.8202171-1.0.1.1-xOmW2FhgwDf3uZylCL88_716RikUAaHA8n6Q85WljSs
+    C __Secure-next-auth.state=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..uSHZrfYmKwyQlNki.fN-02UJQhAO4uIJB7SmVsk6d1G6aeVhp9vMxYMb83KVlKxfGua5u485FnGTdimcKyshtrQIk8IuWavU3whhYAOIAemN0TQ-KGIlQi2
+    C oai-sc=0gAAAAABqY5pf_s9MtOkrj15D6HMJrGDMJG-vDlhe3DOJbBXs_I4UaZpJgKid2bLnr9LdpGTthzjhiHY2cV40V8y0UxXrhEBgVmAXVxBSQ3inSblNNr4oEPYmdhCCnsO_YegiIeOe4MnNDtE15gPKLFCl6q3Luur
+    C g_state={"i_l":1,"i_ll":1784912476109,"i_b":"+ZDInqMjUqXtd+nCadAVeprERdVBCYy2+mHiJKwbFHU","i_e":{"enable_itp_optimization":24},"i_et":1784912476109}
+    C oai-asli=56018b74-7ae5-439e-b1b3-ef18ded122e5
+  host: chatgpt.com
+  referer: https://auth.openai.com/
+  sec-fetch-dest: document
+  sec-fetch-mode: navigate
+  sec-fetch-site: cross-site
+  sec-fetch-user: ?1
+  upgrade-insecure-requests: 1
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  Set-Cookie: oai-logout-debug-context=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT
+  Set-Cookie: oai-hlib=true; Max-Age=31104000; Path=/; SameSite=Lax
+  Set-Cookie: __Secure-oai-is=ois1.eyJ2IjoxLCJhbGciOiJBMjU2R0NNIiwia2lkIjoiY2hhdGdwdC13ZWItdjEifQ.NArVnX_z-yv9aFKD.WlvSU1NkovtJ3cdxGkE-mnXRtZKIfV6F8dYulGJlAZEkWb-a9kmZiI5WVyjxbiYLs_kfupcxQu_Oud_cZJiuRjrvLmy7ASdQeYViW0TyEKsRE-7MBl3V06ipGRyZGT8052OqnIRdGopf7YRyrKBou1Jhl2HuhXgCu_NgZgeZvbWOYZqm5URNBygLU9wLGmHryLiw3pa
+  Set-Cookie: _account=c49c6dde-68c9-4d7f-93c9-18a29f42d186; Max-Age=7776000; Path=/; SameSite=Lax
+  Set-Cookie: oai-login-page-load-pending=true; Path=/; SameSite=Lax
+  Set-Cookie: _account=personal; Max-Age=7776000; Path=/; SameSite=Lax
+  Set-Cookie: _account_is_fedramp=false; Max-Age=7776000; Path=/; SameSite=Lax
+  Set-Cookie: _account_residency_region=; Max-Age=-1; Path=/
+  Set-Cookie: _account_routing_override=; Max-Age=-1; Path=/
+  Set-Cookie: _account_is_fedramp=false; Max-Age=7776000; Path=/; SameSite=Lax
+  Set-Cookie: __Secure-next-auth.state=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax
+  Set-Cookie: __Secure-next-auth.session-token=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..fSdoCjXxG2qgpnHp.iG1zZEPjtUjRf3g8Cz_VSBXRhrMq1sHhFJZsqYw8WkmGuTCjGAcmDRLPLPDacqW6J9SQih1nULetBndfUTf7Gw-YJ6xHJC1zqYr-kVQdrzxw_uK7t1Z6ysUDomvJ9jWAmL7tAiqocSK3E2ENr0NJN8JtwQXTS3JqE2WHNqSOmFUzFDUeMQvMbbn3CaerT5YDUL3XdM3NoycAfGiat
+
+========================================================================================
+[220] POST 200 https://sentinel.openai.com/backend-api/sentinel/req
+  accept: */*
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  content-length: 675
+  content-type: text/plain;charset=UTF-8
+  cookie_names=['oai-did', 'oaicom-stable-id', '__cflb', '__cf_bm', 'oai-sc']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oaicom-stable-id=7158c4c5-8de5-41d4-927b-b74d8ca4d177
+    C __cflb=0H28vzvP5FJafnkHxisyrUFUAuuJgZWNPsceqVKYPJs
+    C __cf_bm=E3PEWuO4qdLOWNLewvVhA5.q2RASjtEm7rLxlCxl1LQ-1784912489.059512-1.0.1.1-DY6GQVYsLLqnANwDSeXwEaXQwTa0ziF0b9nzAMbN20NRrKird7dtT3yJJlS1l9UHYJcxOgXr0_1g4eDzHl3NpkDmPb
+    C oai-sc=0gAAAAABqY5p9TP9el308y7ZwYwhqMGFTUCJbhy9hUiFtsc_Tp3Q5vbRYBfla6bQEWfSu_wJIXh2F9a2ivuUPV0DzfZ27xTQRfHeOBUvll-RfzCi9_97Om1sBdnMmH9F53jJu90unepW1WyNp3vfowaQ_4xribBP
+  host: sentinel.openai.com
+  origin: https://sentinel.openai.com
+  referer: https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6
+  sec-fetch-dest: empty
+  sec-fetch-mode: cors
+  sec-fetch-site: same-origin
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  BODY(675): {"p":"gAAAAACWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo0NyBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhcmQgVGltZSkiLG51bGwsMiwiTW96aWxsYS81LjAgKE1hY2ludG9zaDsgSW50ZWwgTWFjIE9TIFggMTAuMTU7IHJ2OjEzNS4wKSBHZWNrby8yMDEwMDEwMSBGaXJlZm94LzEzNS4wIiwiaHR0cHM6Ly9zZW50aW5lbC5vcGVuYWkuY29tL3NlbnRpbmVsLzIwMjYwMjE5ZjlmNi9zZGsuanMiLG51bGwsImVuLVVTIiwiZW4tVVMsZW4iLDU4LCJtb3pHZXRVc2VyTWVkaWHiiJJmdW5jdGlvbiBtb3pHZXRVc2VyTWVkaWEoKSB7XG4gICAgW25hdGl2ZSBjb2RlXVxufSIsIl9yZWFjdExpc3RlbmluZzdlbnNtYTh3a3I4Iiwib25kcmFnc3RhcnQiLDIzMTI1LCI0YjRlNzlmMi1iNmFjLTQ1MmItOGM4ZC1mMjI5NjcyNDE2NTIiLCIiLDEyLDE3ODQ5MTI0ODQxMjAsMCwwLDAsMCwwLDEsMV0=~S","id":"15a3b48e-c795-4c96-a999-ab526a97901d","flow":"oauth_create_account"}
+  RESP(60291): {"persona":"chatgpt-noauth","token":"gAAAAABqY5qJ-Fr6rzxFB177EFWMR9qaNd8QWdfOUHA_O0UqsPTuUa0LuMWYRK38HQ5H-fqdn68bbAkTja2jXsp6R3z0ihrqdKR9ZAktg_Wq9RRDk85qofkXC4RPvk--L0ingMYW2evkew9yTcXDCaCWCUCNEl9v4hWyYUoqhDAP5DCJZKr91kmK4LLRThAQ_eTmvDXZ_Lb44vnjuQhkoW7Qkj5KT69vhGbWLiSXT9tDE6SazGzweA2t9kGchK41V0bcQw-QczVdtBCFmBMwYwukbtMNSHUjVbByCQ6tDtULfZpY77jCV7yLT0atC56aie3aCJj1Y6BORVUGauVf27IdmUzxAb-YAShsL9qvTo2KAI4YbBghE9gBzgPC5oTFPKIvFw_rU2GKySF2Dyb8YkVohXCu5E1BIIzW_XVb7mrvvjMdOlxmgONvL2o_b7dzBk8FL5NKPS6Z1E-ccG1kCNZYofy3FT4Lek1W7j4k3jfPTvFCf-4Ix7L-Zipm47sgrV9P_Svbb-nGi7yZ1-Hj9X8Y7S0DuWI2NrbijT6loOyroyGVtcYtD3PCtvyNzcmxMU9WmAQYKp7uVdF4avBOS_jcnLTlKKNSsjlLxKraSECe4qr6ANHtYYSHJdcNth3TcD4VrI14aWCxBevHL7VnIozEKaDYN8R77rdzjdEviac0Slr56-Y2Mc0VDP3aIiQYRiuwqd5hCPYJyg-wWqfFgahdDHtBvlmfLxIak6kjLOq7We5XRSRZn3hdEvm8haUk9LjGSdLYQM4Ox-wDXogA5ENMEAcdJbJ4CeoXBJo3WL4KAvR0I0PtE4i-6QG1RIbG1IAGKpTQxG2_yF5zQxa-3IXf3_NtWWmhUW4FadPAVF69_c8Bwv3L7dYGfV-NTX-wNecv_Lhi9IcifeJj3w3AkTKLEDy2CPFBL5rOkGF7XYZxjUQMs0R1EnY6J1MIMF4HBRG
+  Set-Cookie: oai-sc=0gAAAAABqY5qJjjtHrNl-wveS0ERbCUHreV2u15hyWKP5GpIPDdGqnq0JpOE5TKOKoERAqCoNNr42yyjozpLaRUrBsqexuRJI08VzHR-7iqAFPY6ZZLzjiGKNA_ieDZvC-XYuNP_sBgSZj5d946MfJKyrEk9xoU6mA2tmzv7iLOTY8ZLYW9-yPuQ1HEz5yruR9PrLDgGm_UAUSXUxVfCFp-lu7EgEdoT8gvlECdZYnJX-SQrDP9KkQXz4K8-uwnXWi8VxC7EkOlpU; Domain=.openai.com; Ma
+  Set-Cookie: __cf_bm=ycz3U3FqPh7rz.NXgQ.R3fhrMiPrsIb9TVvT3ea9dEg-1784912521.244861-1.0.1.1-lM9ZMxc5gmtuJz0jXCjLyUaErLwcf.JEGnPj9Hw3WPJQfdmER1XlPs4QbdO3kTwmI6YNgS8TYz3RxoQ7KuluZRfXeYbdwa6mnXqpcwfnGBkgjjXu4bYmG0PWWTrAPbW9; HttpOnly; SameSite=None; Secure; Path=/; Domain=chatgpt.com; Expires=Fri, 24 Jul 2026 17:32:
+
+========================================================================================
+[409] GET 200 https://chatgpt.com/api/auth/session
+  accept: application/json
+  accept-encoding: gzip, deflate, br, zstd
+  accept-language: en-US,en;q=0.5
+  connection: keep-alive
+  cookie_names=['oai-did', 'oai-did', '__cf_bm', '__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', '__cflb', 'oai-mweb-route-desktop', '_cfuvid', '_dd_s', 'oai-sc', 'g_state', 'oai-hlib', '__Secure-oai-is', '_account', '_account_is_fedramp', '__Secure-next-auth.session-token']
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C oai-did=15a3b48e-c795-4c96-a999-ab526a97901d
+    C __cf_bm=yTXSQ0sZBXnS26PIu.vPIV5i28ejcss2t7m9BfqYQmY-1784912478.1489687-1.0.1.1-3A0EHrfFy_G8rTZt_RhhV26AEnkey_LXPl7PGcttlKlhnPrBZcYiqkqB3mSxkOZhXiBwrcdFu0qb04WHiDhFG_Q8_
+    C __Host-next-auth.csrf-token=3f35e23e9e8b1537061106fbae3404178b922a6060b34cc5064186fc312ecb3d%7C67fba309b50260565335911ba2d5dc12d8e8091b1148d9c6de2474a474812cb9
+    C __Secure-next-auth.callback-url=https%3A%2F%2Fchatgpt.com%2F
+    C __cflb=04dTofELUVCxHqRn2Xc6EDe5FdXAfnXrUNngzEzTkX
+    C oai-mweb-route-desktop=0
+    C _cfuvid=gBwMEOCGxbvNtBK_xxLvC2fRh2Mgo8oFXCFnJUj9ji8-1784912467.8202171-1.0.1.1-xOmW2FhgwDf3uZylCL88_716RikUAaHA8n6Q85WljSs
+    C _dd_s=aid=c810e5de-0290-4451-b469-291e598e20ff&rum=0&expire=1784913423488&logs=1&id=776a2a0f-a7e5-4de3-a70f-8a9b1555851b&created=1784912474311
+    C oai-sc=0gAAAAABqY5qPxSRqXz-rB-JbZYVKD9cb_NVRKSgIh5hoOBieNNhPLH-vzNxQb2dyl-SUJ3KEF-FsdsgHv1Cze1CMe2YjBFd4Td9_INa2VXOBmjxO9hxApUsNlPhatJHEyPgIWA92wToEEHTwDlXci3-W_RmGcZO
+    C g_state={"i_l":1,"i_ll":1784912476109,"i_b":"+ZDInqMjUqXtd+nCadAVeprERdVBCYy2+mHiJKwbFHU","i_e":{"enable_itp_optimization":24},"i_et":1784912476109}
+    C oai-hlib=true
+    C __Secure-oai-is=ois1.eyJ2IjoxLCJhbGciOiJBMjU2R0NNIiwia2lkIjoiY2hhdGdwdC13ZWItdjEifQ.8xe412cQPE52Pvp8.gkY0kSj0jblZF4G3EoVUvSl8FbjfuqGNtz6VNHl-1TxuWdM0ALFNxq0W42RzOYItmEAQCiRuy6f
+    C _account=personal
+    C _account_is_fedramp=false
+    C __Secure-next-auth.session-token=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..yKfex_RwkXPhjVZ3.1_8Z55WO8_CQ4HExRo2N-n5EZwnoV3Gukz5JefyKyv2g_BUL99RRRlfqmtZF8GqWK9UY1Uvk73-VaShHBbKFTop92-Xa5Ric28n0TR
+  host: chatgpt.com
+  referer: https://chatgpt.com/
+  sec-fetch-dest: empty
+  sec-fetch-mode: cors
+  sec-fetch-site: same-origin
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  RESP(6448): {"WARNING_BANNER":"!!!!!!!!!!!!!!!!!!!! DO NOT SHARE ANY PART OF THE INFORMATION YOU SEE HERE. THIS INFORMATION IS SENSITIVE AND CAN GRANT ACCESS TO YOUR ACCOUNT. SHARING THIS INFORMATION IS LIKE SHARING YOUR PASSWORD. !!!!!!!!!!!!!!!!!!!!","user":{"id":"user-AjViNQIirfq6lQFdAC5xEU9J","name":"Joseph Hernandez","email":"ArlanBrando080676@hotmail.com","idp":"auth0","iat":1784912521,"amr":["otp","urn:openai:amr:otp_email"],"mfa":false},"expires":"2026-10-22T17:02:09.139Z","account":{"id":"c49c6dde-68c9-4d7f-93c9-18a29f42d186","planType":"free","structure":"personal","isUsageBasedSeatEnabled":false,"isConversationClassifierEnabledForWorkspace":true,"hasFloraFeature":false,"isFedrampCompliantWorkspace":false,"isDelinquent":false,"residencyRegion":"no_constraint","computeResidency":"no_constraint"},"accessToken":"eyJhbGciOiJSUzI1NiIsImtpZCI6IldjNzdXREtWTkN2N1ZYSGxqZUhzZjZZUjFhM3I3MmxYMnhJdG9zaVF4NHciLCJ0eXAiOiJKV1QifQ.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfWD
+  Set-Cookie: __Secure-next-auth.session-token=eyJhbGciOiJkaXIiLCJlbmMiOiJBMjU2R0NNIn0..Lbpo7QPejjZIs40r.ap5qInnxnnFHhaPiV7mIEgKymsqT29WJN_IlLyGaUWMX_Qi7pjjB_CmxKS81IQU75_gjBhhi9BQZXOGJRs7tfwW-s0iPYUjfDdjQ7lZtXGDAHGH_VDr4jV_yAOznlKiytZvJSBFUjnEA8X7NIw8g_2n_ioJck9L_c9cC2CA_HTmWcKfTWEK3mQasqE0ybAPnPBJYHtieJZS6any-q
+
+== sentinel token structure on create_account ==
+
+openai-sentinel-token len=4069
+  keys=['p', 't', 'c', 'id', 'flow']
+  p: str len=517 head=gAAAAABWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo1NCBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhcmQgVGltZSkiLG51bGwsNTEsIk1vemlsbGEvNS4wI
+  t: str len=1332 head=TRscARwCAQwNEHRRTWAQGhsYDxwPDQwNEHROXQoQGhsdBxwAAAwNEGJrWmB0Z15pcWNOdmt2RXtxf3ZRcl4eb3ZRbGpzcG96bUBneX5WRGNnb2x8YwdWe3ZK
+  c: str len=2124 head=gAAAAABqY5p97rIsLiOccsrVXTZMDtqZ2ixWZ31eK0Y1ADShA49Otz7HK8-e0JKUQ3sHJ10J6Y5g_vRCOC5RzEnjUNc7duDBnn9nbnVJ7aM-Aa8TOiRDWiKO
+  id: str len=36 head=15a3b48e-c795-4c96-a999-ab526a97901d
+  flow: str len=20 head=oauth_create_account
+
+openai-sentinel-so-token len=2622
+  keys=['so', 'c', 'id', 'flow']
+  so: str len=408 head=QxMZABYGGhACE2pVcVJsRQUMDB4aBxccCgAMCBpybw8FEwIQDwcABg4TFBB7cBMPGh0MCgAfFgcaCwxxeQwTEBQTFgUWBhwQAhNtcwUMDB4aBx0cAQcMCBpy
+  c: str len=2124 head=gAAAAABqY5p97rIsLiOccsrVXTZMDtqZ2ixWZ31eK0Y1ADShA49Otz7HK8-e0JKUQ3sHJ10J6Y5g_vRCOC5RzEnjUNc7duDBnn9nbnVJ7aM-Aa8TOiRDWiKO
+  id: str len=36 head=15a3b48e-c795-4c96-a999-ab526a97901d
+  flow: str len=20 head=oauth_create_account
+
+== urls containing authorize/continue/register/password ==
+[209] POST 200 https://auth.openai.com/api/accounts/email-otp/validate

@@ -345,3 +345,5 @@ def test_protocol_mailbox_mapper_preserves_protocol_metadata():
 
     assert mapped.extra["expires_at"] == "2026-05-20T00:00:00Z"
 
+    assert mapped.extra["account_overview"]["registration_mode_label"] == "协议模式"
+

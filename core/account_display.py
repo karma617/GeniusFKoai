@@ -196,6 +196,35 @@ def _build_generic_usage_metrics(overview: dict[str, Any]) -> tuple[list[dict[st
     return primary, secondary, sections
 
 
+def _registration_mode_label(overview: dict[str, Any]) -> str:
+    legacy_extra = _safe_dict(overview.get("legacy_extra"))
+    label = _text(overview.get("registration_mode_label") or legacy_extra.get("registration_mode_label"))
+    if label:
+        return label
+    mode = _text(overview.get("registration_mode") or legacy_extra.get("registration_mode")).lower()
+    if mode == "headless_browser":
+        return "无头浏览器"
+    if mode == "headed_browser":
+        return "有头浏览器"
+    if mode == "protocol":
+        return "协议模式"
+    executor = _text(overview.get("registration_executor_type") or legacy_extra.get("registration_executor_type")).lower()
+    if executor == "headless":
+        return "无头浏览器"
+    if executor == "headed":
+        return "有头浏览器"
+    if executor == "protocol":
+        return "协议模式"
+    return ""
+
+
+def _codex_usage_error_message(value: Any) -> str:
+    message = _text(value)
+    if "openai codex probe returned status 401" in message.lower():
+        return "Codex 探测返回 401：当前 ChatGPT 登录态可用，但 Codex 探测凭证未授权或已过期；不等同于账号失效。"
+    return message
+
+
 def build_account_display_summary(
     *,
     platform: str,
@@ -246,13 +275,16 @@ def build_account_display_summary(
     if overview.get("check_error"):
         warnings.append({"key": "check_error", "tone": "danger", "message": _text(overview.get("check_error"))})
     if overview.get("codex_usage_error"):
-        warnings.append({"key": "codex_usage_error", "tone": "warning", "message": _text(overview.get("codex_usage_error"))})
+        warnings.append({"key": "codex_usage_error", "tone": "warning", "message": _codex_usage_error_message(overview.get("codex_usage_error"))})
 
     badges = [
         {"label": _text(chip), "tone": "muted"}
         for chip in _safe_list(overview.get("chips"))
         if _text(chip)
     ]
+    registration_mode_label = _registration_mode_label(overview)
+    if registration_mode_label and not any(_text(badge.get("label")) == registration_mode_label for badge in badges):
+        badges.append({"label": registration_mode_label, "tone": "muted"})
     if bool(overview.get("bugfree")) and not any(_text(badge.get("label")).lower() == "bugfree" for badge in badges):
         badges.insert(0, {"label": "BUGFREE", "tone": "danger"})
     if bool(overview.get("chatgpt_free_plus_trial")) and not any(_text(badge.get("label")) == "试用" for badge in badges):

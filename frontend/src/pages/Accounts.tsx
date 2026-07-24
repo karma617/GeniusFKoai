@@ -4,11 +4,12 @@ import { useParams } from 'react-router-dom'
 import { getConfig, getConfigOptions, getPlatforms } from '@/lib/app-data'
 import type { ConfigOptionsResponse } from '@/lib/config-options'
 import { getCaptchaStrategyLabel } from '@/lib/config-options'
-import { apiDownload, apiFetch, triggerBrowserDownload, cn } from '@/lib/utils'
+import { apiDownload, apiFetch, triggerBrowserDownload, cn, API_BASE } from '@/lib/utils'
 import { formatDateTime, translateAccountStatus } from '@/lib/i18n'
 import { useI18n } from '@/lib/i18n-context'
 import { buildExecutorOptions, buildRegistrationOptions, hasReusableOAuthBrowser, pickOAuthExecutor } from '@/lib/registration'
 import { TaskLogPanel } from '@/components/tasks/TaskLogPanel'
+import { PpBaTokenDialog, PpPlusFloatingWidget, PpPlusSettingsDialog, PpTaskCell, PpTaskLogDialog, fetchPpPlusStatus, getAccountPpTask, type PpAccountTask, type PpPlusStatus } from '@/components/pp-plus/PpPlusPanels'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -80,7 +81,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'invalid',
   'banned',
 ]
-const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'BUGFREE', 'FREE', 'K12', 'PLUS']
+const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', '协议模式', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
 const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -184,6 +185,15 @@ function getValidityStatus(acc: any) {
   return getDisplaySummary(acc)?.status?.validity || acc?.validity_status || acc?.overview?.validity_status || 'unknown'
 }
 
+function getValidityStatusLabel(acc: any) {
+  const status = String(getValidityStatus(acc) || '').trim().toLowerCase()
+  if (status === 'valid') return '有效'
+  if (status === 'invalid') return '失效'
+  if (status === 'relogin_required') return '需重登'
+  if (status === 'unknown') return '未检测'
+  return status || '未检测'
+}
+
 function getCompactStatusMeta(acc: any) {
   const summary = getDisplaySummary(acc)
   const primaryMetrics = Array.isArray(summary?.primary_metrics) ? summary.primary_metrics : []
@@ -227,6 +237,22 @@ function getDisplayBadges(acc: any) {
   return normalizeAccountBadges(acc, Array.isArray(badges) ? badges : [])
 }
 
+function getRegistrationModeBadge(acc: any) {
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const label = String(overview?.registration_mode_label || legacyExtra?.registration_mode_label || '').trim()
+  if (label) return { label, tone: 'muted' }
+  const mode = String(overview?.registration_mode || legacyExtra?.registration_mode || '').trim().toLowerCase()
+  if (mode === 'headless_browser') return { label: '无头浏览器', tone: 'muted' }
+  if (mode === 'headed_browser') return { label: '有头浏览器', tone: 'muted' }
+  if (mode === 'protocol') return { label: '协议模式', tone: 'muted' }
+  const executor = String(overview?.registration_executor_type || legacyExtra?.registration_executor_type || '').trim().toLowerCase()
+  if (executor === 'headless') return { label: '无头浏览器', tone: 'muted' }
+  if (executor === 'headed') return { label: '有头浏览器', tone: 'muted' }
+  if (executor === 'protocol') return { label: '协议模式', tone: 'muted' }
+  return null
+}
+
 function isChatgptK12Account(acc: any) {
   if (String(acc?.platform || '').trim().toLowerCase() !== 'chatgpt') return false
   const overview = getAccountOverview(acc)
@@ -240,10 +266,14 @@ function isChatgptK12Account(acc: any) {
 }
 
 function normalizeAccountBadges(acc: any, badges: any[]) {
-  if (!isChatgptK12Account(acc)) return badges
+  const registrationModeBadge = getRegistrationModeBadge(acc)
+  const normalizedBadges = registrationModeBadge && !badges.some((badge: any) => String(badge?.label || '').trim() === registrationModeBadge.label)
+    ? [...badges, registrationModeBadge]
+    : badges
+  if (!isChatgptK12Account(acc)) return normalizedBadges
   let hasK12Badge = false
   let replacedFree = false
-  const next = badges.map((badge: any) => {
+  const next = normalizedBadges.map((badge: any) => {
     const label = String(badge?.label || '').trim()
     const lowerLabel = label.toLowerCase()
     if (lowerLabel === 'k12') {
@@ -335,6 +365,13 @@ function getAccountPlanLabel(acc: any) {
   return planState || '-'
 }
 
+function compactBaExtractStepDesc(desc: string) {
+  const text = String(desc || '').trim()
+  if (!text) return '-'
+  const withoutBody = text.replace(/\s+body=.*$/s, '').trim()
+  return withoutBody.length > 90 ? `${withoutBody.slice(0, 90)}...` : withoutBody
+}
+
 function getAccountPlanPillClassName(acc: any, planLabel: string) {
   const normalizedLabel = String(planLabel || '').trim().toLowerCase()
   const normalizedState = String(getPlanState(acc) || '').trim().toLowerCase()
@@ -381,12 +418,24 @@ function resolveTimeMs(value: any) {
 
 function getAccountExpiresAtMs(acc: any) {
   const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const expiresCredential = getCredentials(acc).find((item: any) =>
+    String(item?.key || '').trim().toLowerCase() === 'expires_at' && item?.value,
+  )
   const candidates = [
     acc?.trial_end_time,
     overview?.trial_end_time,
     overview?.trial_ends_at,
     overview?.expires_at,
     overview?.expiresAt,
+    acc?.expires_at,
+    overview?.session?.expires,
+    overview?.chatgpt_session?.expires,
+    legacyExtra?.expires_at,
+    legacyExtra?.expiresAt,
+    legacyExtra?.session?.expires,
+    legacyExtra?.chatgpt_session?.expires,
+    expiresCredential?.value,
     overview?.subscription_expires_at,
     overview?.reset_at,
   ]
@@ -423,19 +472,97 @@ function getAccountCreatedAtLabel(acc: any, language: string) {
   })
 }
 
-function getInlinePaymentLinkParams() {
-  return {
-    country: 'ID',
-    currency: 'IDR',
-    plan: 'plus',
-    auto_checkout: 'false',
-    use_stripe_init: 'true',
-    use_short_link: 'false',
-    payment_method: 'paypal',
-    headless: 'false',
-    checkout_mode: 'protocol',
+const BA_EXTRACT_SETTINGS_KEY = 'accounts.chatgpt.baExtractSettings'
+const BA_EXTRACT_COUNTRY_CURRENCY: Record<string, string> = {
+  US: 'USD',
+  TR: 'TRY',
+  VN: 'VND',
+  BR: 'USD',
+  JP: 'JPY',
+  ID: 'IDR',
+  SG: 'SGD',
+  HK: 'HKD',
+  GB: 'GBP',
+  AU: 'AUD',
+  CA: 'CAD',
+  IN: 'INR',
+  MX: 'MXN',
+  DE: 'EUR',
+  NL: 'EUR',
+  IE: 'EUR',
+  FR: 'EUR',
+  BE: 'EUR',
+}
+
+function baExtractCurrencyForCountry(country: string): string {
+  const code = String(country || 'US').trim().toUpperCase()
+  return BA_EXTRACT_COUNTRY_CURRENCY[code] || 'USD'
+}
+
+function loadBaExtractSettings(): Record<string, string> {
+  const defaults = {
+    billing_proxy: '',
+    promo_proxy: '',
+    billing_country: 'US',
+    promo_country: 'TR',
+    billing_currency: 'USD',
+    confirm_mode: 'pm',
+    max_attempts: '20',
+  }
+  if (typeof window === 'undefined') return defaults
+  try {
+    const raw = window.localStorage.getItem(BA_EXTRACT_SETTINGS_KEY)
+    if (!raw) return defaults
+    const parsed = JSON.parse(raw)
+    return { ...defaults, ...(parsed && typeof parsed === 'object' ? parsed : {}) }
+  } catch {
+    return defaults
   }
 }
+
+function saveBaExtractSettings(settings: Record<string, string>) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(BA_EXTRACT_SETTINGS_KEY, JSON.stringify(settings || {}))
+  } catch {
+    // ignore
+  }
+}
+
+
+function splitProxyPoolLines(raw: string): string[] {
+  return String(raw || '')
+    .replace(/,/g, '\n')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+}
+
+function inferRegionFromProxyText(raw: string, fallback = ''): string {
+  const lines = splitProxyPoolLines(raw)
+  const sample = lines[0] || String(raw || '').trim()
+  if (!sample) return String(fallback || '').toUpperCase()
+  if (/^[A-Za-z]{2}$/.test(sample)) return sample.toUpperCase()
+  const patterns = [
+    /(?:region[-_]?|[-_]g[-_]?|[-_]country[-_]?|[-_]cc[-_]?)([A-Za-z]{2})(?:[^A-Za-z]|$)/i,
+    /(?:^|[-_])([A-Za-z]{2})[-_]\d{3,}/i,
+    /[-_]([A-Za-z]{2})(?:[-_@]|$)/i,
+  ]
+  for (const re of patterns) {
+    const m = sample.match(re)
+    if (m?.[1]) return m[1].toUpperCase()
+  }
+  return String(fallback || '').toUpperCase()
+}
+
+function getAuthTokenForStream(): string {
+  try {
+    return localStorage.getItem('_auth_token') || ''
+  } catch {
+    return ''
+  }
+}
+
 
 function isEmptyPayload(value: any) {
   return value == null || value === '' || (Array.isArray(value) && value.length === 0) || (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)
@@ -640,6 +767,7 @@ function RegisterModal({
 
   const supportedExecutors: string[] = platformMeta?.supported_executors || []
   const registrationOptions = buildRegistrationOptions(platformMeta, language)
+    .filter(option => !(option.identityProvider === 'oauth_browser' && ['google', 'microsoft'].includes(String(option.oauthProvider || '').toLowerCase())))
   const reusableBrowser = hasReusableOAuthBrowser(config || {})
   const executorOptions = buildExecutorOptions(
     selection.identityProvider,
@@ -2472,7 +2600,7 @@ function DetailModal({ acc, onClose, onSave }: { acc: any; onClose: () => void; 
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 dark:border-slate-800 dark:bg-slate-900">
                   <div className="uppercase tracking-[0.12em]">有效性</div>
-                  <div className="mt-1 font-semibold text-slate-950 dark:text-slate-50">{getValidityStatus(acc)}</div>
+                  <div className="mt-1 font-semibold text-slate-950 dark:text-slate-50">{getValidityStatusLabel(acc)}</div>
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 dark:border-slate-800 dark:bg-slate-900">
                   <div className="uppercase tracking-[0.12em]">套餐状态</div>
@@ -2746,6 +2874,15 @@ export default function Accounts() {
   const [showImport, setShowImport] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
+  const [showPpPlusSettings, setShowPpPlusSettings] = useState(false)
+  const [ppPlusStatus, setPpPlusStatus] = useState<PpPlusStatus | null>(null)
+  const [ppBaAccount, setPpBaAccount] = useState<any | null>(null)
+  const [baExtractAccount, setBaExtractAccount] = useState<any | null>(null)
+  const [baExtractForm, setBaExtractForm] = useState<Record<string, string>>(() => loadBaExtractSettings())
+  const [baExtractRunning, setBaExtractRunning] = useState(false)
+  const [baExtractProgress, setBaExtractProgress] = useState<{ step: number; total: number; desc: string; status: string; logs: string[]; attempt: number; maxAttempts: number }>({ step: 0, total: 7, desc: '', status: 'idle', logs: [], attempt: 0, maxAttempts: 0 })
+  const baExtractAbortRef = useRef<AbortController | null>(null)
+  const [ppLogTask, setPpLogTask] = useState<PpAccountTask | null>(null)
   const [platformsMap, setPlatformsMap] = useState<Record<string, any>>({})
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
@@ -2832,24 +2969,24 @@ export default function Accounts() {
     return () => { active = false }
   }, [])
 
-  const pageSize = 10
+  const [pageSize, setPageSize] = useState(10)
 
   useEffect(() => {
     setSelectedIds(new Set())
     setPage(1)
-  }, [tab, filterStatus, filterTag, debouncedSearch])
+  }, [tab, filterStatus, filterTag, debouncedSearch, pageSize])
 
-  const load = useCallback(async (p = tab, s = debouncedSearch, fs = filterStatus, ft = filterTag, pg = page) => {
+  const load = useCallback(async (p = tab, s = debouncedSearch, fs = filterStatus, ft = filterTag, pg = page, ps = pageSize) => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({ platform: p, page: String(pg), page_size: String(pageSize) })
+      const params = new URLSearchParams({ platform: p, page: String(pg), page_size: String(ps) })
       if (s) params.set('email', s)
       if (fs) params.set('status', fs)
       if (ft) params.set('tag', ft)
       const data = await apiFetch(`/accounts?${params}`)
       setAccounts(data.items); setTotal(data.total)
     } finally { setLoading(false) }
-  }, [tab, debouncedSearch, filterStatus, filterTag, page])
+  }, [tab, debouncedSearch, filterStatus, filterTag, page, pageSize])
 
   const fetchPlanRefreshTargets = useCallback(async () => {
     const targets: any[] = []
@@ -2870,7 +3007,7 @@ export default function Accounts() {
     return targets
   }, [tab, debouncedSearch, filterStatus, filterTag])
 
-  useEffect(() => { load(tab, debouncedSearch, filterStatus, filterTag, page) }, [tab, debouncedSearch, filterStatus, filterTag, page, load])
+  useEffect(() => { load(tab, debouncedSearch, filterStatus, filterTag, page, pageSize) }, [tab, debouncedSearch, filterStatus, filterTag, page, pageSize, load])
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -2880,6 +3017,24 @@ export default function Accounts() {
   }, [accounts])
 
   
+  useEffect(() => {
+    let active = true
+    const tick = async () => {
+      try {
+        const status = await fetchPpPlusStatus()
+        if (active) setPpPlusStatus(status)
+      } catch {
+        // ignore status poll errors
+      }
+    }
+    tick()
+    const timer = window.setInterval(tick, 2000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [])
+
   const exportCsv = () => {
     const header = 'email,password,display_status,lifecycle_status,plan_state,validity_status,cashier_url,created_at'
     const rowsSource = selectedIds.size > 0 ? accounts.filter(a => selectedIds.has(a.id)) : accounts
@@ -2905,6 +3060,12 @@ export default function Accounts() {
     .filter(acc => getRtTaskMode === 'target' ? isGetRtTargetModeAccount(acc) : isRegisteredOnlyAccount(acc))
     .map(acc => Number(acc.id))
     .filter(id => Number.isFinite(id) && id > 0)
+  const ppLiveMap = (ppPlusStatus?.accounts && typeof ppPlusStatus.accounts === 'object') ? ppPlusStatus.accounts : {}
+  const resolvePpTask = (acc: any): PpAccountTask => {
+    const live = ppLiveMap[String(acc?.id)] || (ppPlusStatus?.current && Number(ppPlusStatus.current.account_id) === Number(acc?.id) ? ppPlusStatus.current : null)
+    return getAccountPpTask(acc, live)
+  }
+
   const getRtAnyModeEligibleIds = selectedAccounts
     .filter(isGetRtTargetModeAccount)
     .map(acc => Number(acc.id))
@@ -3175,11 +3336,12 @@ export default function Accounts() {
     setError('')
     setAgentsUploadBusy(true)
     try {
+      const ids = [...selectedIds].map(Number)
       const data = await apiFetch('/tasks/agents-upload-sub2api', {
         method: 'POST',
         body: JSON.stringify({
           platform: 'chatgpt',
-          ids: [],
+          ids,
           batch_size: 10,
           verify_task: true,
           timeout: 30,
@@ -3437,6 +3599,432 @@ export default function Accounts() {
       {detail && <DetailModal acc={detail} onClose={() => setDetail(null)} onSave={() => { setDetail(null); load() }} />}
       {showImport && <ImportModal platform={tab} onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); load() }} />}
       {showAdd && <AddModal platform={tab} onClose={() => setShowAdd(false)} onDone={() => { setShowAdd(false); load() }} />}
+      {showPpPlusSettings && (
+        <PpPlusSettingsDialog
+          open={showPpPlusSettings}
+          onClose={() => setShowPpPlusSettings(false)}
+          onStarted={(status) => {
+            setPpPlusStatus(status)
+            load()
+          }}
+        />
+      )}
+      {ppBaAccount && (
+        <PpBaTokenDialog
+          open={Boolean(ppBaAccount)}
+          account={ppBaAccount}
+          onClose={() => setPpBaAccount(null)}
+          onSaved={() => load()}
+        />
+      )}
+      {baExtractAccount && (
+        <div className="dialog-backdrop" onClick={() => { if (!baExtractRunning) setBaExtractAccount(null) }}>
+          <div
+            className="w-[min(760px,96vw)] max-h-[92vh] overflow-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-base)] p-5 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-[var(--text-primary)]">提取BA链</h2>
+                <p className="mt-1 truncate text-xs text-[var(--text-muted)]">{baExtractAccount.email}</p>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">
+                  账单/优惠代理池每行一个代理，格式与代理池一致（支持 host:port:user:pass / user:pass@host:port / URL / host:port##user##pass）。国家根据代理自动识别。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (baExtractRunning) {
+                    baExtractAbortRef.current?.abort()
+                    setBaExtractRunning(false)
+                  }
+                  setBaExtractAccount(null)
+                }}
+                className="rounded-lg p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-pane)] hover:text-[var(--text-primary)]"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="grid gap-3 lg:grid-cols-2">
+                <label className="space-y-1 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[var(--text-secondary)]">代理池 - 账单IP</span>
+                    <span className="text-[10px] text-[var(--text-muted)]">
+                      {splitProxyPoolLines(baExtractForm.billing_proxy || '').length} 条 · 地区 {inferRegionFromProxyText(baExtractForm.billing_proxy || '', baExtractForm.billing_country || 'US') || '-'}
+                    </span>
+                  </div>
+                  <textarea
+                    rows={7}
+                    className="w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 font-mono text-xs leading-5 text-[var(--text-primary)] outline-none transition focus:border-[var(--accent)]"
+                    value={baExtractForm.billing_proxy || ''}
+                    disabled={baExtractRunning}
+                    onChange={e => {
+                      const value = e.target.value
+                      const region = inferRegionFromProxyText(value, baExtractForm.billing_country || 'US')
+                      setBaExtractForm(current => ({
+                        ...current,
+                        billing_proxy: value,
+                        billing_country: region || current.billing_country || 'US',
+                        billing_currency: baExtractCurrencyForCountry(region || current.billing_country || 'US'),
+                      }))
+                    }}
+                    placeholder={"gate.kookeey.info:1000:user:pass-US-xxxx-5m\n每行一个代理，不带协议头默认 http://"}
+                  />
+                </label>
+                <label className="space-y-1 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[var(--text-secondary)]">代理池 - 优惠IP</span>
+                    <span className="text-[10px] text-[var(--text-muted)]">
+                      {splitProxyPoolLines(baExtractForm.promo_proxy || '').length} 条 · 地区 {inferRegionFromProxyText(baExtractForm.promo_proxy || '', baExtractForm.promo_country || 'TR') || '-'}
+                    </span>
+                  </div>
+                  <textarea
+                    rows={7}
+                    className="w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 font-mono text-xs leading-5 text-[var(--text-primary)] outline-none transition focus:border-[var(--accent)]"
+                    value={baExtractForm.promo_proxy || ''}
+                    disabled={baExtractRunning}
+                    onChange={e => {
+                      const value = e.target.value
+                      const region = inferRegionFromProxyText(value, baExtractForm.promo_country || 'TR')
+                      setBaExtractForm(current => ({
+                        ...current,
+                        promo_proxy: value,
+                        promo_country: region || current.promo_country || 'TR',
+                      }))
+                    }}
+                    placeholder={"gate.kookeey.info:1000:user:pass-TR-xxxx-5m\n每行一个代理，不带协议头默认 http://"}
+                  />
+                </label>
+              </div>
+
+              <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/40 p-3">
+                <div className="mb-2 text-[11px] font-medium tracking-wide text-[var(--text-secondary)]">识别结果 / 高级参数</div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className="space-y-1 text-xs">
+                    <span className="text-[var(--text-secondary)]">账单资料国家（自动）</span>
+                    <input
+                      className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
+                      value={baExtractForm.billing_country || ''}
+                      disabled={baExtractRunning}
+                      onChange={e => {
+                        const country = e.target.value.toUpperCase()
+                        setBaExtractForm(current => ({ ...current, billing_country: country, billing_currency: baExtractCurrencyForCountry(country) }))
+                      }}
+                    />
+                  </label>
+                  <label className="space-y-1 text-xs">
+                    <span className="text-[var(--text-secondary)]">优惠国家（自动）</span>
+                    <input
+                      className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
+                      value={baExtractForm.promo_country || ''}
+                      disabled={baExtractRunning}
+                      onChange={e => setBaExtractForm(current => ({ ...current, promo_country: e.target.value.toUpperCase() }))}
+                    />
+                  </label>
+                  <label className="space-y-1 text-xs">
+                    <span className="text-[var(--text-secondary)]">账单币种</span>
+                    <input
+                      className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
+                      value={baExtractForm.billing_currency || ''}
+                      disabled={baExtractRunning}
+                      onChange={e => setBaExtractForm(current => ({ ...current, billing_currency: e.target.value.toUpperCase() }))}
+                      placeholder="USD"
+                    />
+                  </label>
+                  <label className="space-y-1 text-xs">
+                    <span className="text-[var(--text-secondary)]">最大重试</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
+                      value={baExtractForm.max_attempts || '20'}
+                      disabled={baExtractRunning}
+                      onChange={e => setBaExtractForm(current => ({ ...current, max_attempts: e.target.value }))}
+                    />
+                  </label>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="space-y-1 text-xs">
+                    <span className="text-[var(--text-secondary)]">Confirm 模式</span>
+                    <select
+                      className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
+                      value={baExtractForm.confirm_mode || 'pm'}
+                      disabled={baExtractRunning}
+                      onChange={e => setBaExtractForm(current => ({ ...current, confirm_mode: e.target.value }))}
+                    >
+                      <option value="pm">pm（PaymentMethod）</option>
+                      <option value="direct">direct（直连 confirm）</option>
+                    </select>
+                  </label>
+                  <div className="rounded-lg border border-dashed border-[var(--border-soft)] bg-[var(--bg-base)]/40 px-3 py-2 text-[11px] leading-5 text-[var(--text-muted)]">
+                    代理池格式支持：host:port:user:pass、user:pass@host:port、http(s)/socks5 URL、host:port##user##pass。不带协议默认 http://。
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/30 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-medium tracking-wide text-[var(--text-secondary)]">
+                    进度{baExtractProgress.attempt > 0 ? ` · 第 ${baExtractProgress.attempt}/${baExtractProgress.maxAttempts || Number(baExtractForm.max_attempts || 20)} 轮` : ''}
+                  </div>
+                  <div className={`text-[11px] ${baExtractProgress.status === 'error' ? 'text-red-500' : baExtractProgress.status === 'success' ? 'text-emerald-500' : baExtractProgress.status === 'cancelled' ? 'text-amber-500' : baExtractRunning ? 'text-sky-500' : 'text-[var(--text-muted)]'}`}>
+                    {baExtractProgress.status === 'success' ? '提取成功' : baExtractProgress.status === 'error' ? '提取失败' : baExtractProgress.status === 'cancelled' ? '已停止' : baExtractRunning ? '任务进行中' : baExtractProgress.status === 'started' ? '任务已开始' : '等待开始'}
+                  </div>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--bg-input)]">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${baExtractProgress.status === 'error' ? 'bg-red-500' : baExtractProgress.status === 'success' ? 'bg-emerald-500' : baExtractProgress.status === 'cancelled' ? 'bg-amber-500' : 'bg-sky-500'}`}
+                    style={{ width: `${Math.max(0, Math.min(100, ((baExtractProgress.step || 0) / (baExtractProgress.total || 7)) * 100))}%` }}
+                  />
+                </div>
+                <div className="mt-2 max-h-20 overflow-y-auto break-all rounded-lg bg-[var(--bg-base)]/40 px-2 py-1 text-xs leading-5 text-[var(--text-secondary)]">
+                  {baExtractProgress.step > 0
+                    ? `步骤 ${baExtractProgress.step}/${baExtractProgress.total || 7}：${compactBaExtractStepDesc(baExtractProgress.desc)}`
+                    : '点击开始提取后，这里会实时显示 SSE 进度'}
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-medium text-[var(--text-secondary)]">日志</div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={(baExtractProgress.logs || []).length === 0}
+                    onClick={() => copy((baExtractProgress.logs || []).join('\n'))}
+                  >
+                    <Copy className="mr-1 h-3 w-3" />
+                    复制完整日志
+                  </Button>
+                </div>
+                <div className="mt-2 max-h-36 overflow-auto rounded-lg border border-[var(--border-soft)] bg-[var(--bg-base)] px-2 py-1.5 font-mono text-[11px] leading-5 text-[var(--text-muted)]">
+                  {(baExtractProgress.logs || []).length === 0 ? (
+                    <div className="text-[var(--text-muted)]">暂无日志</div>
+                  ) : (
+                    baExtractProgress.logs.slice(-40).map((line, idx) => (
+                      <div key={`${idx}-${line.slice(0, 12)}`} className="break-all">{line}</div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-9 min-w-[104px]"
+                disabled={baExtractRunning}
+                onClick={() => setBaExtractAccount(null)}
+              >
+                取消
+              </Button>
+              {baExtractRunning && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 min-w-[104px] border-amber-400/60 text-amber-600 hover:bg-amber-500/10"
+                  onClick={() => {
+                    baExtractAbortRef.current?.abort()
+                    setBaExtractRunning(false)
+                    setBaExtractProgress(prev => ({
+                      ...prev,
+                      status: 'cancelled',
+                      desc: '正在停止',
+                      logs: [...prev.logs, '用户请求停止任务'],
+                    }))
+                  }}
+                >
+                  停止任务
+                </Button>
+              )}
+              <Button
+                type="button"
+                className="h-9 min-w-[120px]"
+                disabled={baExtractRunning}
+                onClick={async () => {
+                  const billingProxy = String(baExtractForm.billing_proxy || '').trim()
+                  const promoProxy = String(baExtractForm.promo_proxy || '').trim()
+                  if (!billingProxy) {
+                    setError('请填写账单代理池')
+                    return
+                  }
+                  if (!promoProxy) {
+                    setError('请填写优惠代理池')
+                    return
+                  }
+                  const billingCountry = inferRegionFromProxyText(billingProxy, baExtractForm.billing_country || 'US') || 'US'
+                  const promoCountry = inferRegionFromProxyText(promoProxy, baExtractForm.promo_country || 'TR') || 'TR'
+                  const billingCurrency = baExtractCurrencyForCountry(billingCountry)
+                  const conf = {
+                    billing_proxy: billingProxy,
+                    promo_proxy: promoProxy,
+                    billing_country: billingCountry,
+                    promo_country: promoCountry,
+                    billing_currency: billingCurrency,
+                    confirm_mode: String(baExtractForm.confirm_mode || 'pm'),
+                    max_attempts: String(baExtractForm.max_attempts || '20'),
+                  }
+                  saveBaExtractSettings(conf)
+                  setBaExtractForm(current => ({ ...current, ...conf }))
+                  setError('')
+                  setBaExtractRunning(true)
+                  setBaExtractProgress({ step: 0, total: 7, desc: '任务已开始', status: 'started', logs: ['任务已开始'], attempt: 0, maxAttempts: Number(conf.max_attempts || 20) })
+                  const controller = new AbortController()
+                  baExtractAbortRef.current = controller
+                  const acc = baExtractAccount
+                  try {
+                    const token = getAuthTokenForStream()
+                    const res = await fetch(`${API_BASE}/pp-plus/accounts/${acc.id}/extract-ba-stream`, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                      },
+                      body: JSON.stringify({
+                        billing_proxy: conf.billing_proxy,
+                        promo_proxy: conf.promo_proxy,
+                        billing_country: conf.billing_country,
+                        promo_country: conf.promo_country,
+                        billing_currency: conf.billing_currency,
+                        confirm_mode: conf.confirm_mode,
+                        max_attempts: Number(conf.max_attempts || 20),
+                      }),
+                      signal: controller.signal,
+                    })
+                    if (!res.ok || !res.body) {
+                      const msg = await res.text()
+                      throw new Error(msg || `SSE 启动失败 HTTP ${res.status}`)
+                    }
+                    const reader = res.body.getReader()
+                    const decoder = new TextDecoder('utf-8')
+                    let buffer = ''
+                    let finalPayload: any = null
+                    while (true) {
+                      const { done, value } = await reader.read()
+                      if (done) break
+                      buffer += decoder.decode(value, { stream: true })
+                      const chunks = buffer.split(/\n\n/)
+                      buffer = chunks.pop() || ''
+                      for (const chunk of chunks) {
+                        const lines = chunk.split(/\r?\n/)
+                        for (const line of lines) {
+                          if (!line.startsWith('data:')) continue
+                          const raw = line.slice(5).trim()
+                          if (!raw) continue
+                          let evt: any = null
+                          try { evt = JSON.parse(raw) } catch { continue }
+                          if (!evt || typeof evt !== 'object') continue
+                          if (evt.type === 'started') {
+                            setBaExtractProgress(prev => ({
+                              ...prev,
+                              status: 'started',
+                              desc: '任务已开始',
+                              maxAttempts: Number(evt.max_attempts || conf.max_attempts || prev.maxAttempts || 20),
+                              logs: [...prev.logs, `started pool=${evt.billing_pool_size || 0}/${evt.promo_pool_size || 0} max=${evt.max_attempts || conf.max_attempts}`],
+                            }))
+                          } else if (evt.type === 'progress') {
+                            const step = Number(evt.step || 0)
+                            const total = Number(evt.total || 7)
+                            const desc = String(evt.desc || '')
+                            const attempt = Number(evt.attempt || 0)
+                            setBaExtractProgress(prev => ({
+                              step,
+                              total,
+                              desc,
+                              status: 'running',
+                              attempt: attempt || prev.attempt,
+                              maxAttempts: prev.maxAttempts || Number(conf.max_attempts || 20),
+                              logs: [...prev.logs, `步骤 ${step}/${total}: ${desc}`],
+                            }))
+                          } else if (evt.type === 'saved') {
+                            setBaExtractProgress(prev => ({
+                              ...prev,
+                              logs: [...prev.logs, `已写回 BA: ${evt.ba_token || ''}`],
+                            }))
+                          } else if (evt.type === 'done') {
+                            finalPayload = evt
+                            if (evt.ok) {
+                              setBaExtractProgress(prev => ({
+                                step: prev.total || 7,
+                                total: prev.total || 7,
+                                desc: `成功 ${evt.ba_token || ''}`,
+                                status: 'success',
+                                attempt: Number(evt.attempt || prev.attempt || 0),
+                                maxAttempts: prev.maxAttempts || Number(conf.max_attempts || 20),
+                                logs: [...prev.logs, `成功: ${evt.ba_token || ''}`],
+                              }))
+                            } else {
+                              setBaExtractProgress(prev => ({
+                                ...prev,
+                                status: 'error',
+                                desc: String(evt.error || '提取失败'),
+                                logs: [...prev.logs, `失败: ${evt.error || '提取失败'}`],
+                              }))
+                            }
+                          } else if (evt.type === 'error') {
+                            setBaExtractProgress(prev => ({
+                              ...prev,
+                              status: 'error',
+                              desc: String(evt.error || '错误'),
+                              logs: [...prev.logs, `错误: ${evt.error || ''}`],
+                            }))
+                          }
+                        }
+                      }
+                    }
+                    if (finalPayload?.ok) {
+                      setActionResult({
+                        title: `提取BA链 - ${acc.email}`,
+                        payload: {
+                          ba_token: finalPayload.ba_token,
+                          ba_url: finalPayload.ba_url,
+                          message: `已提取并保存 BA 链 ${finalPayload.ba_token || ''}`,
+                          ...(finalPayload.data || {}),
+                        },
+                      })
+                      await load()
+                    } else if (finalPayload && !finalPayload.ok) {
+                      setError(String(finalPayload.error || '提取 BA 链失败'))
+                    }
+                  } catch (exc: any) {
+                    if (exc?.name === 'AbortError') {
+                      setBaExtractProgress(prev => ({ ...prev, status: 'cancelled', desc: '已停止', logs: [...prev.logs, '已停止'] }))
+                    } else {
+                      const msg = exc?.message || '提取 BA 链失败'
+                      setError(msg)
+                      setBaExtractProgress(prev => ({ ...prev, status: 'error', desc: msg, logs: [...prev.logs, msg] }))
+                    }
+                  } finally {
+                    setBaExtractRunning(false)
+                    baExtractAbortRef.current = null
+                  }
+                }}
+              >
+                {baExtractRunning ? '提取中...' : '开始提取'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+{ppLogTask && (
+        <PpTaskLogDialog
+          open={Boolean(ppLogTask)}
+          task={ppLogTask}
+          onClose={() => setPpLogTask(null)}
+        />
+      )}
+      <PpPlusFloatingWidget
+        status={ppPlusStatus}
+        onStop={async () => {
+          const status = await apiFetch('/pp-plus/stop', { method: 'POST', body: '{}' })
+          setPpPlusStatus(status)
+        }}
+        onOpenLogs={(task) => setPpLogTask(task)}
+      />
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
       {planRefreshDialog.open && (
@@ -3994,6 +4582,11 @@ export default function Accounts() {
           </div>
           <div className="flex shrink-0 items-center gap-4">
             <nav className="hidden items-center gap-4 lg:flex">
+              {tab === 'chatgpt' && (
+                <button onClick={() => setShowPpPlusSettings(true)} className="pb-1 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--accent)]">
+                  PLUS开通设置
+                </button>
+              )}
               <button onClick={() => setShowRegister(true)} className="border-b-2 border-[var(--accent)] pb-1 text-[11px] font-bold text-[var(--accent)]">
                 {t('accounts.autoRegister')}
               </button>
@@ -4203,7 +4796,7 @@ export default function Accounts() {
                     size="sm"
                     disabled={agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || batchRefreshing || loading}
                     className="h-8 rounded-lg border-0 bg-blue-500/10 px-3 text-[12px] font-medium text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
-                    title="为所有状态正常的 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api"
+                    title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api` : '为所有状态正常的 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api'}
                     onClick={startAgentsUploadSub2Api}
                   >
                     {agentsUploadBusy ? (
@@ -4311,7 +4904,7 @@ export default function Accounts() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1510px] border-collapse text-left text-[12px]">
+              <table className="w-full min-w-[1820px] border-collapse text-left text-[12px]">
                 <colgroup>
                   <col className="w-[44px]" />
                   <col className="w-[210px]" />
@@ -4323,7 +4916,8 @@ export default function Accounts() {
                   <col className="w-[170px]" />
                   <col className="w-[110px]" />
                   <col className="w-[106px]" />
-                  <col className="w-[356px]" />
+                  {tab === 'chatgpt' ? <col className="w-[88px]" /> : null}
+                  <col className="w-[248px]" />
                 </colgroup>
                 <thead>
                   <tr className="border-y border-[var(--border-soft)] bg-[var(--bg-pane)]/45 text-[12px] text-[var(--text-secondary)]">
@@ -4344,13 +4938,18 @@ export default function Accounts() {
                     <th className="px-3 py-3 font-semibold">完整 JSON</th>
                     <th className="px-3 py-3 font-semibold">有效期</th>
                     <th className="px-3 py-3 font-semibold">支付长链</th>
-                    <th className="px-3 py-3 font-semibold">{t('common.actions')}</th>
+                    {tab === 'chatgpt' && (
+                      <th className="w-[88px] max-w-[88px] px-2 py-3 font-semibold">任务日志</th>
+                    )}
+                    <th className="sticky right-0 z-20 w-[248px] min-w-[248px] max-w-[248px] border-l border-[var(--border-soft)] bg-[var(--bg-pane)] px-2 py-3 text-center font-semibold shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.28)]">
+                      {t('common.actions')}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-soft)]">
                   {accounts.length === 0 && (
                     <tr>
-                      <td colSpan={11} className="px-6 py-20 text-center">
+                      <td colSpan={tab === 'chatgpt' ? 12 : 11} className="px-6 py-20 text-center">
                         <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
                           <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--bg-pane)]">
                             <Mail className="h-5 w-5 text-[var(--text-muted)]" />
@@ -4493,15 +5092,37 @@ export default function Accounts() {
                               {cashierUrl ? '已提取' : '未提取'}
                             </span>
                           </td>
-                          <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
-                            <div className="flex flex-wrap items-center gap-2">
+                          {tab === 'chatgpt' && (
+                            <td className="w-[88px] max-w-[88px] px-2 py-3 align-middle" onClick={e => e.stopPropagation()}>
+                              <PpTaskCell
+                                task={resolvePpTask(acc)}
+                                onViewLogs={() => setPpLogTask(resolvePpTask(acc))}
+                              />
+                            </td>
+                          )}
+                          <td
+                            className="sticky right-0 z-10 w-[248px] min-w-[248px] max-w-[248px] border-l border-[var(--border-soft)] bg-[var(--bg-card)] px-2 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.28)] group-hover:bg-[var(--bg-pane)]"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <div className="flex w-[232px] flex-wrap content-start items-center gap-1.5">
                               {tab === 'chatgpt' && (
                                 <button
-                                  onClick={() => runInlineAccountAction(acc, 'payment_link', `提取长链 - ${acc.email}`, getInlinePaymentLinkParams())}
-                                  disabled={isBusy('payment_link')}
+                                  onClick={() => setPpBaAccount(acc)}
                                   className="table-action-btn"
                                 >
-                                  {isBusy('payment_link') ? '提取中' : '提取长链'}
+                                  填写BA链
+                                </button>
+                              )}
+                              {tab === 'chatgpt' && (
+                                <button
+                                  onClick={() => {
+                                    setBaExtractForm(loadBaExtractSettings())
+                                    setBaExtractAccount(acc)
+                                  }}
+                                  disabled={isBusy('extract_ba_link')}
+                                  className="table-action-btn"
+                                >
+                                  {isBusy('extract_ba_link') ? '提取中' : '提取BA链'}
                                 </button>
                               )}
                               <button onClick={() => setDetail(acc)} className="table-action-btn">查看</button>
@@ -4559,9 +5180,28 @@ export default function Accounts() {
             </div>
 
             <div className="flex flex-col gap-3 border-t border-[var(--border-soft)] px-6 py-4 text-[11px] text-[var(--text-muted)] sm:flex-row sm:items-center sm:justify-between">
-              <span>
-                {t('accounts.showingEntries', { from: entryStart, to: entryEnd, total })}
-              </span>
+              <div className="flex flex-wrap items-center gap-3">
+                <span>
+                  {t('accounts.showingEntries', { from: entryStart, to: entryEnd, total })}
+                </span>
+                <label className="flex items-center gap-1.5 text-[var(--text-secondary)]">
+                  <span>每页</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      const next = Number(e.target.value) || 10
+                      setPageSize(next)
+                      setPage(1)
+                    }}
+                    className="h-7 rounded-md border border-[var(--border)] bg-[var(--bg-input)] px-2 text-[11px] text-[var(--text-primary)] outline-none focus:ring-2 focus:ring-[rgba(var(--accent-rgb),0.2)]"
+                  >
+                    {[5, 10, 20, 50, 100].map((value) => (
+                      <option key={value} value={value}>{value}</option>
+                    ))}
+                  </select>
+                  <span>条</span>
+                </label>
+              </div>
               <div className="flex items-center justify-end gap-2">
                 <button
                   onClick={() => setPage(current => Math.max(1, current - 1))}
@@ -4607,6 +5247,11 @@ export default function Accounts() {
             </div>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
+            {tab === 'chatgpt' && (
+              <Button size="sm" variant="outline" onClick={() => setShowPpPlusSettings(true)} className={ACCOUNT_TOOL_BUTTON_CLASS}>
+                PLUS开通设置
+              </Button>
+            )}
             <Button size="sm" onClick={() => setShowRegister(true)} className="h-8 shrink-0 whitespace-nowrap shadow-sm">
               <Plus className="mr-1.5 h-3.5 w-3.5 shrink-0" />
               {t('accounts.autoRegister')}
@@ -4995,8 +5640,21 @@ export default function Accounts() {
                     hour12: false 
                   }) : '-'}
                 </td>
+                {tab === 'chatgpt' && (
+                  <td className="px-3 py-2.5 align-top" onClick={e => e.stopPropagation()}>
+                    <PpTaskCell
+                      task={resolvePpTask(acc)}
+                      onViewLogs={() => setPpLogTask(resolvePpTask(acc))}
+                    />
+                  </td>
+                )}
                 <td className="px-3 py-2.5 align-top" onClick={e => e.stopPropagation()}>
-                  <div className="flex items-center justify-end opacity-60 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center justify-end gap-1.5 opacity-60 group-hover:opacity-100 transition-opacity">
+                    {tab === 'chatgpt' && (
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setPpBaAccount(acc)}>
+                        填写BA链
+                      </Button>
+                    )}
                     <ActionMenu
                       acc={acc}
                       onDetail={() => setDetail(acc)}

@@ -1,0 +1,174 @@
+size=45544027 entries=413
+
+== URL frequency ==
+ 14  POST https://chatgpt.com/ces/v1/rgstr
+  8  GET https://chatgpt.com/cdn/assets/root-4cbk3kbb.css
+  8  GET https://chatgpt.com/cdn/assets/conversation-small-oe8uq6xu.css
+  4  GET https://chatgpt.com/cdn/assets/root-euv0aibr.css
+  4  GET https://chatgpt.com/backend-api/system_hints
+  3  GET https://chatgpt.com/backend-anon/system_hints
+  3  GET https://chatgpt.com/cdn/assets/global-modals-5n50n0lo.css
+  3  GET https://chatgpt.com/cdn/assets/tpp-site-preview-transition-jee6i7ix.css
+  3  GET https://chatgpt.com/cdn/assets/app-block-trigger-actions-hxl87txx.css
+  2  GET https://chatgpt.com/
+  2  GET https://chatgpt.com/cdn/assets/manifest-d26d6c36.js
+  2  GET https://chatgpt.com/cdn/assets/entry.client-hmz30f52.js
+  2  GET https://chatgpt.com/cdn/assets/f025431a-ehagpvg3m4e1cduv.js
+  2  GET https://chatgpt.com/cdn/assets/4813494d-btp8cmrhquskot7i.js
+  2  GET https://chatgpt.com/cdn/assets/2340486e-gh6s19h8ofjisiyk.js
+  2  GET https://chatgpt.com/cdn/assets/d42ee766-07bvik11g7wedua2.js
+  2  GET https://chatgpt.com/cdn/assets/root-hzi0glck.js
+  2  GET https://chatgpt.com/cdn/assets/_conversation-j8am7ghf.js
+  2  GET https://chatgpt.com/cdn/assets/8b34dbc2-ovjh9yei07znxou8.js
+  2  GET https://chatgpt.com/cdn/assets/conversation-small-ko3jpga154949ful.js
+  2  GET https://chatgpt.com/cdn/assets/c470f5ab-lcbdjqdwjjcurrjl.js
+  2  GET https://chatgpt.com/cdn/assets/30901919-dzcifvhacckjprwe.js
+  2  GET https://chatgpt.com/cdn/assets/82782bc9-ejpa4tkz7nuiioed.js
+  2  GET https://chatgpt.com/cdn/assets/0e5afe53-hap7c9kpvedtn5e3.js
+  2  GET https://chatgpt.com/cdn/assets/_conversation._index-e67wmoyr.js
+  2  GET https://chatgpt.com/cdn/assets/sprites-core-b928d45d.svg
+  2  GET https://cdn.openai.com/common/fonts/openai-sans/v4/OpenAISans-Semibold.woff2
+  2  GET https://chatgpt.com/cdn/assets/favicon-180x180-od45eci6.webp
+  2  GET https://chatgpt.com/cdn/assets/favicon-l4nq08hd.svg
+  2  GET https://chatgpt.com/cdn/assets/eec4c631-obg127bhvreek9ma.js
+  2  GET https://chatgpt.com/cdn/assets/5ab42519-nhl1589sen9yysdj.js
+  2  GET https://chatgpt.com/cdn/assets/e6911992-kfc01pk08alxqeyl.js
+  2  GET https://chatgpt.com/cdn/assets/88605b43-nranmlkt6wbdnxxx.js
+  2  GET https://chatgpt.com/cdn/assets/be58453f-hongbip3x2vqruxr.js
+  2  GET https://chatgpt.com/cdn/assets/fd7f274b-nwk6yabho5iz75p5.js
+  2  GET https://chatgpt.com/cdn/assets/10177590-ovgc83jpzsfpyron.js
+  2  GET https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js
+  2  GET https://chatgpt.com/ces/v1/projects/oai/settings
+  2  GET https://chatgpt.com/cdn/assets/9521ff6d-kcspq60yfk39dspf.js
+  2  GET https://chatgpt.com/cdn/assets/ae144ef6-n02508n8nq0ocbla.js
+  2  GET https://chatgpt.com/cdn/assets/8d5bfd5c-m3rj4h1vj2vjih4f.js
+  2  GET https://chatgpt.com/cdn/assets/c2675c8c-i18hx1obg87e2wyz.js
+  2  GET https://chatgpt.com/cdn/assets/9435784d-jl6po8muqr2awenx.js
+  2  GET https://chatgpt.com/cdn/assets/2831b016-nsi4chh5vap7f39s.js
+  2  GET https://chatgpt.com/cdn/assets/3c02c844-nxf2f3rxu2gbv3j6.js
+  2  GET https://chatgpt.com/cdn/assets/842afc59-m8qk6r6t7vfpp536.js
+  2  GET https://chatgpt.com/cdn/assets/a846575e-ikgp8abtfjofp92k.js
+  2  GET https://chatgpt.com/cdn/assets/2d69f250-gpux23huy99cwtz7.js
+  2  GET https://chatgpt.com/cdn/assets/f1d26d54-b5qx6v6opemtb710.js
+  2  GET https://chatgpt.com/cdn/assets/20b6b8ed-fipukn8oo05txizu.js
+  2  GET https://chatgpt.com/cdn/assets/68039cf3-jpmzhs9gt073l8zs.js
+  2  GET https://chatgpt.com/cdn/assets/fc0b9bf1-opz6793w5wfy60bm.js
+  2  GET https://chatgpt.com/cdn/assets/6fd89734-e2j9921e4cvsk892.js
+  2  GET https://chatgpt.com/cdn/assets/eda93c10-ehhhqk55m3mx6pkb.js
+  2  GET https://chatgpt.com/cdn/assets/e802fc66-fjskniue1n6gqc2i.js
+  2  GET https://chatgpt.com/cdn/assets/c88606bd-ggsbgiakatupke2j.js
+  2  GET https://chatgpt.com/cdn/assets/30f82755-j2rh8h7aiegdaapj.js
+  2  GET https://chatgpt.com/cdn/assets/79f982eb-czrj8nqcenrdlnfm.js
+  2  GET https://chatgpt.com/cdn/assets/f0ac14f6-mkufk64znwnofbs3.js
+  2  GET https://chatgpt.com/cdn/assets/a0c3e3cc-mh5tq7rm45rocy7k.js
+
+== interesting entries ==
+
+================================================================================
+[34] GET https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload
+  status=302 mime= body_len=0
+  referer: https://chatgpt.com/
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  cookie_names=['oai-did', 'oai-did', '__cf_bm', '__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', '__cflb', 'oai-mweb-route-desktop', '_cfuvid', '_dd_s']
+  cookie_preview=oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; __cf_bm=Zv_k5jr2KsIYsiDX.jT0Wqfelc.ABGIbpJzdKdMsLvU-1784912467.8202171-1.0.1.1-MZmKpsOvEqpcQSWy_JAKcDcg2FHMy2J_blDtT4Kx72.2ovUV8nAlWBspq8v72v0EupgRen4p.Kt_qePNBtiUjiwuO9RJR0SsIruXoJFQA3ahXCbPt7r2s2Z62jgVZVf3;
+  accept: */*
+  accept-language: en-US,en;q=0.5
+  sec-fetch-site: same-origin
+  sec-fetch-mode: no-cors
+  sec-fetch-dest: script
+  set-cookie count=1
+    __cf_bm=MD4Z8slwNtxVdXwdxFHz8AEc.pQk6RTFGcPa2m5wi1g-1784912476.3218331-1.0.1.1-lLRUZ5cWMGxpuwfPWxD8NMx6zA9.ksakOrSGetQEUb56ywjR0zc2P5VesLcReDp7cdmUmet5tY.kFay1pAYSeZPWydpoTu0Y9Zo24vVsRyjOYCLHxj0aRiYyY
+
+================================================================================
+[141] GET https://chatgpt.com/cdn-cgi/challenge-platform/h/g/scripts/jsd/b0da9f4911ba/api.js?onload=jsdOnload
+  status=200 mime= body_len=0
+  referer: https://chatgpt.com/
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  cookie_names=['oai-did', 'oai-did', '__cf_bm', '__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', '__cflb', 'oai-mweb-route-desktop', '_cfuvid', '_dd_s', '__Secure-next-auth.state', 'oai-sc']
+  cookie_preview=oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; __cf_bm=MD4Z8slwNtxVdXwdxFHz8AEc.pQk6RTFGcPa2m5wi1g-1784912476.3218331-1.0.1.1-lLRUZ5cWMGxpuwfPWxD8NMx6zA9.ksakOrSGetQEUb56ywjR0zc2P5VesLcReDp7cdmUmet5tY.kFay1pAYSeZPWydpoTu0Y9Zo24vVsRyjOYCLHxj0aRiYyY0guUIkh;
+  accept: */*
+  accept-language: en-US,en;q=0.5
+  set-cookie count=1
+    __cf_bm=yTXSQ0sZBXnS26PIu.vPIV5i28ejcss2t7m9BfqYQmY-1784912478.1489687-1.0.1.1-3A0EHrfFy_G8rTZt_RhhV26AEnkey_LXPl7PGcttlKlhnPrBZcYiqkqB3mSxkOZhXiBwrcdFu0qb04WHiDhFG_Q8_w54dUuPuS7M9iZoDJeBQoxpixh7k9p.H
+
+================================================================================
+[145] GET https://accounts.google.com/gsi/iframe/select?client_id=799222349882-ne3i0s9jdm5s0p7ll2d7tlsi1vc1halt.apps.googleusercontent.com&auto_select=false&ux_mode=popup&ui_mode=card&as=jVSj0dYuH0J5CS0DOXoy4cO
+  status=200 mime= body_len=0
+  referer: https://chatgpt.com/
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+  accept-language: en-US,en;q=0.5
+  sec-fetch-site: cross-site
+  sec-fetch-mode: navigate
+  sec-fetch-dest: iframe
+
+================================================================================
+[197] GET https://auth.openai.com/cdn-cgi/challenge-platform/scripts/jsd/main.js
+  status=302 mime= body_len=0
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  cookie_names=['oai-did', 'oai-did', 'oai-login-csrf_dev_3772291445', 'oai-did', 'rg_context', 'iss_context', 'auth_provider', 'login_session', 'hydra_redirect', 'oai-client-auth-session', 'auth-session-minimized', 'auth-session-minimized-client-checksum', 'oaicom-stable-id', '__cf_bm', '__cflb', '_cfuvid']
+  cookie_preview=oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-login-csrf_dev_3772291445=MTc4NDkxMjQ4NnxXN0NiSUhXa2JSdTNIX2xVQ3IxZGNpbThwY3BITWlRckNHcW5vUUVKRmRnYTZtN1g5elp6VzV5RkNnYllFeWpZMWhydS1hU1lxbjRwTTNlbFJTYjk3US1icE5lX0lWSDl4bnVPWVVYY1lKdWRXY2VEQ2JETTZVRng4Q3
+  accept: */*
+  accept-language: en-US,en;q=0.5
+  sec-fetch-site: same-origin
+  sec-fetch-mode: no-cors
+  sec-fetch-dest: script
+  set-cookie count=1
+    __cf_bm=efLChWar8a_FUAdOlrthQiNzv.LzM4gaDNWJB_RLuHg-1784912488.682962-1.0.1.1-2m9JSkzDSLDow93llAP0A.N6OsiyN4kbhuI7A98elRTZxt08W9R1bu_WOHYi5nLsaA5yexJbUYpb8dCiQem8a30YQHo.qOXNbgF_5e9uNQWdW1A3ZM6rnpxRGN
+
+================================================================================
+[202] GET https://auth.openai.com/cdn-cgi/challenge-platform/h/g/scripts/jsd/b0da9f4911ba/main.js?
+  status=200 mime= body_len=0
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  cookie_names=['oai-did', 'oai-did', 'oai-login-csrf_dev_3772291445', 'oai-did', 'rg_context', 'iss_context', 'auth_provider', 'login_session', 'hydra_redirect', 'oai-client-auth-session', 'auth-session-minimized', 'auth-session-minimized-client-checksum', 'oaicom-stable-id', '__cf_bm', '__cflb', '_cfuvid']
+  cookie_preview=oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-login-csrf_dev_3772291445=MTc4NDkxMjQ4NnxXN0NiSUhXa2JSdTNIX2xVQ3IxZGNpbThwY3BITWlRckNHcW5vUUVKRmRnYTZtN1g5elp6VzV5RkNnYllFeWpZMWhydS1hU1lxbjRwTTNlbFJTYjk3US1icE5lX0lWSDl4bnVPWVVYY1lKdWRXY2VEQ2JETTZVRng4Q3
+  accept: */*
+  accept-language: en-US,en;q=0.5
+  set-cookie count=1
+    __cf_bm=w.F6.VYv6ev7K.AqYms9o59FQ0KoDmhlhmUhwJBGJCk-1784912488.9918525-1.0.1.1-kb0AIasNTgblVjtV0lGGPdXKNfFeB2.AoG0sjMu9e6b5.tW.8x0_MFnLuso7IIFcy5Mi6U8O3YDG4DEMur6o7lfv8S.Lm0kQuLNZ32YGOaoZkmHRWKs2slDHA
+
+================================================================================
+[204] POST https://auth.openai.com/cdn-cgi/challenge-platform/h/g/jsd/oneshot/b0da9f4911ba/0.7954367696543878:1784908835:VuFjeEfSlNB3qQf6IEJZ5vVjFXeaNiCQwlXPXRxwQi4/a2047ca3fb73e388
+  status=200 mime=text/plain;charset=UTF-8 body_len=13282
+  content-type: text/plain;charset=UTF-8
+  origin: https://auth.openai.com
+  referer: https://auth.openai.com/email-verification
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  cookie_names=['oai-did', 'oai-did', 'oai-login-csrf_dev_3772291445', 'oai-did', 'rg_context', 'iss_context', 'auth_provider', 'login_session', 'hydra_redirect', 'oai-client-auth-session', 'auth-session-minimized', 'auth-session-minimized-client-checksum', 'oaicom-stable-id', '__cf_bm', '__cflb', '_cfuvid', '_dd_s']
+  cookie_preview=oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-login-csrf_dev_3772291445=MTc4NDkxMjQ4NnxXN0NiSUhXa2JSdTNIX2xVQ3IxZGNpbThwY3BITWlRckNHcW5vUUVKRmRnYTZtN1g5elp6VzV5RkNnYllFeWpZMWhydS1hU1lxbjRwTTNlbFJTYjk3US1icE5lX0lWSDl4bnVPWVVYY1lKdWRXY2VEQ2JETTZVRng4Q3
+  accept: */*
+  accept-language: en-US,en;q=0.5
+  sec-fetch-site: same-origin
+  sec-fetch-mode: cors
+  sec-fetch-dest: empty
+  body_preview=q2tbBSURiIizkIQTR+1-g$9nhNEk75BEXz0Wx59Wg8mlDK0YwughPPRQLk7ax7Ip4EXsTpg5qVLTRjJlmSgqKh7-W0iEQCX1yg23Sbg4HQQy8ipgSNeH084aI2WA2XoV4N-7w+IeNUpA2htau1r96TGLELs90b3sO-9tajZic4TqhuXX0NZt-BscnhwGWeXNaxlawsr3rmIUCHzmS$l9TWZ1E-M$iDyoewW2EWqhaJLVnk$t01PBHwX+M3JwlMZgREs-NGWvQAo7lkiR9zDbWGCK$plo8-Hr3Eri$0mioYbqzE47oCDk4w$Y1zkscxqwYtmoKtLbh$TThs7RQboQRYOtL02LNDhEITSKnCzYEzPx-bHyWbdpaXKKZ8xsXQZk9jGV1q8VGBbI39EqtgBMv$L$Mlhvab3yPDqpkjjC3H2IX4e7e$rVju-jGOlhEkdaFkEMeuUhZ3LT$1UKmex4baA4sAkkxYu2kUwtcoObV3WFqFoVUsHNC8wzSOE$mNaXb7cU3XoWnpUN6Rx+j+bOETbDHX141XMX8o71zN+8Sh7PTia-jW$M3nixdcSkE1zdVTYsMOj$en8HiHl7eJp1Ih9Bwvo4bKnd$hb2yQtbFUgC-7yspMnS9d24MqQDc1ksT+ZqjF2EEwd$9HxQzq3Z0XFEamz$FA8a+FyYEu-HmVXjO9jYgehlbv3Tl4y1i78d$$o-M1w1eW5on0ch7AaOvpCQxC9tIb-LZWEoSJkkWt4gJAQliZeeF6TU$Ap8XJTZk7BDdnBGX2x9FJo$6pbMCapqxsa+xgcK
+  set-cookie count=2
+    cf_clearance=5BDn2mwnR3xtresk9LFU2fWUlOeK5zQMM8Y22sIMrIA-1784912489-1.2.1.1-9l.Ub6ZYHXXknGQZoiHz1Nqez4SW4_5sBpcDypZMUktsPUV8yZcKewKuP735NJsHt.clWWE5XNiub.BW5Nbp8ibuiunbZyCoPcYvR4VDngBr2GRZ3iA.jwDfBykh
+    __cf_bm=1nYZ6e4qex1uXcoNY8AorSl3sBlS5xL_IM7pIB8DHzA-1784912489.3850656-1.0.1.1-jYbgr701XO6fBajsZ1xAd.j0tzoQyksffPRSNChz_oV5lmODrTngXMj6D5GZNuG12VncQnerlmjBNTbcOYUMq5zBojGelx4XHPfpSizFA3Du5wDCXIWyEKgtF
+
+================================================================================
+[252] GET https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload
+  status=302 mime= body_len=0
+  referer: https://chatgpt.com/
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  cookie_names=['oai-did', 'oai-did', '__cf_bm', '__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', '__cflb', 'oai-mweb-route-desktop', '_cfuvid', '_dd_s', 'oai-sc', 'g_state', 'oai-asli', 'oai-hlib', '__Secure-oai-is', '_account', '_account_is_fedramp', '__Secure-next-auth.session-token']
+  cookie_preview=oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; __cf_bm=yTXSQ0sZBXnS26PIu.vPIV5i28ejcss2t7m9BfqYQmY-1784912478.1489687-1.0.1.1-3A0EHrfFy_G8rTZt_RhhV26AEnkey_LXPl7PGcttlKlhnPrBZcYiqkqB3mSxkOZhXiBwrcdFu0qb04WHiDhFG_Q8_w54dUuPuS7M9iZoDJeBQoxpixh7k9p.HvFFjQW0;
+  accept: */*
+  accept-language: en-US,en;q=0.5
+  sec-fetch-site: same-origin
+  sec-fetch-mode: no-cors
+  sec-fetch-dest: script
+
+================================================================================
+[401] GET https://chatgpt.com/cdn-cgi/challenge-platform/h/g/scripts/jsd/b0da9f4911ba/api.js?onload=jsdOnload
+  status=200 mime= body_len=0
+  referer: https://chatgpt.com/
+  user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+  cookie_names=['oai-did', 'oai-did', '__cf_bm', '__Host-next-auth.csrf-token', '__Secure-next-auth.callback-url', '__cflb', 'oai-mweb-route-desktop', '_cfuvid', '_dd_s', 'oai-sc', 'g_state', 'oai-hlib', '__Secure-oai-is', '_account', '_account_is_fedramp', '__Secure-next-auth.session-token']
+  cookie_preview=oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; oai-did=15a3b48e-c795-4c96-a999-ab526a97901d; __cf_bm=yTXSQ0sZBXnS26PIu.vPIV5i28ejcss2t7m9BfqYQmY-1784912478.1489687-1.0.1.1-3A0EHrfFy_G8rTZt_RhhV26AEnkey_LXPl7PGcttlKlhnPrBZcYiqkqB3mSxkOZhXiBwrcdFu0qb04WHiDhFG_Q8_w54dUuPuS7M9iZoDJeBQoxpixh7k9p.HvFFjQW0;
+  accept: */*
+  accept-language: en-US,en;q=0.5
+
+== body keyword scan ==
+[144] POST https://chatgpt.com/backend-anon/sentinel/chat-requirements/finalize hits=['turnstile']
+  body={"prepare_token":"gAAAAABqY5pc6Lj3nZEGbXp1B0ohn20g6uSAq-R0KjGf2kY0wr-Z-u_7SAJ83DrtHsCThZM_O2BwAqlNOBtmOXPfZeI5Hjzlxkk5cbiPoZGqiw4IRE3JKYRtRg7nW865iwg5s804yGbMbMlfKdu-wjBaQDrhvFLj4c6asGr8odZi8KApDq6R98pMQybc4DQqMzkLSt84s9yeF-4wBZfKaiYs3MJTo9p9mxgAxbofqv2ntVMARLnLZG7fVd-Mv163szKko3t9JWgbXmqNvgLqJKnY1mXEVrBfxmXIN8__l3QvkapeT8iTP3x9Jw1NdPWcQMx6kHXmef7xtKhTxBZNT2NTTujUAicAybACcswz94UTgqy9heV-y2D99Ah1jeBRS7IoWLsALDxukJjfjVMOlep4Youw3BEMvM-OQ0Nwd1Th3MOE6Txpm9w0t-K2GpMqNAySSahHNMY5bsS-odNrnaoGIcWqRYlNps

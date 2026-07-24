@@ -195,6 +195,70 @@ def test_email_otp_retry_recovers_transient_missing_input_six_times(monkeypatch)
     assert any("recovery retry 6/6" in item for item in events)
 
 
+def test_submit_otp_uses_browser_validate_fallback_after_stuck_click(monkeypatch):
+    events = []
+
+    class FakePage:
+        url = "https://auth.openai.com/email-verification"
+
+        def wait_for_load_state(self, *_args, **_kwargs):
+            return None
+
+        def locator(self, selector):
+            class Locator:
+                def __init__(self, name):
+                    self.name = name
+                    self.first = self
+
+                def count(self):
+                    return 0
+
+                def wait_for(self, **_kwargs):
+                    if self.name == "input":
+                        return None
+                    raise RuntimeError("not found")
+
+                def click(self, **_kwargs):
+                    return None
+
+                def fill(self, _value):
+                    return None
+
+                def type(self, _value, **_kwargs):
+                    return None
+
+                def input_value(self):
+                    return "123456"
+
+            return Locator(selector)
+
+        def get_by_label(self, *_args, **_kwargs):
+            return self.locator("missing-label")
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self.locator("missing-role")
+
+    monkeypatch.setattr(browser_register, "_otp_page_transition_result", lambda _page: None)
+    monkeypatch.setattr(browser_register, "_click_first", lambda *_args, **_kwargs: 'button[type="submit"]')
+    monkeypatch.setattr(
+        browser_register,
+        "_validate_browser_email_otp",
+        lambda *_args, **_kwargs: {"ok": True, "status": 200, "url": "https://auth.openai.com/about-you", "data": {}},
+    )
+
+    result = browser_register._submit_otp_via_page(
+        FakePage(),
+        "123456",
+        events.append,
+        device_id="device-1",
+        user_agent="Mozilla/5.0",
+    )
+
+    assert result["ok"] is True
+    assert result["url"] == "https://auth.openai.com/about-you"
+    assert any("直连 validate 接口" in item for item in events)
+
+
 def test_oauth_email_submit_uses_form_fallback_after_stuck_click(monkeypatch):
     events = []
 

@@ -4739,6 +4739,47 @@ def _mask_proxy_for_log(proxy: str | None) -> str:
 
 
 
+_CHATGPT_PROXY_PREFLIGHT_DETAIL_CACHE: dict[str, str] = {}
+
+
+def _chatgpt_proxy_cache_key(proxy: str | None) -> str:
+    return str(proxy or "").strip()
+
+
+def _parse_cloudflare_trace_fields(text: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for line in str(text or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        fields[key.strip().lower()] = value.strip()
+    return fields
+
+
+def _format_chatgpt_proxy_preflight_detail(status_code: int, route: str, trace_text: str = "") -> str:
+    fields = _parse_cloudflare_trace_fields(trace_text)
+    parts = [route]
+    loc = fields.get("loc", "")
+    ip = fields.get("ip", "")
+    if loc:
+        parts.append(f"地区={loc}")
+    if ip:
+        parts.append(f"出口IP={ip}")
+    return f"HTTP {status_code} ({', '.join(parts)})"
+
+
+def _chatgpt_proxy_detail_for_log(proxy: str | None) -> str:
+    detail = _CHATGPT_PROXY_PREFLIGHT_DETAIL_CACHE.get(_chatgpt_proxy_cache_key(proxy), "")
+    if not detail:
+        return ""
+    inside = ""
+    if "(" in detail and detail.endswith(")"):
+        inside = detail.rsplit("(", 1)[1][:-1]
+    if not inside:
+        return detail
+    return inside
+
+
 
 
 def _chatgpt_proxy_preflight(proxy: str | None, *, timeout: int = 12) -> tuple[bool, str]:
@@ -4759,9 +4800,15 @@ def _chatgpt_proxy_preflight(proxy: str | None, *, timeout: int = 12) -> tuple[b
         try:
             response = client.get("https://chatgpt.com/cdn-cgi/trace", timeout=timeout)
             route = "本地中转" if client.config.proxy_upstream_url else "目标代理直连"
+            detail = _format_chatgpt_proxy_preflight_detail(
+                int(getattr(response, "status_code", 0) or 0),
+                route,
+                str(getattr(response, "text", "") or ""),
+            )
+            _CHATGPT_PROXY_PREFLIGHT_DETAIL_CACHE[_chatgpt_proxy_cache_key(proxy)] = detail
             if response.status_code >= 500:
-                return False, f"HTTP {response.status_code} ({route})"
-            return True, f"HTTP {response.status_code} ({route})"
+                return False, detail
+            return True, detail
         finally:
             client.close()
     except Exception as exc:
@@ -6190,7 +6237,11 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
             if resolved_proxy:
 
-                logger.log(f"使用代理: {resolved_proxy}")
+                proxy_detail = _chatgpt_proxy_detail_for_log(resolved_proxy)
+                if proxy_detail:
+                    logger.log(f"使用代理: {resolved_proxy}（{proxy_detail}）")
+                else:
+                    logger.log(f"使用代理: {resolved_proxy}")
 
             account = platform.register(email=email, password=password)
 
@@ -8356,7 +8407,10 @@ def _execute_agents_upload_sub2api_task(payload: dict[str, Any], logger: TaskLog
             failed_count += 1
             logger.record_error(f"{email}: {message}")
             _save_task_log(platform, email, "failed", error=message, detail={"action": "agents_upload_sub2api"})
-            logger.log(f"{email}: Agent Identity 上传失败：{message}", level="error")
+            if message.startswith("Agent Identity "):
+                logger.log(f"{email}: {message}", level="error")
+            else:
+                logger.log(f"{email}: Agent Identity 上传失败：{message}", level="error")
         logger.set_progress(processed_count, total)
 
     def _flush_batch() -> None:
@@ -8415,7 +8469,7 @@ def _execute_agents_upload_sub2api_task(payload: dict[str, Any], logger: TaskLog
             if len(pending_batch) >= batch_size:
                 _flush_batch()
         except Exception as exc:
-            _finish_one(email, False, str(exc))
+            _finish_one(email, False, f"Agent Identity 生成失败：{exc}")
 
     _flush_batch()
     logger.clear_subtask()

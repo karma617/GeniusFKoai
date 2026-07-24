@@ -150,6 +150,48 @@ def test_filter_accounts_by_tag(client):
     assert [item["email"] for item in plus_resp.json()["items"]] == ["plus@test.com"]
 
 
+def test_registration_mode_badge_and_tag_filter(client):
+    _create_account(
+        client,
+        platform="chatgpt",
+        email="protocol-mode@test.com",
+        overview={"registration_mode_label": "协议模式", "registration_mode": "protocol"},
+    )
+    _create_account(
+        client,
+        platform="chatgpt",
+        email="headless-mode@test.com",
+        overview={"registration_mode_label": "无头浏览器", "registration_mode": "headless_browser"},
+    )
+
+    list_resp = client.get("/api/accounts", params={"platform": "chatgpt", "tag": "协议模式"})
+    items = list_resp.json()["items"]
+    badges = [badge["label"] for badge in items[0]["display_summary"]["badges"]]
+
+    assert [item["email"] for item in items] == ["protocol-mode@test.com"]
+    assert "协议模式" in badges
+
+
+def test_codex_probe_401_warning_has_business_message(client):
+    _create_account(
+        client,
+        platform="chatgpt",
+        email="codex-401@test.com",
+        overview={"valid": True, "codex_usage_error": "openai codex probe returned status 401:"},
+    )
+
+    resp = client.get("/api/accounts", params={"platform": "chatgpt"})
+    warnings = [
+        warning
+        for warning in resp.json()["items"][0]["display_summary"]["warnings"]
+        if warning["key"] == "codex_usage_error"
+    ]
+
+    assert warnings[0]["key"] == "codex_usage_error"
+    assert "Codex 探测返回 401" in warnings[0]["message"]
+    assert "不等同于账号失效" in warnings[0]["message"]
+
+
 def test_export_accounts_by_tag_filter(client):
     _create_account(client, platform="chatgpt", email="bugfree@test.com", overview={"chips": ["Free"], "bugfree": True})
     _create_account(client, platform="chatgpt", email="free@test.com")

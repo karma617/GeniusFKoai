@@ -11,7 +11,7 @@ from application import tasks as tasks_module
 from application.tasks import _mark_get_rt_upload_status
 from core.account_graph import load_account_graphs, patch_account_graph
 from core.base_platform import Account, RegisterConfig
-from core.db import AccountModel, engine
+from core.db import AccountModel, engine, save_account
 from domain.actions import ActionExecutionResult
 from domain.actions import ActionExecutionCommand
 from infrastructure import platform_runtime as runtime_module
@@ -145,6 +145,37 @@ def test_platform_action_task_passes_task_logger_to_runtime(monkeypatch):
     assert ("log", "checkout step log", {}) in logger.events
     assert logger.result_data == {"message": "summary"}
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
+
+
+def test_agents_upload_marks_agent_registry_disabled_failed(monkeypatch):
+    token = _make_openai_access_token(account_id="account-fallback", user_id="user-fallback")
+    save_account(Account(
+        platform="chatgpt",
+        email="agent-registry-disabled@test.com",
+        password="Pass123!",
+        token=token,
+        extra={"access_token": token},
+    ))
+    with Session(engine) as session:
+        model = session.exec(select(AccountModel).where(AccountModel.email == "agent-registry-disabled@test.com")).one()
+        account_id = int(model.id or 0)
+    from platforms.chatgpt import codex_agent_identity
+
+    def fake_create_codex_agent_identity(*args, **kwargs):
+        raise RuntimeError('Agent registration failed: 403 {"error":{"code":"agent_registry_not_enabled","message":"Agent registry is not enabled."}}')
+
+    monkeypatch.setattr(codex_agent_identity, "create_codex_agent_identity", fake_create_codex_agent_identity)
+
+    logger = _FakeLogger()
+    tasks_module._execute_agents_upload_sub2api_task(
+        {"platform": "chatgpt", "ids": [account_id], "batch_size": 10, "timeout": 30},
+        logger,
+    )
+
+    assert logger.finished == (tasks_module.TASK_STATUS_FAILED, "Agents上传到Sub2Api 全部失败")
+    assert logger.result_data["failed"] == 1
+    assert "fallback_oauth_at" not in logger.result_data
+    assert any("agent_registry_not_enabled" in str(event[1]) for event in logger.events)
 
 
 def test_build_platform_instance_keeps_mailbox_off_registration_proxy(monkeypatch):

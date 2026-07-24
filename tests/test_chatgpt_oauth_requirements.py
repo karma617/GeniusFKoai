@@ -11,6 +11,7 @@ from platforms.chatgpt.plugin import (
     ChatGPTPlatform,
     _assert_complete_oauth_callback,
     _generate_chatgpt_registration_password,
+    _run_sync_browser_register_isolated,
 )
 
 
@@ -58,6 +59,31 @@ def test_generate_chatgpt_registration_password_meets_openai_strength_requiremen
         assert any(ch.isupper() for ch in password)
         assert any(ch.isdigit() for ch in password)
         assert any(ch in ",._!@#" for ch in password)
+
+
+def test_browser_register_runner_moves_sync_playwright_outside_asyncio_loop():
+    calls = []
+
+    class Worker:
+        def __init__(self):
+            self.log = calls.append
+
+        def run(self, *, email, password):
+            with pytest.raises(RuntimeError):
+                asyncio.get_running_loop()
+            return {"email": email, "password": password, "ok": True}
+
+    async def run_inside_loop():
+        return _run_sync_browser_register_isolated(
+            Worker(),
+            email="user@example.com",
+            password="Pw123456!",
+        )
+
+    result = asyncio.run(run_inside_loop())
+
+    assert result["ok"] is True
+    assert any("独立线程执行同步 Playwright" in item for item in calls)
 
 
 def test_add_phone_retryable_rejection_text_matches_english_and_chinese():

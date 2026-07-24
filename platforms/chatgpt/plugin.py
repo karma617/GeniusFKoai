@@ -63,6 +63,25 @@ def _safe_dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def _registration_mode_metadata(executor_type: str | None, browser_mode: str | None = "") -> dict:
+    normalized = str(executor_type or "protocol").strip().lower() or "protocol"
+    if normalized == "headless":
+        mode = "headless_browser"
+        label = "无头浏览器"
+    elif normalized == "headed":
+        mode = "headed_browser"
+        label = "有头浏览器"
+    else:
+        mode = "protocol"
+        label = "协议模式"
+    return {
+        "registration_mode": mode,
+        "registration_mode_label": label,
+        "registration_executor_type": normalized,
+        "browser_mode": str(browser_mode or "").strip(),
+    }
+
+
 def _first_non_empty(*values) -> str:
     for value in values:
         text = str(value or "").strip()
@@ -341,6 +360,54 @@ def _run_sync_checkout_isolated(checkout_fn, **kwargs):
     return result_box.get("result")
 
 
+def _run_sync_browser_register_isolated(worker, *, email: str, password: str):
+    """在 asyncio loop 内调用同步 Playwright 注册器时切到独立线程。"""
+    try:
+        import asyncio
+
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return worker.run(email=email, password=password)
+
+    log_fn = getattr(worker, "log", None)
+    if callable(log_fn):
+        log_fn("浏览器注册检测到 asyncio loop，已切到独立线程执行同步 Playwright")
+
+    result_box = {}
+    error_box = {}
+    parent_logger = getattr(log_fn, "__self__", None)
+    parent_subtask: tuple[str, str] | None = None
+    if parent_logger is not None and hasattr(parent_logger, "_current_subtask"):
+        try:
+            parent_subtask = parent_logger._current_subtask()
+        except Exception:
+            parent_subtask = None
+
+    def _target():
+        if parent_logger is not None and parent_subtask and parent_subtask[0]:
+            try:
+                parent_logger.set_subtask(parent_subtask[0], parent_subtask[1])
+            except Exception:
+                pass
+        try:
+            result_box["result"] = worker.run(email=email, password=password)
+        except BaseException as exc:
+            error_box["error"] = exc
+        finally:
+            if parent_logger is not None and parent_subtask and parent_subtask[0]:
+                try:
+                    parent_logger.clear_subtask()
+                except Exception:
+                    pass
+
+    thread = threading.Thread(target=_target, name="chatgpt-browser-register")
+    thread.start()
+    thread.join()
+    if error_box:
+        raise error_box["error"]
+    return result_box.get("result")
+
+
 def _generate_chatgpt_registration_password(length: int = 16) -> str:
     """生成更稳定通过 OpenAI 注册页校验的密码。
 
@@ -467,6 +534,8 @@ class ChatGPTPlatform(BasePlatform):
         password: str = "",
         user_id: str = "",
         require_oauth: bool = False,
+        executor_type: str | None = None,
+        browser_mode: str | None = "",
     ) -> RegistrationResult:
         if require_oauth:
             _assert_complete_oauth_callback(result)
@@ -499,6 +568,7 @@ class ChatGPTPlatform(BasePlatform):
                 "expires_at": result.get("expires_at", ""),
                 "session": result.get("session", {}),
                 "oauth_error": result.get("oauth_error", ""),
+                "account_overview": _registration_mode_metadata(executor_type, browser_mode),
                 # 短链物理复用：浏览器内 PayPal checkout 结果透传给上层任务判定。
                 "_shortlink_checkout": result.get("_shortlink_checkout", None),
                 "record_har_path": result.get("record_har_path", ""),
@@ -525,6 +595,8 @@ class ChatGPTPlatform(BasePlatform):
                 result,
                 require_oauth=getattr(ctx.identity, "identity_provider", "")
                 in {"oauth_browser", "sms_oauth"},
+                executor_type=getattr(ctx, "executor_type", None),
+                browser_mode=(getattr(ctx, "extra", {}) or {}).get("browser_mode", ""),
             ),
             browser_worker_builder=lambda ctx, artifacts: __import__("platforms.chatgpt.browser_register", fromlist=["ChatGPTBrowserRegister"]).ChatGPTBrowserRegister(
                 headless=(ctx.executor_type == "headless"),
@@ -546,7 +618,8 @@ class ChatGPTPlatform(BasePlatform):
                 phone_change_limit=max(_int_param(ctx.extra or {}, "phone_change_limit", 10), 1),
                 phone_first_full_rounds=_int_param(ctx.extra or {}, "phone_first_full_rounds", 0) or None,
             ),
-            browser_register_runner=lambda worker, ctx, artifacts: worker.run(
+            browser_register_runner=lambda worker, ctx, artifacts: _run_sync_browser_register_isolated(
+                worker,
                 email=ctx.identity.email or "",
                 password=ctx.password or "",
             ),
@@ -562,6 +635,8 @@ class ChatGPTPlatform(BasePlatform):
                 result,
                 user_id=result.get("account_id", ""),
                 require_oauth=True,
+                executor_type=getattr(ctx, "executor_type", None),
+                browser_mode=(getattr(ctx, "extra", {}) or {}).get("browser_mode", ""),
             ),
         )
 
@@ -640,6 +715,10 @@ class ChatGPTPlatform(BasePlatform):
                 token=access_token,
                 status=AccountStatus.REGISTERED,
                 extra={
+                    "account_overview": _registration_mode_metadata(
+                        getattr(ctx, "executor_type", "protocol"),
+                        (getattr(ctx, "extra", {}) or {}).get("browser_mode", ""),
+                    ),
                     "access_token": access_token,
                     "refresh_token": "",
                     "registration_refresh_token": registration_refresh_token,
@@ -734,6 +813,21 @@ class ChatGPTPlatform(BasePlatform):
                  {"key": "sms_pool", "label": "SMS 号码池 (+phone----relay_url 每行一条)",
                   "type": "textarea", "placeholder": "+15822057201----https://mail-api.yuecheng.shop/api/text-relay/eca_tr_xxx"},
              ]},
+            {"id": "extract_ba_link", "label": "提取BA链",
+             "params": [
+                 {"key": "billing_proxy", "label": "账单IP/代理（URL 或两位地区码）", "type": "text",
+                  "placeholder": "US 或 http://user:pass@host:port"},
+                 {"key": "promo_proxy", "label": "优惠IP/代理（URL 或两位地区码）", "type": "text",
+                  "placeholder": "TR 或 http://user:pass@host:port"},
+                 {"key": "billing_country", "label": "账单国家", "type": "select",
+                  "options": ["US","TR","VN","BR","JP","IE","NL","DE","ID","SG","HK","GB","AU","CA","IN","MX"]},
+                 {"key": "promo_country", "label": "优惠国家", "type": "select",
+                  "options": ["TR","VN","BR","JP","US","IE","NL","DE"]},
+                 {"key": "billing_currency", "label": "账单币种（可空）", "type": "text"},
+                 {"key": "confirm_mode", "label": "Confirm模式", "type": "select",
+                  "options": ["pm", "direct"]},
+                 {"key": "max_attempts", "label": "最大重试次数", "type": "number"},
+             ]},
             {"id": "upload_cpa", "label": "上传 CPA",
              "params": [
                  {"key": "api_url", "label": "CPA API URL", "type": "text"},
@@ -770,6 +864,8 @@ class ChatGPTPlatform(BasePlatform):
             return self._handle_query_state(account, params)
         if action_id == "payment_link":
             return self._handle_generate_link(account, params)
+        if action_id == "extract_ba_link":
+            return self._handle_extract_ba_link(account, params)
         if action_id == "get_rt":
             result = self._handle_get_rt(account, params)
             if not bool(result.get("ok")):
@@ -928,6 +1024,8 @@ class ChatGPTPlatform(BasePlatform):
 
         if action_id == "payment_link":
             return self._handle_generate_link(account, params)
+        if action_id == "extract_ba_link":
+            return self._handle_extract_ba_link(account, params)
 
         raise NotImplementedError(f"Unknown action: {action_id}")
 
@@ -2311,6 +2409,108 @@ class ChatGPTPlatform(BasePlatform):
             return captcha_solver.solve_turnstile(page_url, site_key)
 
         return _solver
+
+
+    def _handle_extract_ba_link(self, account: Account, params: dict) -> dict:
+        """双 IP 撞链提取 PayPal BA，成功后写回账号 pp_ba_token。"""
+        self.raise_if_cancelled()
+        extra = account.extra or {}
+        access_token = str(extra.get("access_token") or account.token or "").strip()
+        cookies = str(extra.get("cookies") or "").strip()
+        email = str(account.email or "").strip()
+        log_fn = getattr(self, "_log_fn", print)
+
+        from application.ba_link_extract import extract_ba_link
+        from application.pp_plus_ba import get_pp_plus_worker
+        from core.db import AccountModel, engine
+        from sqlmodel import Session, select
+
+        result = extract_ba_link(
+            access_token=access_token,
+            cookies=cookies,
+            email=email,
+            billing_proxy=str(params.get("billing_proxy") or params.get("billing_ip") or ""),
+            promo_proxy=str(params.get("promo_proxy") or params.get("promo_ip") or ""),
+            billing_country=str(params.get("billing_country") or params.get("country") or "US"),
+            promo_country=str(params.get("promo_country") or "TR"),
+            billing_currency=str(params.get("billing_currency") or params.get("currency") or ""),
+            confirm_mode=str(params.get("confirm_mode") or "pm"),
+            max_attempts=_int_param(params, "max_attempts", 20),
+            log_fn=log_fn,
+            cancel_check=getattr(self, "_cancel_check_fn", None),
+        )
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "error": str(result.get("error") or "提取 BA 链失败"),
+                "data": result.get("data") or {"steps": result.get("steps") or {}},
+            }
+
+        ba_token = str(result.get("ba_token") or "").strip()
+        ba_url = str(result.get("ba_url") or result.get("redirect_url") or "").strip()
+        saved = {}
+        account_id = 0
+        try:
+            account_id = int(params.get("account_id") or params.get("_account_id") or 0)
+        except Exception:
+            account_id = 0
+        if account_id <= 0:
+            with Session(engine) as session:
+                model = session.exec(
+                    select(AccountModel).where(
+                        AccountModel.platform == "chatgpt",
+                        AccountModel.email == email,
+                    )
+                ).first()
+                if model is not None:
+                    account_id = int(model.id or 0)
+        if ba_token:
+            if account_id <= 0:
+                return {
+                    "ok": False,
+                    "error": "提取成功但无法定位账号 ID 写回 BA",
+                    "data": {
+                        "ba_token": ba_token,
+                        "ba_url": ba_url,
+                        "url": ba_url,
+                        "steps": result.get("steps") or {},
+                    },
+                }
+            try:
+                saved = get_pp_plus_worker().save_ba_token(account_id, ba_token)
+                log_fn(f"[BA提取] 已写回账号#{account_id} BA: {ba_token}")
+            except Exception as exc:
+                log_fn(f"[BA提取] 写回 BA 失败: {exc}")
+                return {
+                    "ok": False,
+                    "error": f"提取成功但写回失败: {exc}",
+                    "data": {
+                        "ba_token": ba_token,
+                        "ba_url": ba_url,
+                        "url": ba_url,
+                        "steps": result.get("steps") or {},
+                    },
+                }
+
+        data = dict(result.get("data") or {})
+        data.update(
+            {
+                "ba_token": ba_token,
+                "pp_ba_token": ba_token,
+                "ba_url": ba_url,
+                "url": ba_url,
+                "cashier_url": ba_url,
+                "message": f"已提取并保存 BA 链 {ba_token}",
+                "saved": saved,
+                "account_id": account_id,
+                "steps": result.get("steps") or data.get("steps") or {},
+                "billing_country": result.get("billing_country"),
+                "promo_country": result.get("promo_country"),
+                "amount": result.get("amount"),
+                "cs_id": result.get("cs_id"),
+            }
+        )
+        return {"ok": True, "data": data, "error": ""}
 
     def _handle_generate_link(self, account: Account, params: dict) -> dict:
         """Handle generate_link capability for ChatGPT.

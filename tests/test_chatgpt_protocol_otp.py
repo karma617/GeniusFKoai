@@ -229,21 +229,22 @@ def test_signup_form_recovers_from_invalid_state_by_reauthorizing():
     assert any("invalid_state" in message for message in engine.logs)
 
 
-def test_check_sentinel_prefers_quickjs_token(monkeypatch):
+def test_check_sentinel_prefers_vm_pow_token(monkeypatch):
     from platforms.chatgpt.authflow_experimental import sentinel_quickjs
 
     engine = _bare_engine()
-    captured = {}
+    calls = {"vm": 0, "quickjs": 0}
 
     class FakeHTTPClient:
         default_headers = {"User-Agent": "ua-test"}
         session = object()
 
         def post(self, *_args, **_kwargs):
-            raise AssertionError("legacy sentinel should not be called")
+            calls["vm"] += 1
+            return _SentinelResponse()
 
-    def quickjs_tokens(*_args, **kwargs):
-        captured.update(kwargs)
+    def quickjs_tokens(*_args, **_kwargs):
+        calls["quickjs"] += 1
         return {
             "token": json.dumps(
                 {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "authorize_continue"}
@@ -251,63 +252,159 @@ def test_check_sentinel_prefers_quickjs_token(monkeypatch):
             "so_token": '{"so":"quick-so","c":"quick-c","id":"device-id","flow":"authorize_continue"}',
         }
 
-    monkeypatch.setattr(
-        sentinel_quickjs,
-        "get_sentinel_tokens_via_quickjs",
-        quickjs_tokens,
-    )
+    monkeypatch.setattr(sentinel_quickjs, "get_sentinel_tokens_via_quickjs", quickjs_tokens)
     engine.http_client = FakeHTTPClient()
 
     payload = engine._check_sentinel("device-id", flow="authorize_continue")
+
+    assert payload is not None
+    assert payload.p.startswith("gAAAAA")
+    assert payload.t == ""
+    assert payload.c == "legacy-c"
+    assert payload.flow == "authorize_continue"
+    assert payload.so_token == ""
+    assert calls == {"vm": 1, "quickjs": 0}
+
+
+def test_check_sentinel_falls_back_to_quickjs_when_vm_pow_missing(monkeypatch):
+    from platforms.chatgpt.authflow_experimental import sentinel_quickjs
+
+    engine = _bare_engine()
+    captured = {}
+
+    class FailedSentinelResponse:
+        status_code = 500
+        text = "sentinel down"
+
+        def json(self):
+            return {}
+
+    class FakeHTTPClient:
+        default_headers = {"User-Agent": "ua-test", "Accept-Language": "en-US,en;q=0.5"}
+        session = object()
+
+        def post(self, *_args, **_kwargs):
+            return FailedSentinelResponse()
+
+    def quickjs_tokens(*_args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "token": json.dumps(
+                {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "username_password_create"}
+            ),
+            "so_token": "",
+        }
+
+    monkeypatch.setattr(sentinel_quickjs, "get_sentinel_tokens_via_quickjs", quickjs_tokens)
+    engine.http_client = FakeHTTPClient()
+
+    payload = engine._check_sentinel("device-id", flow="username_password_create")
 
     assert payload == SentinelPayload(
         p="quick-p",
         t="quick-t",
         c="quick-c",
-        flow="authorize_continue",
-        so_token='{"so":"quick-so","c":"quick-c","id":"device-id","flow":"authorize_continue"}',
+        flow="username_password_create",
     )
     assert captured["user_agent"] == "ua-test"
-    assert any("QuickJS Sentinel 已启用" in message for message in engine.logs)
+    assert captured["accept_language"] == "en-US,en;q=0.5"
+    assert any("QuickJS Sentinel 已生成" in message for message in engine.logs)
 
 
-def test_check_sentinel_falls_back_to_legacy_when_quickjs_missing(monkeypatch):
+def test_check_sentinel_falls_back_to_quickjs_when_dx_t_missing(monkeypatch):
+    from platforms.chatgpt import sentinel_vm
     from platforms.chatgpt.authflow_experimental import sentinel_quickjs
 
     engine = _bare_engine()
-    calls = {"legacy": 0}
+
+    class DxSentinelResponse:
+        status_code = 200
+        text = '{"token":"legacy-c","turnstile":{"dx":"dx"},"proofofwork":{"required":false}}'
+
+        def json(self):
+            return {
+                "token": "legacy-c",
+                "turnstile": {"dx": "dx"},
+                "proofofwork": {"required": False},
+            }
 
     class FakeHTTPClient:
-        default_headers = {"User-Agent": "ua-test"}
+        default_headers = {"User-Agent": "ua-test", "Accept-Language": "en-US,en;q=0.5"}
         session = object()
 
         def post(self, *_args, **_kwargs):
-            calls["legacy"] += 1
-            return _SentinelResponse()
+            return DxSentinelResponse()
 
-    monkeypatch.setattr(sentinel_quickjs, "get_sentinel_tokens_via_quickjs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sentinel_vm, "solve_turnstile_dx", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        sentinel_quickjs,
+        "get_sentinel_tokens_via_quickjs",
+        lambda *_args, **_kwargs: {
+            "token": json.dumps(
+                {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "authorize_continue"}
+            ),
+            "so_token": "",
+        },
+    )
     engine.http_client = FakeHTTPClient()
 
-    payload = engine._check_sentinel("device-id", flow="username_password_create")
+    payload = engine._check_sentinel("device-id", flow="authorize_continue")
 
-    assert payload is not None
-    assert payload.t == ""
-    assert payload.c == "legacy-c"
-    assert payload.flow == "username_password_create"
-    assert calls["legacy"] == 1
+    assert payload == SentinelPayload(p="quick-p", t="quick-t", c="quick-c", flow="authorize_continue")
 
 
-def test_platform_sentinel_header_prefers_quickjs_token(monkeypatch):
+def test_platform_sentinel_header_prefers_vm_pow_token(monkeypatch):
     from platforms.chatgpt.authflow_experimental import sentinel_quickjs
 
     engine = _bare_engine()
+    calls = {"quickjs": 0}
 
     class FakeClient:
         default_headers = {"User-Agent": "ua-test"}
         session = object()
 
         def post(self, *_args, **_kwargs):
-            raise AssertionError("legacy sentinel should not be called")
+            return _SentinelResponse()
+
+    monkeypatch.setattr(
+        sentinel_quickjs,
+        "get_sentinel_tokens_via_quickjs",
+        lambda *_args, **_kwargs: calls.__setitem__("quickjs", calls["quickjs"] + 1),
+    )
+
+    header = engine._build_sentinel_header_for_client(FakeClient(), "device-id", "oauth_create_account")
+
+    parsed = json.loads(header)
+    assert parsed["p"].startswith("gAAAAA")
+    assert parsed["t"] == ""
+    assert parsed["c"] == "legacy-c"
+    assert parsed["id"] == "device-id"
+    assert parsed["flow"] == "oauth_create_account"
+    assert calls["quickjs"] == 0
+
+
+def test_platform_sentinel_payload_uses_quickjs_when_so_required(monkeypatch):
+    from platforms.chatgpt.authflow_experimental import sentinel_quickjs
+
+    engine = _bare_engine()
+
+    class SoSentinelResponse:
+        status_code = 200
+        text = '{"token":"legacy-c","so":{"required":true,"collector_dx":"dx"},"proofofwork":{"required":false}}'
+
+        def json(self):
+            return {
+                "token": "legacy-c",
+                "so": {"required": True, "collector_dx": "dx"},
+                "proofofwork": {"required": False},
+            }
+
+    class FakeClient:
+        default_headers = {"User-Agent": "ua-test", "Accept-Language": "en-US,en;q=0.5"}
+        session = object()
+
+        def post(self, *_args, **_kwargs):
+            return SoSentinelResponse()
 
     monkeypatch.setattr(
         sentinel_quickjs,
@@ -316,23 +413,196 @@ def test_platform_sentinel_header_prefers_quickjs_token(monkeypatch):
             "token": json.dumps(
                 {"p": "quick-p", "t": "quick-t", "c": "quick-c", "id": "device-id", "flow": "oauth_create_account"}
             ),
-            "so_token": "",
+            "so_token": '{"so":"quick-so","c":"quick-c","id":"device-id","flow":"oauth_create_account"}',
         },
     )
 
-    header = engine._build_sentinel_header_for_client(FakeClient(), "device-id", "oauth_create_account")
+    payload = engine._build_sentinel_payload_for_client(FakeClient(), "device-id", "oauth_create_account")
 
-    assert json.loads(header) == {
-        "p": "quick-p",
-        "t": "quick-t",
-        "c": "quick-c",
+    # When VM already produced a valid path, only merge so_token from QuickJS.
+    # Do not overwrite p/c/t with QuickJS placeholders (HAR create_account keeps long VM t).
+    assert payload.p.startswith("gAAAAA")
+    assert payload.t == ""
+    assert payload.c == "legacy-c"
+    assert payload.flow == "oauth_create_account"
+    assert payload.so_token == '{"so":"quick-so","c":"quick-c","id":"device-id","flow":"oauth_create_account"}'
+
+
+def test_check_sentinel_keeps_vm_t_when_so_required(monkeypatch):
+    from platforms.chatgpt import sentinel_vm
+    from platforms.chatgpt.authflow_experimental import sentinel_quickjs
+
+    engine = _bare_engine()
+    solved = []
+
+    class SoDxSentinelResponse:
+        status_code = 200
+        text = '{"token":"legacy-c","turnstile":{"dx":"dx"},"so":{"required":true,"snapshot_dx":"snap"},"proofofwork":{"required":false}}'
+
+        def json(self):
+            return {
+                "token": "legacy-c",
+                "turnstile": {"dx": "dx"},
+                "so": {"required": True, "snapshot_dx": "snap"},
+                "proofofwork": {"required": False},
+            }
+
+    class FakeHTTPClient:
+        default_headers = {"User-Agent": "ua-test", "Accept-Language": "en-US,en;q=0.5"}
+        session = object()
+
+        def post(self, *_args, **_kwargs):
+            return SoDxSentinelResponse()
+
+    def fake_solve(dx_b64, p_token, user_agent="", sdk_url=""):
+        solved.append((dx_b64, p_token))
+        if dx_b64 == "snap":
+            return "so-value-from-vm"
+        return "vm-long-t" * 20
+
+    monkeypatch.setattr(sentinel_vm, "solve_turnstile_dx", fake_solve)
+    monkeypatch.setattr(
+        sentinel_quickjs,
+        "get_sentinel_tokens_via_quickjs",
+        lambda *_args, **_kwargs: {
+            "token": json.dumps(
+                {"p": "quick-p", "t": "1", "c": "quick-c", "id": "device-id", "flow": "oauth_create_account"}
+            ),
+            "so_token": '{"so":"quick-so"}',
+        },
+    )
+    engine.http_client = FakeHTTPClient()
+
+    payload = engine._check_sentinel("device-id", flow="oauth_create_account")
+
+    assert payload is not None
+    assert payload.t.startswith("vm-long-t")
+    assert payload.c == "legacy-c"
+    assert json.loads(payload.so_token)["so"] == "so-value-from-vm"
+    assert json.loads(payload.so_token)["c"] == "legacy-c"
+    assert any(item[0] == "snap" for item in solved)
+    assert not payload.p.startswith("quick-")
+
+
+
+
+
+
+def test_protocol_cookie_export_includes_device_id():
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+
+    class CookieJar:
+        def __iter__(self):
+            return iter([])
+
+        def items(self):
+            return [("login_session", "abc")]
+
+    class Session:
+        cookies = CookieJar()
+
+    engine.session = Session()
+    items = engine._latest_chatgpt_protocol_cookie_items()
+    names = {(c["name"], c["domain"]) for c in items}
+    assert ("oai-did", ".auth.openai.com") in names
+    assert ("login_session", ".auth.openai.com") in names
+
+
+def test_solve_session_observer_token_uses_snapshot_dx(monkeypatch):
+    from platforms.chatgpt import sentinel_vm
+
+    engine = _bare_engine()
+
+    monkeypatch.setattr(
+        sentinel_vm,
+        "solve_turnstile_dx",
+        lambda dx_b64, p_token, user_agent="", sdk_url="": f"so-for-{dx_b64}",
+    )
+    token = engine._solve_session_observer_token(
+        device_id="device-id",
+        flow="oauth_create_account",
+        challenge={
+            "token": "challenge-c",
+            "so": {"required": True, "snapshot_dx": "snap-dx"},
+        },
+        request_p="req-p",
+        user_agent="ua-test",
+    )
+    assert json.loads(token) == {
+        "so": "so-for-snap-dx",
         "id": "device-id",
         "flow": "oauth_create_account",
+        "c": "challenge-c",
     }
 
 
-def test_create_account_sends_quickjs_sentinel_so_token():
+def test_latest_chatgpt_json_headers_include_access_flow_id():
     engine = _bare_engine()
+    engine._device_id = "device-id"
+    headers = engine._latest_chatgpt_json_headers(referer="https://auth.openai.com/about-you")
+    assert headers["oai-device-id"] == "device-id"
+    assert headers["x-access-flow-invocation-id"]
+    assert headers["content-type"] == "application/json"
+
+
+def test_latest_chatgpt_warmup_finalize_when_prepare_ready(monkeypatch):
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    calls = []
+
+    class PrepareResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "prepare_token": "prep-token",
+                "proofofwork": {"required": True, "seed": "0.1", "difficulty": "0"},
+                "turnstile": {"required": True, "dx": "dx"},
+                "so": {"required": True, "snapshot_dx": "snap"},
+            }
+
+    class FinalizeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"ok": True}
+
+    class WarmSession:
+        def get(self, url, headers=None, params=None, timeout=None):
+            calls.append(("get", url))
+            return PrepareResponse()
+
+        def post(self, url, headers=None, data=None, timeout=None):
+            calls.append(("post", url, data, headers))
+            if "finalize" in url:
+                return FinalizeResponse()
+            return PrepareResponse()
+
+    engine.session = WarmSession()
+    monkeypatch.setattr(
+        "platforms.chatgpt.sentinel_vm.solve_turnstile_dx",
+        lambda *_args, **_kwargs: "turnstile-token",
+    )
+    engine._latest_chatgpt_has_cf_clearance = lambda: True
+    engine._latest_chatgpt_seed_cf_clearance_via_headless = lambda *_a, **_k: True
+    engine._latest_chatgpt_warmup_chatgpt_anon_session("device-id")
+    assert any(item[0] == "post" and "prepare" in item[1] for item in calls)
+    assert any(item[0] == "post" and "finalize" in item[1] for item in calls)
+    finalize_call = next(item for item in calls if item[0] == "post" and "finalize" in item[1])
+    body = json.loads(finalize_call[2])
+    assert body["prepare_token"] == "prep-token"
+    assert body["turnstile"] == "turnstile-token"
+    assert body["proofofwork"].startswith("gAAAAA")
+
+
+def test_create_account_sends_quickjs_sentinel_so_token(monkeypatch):
+    monkeypatch.setenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", "1")
+    engine = _bare_engine()
+    engine._latest_chatgpt_has_cf_clearance = lambda: True
+    engine._latest_chatgpt_seed_cf_clearance_via_headless = lambda *_a, **_k: True
     captured = {}
 
     class DumpResponse:
@@ -555,7 +825,7 @@ def test_latest_chatgpt_register_flow_uses_login_hint_and_session(monkeypatch):
     assert not any(item[1] == "https://auth.openai.com/api/accounts/client_auth_session_dump" for item in calls)
 
 
-def test_latest_chatgpt_session_uses_firefox144(monkeypatch):
+def test_latest_chatgpt_session_uses_firefox135(monkeypatch):
     engine = _bare_engine()
     created = {}
 
@@ -573,9 +843,10 @@ def test_latest_chatgpt_session_uses_firefox144(monkeypatch):
 
     assert engine._init_latest_chatgpt_session() is True
     assert created["proxy_url"] == "http://127.0.0.1:7897"
-    assert created["config"].impersonate == "firefox144"
+    assert created["config"].impersonate == "firefox135"
     assert created["config"].timeout == 60
     assert created["client"].default_headers["User-Agent"] == register_module.LATEST_CHATGPT_FIREFOX_USER_AGENT
+    assert created["client"].default_headers["Accept-Language"] == "en-US,en;q=0.5"
     assert engine.session is created["session"]
 
 
@@ -853,6 +1124,328 @@ def test_latest_chatgpt_create_account_retries_transport_error(monkeypatch):
 
     assert engine._latest_chatgpt_create_account_with_retry() is True
     assert calls["create"] == 2
+
+
+def test_latest_chatgpt_init_uses_browser_signin_headers_and_params():
+    engine = _bare_engine()
+    captured = {}
+
+    class Response:
+        def __init__(self, data=None, status_code=200, headers=None):
+            self.status_code = status_code
+            self._data = data if data is not None else {}
+            self.text = json.dumps(self._data)
+            self.headers = headers or {}
+
+        def json(self):
+            return self._data
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+
+        def get(self, url, headers=None, **_kwargs):
+            captured.setdefault("gets", []).append((url, headers or {}))
+            if url == "https://chatgpt.com/api/auth/csrf":
+                return Response({"csrfToken": "csrf-token"})
+            return Response()
+
+        def post(self, url, headers=None, data=None, **_kwargs):
+            captured["signin_url"] = url
+            captured["signin_headers"] = headers or {}
+            captured["signin_body"] = data
+            return Response({"url": "https://auth.openai.com/email-verification"})
+
+    engine.session = Session()
+
+    ok, error = engine._latest_chatgpt_init_email_oauth()
+
+    assert ok is True
+    assert error == ""
+    assert "ext-passkey-client-capabilities" not in captured["signin_url"]
+    assert "ext-oai-did=old-did" in captured["signin_url"]
+    assert "auth_session_logging_id=" in captured["signin_url"]
+    assert "login_hint=new%40example.com" in captured["signin_url"]
+    assert captured["signin_body"] == "callbackUrl=https%3A%2F%2Fchatgpt.com%2F&csrfToken=csrf-token&json=true"
+    assert captured["signin_headers"]["accept"] == "application/json"
+    assert captured["signin_headers"]["content-type"] == "application/x-www-form-urlencoded"
+    assert captured["signin_headers"]["origin"] == "https://chatgpt.com"
+    assert captured["signin_headers"]["referer"] == "https://chatgpt.com/"
+    assert captured["signin_headers"]["sec-fetch-dest"] == "empty"
+    assert captured["signin_headers"]["sec-fetch-mode"] == "cors"
+    assert captured["signin_headers"]["sec-fetch-site"] == "same-origin"
+    assert captured["signin_headers"]["accept-language"] == "en-US,en;q=0.5"
+    assert "priority" not in captured["signin_headers"]
+    assert "Firefox/135" in captured["signin_headers"]["user-agent"]
+    assert "sec-ch-ua" not in captured["signin_headers"]
+
+
+def test_latest_chatgpt_validate_email_otp_uses_auth_json_browser_headers(monkeypatch):
+    monkeypatch.setenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", "1")
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    engine._check_sentinel = lambda did, flow="authorize_continue": SentinelPayload(
+        p="proof",
+        t="turnstile",
+        c="challenge",
+        flow=flow,
+        so_token='{"so":"otp-so"}',
+    )
+
+    class Session:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, headers=None, data=None, **kwargs):
+            self.posts.append((url, headers or {}, data, kwargs))
+            return _OtpSuccessResponse()
+
+    engine.session = Session()
+
+    payload = engine._latest_chatgpt_validate_email_otp("123456")
+
+    assert payload["page"]["type"] == "about_you"
+    _url, headers, data, _kwargs = engine.session.posts[0]
+    assert json.loads(data) == {"code": "123456"}
+    assert headers["accept"] == "application/json"
+    assert headers["content-type"] == "application/json"
+    assert headers["origin"] == "https://auth.openai.com"
+    assert headers["referer"] == "https://auth.openai.com/email-verification"
+    assert headers["oai-device-id"] == "device-id"
+    assert headers["sec-fetch-dest"] == "empty"
+    assert headers["sec-fetch-mode"] == "cors"
+    assert headers["sec-fetch-site"] == "same-origin"
+    assert headers["accept-language"] == "en-US,en;q=0.5"
+    assert "priority" not in headers
+    assert "traceparent" in headers
+    assert "x-access-flow-invocation-id" in headers
+    assert "openai-sentinel-token" in headers
+
+
+def test_latest_chatgpt_validate_email_otp_retries_with_authorize_continue_sentinel(monkeypatch):
+    monkeypatch.setenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", "1")
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    sentinel_calls = {"n": 0}
+
+    class FirstRejectedResponse:
+        status_code = 403
+        text = '{"error":{"code":"sentinel_required"}}'
+
+        def json(self):
+            return {"error": {"code": "sentinel_required"}}
+
+    class Session:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, headers=None, data=None, **kwargs):
+            self.posts.append((url, headers or {}, data, kwargs))
+            if len(self.posts) == 1:
+                return FirstRejectedResponse()
+            return _OtpSuccessResponse()
+
+    def fake_check_sentinel(did, flow="authorize_continue"):
+        sentinel_calls["n"] += 1
+        return SentinelPayload(
+            p=f"proof-{sentinel_calls['n']}",
+            t=f"turnstile-{sentinel_calls['n']}",
+            c=f"challenge-{sentinel_calls['n']}",
+            flow=flow,
+            so_token='{"so":"otp-so"}' if sentinel_calls["n"] == 1 else "",
+        )
+
+    engine.session = Session()
+    engine._check_sentinel = fake_check_sentinel
+
+    payload = engine._latest_chatgpt_validate_email_otp("123456")
+
+    assert payload["page"]["type"] == "about_you"
+    assert len(engine.session.posts) == 2
+    first_headers = engine.session.posts[0][1]
+    retry_headers = engine.session.posts[1][1]
+    # HAR 对齐：首次 OTP validate 就带 authorize_continue Sentinel / so-token。
+    assert json.loads(first_headers["openai-sentinel-token"]) == {
+        "p": "proof-1",
+        "t": "turnstile-1",
+        "c": "challenge-1",
+        "id": "device-id",
+        "flow": "authorize_continue",
+    }
+    assert first_headers["openai-sentinel-so-token"] == '{"so":"otp-so"}'
+    assert json.loads(retry_headers["openai-sentinel-token"]) == {
+        "p": "proof-2",
+        "t": "turnstile-2",
+        "c": "challenge-2",
+        "id": "device-id",
+        "flow": "authorize_continue",
+    }
+    assert any("补 authorize_continue Sentinel 后重试" in message for message in engine.logs)
+
+
+
+def test_import_browser_cookies_only_names_filters_auth_state():
+    engine = _bare_engine()
+
+    class Jar:
+        def __init__(self):
+            self.seeded = []
+
+        def set(self, name, value, **kwargs):
+            self.seeded.append((name, value, kwargs.get("domain"), kwargs.get("path")))
+
+    class Session:
+        def __init__(self):
+            self.cookies = Jar()
+
+    engine.session = Session()
+    engine._seed_named_cookie = lambda name, value, domains=(): engine.session.cookies.set(
+        name, value, domain=(domains[0] if domains else ""), path="/"
+    )
+
+    engine._latest_chatgpt_import_browser_cookies(
+        [
+            {"name": "cf_clearance", "value": "cf-1", "domain": ".auth.openai.com", "path": "/"},
+            {"name": "oai-client-auth-session", "value": "auth-should-skip", "domain": ".auth.openai.com", "path": "/"},
+            {"name": "__cf_bm", "value": "bm-1", "domain": ".auth.openai.com", "path": "/"},
+            {"name": "login_session", "value": "login-should-skip", "domain": "auth.openai.com", "path": "/"},
+        ],
+        only_names={"cf_clearance", "__cf_bm", "__cflb", "_cfuvid"},
+    )
+
+    names = [item[0] for item in engine.session.cookies.seeded]
+    assert "cf_clearance" in names
+    assert "__cf_bm" in names
+    assert "oai-client-auth-session" not in names
+    assert "login_session" not in names
+
+
+def test_latest_chatgpt_headless_auth_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("OPENAI_PROTOCOL_ENABLE_HEADLESS_AUTH", raising=False)
+    monkeypatch.delenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", raising=False)
+    engine = _bare_engine()
+    try:
+        engine._latest_chatgpt_headless_auth_json(
+            url="https://auth.openai.com/api/accounts/email-otp/validate",
+            body="{}",
+            referer="https://auth.openai.com/email-verification",
+            headers={},
+            label="test",
+        )
+        assert False, "expected headless auth to be disabled by default"
+    except RuntimeError as exc:
+        assert "headless_auth_disabled_by_default" in str(exc)
+
+
+def test_latest_chatgpt_create_account_uses_auth_json_browser_headers(monkeypatch):
+    monkeypatch.setenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", "1")
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    engine._latest_chatgpt_has_cf_clearance = lambda: True
+    engine._latest_chatgpt_seed_cf_clearance_via_headless = lambda *_a, **_k: True
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=abc"}'
+
+        def json(self):
+            return {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc"}
+
+    class Session:
+        def post(self, url, headers=None, data=None, **_kwargs):
+            captured["url"] = url
+            captured["headers"] = headers or {}
+            captured["data"] = data
+            return Response()
+
+    engine.session = Session()
+    engine._check_sentinel = lambda *_args, **_kwargs: SentinelPayload(
+        p="proof",
+        t="turnstile",
+        c="challenge",
+        flow="oauth_create_account",
+        so_token="session-observer",
+    )
+    monkeypatch.setattr(
+        register_module,
+        "generate_random_user_info",
+        lambda: {"name": "Jane Doe", "birthdate": "1990-01-01"},
+    )
+
+    assert engine._latest_chatgpt_create_user_account() is True
+
+    headers = captured["headers"]
+    assert captured["url"] == "https://auth.openai.com/api/accounts/create_account"
+    assert json.loads(captured["data"]) == {"name": "Jane Doe", "birthdate": "1990-01-01"}
+    assert headers["accept"] == "application/json"
+    assert headers["content-type"] == "application/json"
+    assert headers["origin"] == "https://auth.openai.com"
+    assert headers["referer"] == "https://auth.openai.com/about-you"
+    assert headers["oai-device-id"] == "device-id"
+    assert headers["sec-fetch-dest"] == "empty"
+    assert headers["sec-fetch-mode"] == "cors"
+    assert headers["sec-fetch-site"] == "same-origin"
+    assert headers["accept-language"] == "en-US,en;q=0.5"
+    assert "priority" not in headers
+    assert "traceparent" in headers
+    assert json.loads(headers["openai-sentinel-token"]) == {
+        "p": "proof",
+        "t": "turnstile",
+        "c": "challenge",
+        "id": "device-id",
+        "flow": "oauth_create_account",
+    }
+    assert headers["openai-sentinel-so-token"] == "session-observer"
+
+
+def test_platform_reference_create_account_includes_session_observer_token(monkeypatch):
+    engine = _bare_engine()
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=abc"}'
+
+        def json(self):
+            return {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc"}
+
+    class Session:
+        def post(self, url, headers=None, data=None, **_kwargs):
+            raise AssertionError("must go through _platform_request_with_retry")
+
+    client = type("Client", (), {"session": Session(), "default_headers": {"User-Agent": "Mozilla/5.0 Firefox/144"}})()
+    engine._build_sentinel_payload_for_client = lambda *_args, **_kwargs: SentinelPayload(
+        p="proof",
+        t="turnstile",
+        c="challenge",
+        flow="oauth_create_account",
+        so_token="session-observer",
+    )
+    monkeypatch.setattr(
+        register_module,
+        "generate_random_user_info",
+        lambda: {"name": "Jane Doe", "birthdate": "1990-01-01"},
+    )
+
+    def request_with_retry(session, method, url, **kwargs):
+        captured["headers"] = kwargs["headers"]
+        captured["data"] = kwargs["data"]
+        return Response(), ""
+
+    engine._platform_request_with_retry = request_with_retry
+
+    engine._platform_reference_create_account(client, "device-id")
+
+    headers = captured["headers"]
+    assert json.loads(headers["openai-sentinel-token"]) == {
+        "p": "proof",
+        "t": "turnstile",
+        "c": "challenge",
+        "id": "device-id",
+        "flow": "oauth_create_account",
+    }
+    assert headers["openai-sentinel-so-token"] == "session-observer"
 
 
 def test_latest_chatgpt_init_signin_403_records_response_hint():
@@ -1400,6 +1993,128 @@ def test_platform_login_validate_preserves_deactivated_response_without_retry():
     assert "deleted or deactivated" in response.text
     assert client.session.posts == 1
     assert any("保留首次响应不重复提交 OTP" in message for message in engine.logs)
+
+
+def test_latest_account_deactivated_switches_to_login_and_saves_session(monkeypatch):
+    engine = _bare_engine()
+    result = register_module.RegistrationResult(success=False, logs=engine.logs)
+    calls = []
+
+    class Client:
+        session = object()
+
+    class LoginOkResponse:
+        status_code = 200
+        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz"}'
+
+        def json(self):
+            return {
+                "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz",
+                "page": {"type": "done"},
+            }
+
+    engine.http_client = Client()
+    engine.session = engine.http_client.session
+    engine._reset_latest_chatgpt_session_for_retry = lambda: None
+    engine._read_oai_did_cookie = lambda: "device-id"
+    engine._set_oai_did_for_session = lambda session, device_id: calls.append(("did", device_id))
+    engine._refresh_mailbox_before_ids = lambda: calls.append(("refresh", "")) or set()
+    engine._platform_reference_prepare_existing_login_otp = lambda client, device_id: calls.append(("prepare", device_id))
+    engine._wait_platform_reference_register_code = lambda client: "123456"
+    engine._validate_platform_login_otp = lambda client, device_id, code: LoginOkResponse()
+
+    def finish_session(target):
+        target.success = True
+        target.email = engine.email
+        target.access_token = "access-token"
+        target.session_token = "session-token"
+        target.source = "login"
+        target.metadata = {
+            "session": {"accessToken": "access-token", "sessionToken": "session-token"},
+            "cookies": "__Secure-next-auth.session-token=session-token",
+            "chatgpt_session_source": "latest_account_deactivated_login",
+        }
+        return target
+
+    engine._latest_chatgpt_fetch_session_result = finish_session
+
+    actual = engine._latest_chatgpt_login_after_account_deactivated(result)
+
+    assert actual.success is True
+    assert actual.source == "login"
+    assert actual.metadata["session"]["accessToken"] == "access-token"
+    assert actual.metadata["cookies"]
+    assert engine._is_existing_account is True
+    assert ("prepare", "device-id") in calls
+
+
+def test_latest_account_deactivated_login_403_marks_invalid_email():
+    engine = _bare_engine()
+    result = register_module.RegistrationResult(success=False, logs=engine.logs)
+    marks = []
+
+    class Client:
+        session = object()
+
+    class LoginRejectedResponse:
+        status_code = 403
+        text = '{"error":{"code":"account_deactivated"}}'
+
+        def json(self):
+            return {"error": {"code": "account_deactivated"}}
+
+    class EmailService:
+        def mark_invalid_email(self, *, reason: str = ""):
+            marks.append(reason)
+            return ["无效邮箱"]
+
+    engine.email_service = EmailService()
+    engine.http_client = Client()
+    engine.session = engine.http_client.session
+    engine._reset_latest_chatgpt_session_for_retry = lambda: None
+    engine._read_oai_did_cookie = lambda: "device-id"
+    engine._set_oai_did_for_session = lambda session, device_id: None
+    engine._refresh_mailbox_before_ids = lambda: set()
+    engine._platform_reference_prepare_existing_login_otp = lambda client, device_id: None
+    engine._wait_platform_reference_register_code = lambda client: "123456"
+    engine._validate_platform_login_otp = lambda client, device_id, code: LoginRejectedResponse()
+
+    actual = engine._latest_chatgpt_login_after_account_deactivated(result)
+
+    assert actual.success is False
+    assert "已标记无效邮箱" in actual.error_message
+    assert marks == ["account_deactivated_login_rejected"]
+    assert any("邮箱无效打标完成" in message for message in engine.logs)
+
+
+def test_latest_register_routes_account_deactivated_otp_to_login():
+    engine = _bare_engine()
+
+    engine._create_email = lambda: True
+    engine._init_latest_chatgpt_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: set()
+    engine._latest_chatgpt_init_email_oauth = lambda: (True, "")
+    engine._latest_chatgpt_init_final_url = "https://auth.openai.com/email-verification"
+    engine._get_verification_code = lambda resend_on_timeout=False: "123456"
+
+    def raise_deactivated(_code):
+        raise RuntimeError("account_deactivated")
+
+    def login_fallback(result):
+        result.success = True
+        result.email = engine.email
+        result.source = "login"
+        result.metadata = {"session": {"accessToken": "access-token"}}
+        return result
+
+    engine._latest_chatgpt_validate_email_otp = raise_deactivated
+    engine._latest_chatgpt_login_after_account_deactivated = login_fallback
+
+    result = engine.run_chatgpt_register_latest()
+
+    assert result.success is True
+    assert result.source == "login"
+    assert result.metadata["session"]["accessToken"] == "access-token"
 
 
 def test_create_user_account_deletes_mailbox_when_openai_marks_email_deactivated():

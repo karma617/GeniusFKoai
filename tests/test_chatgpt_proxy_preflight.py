@@ -64,6 +64,7 @@ def test_chatgpt_proxy_preflight_uses_runtime_pre_proxy(monkeypatch):
 
     class _Response:
         status_code = 200
+        text = ""
 
     class _Client:
         def __init__(self, proxy_url=None, config=None):
@@ -90,6 +91,32 @@ def test_chatgpt_proxy_preflight_uses_runtime_pre_proxy(monkeypatch):
     assert captured["proxy_url"] == "socks5://user:pass@gate.kookeey.info:1000"
     assert captured["config"].max_retries == 2
     assert captured["closed"] is True
+
+
+def test_chatgpt_proxy_preflight_records_exit_region_for_log(monkeypatch):
+    class _Response:
+        status_code = 200
+        text = "fl=1\nip=203.0.113.8\nloc=JP\n"
+
+    class _Client:
+        def __init__(self, proxy_url=None, config=None):
+            self.config = config
+
+        def get(self, url, **kwargs):
+            return _Response()
+
+        def close(self):
+            pass
+
+    proxy = "http://127.0.0.1:7897"
+    tasks._CHATGPT_PROXY_PREFLIGHT_DETAIL_CACHE.clear()
+    monkeypatch.setattr("platforms.chatgpt.http_client.OpenAIHTTPClient", _Client)
+
+    ok, detail = tasks._chatgpt_proxy_preflight(proxy)
+
+    assert ok is True
+    assert detail == "HTTP 200 (目标代理直连, 地区=JP, 出口IP=203.0.113.8)"
+    assert tasks._chatgpt_proxy_detail_for_log(proxy) == "目标代理直连, 地区=JP, 出口IP=203.0.113.8"
 
 
 def test_chatgpt_proxy_preflight_refreshes_local_node_on_transient_tls_error(monkeypatch):

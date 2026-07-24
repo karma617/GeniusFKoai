@@ -93,13 +93,14 @@ class _FakeWindow(_JSObj):
     def __init__(self, user_agent: str = "", sdk_url: str = ""):
         super().__init__()
         import time as _time
+        platform = "Win32" if "Windows" in (user_agent or "") else "MacIntel"
 
         self.navigator = _make_obj(
             userAgent=user_agent,
             language="en-US",
             languages=["en-US", "en"],
             hardwareConcurrency=8,
-            platform="MacIntel",
+            platform=platform,
             maxTouchPoints=0,
             cookieEnabled=True,
             webdriver=False,

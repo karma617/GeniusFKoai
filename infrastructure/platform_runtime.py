@@ -431,6 +431,9 @@ class PlatformRuntime:
                 else:
                     instance._cancel_check_fn = cancel_check
             account = build_platform_account(session, model)
+            # 给 action 透传数据库账号 ID，便于写回 overview（如 BA 链）
+            if isinstance(command.params, dict) and "account_id" not in command.params:
+                command.params = {**command.params, "account_id": int(model.id or 0)}
             try:
                 if callable(cancel_check) and cancel_check():
                     return ActionExecutionResult(ok=False, error="任务已取消")

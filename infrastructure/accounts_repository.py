@@ -60,6 +60,7 @@ def _tag_text(value: object) -> str:
 
 def _record_tag_values(item: AccountRecord) -> set[str]:
     overview = item.overview if isinstance(item.overview, dict) else {}
+    legacy_extra = overview.get("legacy_extra") if isinstance(overview.get("legacy_extra"), dict) else {}
     display_summary = item.display_summary if isinstance(item.display_summary, dict) else {}
     values: set[str] = set()
 
@@ -82,6 +83,8 @@ def _record_tag_values(item: AccountRecord) -> set[str]:
         overview.get("plan_name"),
         overview.get("membership_type"),
         overview.get("individual_membership_type"),
+        overview.get("registration_mode_label"),
+        legacy_extra.get("registration_mode_label"),
     ):
         text = _tag_text(value)
         if text and text != "unknown":
