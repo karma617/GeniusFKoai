@@ -86,6 +86,62 @@ def test_protocol_mailbox_delivery_delay_does_not_extend_short_timeout(monkeypat
     assert seen["timeout"] == 19
 
 
+def test_protocol_mailbox_reuses_initial_message_baseline_once():
+    import platforms.chatgpt.protocol_mailbox as protocol_mailbox
+
+    class Mailbox(_Mailbox):
+        def __init__(self):
+            super().__init__()
+            self.current_ids_calls = 0
+
+        def get_current_ids(self, account):
+            self.current_ids_calls += 1
+            return {f"message-{self.current_ids_calls}"}
+
+    mailbox = Mailbox()
+    service = protocol_mailbox._MailboxEmailService(
+        mailbox=mailbox,
+        mailbox_account=_MailboxAccount(),
+        provider="outlook_email_api",
+        log_fn=lambda message: None,
+    )
+
+    service.create_email()
+
+    assert service.refresh_before_ids() == {"message-1"}
+    assert mailbox.current_ids_calls == 1
+    assert service.refresh_before_ids() == {"message-2"}
+    assert mailbox.current_ids_calls == 2
+
+
+def test_protocol_mailbox_uses_identity_message_baseline_without_refetch():
+    import platforms.chatgpt.protocol_mailbox as protocol_mailbox
+
+    class Mailbox(_Mailbox):
+        def __init__(self):
+            super().__init__()
+            self.current_ids_calls = 0
+
+        def get_current_ids(self, account):
+            self.current_ids_calls += 1
+            return {"unexpected-refetch"}
+
+    mailbox = Mailbox()
+    service = protocol_mailbox._MailboxEmailService(
+        mailbox=mailbox,
+        mailbox_account=_MailboxAccount(),
+        provider="outlook_email_api",
+        log_fn=lambda message: None,
+        initial_before_ids={"identity-message"},
+    )
+
+    service.create_email()
+
+    assert mailbox.current_ids_calls == 0
+    assert service.refresh_before_ids() == {"identity-message"}
+    assert mailbox.current_ids_calls == 0
+
+
 def test_protocol_mailbox_raises_on_otp_timeout(monkeypatch):
 
     import platforms.chatgpt.protocol_mailbox as protocol_mailbox

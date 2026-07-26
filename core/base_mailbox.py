@@ -15,6 +15,7 @@ DEFAULT_LAOUDO_API_URL = "https://laoudo.com/api/email"
 DEFAULT_AITRE_API_URL = "https://mail.aitre.cc/api/tempmail"
 DEFAULT_TEMPMAIL_LOL_API_URL = "https://api.tempmail.lol/v2"
 DEFAULT_TEMPMAIL_WEB_BASE_URL = "https://web2.temp-mail.org"
+DEFAULT_SMSBOWER_MAIL_API_URL = "https://smsbower.page"
 
 
 @dataclass
@@ -254,6 +255,23 @@ def _create_testmail(extra: dict, proxy: str | None) -> 'BaseMailbox':
     )
 
 
+def _create_smsbower_mail(extra: dict, proxy: str | None) -> 'BaseMailbox':
+    from core.smsbower_mail_mailbox import SmsBowerMailMailbox
+
+    mailbox_proxy = str(extra.get("smsbower_mail_proxy") or extra.get("mailbox_proxy") or "").strip()
+    return SmsBowerMailMailbox(
+        api_url=extra.get("smsbower_mail_api_url", ""),
+        api_key=extra.get("smsbower_mail_api_key", ""),
+        service=extra.get("smsbower_mail_service", ""),
+        domain=extra.get("smsbower_mail_domain", ""),
+        alias=extra.get("smsbower_mail_alias", "0"),
+        max_price=extra.get("smsbower_mail_max_price", ""),
+        ref=extra.get("smsbower_mail_ref", ""),
+        poll_interval=extra.get("smsbower_mail_poll_interval", "3"),
+        proxy=mailbox_proxy or proxy,
+    )
+
+
 def _create_outlook_email(extra: dict, proxy: str | None) -> 'BaseMailbox':
     from core.outlook_email_mailbox import OutlookEmailMailbox
 
@@ -366,6 +384,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "moemail_api": _create_moemail,
     "cfworker_admin_api": _create_cfworker,
     "testmail_api": _create_testmail,
+    "smsbower_mail_api": _create_smsbower_mail,
     "outlook_email_api": _create_outlook_email,
     "local_ms_pool": _create_local_ms_pool,
     "gmail_oauth_fission": _create_gmail_oauth_fission,
@@ -381,6 +400,7 @@ MAILBOX_FACTORY_REGISTRY = {
     "moemail": _create_moemail,
     "cfworker": _create_cfworker,
     "testmail": _create_testmail,
+    "smsbower_mail": _create_smsbower_mail,
     "outlook_email": _create_outlook_email,
     "local_ms": _create_local_ms_pool,
     "gmail_oauth": _create_gmail_oauth_fission,

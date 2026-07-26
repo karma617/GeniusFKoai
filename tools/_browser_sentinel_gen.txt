@@ -1,0 +1,120 @@
+3700|class _SentinelTokenGenerator:
+3701|    def __init__(self, device_id: str, user_agent: str):
+3702|        self.device_id = device_id or str(uuid.uuid4())
+3703|        self.user_agent = user_agent or _random_chrome_ua()
+3704|        self.sid = str(uuid.uuid4())
+3705|
+3706|    @staticmethod
+3707|    def _fnv1a32(text: str) -> str:
+3708|        h = 2166136261
+3709|        for ch in text:
+3710|            h ^= ord(ch)
+3711|            h = (h * 16777619) & 0xFFFFFFFF
+3712|        h ^= (h >> 16)
+3713|        h = (h * 2246822507) & 0xFFFFFFFF
+3714|        h ^= (h >> 13)
+3715|        h = (h * 3266489909) & 0xFFFFFFFF
+3716|        h ^= (h >> 16)
+3717|        return f"{h & 0xFFFFFFFF:08x}"
+3718|
+3719|    @staticmethod
+3720|    def _b64(data) -> str:
+3721|        return base64.b64encode(json.dumps(data, separators=(",", ":")).encode("utf-8")).decode("ascii")
+3722|
+3723|    def _config(self) -> list:
+3724|        perf_now = 1000 + random.random() * 49000
+3725|        return [
+3726|            "1920x1080",
+3727|            time.strftime("%a, %d %b %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)", time.gmtime()),
+3728|            4294705152,
+3729|            random.random(),
+3730|            self.user_agent,
+3731|            SENTINEL_SDK_URL,
+3732|            None,
+3733|            None,
+3734|            "en-US",
+3735|            "en-US,en",
+3736|            random.random(),
+3737|            "webkitTemporaryStorage−undefined",
+3738|            "location",
+3739|            "Object",
+3740|            perf_now,
+3741|            self.sid,
+3742|            "",
+3743|            random.choice([4, 8, 12, 16]),
+3744|            int(time.time() * 1000 - perf_now),
+3745|        ]
+3746|
+3747|    def generate_requirements_token(self) -> str:
+3748|        cfg = self._config()
+3749|        cfg[3] = 1
+3750|        cfg[9] = round(5 + random.random() * 45)
+3751|        return "gAAAAAC" + self._b64(cfg)
+3752|
+3753|    def generate_token(self, seed: str, difficulty: str) -> str:
+3754|        max_attempts = 500000
+3755|        cfg = self._config()
+3756|        start_ms = int(time.time() * 1000)
+3757|        diff = str(difficulty or "0")
+3758|        for nonce in range(max_attempts):
+3759|            cfg[3] = nonce
+3760|            cfg[9] = round(int(time.time() * 1000) - start_ms)
+3761|            encoded = self._b64(cfg)
+3762|            digest = self._fnv1a32((seed or "") + encoded)
+3763|            if digest[: len(diff)] <= diff:
+3764|                return "gAAAAAB" + encoded + "~S"
+3765|        return "gAAAAAB" + self._b64(None)
+3766|
+3767|
+3768|def _browser_fetch(page, url: str, *, method: str = "GET", headers: dict | None = None, body: str | None = None, redirect: str = "manual", timeout_ms: int = 30000) -> dict:
+3769|    return page.evaluate(
+3770|        """
+3771|        async ({ url, method, headers, body, redirect, timeoutMs }) => {
+3772|          const controller = new AbortController();
+3773|          const timer = setTimeout(() => controller.abort(new Error(`fetch timeout after ${timeoutMs}ms`)), timeoutMs);
+3774|          try {
+3775|            const resp = await fetch(url, {
+3776|              method,
+3777|              headers: headers || {},
+3778|              body: body === null ? undefined : body,
+3779|              redirect,
+3780|              signal: controller.signal,
+3781|            });
+3782|            const respHeaders = {};
+3783|            resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+3784|            let text = '';
+3785|            try { text = await resp.text(); } catch {}
+3786|            let data = null;
+3787|            try { data = JSON.parse(text); } catch {}
+3788|            return { ok: resp.ok, status: resp.status, url: resp.url || url, headers: respHeaders, text, data };
+3789|          } catch (e) {
+3790|            return { ok: false, status: 0, url, headers: {}, text: String(e && e.message || e), data: null };
+3791|          } finally {
+3792|            clearTimeout(timer);
+3793|          }
+3794|        }
+3795|        """,
+3796|        {
+3797|            "url": url,
+3798|            "method": method,
+3799|            "headers": headers or {},
+3800|            "body": body,
+3801|            "redirect": redirect,
+3802|            "timeoutMs": timeout_ms,
+3803|        },
+3804|    )
+3805|
+3806|
+3807|def _build_browser_sentinel_token(page, device_id: str, flow: str, user_agent: str) -> str:
+3808|    generator = _SentinelTokenGenerator(device_id, user_agent)
+3809|    req_body = json.dumps(
+3810|        {"p": generator.generate_requirements_token(), "id": device_id, "flow": flow},
+3811|        separators=(",", ":"),
+3812|    )
+3813|    result = _browser_fetch(
+3814|        page,
+3815|        SENTINEL_REQ_URL,
+3816|        method="POST",
+3817|        headers=_build_browser_headers(
+3818|            user_agent=user_agent,
+3819|            accept="*/*",

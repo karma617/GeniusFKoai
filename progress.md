@@ -6126,3 +6126,190 @@ egister.py` 通过。
 - `frontend/src/pages/Accounts.tsx`：调整提取BA链进度摘要样式，并新增步骤描述压缩显示逻辑。
 - `static/index.html`、`static/assets/index-Bue-4EIA.js`、`static/assets/index-Ds1sxOMe.css`：前端构建产物更新。
 - 回滚方式：还原 `frontend/src/pages/Accounts.tsx` 本轮变更，并重新执行前端构建；同时删除本段 progress 记录。
+
+## 2026-07-25 - Task: 协议注册对齐有头 HAR 头信息/Sentinel SDK
+
+### 目标
+- 对照 `tools/captures/register-20260725-010100-ArlanBrando080676_hotmail.com.har` 修正协议注册请求头与 Sentinel SDK 参数，降低协议号秒死/风控概率。
+
+### 关键差异（HAR vs 旧协议）
+1. User-Agent：有头为 Macintosh Firefox/135，协议旧为 Windows Firefox/135。
+2. oai-client-version/build：有头 prod-2c08737... / 8578659，协议旧值过期。
+3. Sentinel p 载荷：
+   - /sentinel/req 使用 versioned .../sentinel/20260219f9f6/sdk.js + mozGetUserMedia，前缀 gAAAAAC...~S
+   - create_account final p 使用 .../backend-api/sentinel/sdk.js + plugins-[object PluginArray]，前缀 gAAAAAB...~S
+   - 旧实现把两种 SDK URL 写反，且 capability probe 不像真实 Firefox。
+4. chat-requirements/prepare 的 p 使用 CF jsd script + client version。
+5. auth.openai.com JSON（email-otp/create_account）不发送 oai-device-id；设备身份走 oai-did cookie + sentinel id。
+
+### 改动
+- platforms/chatgpt/register.py：UA/client version、_SentinelTokenGenerator 三阶段 token、final p、auth JSON headers。
+- tests/test_chatgpt_protocol_otp.py：同步断言与 HAR shape 回归。
+
+### 验证
+- python -m py_compile platforms/chatgpt/register.py
+- python tools/_verify_sentinel_shapes.py ALL PASSED
+- pytest tests/test_chatgpt_protocol_otp.py -> 53 passed
+
+### 回滚点
+- 恢复 platforms/chatgpt/register.py 与 tests/test_chatgpt_protocol_otp.py 本轮 diff 即可。
+
+## 2026-07-25 - Task: 新增 SMSBROWER谷歌邮箱 provider
+
+### 目标
+- 在邮箱服务-第三方服务下新增 SMSBower 谷歌邮箱，注册任务可选后自动 getActivation 取号并 getCode 收码。
+
+### 实现
+- core/smsbower_mail_mailbox.py: SMSBower mail API 封装
+- core/base_mailbox.py: 注册 factory
+- infrastructure/provider_definitions_repository.py: 第三方服务定义（默认 domain=gmail.com, service=dr）
+- providers/mailbox/smsbower_mail.py: 统一 registry 注册
+- tests/test_smsbower_mail_mailbox.py: 工厂/取号/收码回归
+
+### 验证
+- pytest tests/test_smsbower_mail_mailbox.py
+- 实网 probe: service=dr domain=gmail.com 可 getActivation，随后 setStatus=2 取消
+
+### 回滚点
+- 删除上述新增文件与定义/注册即可。
+
+## 2026-07-26 - Task: 缩短稳定协议注册链路的邮箱基线读取耗时
+
+### What was done
+- 复用协议邮箱 worker 在领取邮箱时已读取的邮件 ID 基线，移除注册主链紧接着发生的一次重复邮箱接口请求。
+- 缓存只消费一次；初始化重试、OTP 重发和状态恢复仍重新读取最新邮件 ID，原注册步骤与请求顺序保持不变。
+- 同步记录协议注册耗时优化的行为边界与回归测试。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_mailbox.py tests\test_chatgpt_protocol_mailbox_fallback.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_mailbox_fallback.py -q --disable-warnings --tb=short`：7 passed。
+- `git diff --check -- platforms/chatgpt/protocol_mailbox.py tests/test_chatgpt_protocol_mailbox_fallback.py docs/chatgpt-register-flow.md`：通过，仅提示仓库既有 CRLF 转换信息。
+
+### Notes
+- `platforms/chatgpt/protocol_mailbox.py`：新增一次性复用初始邮件 ID 基线的状态。
+- `tests/test_chatgpt_protocol_mailbox_fallback.py`：验证首次刷新不重复请求、后续刷新仍请求最新基线。
+- `docs/chatgpt-register-flow.md`：说明本次耗时优化及不变的重试语义。
+- `progress.md`：追加本轮施工与验证记录。
+- 回滚方式：撤销以上四个文件中标题为“协议注册耗时优化（2026-07-26）”及一次性邮件基线复用相关的本轮 diff。
+
+## 2026-07-26 - Task: 避免单次协议注册重复启动无头 CF
+
+### What was done
+- 根据实跑日志定位到同一账号连续三次启动 Camoufox 且均未获取 `cf_clearance`，累计增加约 164 秒。
+- 每个注册引擎只保留一次无头 CF 获取尝试；首次失败后 OTP validate 和 `create_account` 继续按原协议请求执行，不再重复启动浏览器。
+- 新账号任务使用新的注册引擎，仍保留独立的一次 CF 获取机会。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q --disable-warnings --tb=short`：61 passed。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md`：通过，仅提示仓库既有 CRLF 转换信息。
+
+### Notes
+- `platforms/chatgpt/register.py`：记录本次注册是否已尝试无头 CF，并跳过后续重复启动。
+- `tests/test_chatgpt_protocol_otp.py`：新增同一次注册不重复尝试无头 CF 的回归测试。
+- `docs/chatgpt-register-flow.md`：补充一次性无头 CF 尝试的行为说明。
+- `progress.md`：追加本轮日志、修改和验证记录。
+- 回滚方式：撤销以上四个文件中与 `_latest_chatgpt_cf_attempted`、`test_headless_cf_failure_is_not_retried_in_same_registration` 及本任务记录有关的本轮 diff。
+
+## 2026-07-26 - Task: 补齐协议注册最终 callback/session 403 诊断
+
+### What was done
+- 最终 OAuth callback 或 ChatGPT session 接口返回 4xx 时，分别记录状态码、响应摘要和 Cloudflare Managed Challenge 分类。
+- 注册失败信息同时携带 callback/session 状态，明确区分“建号接口 200”和“最终 Web session 完成”。
+- 保持现有 callback、session 请求次数及成功判定不变。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_chatgpt_protocol_mailbox_fallback.py -q --disable-warnings --tb=short`：62 passed。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py docs/chatgpt-register-flow.md`：通过，仅提示仓库既有 CRLF 转换信息。
+
+### Notes
+- `platforms/chatgpt/register.py`：增加 callback/session 4xx 分类日志和状态化错误信息。
+- `tests/test_chatgpt_protocol_otp.py`：新增 callback/session 同为 403 的诊断回归测试。
+- `docs/chatgpt-register-flow.md`：补充最终会话失败的日志语义。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上四个文件中与 callback/session 拒绝诊断及本任务记录有关的本轮 diff。
+
+## 2026-07-26 - Task: 复用邮箱身份解析阶段的 OTP 邮件基线
+
+### What was done
+- 将邮箱身份解析阶段已经读取的 `before_ids` 传入 ChatGPT 协议邮箱 worker，避免进入 worker 后再次请求同一邮箱的消息列表。
+- 空邮箱基线也按有效结果复用；如果身份解析阶段读取失败并记录 `mailbox_baseline_error`，worker 仍重新读取一次，保留原失败恢复语义。
+- OTP 重发、初始化重试和状态恢复阶段继续刷新最新邮件基线。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\plugin.py tests\test_chatgpt_protocol_mailbox_fallback.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short`：63 passed。
+- `git diff --check -- platforms/chatgpt/protocol_mailbox.py platforms/chatgpt/plugin.py tests/test_chatgpt_protocol_mailbox_fallback.py docs/chatgpt-register-flow.md`：通过，仅提示仓库既有 CRLF 转换信息。
+
+### Notes
+- `platforms/chatgpt/plugin.py`：把身份材料中的邮件基线传给协议 worker，读取失败时保留重新获取路径。
+- `platforms/chatgpt/protocol_mailbox.py`：接收并一次性复用身份阶段邮件基线。
+- `tests/test_chatgpt_protocol_mailbox_fallback.py`：新增身份基线不重复请求邮箱接口的回归测试。
+- `docs/chatgpt-register-flow.md`：记录跨身份解析与协议 worker 的基线复用规则。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上五个文件中与 `initial_before_ids` 及本任务记录有关的本轮 diff。
+
+## 2026-07-26 - Task: 账号列表完整 JSON 仅复制 ChatGPT Session 响应
+
+### What was done
+- 将账号列表“复制完整 JSON”的内容收窄为该账号已保存的 `https://chatgpt.com/api/auth/session` 完整响应 JSON，不再复制账号记录、凭据、标签等列表字段。
+- 未保存 Session 响应的账号显示“无 Session JSON”并禁用复制，避免覆盖剪贴板或复制无关内容。
+
+### Testing
+- `npm run build`（`frontend`）：通过，TypeScript 编译和 Vite 生产构建成功。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_accounts.py::test_chatgpt_registered_account_persists_full_session_for_copy -q`：1 passed，确认完整 Session 响应持久化并由账号列表接口返回。
+- `git diff --check -- frontend/src/pages/Accounts.tsx docs/account-actions.md`：通过，仅提示仓库既有 CRLF 转换信息。
+- 检查生产构建产物包含新的 Session JSON 提示文案：通过。
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：列表复制按钮改用已保存的 ChatGPT Session JSON，并处理 Session 缺失状态。
+- `docs/account-actions.md`：更新“复制完整 JSON”的实际数据范围和缺失状态说明。
+- `progress.md`：追加本轮施工与验证记录。
+- 回滚方式：撤销以上三个文件中与本任务标题、`getAccountJsonText` 和“无 Session JSON”相关的本轮 diff，然后重新执行前端构建。
+
+## 2026-07-26 - Task: 修复 Outlook OTP 基线超时与协议注册恢复状态机
+
+### What was done
+- Outlook 邮件基线读取限制为 5 秒，并将临时请求失败向上传递，严格区分“邮箱确实为空”和“基线读取失败”。
+- OTP 列表、详情和异步 probe 请求共享外层等待截止时间；轮询请求单次最多 5 秒且不做内部三轮重试，避免 10 秒等待膨胀到一分钟以上。
+- 已知 OTP 发送时间时排除明确早于本次发送的历史邮件，避免基线异常后误取旧验证码。
+- OTP validate 对 `wrong_email_otp_code`、`invalid_state` 直接进入对应恢复分支，不再用同一验证码重复 Sentinel 提交；最后一次提交失败后不再读取无法继续提交的新验证码。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py platforms\chatgpt\register.py tests\test_outlook_email_mailbox.py tests\test_chatgpt_protocol_otp.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py tests\test_base_identity.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short`：103 passed。
+- `git diff --check -- core/outlook_email_mailbox.py platforms/chatgpt/register.py tests/test_outlook_email_mailbox.py tests/test_chatgpt_protocol_otp.py docs/outlook-email-provider.md docs/chatgpt-register-flow.md`：通过，仅提示仓库既有 CRLF 转换信息。
+
+### Notes
+- `core/outlook_email_mailbox.py`：增加邮件基线/轮询截止时间、异常传播和旧邮件时间过滤。
+- `platforms/chatgpt/register.py`：修正终止型 OTP 错误分流和最后一轮 `invalid_state` 恢复边界。
+- `tests/test_outlook_email_mailbox.py`：覆盖基线异常、旧验证码过滤和外层截止时间。
+- `tests/test_chatgpt_protocol_otp.py`：覆盖终止型 OTP 错误不重复提交及最后一轮不额外取码。
+- `docs/outlook-email-provider.md`：记录 Outlook 基线、轮询截止时间和旧邮件过滤规则。
+- `docs/chatgpt-register-flow.md`：记录 OTP 错误分流和三次提交边界。
+- `progress.md`：追加本轮施工与验证记录。
+- 回滚方式：撤销以上文件中 `OUTLOOK_EMAIL_BASELINE_TIMEOUT_SECONDS`、`_get_json_before_deadline`、终止型 OTP 错误集合、`otp_validate_attempt < 3` 及本任务测试/文档/日志相关的本轮 diff。
+
+## 2026-07-26 - Task: 修复 Outlook 已收验证码但协议注册漏取并误打标
+
+### What was done
+- 将 Outlook OTP 单次取信上限由固定 5 秒调整为本轮剩余时间且最多 10 秒，按收件箱、垃圾邮件逐目录扫描；收件箱命中后立即返回，收件箱传输失败时继续使用剩余时间检查垃圾邮件。
+- 区分“接口正常但没有新验证码”和 ReadTimeout、连接失败、502/503/504；传输故障最终记为 `mailbox_transport_timeout` 并保留邮箱标签，不再误打“无效邮箱”。
+- 已通过重启后的真实邮箱接口确认目标邮箱最新验证码位于 `top=10` 第一项，协议邮箱提取成功；同时移除本次回归误加到 `SavonTarsi9277@hotmail.com` 的“无效邮箱”标签。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py platforms\chatgpt\register.py tests\test_outlook_email_mailbox.py tests\test_chatgpt_protocol_otp.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py tests\test_base_identity.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short`：106 passed。
+- 重启 `outlookEmailPlus` 后实测目标邮箱：`top=10` 返回 10 封，第一项为 ID 23 的 ChatGPT 验证码邮件；`wait_for_code(timeout=10)` 成功提取 6 位验证码。
+- `git diff --check`：通过，仅提示仓库既有 LF/CRLF 转换信息。
+
+### Notes
+- `core/outlook_email_mailbox.py`：放宽单次 OTP 取信时间并改为逐目录即时扫描。
+- `platforms/chatgpt/register.py`：新增邮箱传输超时分类，阻止服务故障触发无效邮箱打标。
+- `tests/test_outlook_email_mailbox.py`：覆盖收件箱命中短路、收件箱失败后继续垃圾邮件。
+- `tests/test_chatgpt_protocol_otp.py`：覆盖邮箱接口传输超时不打无效标签。
+- `docs/outlook-email-provider.md`：更新取信截止时间、目录顺序和错误打标语义。
+- `docs/chatgpt-register-flow.md`：记录 `mailbox_transport_timeout` 与 `invalid_email_no_otp` 的边界。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上七个文件中与 10 秒请求上限、逐目录扫描、`mailbox_transport_timeout` 及本任务记录有关的本轮 diff；目标邮箱标签已恢复为回归前状态，如需重现旧状态可在邮箱管理页重新添加“无效邮箱”。

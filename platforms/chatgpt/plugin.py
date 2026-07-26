@@ -683,6 +683,11 @@ class ChatGPTPlatform(BasePlatform):
                 provider=(self.config.extra or {}).get("mail_provider", ""),
                 proxy_url=ctx.proxy,
                 log_fn=ctx.log,
+                initial_before_ids=(
+                    None
+                    if (getattr(ctx.identity, "metadata", {}) or {}).get("mailbox_baseline_error")
+                    else set(getattr(ctx.identity, "before_ids", set()) or set())
+                ),
                 skip_post_register_oauth=_bool_param(ctx.extra or {}, "k12_join", False),
                 k12_workspace_ids=str((ctx.extra or {}).get("k12_workspace_ids", "") or "").strip(),
                 remote_upload_enabled=_bool_param(ctx.extra or {}, "remote_upload_enabled", False),

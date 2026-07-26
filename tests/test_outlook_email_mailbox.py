@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime, timezone
 
 import pytest
 import requests
@@ -1080,6 +1082,89 @@ def test_outlook_email_plus_wait_for_code_prefers_async_probe_when_otp_time_know
     assert session.calls[1]["url"] == "https://mail.example.test/api/external/probe/probe-1"
 
 
+def test_outlook_email_plus_scans_inbox_before_requesting_junk(monkeypatch):
+    session = FakeSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "emails": [
+                            {
+                                "id": "latest-code",
+                                "subject": "Your temporary ChatGPT verification code",
+                                "body_preview": "Your code is 340139",
+                            }
+                        ]
+                    },
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        email_folder="all",
+    )
+    mailbox._api_variant = "plus"
+    account = mailbox._build_account(
+        email="pool@outlook.com",
+        account_id="12",
+        source="outlook_email_plus_pool",
+        raw={"account_id": 12, "email": "pool@outlook.com", "claim_token": "claim-token"},
+    )
+
+    assert mailbox.wait_for_code(account, timeout=10) == "340139"
+    assert len(session.calls) == 1
+    assert session.calls[0]["kwargs"]["params"]["folder"] == "inbox"
+    assert 5 < session.calls[0]["kwargs"]["timeout"] <= 10
+
+
+def test_outlook_email_plus_checks_junk_when_inbox_transport_fails(monkeypatch):
+    class InboxTimeoutSession(FakeSession):
+        def get(self, url, **kwargs):
+            self.calls.append({"url": url, "kwargs": kwargs, "headers": dict(self.headers)})
+            if len(self.calls) == 1:
+                raise requests.ReadTimeout("inbox timeout")
+            return self.responses.pop(0)
+
+    session = InboxTimeoutSession(
+        [
+            FakeResponse(
+                {
+                    "success": True,
+                    "data": {
+                        "emails": [
+                            {
+                                "id": "junk-code",
+                                "subject": "Your temporary ChatGPT verification code",
+                                "body_preview": "Your code is 771122",
+                            }
+                        ]
+                    },
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr("requests.Session", lambda: session)
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        email_folder="all",
+    )
+    mailbox._api_variant = "plus"
+    account = mailbox._build_account(
+        email="pool@outlook.com",
+        account_id="12",
+        source="outlook_email_plus_pool",
+        raw={"account_id": 12, "email": "pool@outlook.com", "claim_token": "claim-token"},
+    )
+
+    assert mailbox.wait_for_code(account, timeout=10) == "771122"
+    assert [call["kwargs"]["params"]["folder"] for call in session.calls] == ["inbox", "junkemail"]
+
+
 def test_outlook_email_filters_alias_recipient_when_parent_inbox_has_multiple_alias_codes(monkeypatch):
     session = FakeSession(
         [
@@ -1130,8 +1215,6 @@ def test_outlook_email_plus_temporary_502_keeps_polling_for_code(monkeypatch):
             FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
             FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
             FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
-            FakeResponse({"cloudflare_error": True, "detail": "Bad Gateway"}, status_code=502),
-            FakeResponse({"success": True, "data": {"emails": []}}),
             FakeResponse({"success": True, "data": {"emails": []}}),
             FakeResponse(
                 {
@@ -1148,6 +1231,7 @@ def test_outlook_email_plus_temporary_502_keeps_polling_for_code(monkeypatch):
                     },
                 }
             ),
+            FakeResponse({"success": True, "data": {"emails": []}}),
         ]
     )
     monkeypatch.setattr("requests.Session", lambda: session)
@@ -1167,9 +1251,63 @@ def test_outlook_email_plus_temporary_502_keeps_polling_for_code(monkeypatch):
         raw={"account_id": 12, "email": "pool@outlook.com", "claim_token": "claim-token"},
     )
 
-    assert mailbox.get_current_ids(account) == set()
+    with pytest.raises(outlook_module.OutlookEmailTemporaryUnavailable):
+        mailbox.get_current_ids(account)
     assert mailbox.wait_for_code(account, keyword="OpenAI", timeout=1) == "112233"
-    assert len(session.calls) == 9
+    assert len(session.calls) == 7
+
+
+def test_outlook_email_rejects_old_message_when_baseline_is_unavailable():
+    mailbox = OutlookEmailMailbox(
+        api_url="https://mail.example.test",
+        api_key="fake-api-key",
+        fixed_email="user@outlook.com",
+    )
+    account = mailbox.get_email()
+
+    code = mailbox._code_from_message(
+        account,
+        {
+            "id": "old-message",
+            "subject": "Your ChatGPT code is 230473",
+            "created_at": "2026-07-26T03:10:00Z",
+        },
+        keyword="",
+        pattern=re.compile(outlook_module.DEFAULT_CODE_PATTERN),
+        baseline_ids=set(),
+        otp_sent_at=datetime(2026, 7, 26, 3, 15, tzinfo=timezone.utc).timestamp(),
+    )
+
+    assert code is None
+
+
+def test_outlook_email_polling_respects_outer_deadline(monkeypatch):
+    class TimeoutSession(FakeSession):
+        def __init__(self):
+            super().__init__([])
+
+        def get(self, url, **kwargs):
+            self.calls.append({"url": url, "kwargs": kwargs, "headers": dict(self.headers)})
+            raise requests.ReadTimeout("slow local mailbox service")
+
+    session = TimeoutSession()
+    monkeypatch.setattr("requests.Session", lambda: session)
+    mailbox = OutlookEmailMailbox(
+        api_url="http://127.0.0.1:5000",
+        api_key="fake-api-key",
+        fixed_email="user@outlook.com",
+        poll_interval=4,
+    )
+    account = mailbox.get_email()
+    started = outlook_module.time.monotonic()
+
+    with pytest.raises(TimeoutError):
+        mailbox.wait_for_code(account, timeout=1)
+
+    elapsed = outlook_module.time.monotonic() - started
+    assert elapsed < 1.5
+    assert session.calls
+    assert all(0 < call["kwargs"]["timeout"] <= 1.0 for call in session.calls)
 
 
 def test_outlook_email_adds_registration_success_tag_via_admin_api(monkeypatch):

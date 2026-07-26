@@ -1,0 +1,888 @@
+
+===== start L466 =====
+466|class _SentinelTokenGenerator:
+467|
+468|    """Dynamic sentinel token generator – mirrors browser_register._SentinelTokenGenerator."""
+469|
+470|
+471|
+472|    def __init__(self, device_id: str, user_agent: str):
+473|
+474|        self.device_id = device_id or str(uuid.uuid4())
+475|
+476|        self.user_agent = user_agent
+477|
+478|        self.sid = str(uuid.uuid4())
+479|
+480|
+481|
+482|    @staticmethod
+483|
+484|    def _fnv1a32(text: str) -> str:
+485|
+486|        h = 2166136261
+487|
+488|        for ch in text:
+489|
+490|            h ^= ord(ch)
+491|
+492|            h = (h * 16777619) & 0xFFFFFFFF
+493|
+494|        h ^= (h >> 16)
+495|
+496|        h = (h * 2246822507) & 0xFFFFFFFF
+497|
+498|        h ^= (h >> 13)
+499|
+500|        h = (h * 3266489909) & 0xFFFFFFFF
+501|
+502|        h ^= (h >> 16)
+503|
+504|        return f"{h & 0xFFFFFFFF:08x}"
+505|
+506|
+507|
+508|    @staticmethod
+509|
+510|    def _b64(data) -> str:
+511|
+512|        return base64.b64encode(json.dumps(data, separators=(",", ":")).encode("utf-8")).decode("ascii")
+513|
+514|
+515|
+516|    def _config(self) -> list:
+517|
+518|        # Keep this fingerprint array aligned with headed-browser HAR samples:
+519|        # [screen, date, null, nonce, ua, sdk_url, null, lang, langs, elapsed,
+520|        #  capability probe, react listener, event name, perf, sid, "", cores,
+521|        #  origin_ms, zeros..., flags]
+522|        now_ms = int(time.time() * 1000)
+523|        perf_now = 1000 + random.random() * 49000
+524|        locale_date = time.strftime("%a %b %d %Y %H:%M:%S GMT+0800 (China Standard Time)", time.localtime())
+525|        return [
+526|            4800,
+527|            locale_date,
+528|            None,
+529|            random.random(),
+530|            self.user_agent,
+531|            SENTINEL_SDK_URL,
+532|            None,
+533|            "en-US",
+534|            "en-US,en",
+535|            round(5 + random.random() * 45),
+536|            "languages−en-US,en",
+537|            f"_reactListening{secrets.token_hex(6)}",
+538|            random.choice(["onbeforetoggle", "onbeforeunload", "location"]),
+539|            int(perf_now),
+540|            self.sid,
+541|            "",
+542|            random.choice([8, 12, 16]),
+543|            now_ms - int(perf_now),
+544|            0,
+545|            0,
+546|            0,
+547|            0,
+548|            0,
+549|            1,
+550|            1,
+551|        ]
+552|
+553|
+554|
+555|    def generate_requirements_token(self) -> str:
+556|
+557|        cfg = self._config()
+558|        # Headed HAR initial /sentinel/req p points at backend-api/sdk.js entry.
+559|        cfg[5] = "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
+560|        cfg[3] = 1
+561|        cfg[9] = round(5 + random.random() * 45)
+562|        return "gAAAAAC" + self._b64(cfg)
+563|
+564|
+565|
+566|    def generate_token(self, seed: str, difficulty: str) -> str:
+567|
+568|        max_attempts = 500000
+569|        cfg = self._config()
+570|        # Headed HAR final create_account p points at versioned sentinel sdk.js.
+571|        cfg[5] = SENTINEL_SDK_URL
+572|        start_ms = int(time.time() * 1000)
+573|        diff = str(difficulty or "0")
+574|        for nonce in range(max_attempts):
+575|            cfg[3] = nonce
+576|            cfg[9] = round(int(time.time() * 1000) - start_ms)
+577|            encoded = self._b64(cfg)
+578|            digest = self._fnv1a32((seed or "") + encoded)
+579|            if digest[: len(diff)] <= diff:
+580|                return "gAAAAAB" + encoded + "~S"
+581|        return "gAAAAAB" + self._b64(None)
+582|
+583|
+584|
+585|
+586|
+587|class RegistrationEngine:
+588|
+589|    """
+590|
+591|    注册引擎
+592|
+593|    负责协调邮箱服务、OAuth 流程和 OpenAI API 调用
+594|
+595|    """
+596|
+597|
+598|
+599|    def __init__(
+600|
+601|        self,
+602|
+603|        email_service: Any,
+604|
+605|        proxy_url: Optional[str] = None,
+606|
+607|        callback_logger: Optional[Callable[[str], None]] = None,
+608|
+609|        task_uuid: Optional[str] = None
+610|
+611|    ):
+612|
+613|        """
+614|
+615|        初始化注册引擎
+616|
+617|
+618|
+619|        Args:
+620|
+621|            email_service: 邮箱服务实例
+622|
+623|            proxy_url: 代理 URL
+624|
+625|            callback_logger: 日志回调函数
+626|
+627|            task_uuid: 任务 UUID（用于数据库记录）
+628|
+629|        """
+630|
+631|        self.email_service = email_service
+632|
+633|        self.proxy_url = proxy_url
+634|
+635|        self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
+636|
+637|        self.task_uuid = task_uuid
+638|
+639|        self.protocol_fingerprint = ProtocolFingerprint.create()
+640|
+641|
+642|
+643|        # 创建 HTTP 客户端
+644|
+645|        self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
+646|        self.protocol_fingerprint.apply_to_client(self.http_client)
+647|
+648|
+649|
+650|        # 创建 OAuth 管理器
+651|
+652|        from .constants import OAUTH_CLIENT_ID, OAUTH_AUTH_URL, OAUTH_TOKEN_URL, OAUTH_REDIRECT_URI, OAUTH_SCOPE
+653|
+654|        self.oauth_manager = OAuthManager(
+655|
+656|            client_id=OAUTH_CLIENT_ID,
+657|
+658|            auth_url=OAUTH_AUTH_URL,
+659|
+660|            token_url=OAUTH_TOKEN_URL,
+661|
+662|            redirect_uri=OAUTH_REDIRECT_URI,
+663|
+664|            scope=OAUTH_SCOPE,
+665|
+666|            proxy_url=proxy_url  # 传递代理配置
+667|
+668|        )
+669|
+670|
+671|
+672|        # 状态变量
+673|
+674|        self.email: Optional[str] = None
+675|
+676|        self.password: Optional[str] = None  # 注册密码
+677|
+678|        self.email_info: Optional[Dict[str, Any]] = None
+679|
+680|        self.oauth_start: Optional[OAuthStart] = None
+681|
+682|        self.session: Optional[cffi_requests.Session] = None
+683|
+684|        self.session_token: Optional[str] = None  # 会话令牌
+685|
+
+===== start L2806 =====
+2806|    def _check_sentinel(self, did: str, *, flow: str = "authorize_continue") -> Optional[SentinelPayload]:
+2807|
+2808|        """检查 Sentinel 拦截（动态生成 token + 处理 PoW）"""
+2809|
+2810|        try:
+2811|
+2812|            ua = self.http_client.default_headers.get("User-Agent", "")
+2813|
+2814|            generator = _SentinelTokenGenerator(did, ua)
+2815|
+2816|            sent_p = generator.generate_requirements_token()
+2817|
+2818|            sen_req_body = json.dumps({"p": sent_p, "id": did, "flow": flow}, separators=(",", ":"))
+2819|
+2820|
+2821|
+2822|            response = self.http_client.post(
+2823|
+2824|                OPENAI_API_ENDPOINTS["sentinel"],
+2825|
+2826|                headers=self._latest_chatgpt_sentinel_headers(user_agent=ua),
+2827|
+2828|                data=sen_req_body,
+2829|
+2830|            )
+2831|
+2832|
+2833|
+2834|            if response.status_code == 200:
+2835|
+2836|                data = response.json()
+2837|
+2838|                sen_token = str(data.get("token") or "")
+2839|
+2840|                turnstile = data.get("turnstile") or {}
+2841|
+2842|
+2843|
+2844|                # Handle proofofwork challenge if required
+2845|
+2846|                initial_p = sent_p  # keep for dx decryption
+2847|
+2848|                pow_meta = data.get("proofofwork") or {}
+2849|
+2850|                if pow_meta.get("required") and pow_meta.get("seed"):
+2851|
+2852|                    sent_p = generator.generate_token(
+2853|
+2854|                        str(pow_meta.get("seed") or ""),
+2855|
+2856|                        str(pow_meta.get("difficulty") or "0"),
+2857|
+2858|                    )
+2859|
+2860|                    self._log(f"Sentinel PoW solved: flow={flow}")
+2861|
+2862|
+2863|
+2864|                # Solve turnstile dx with VM
+2865|
+2866|                t_value = ""
+2867|
+2868|                dx_b64 = str(turnstile.get("dx") or "")
+2869|
+2870|                if dx_b64:
+2871|
+2872|                    try:
+2873|
+2874|                        from .sentinel_vm import solve_turnstile_dx
+2875|
+2876|                        from .constants import SENTINEL_SDK_URL
+2877|
+2878|                        t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+2879|
+2880|                        self._log(f"Sentinel VM solved: t_len={len(t_value)} flow={flow}")
+2881|
+2882|                    except Exception as vm_err:
+2883|
+2884|                        self._log(f"Sentinel VM failed: {vm_err}", "warning")
+2885|
+2886|                so_meta = data.get("so") or {}
+2887|                so_token = ""
+2888|                need_t = bool(dx_b64 and not t_value)
+2889|                need_so = bool(isinstance(so_meta, dict) and so_meta.get("required"))
+2890|                # HAR create_account 总是带 openai-sentinel-so-token；优先本地 VM 解 snapshot_dx。
+2891|                if need_so:
+2892|                    so_token = self._solve_session_observer_token(
+2893|                        device_id=did,
+2894|                        flow=flow,
+2895|                        challenge=data if isinstance(data, dict) else {},
+2896|                        request_p=initial_p,
+2897|                        user_agent=ua,
+2898|                    )
+2899|                    if so_token:
+2900|                        self._log(f"Sentinel so VM solved: so_len={len(so_token)} flow={flow}")
+2901|                if need_t or (need_so and not so_token):
+2902|                    quickjs_payload = self._quickjs_sentinel_payload(
+2903|                        getattr(self.http_client, "session", None) or self.session,
+2904|                        did,
+2905|                        flow=flow,
+2906|                        user_agent=ua,
+2907|                        accept_language=self._latest_chatgpt_accept_language(),
+2908|                        label="主注册链路 VM/PoW t/so 补齐",
+2909|                    )
+2910|                    if quickjs_payload:
+2911|                        # HAR shows create_account needs a real long VM t.
+2912|                        # Only take QuickJS t when VM failed; keep VM t when already solved.
+2913|                        if need_t and quickjs_payload.t:
+2914|                            t_value = quickjs_payload.t
+2915|                            if quickjs_payload.p:
+2916|                                sent_p = quickjs_payload.p
+2917|                            if quickjs_payload.c:
+2918|                                sen_token = quickjs_payload.c
+2919|                        if need_so and not so_token and quickjs_payload.so_token:
+2920|                            so_token = quickjs_payload.so_token
+2921|
+2922|                payload = SentinelPayload(
+2923|                    p=sent_p,
+2924|                    c=sen_token,
+2925|                    flow=flow,
+2926|                    t=t_value,
+2927|                    so_token=so_token,
+2928|                )
+2929|
+2930|                self._log(
+2931|                    f"Sentinel token 获取成功: flow={flow} t_len={len(payload.t)} "
+2932|                    f"so_len={len(payload.so_token)}"
+2933|                )
+2934|
+2935|                return payload
+2936|
+2937|            else:
+2938|
+2939|                self._log(f"Sentinel 检查失败: flow={flow} status={response.status_code}", "warning")
+2940|
+2941|                quickjs_payload = self._quickjs_sentinel_payload(
+2942|                    getattr(self.http_client, "session", None) or self.session,
+2943|                    did,
+2944|                    flow=flow,
+2945|                    user_agent=ua,
+2946|                    accept_language=self._latest_chatgpt_accept_language(),
+2947|                    label="主注册链路 VM/PoW 失败后",
+2948|                )
+2949|
+2950|                return quickjs_payload
+2951|
+2952|
+2953|
+2954|        except Exception as e:
+2955|
+2956|            self._log(f"Sentinel VM/PoW 检查异常: flow={flow} {e}", "warning")
+2957|
+2958|            try:
+2959|
+2960|                quickjs_payload = self._quickjs_sentinel_payload(
+2961|                    getattr(self.http_client, "session", None) or self.session,
+2962|                    did,
+2963|                    flow=flow,
+2964|                    user_agent=self.http_client.default_headers.get("User-Agent", ""),
+2965|                    accept_language=self._latest_chatgpt_accept_language(),
+2966|                    label="主注册链路 VM/PoW 异常后",
+2967|                )
+2968|
+2969|                return quickjs_payload
+2970|
+2971|            except Exception as quickjs_error:
+2972|
+2973|                self._log(f"Sentinel QuickJS 兜底异常: flow={flow} {quickjs_error}", "warning")
+2974|
+2975|            return None
+2976|
+2977|
+2978|
+2979|    @staticmethod
+2980|    def _sentinel_payload_header(payload: SentinelPayload, device_id: str) -> str:
+2981|
+2982|        return json.dumps(
+2983|            {
+2984|                "p": payload.p,
+2985|                "t": payload.t,
+2986|                "c": payload.c,
+2987|                "id": device_id,
+2988|                "flow": payload.flow,
+2989|            },
+2990|            separators=(",", ":"),
+2991|        )
+2992|
+2993|
+2994|    def _parse_sentinel_header_payload(
+2995|        self,
+2996|        token: str,
+2997|        *,
+2998|        flow: str,
+2999|        label: str,
+3000|    ) -> Optional[SentinelPayload]:
+3001|
+3002|        try:
+3003|
+3004|            data = json.loads(token or "")
+3005|
+3006|        except Exception as exc:
+3007|
+3008|            self._log(f"{label} QuickJS Sentinel 返回非 JSON: {exc}", "warning")
+3009|
+3010|            return None
+3011|
+3012|        if not isinstance(data, dict):
+3013|
+3014|            self._log(f"{label} QuickJS Sentinel 返回结构异常", "warning")
+3015|
+3016|            return None
+3017|
+3018|        p_value = str(data.get("p") or "").strip()
+3019|
+3020|        c_value = str(data.get("c") or "").strip()
+3021|
+3022|        if not p_value or not c_value:
+3023|
+3024|            self._log(f"{label} QuickJS Sentinel 缺少 p/c，回退原 Sentinel VM", "warning")
+3025|
+
+===== start L2980 =====
+2980|    def _sentinel_payload_header(payload: SentinelPayload, device_id: str) -> str:
+2981|
+2982|        return json.dumps(
+2983|            {
+2984|                "p": payload.p,
+2985|                "t": payload.t,
+2986|                "c": payload.c,
+2987|                "id": device_id,
+2988|                "flow": payload.flow,
+2989|            },
+2990|            separators=(",", ":"),
+2991|        )
+2992|
+2993|
+2994|    def _parse_sentinel_header_payload(
+2995|        self,
+2996|        token: str,
+2997|        *,
+2998|        flow: str,
+2999|        label: str,
+3000|    ) -> Optional[SentinelPayload]:
+3001|
+3002|        try:
+3003|
+3004|            data = json.loads(token or "")
+3005|
+3006|        except Exception as exc:
+3007|
+3008|            self._log(f"{label} QuickJS Sentinel 返回非 JSON: {exc}", "warning")
+3009|
+3010|            return None
+3011|
+3012|        if not isinstance(data, dict):
+3013|
+3014|            self._log(f"{label} QuickJS Sentinel 返回结构异常", "warning")
+3015|
+3016|            return None
+3017|
+3018|        p_value = str(data.get("p") or "").strip()
+3019|
+3020|        c_value = str(data.get("c") or "").strip()
+3021|
+3022|        if not p_value or not c_value:
+3023|
+3024|            self._log(f"{label} QuickJS Sentinel 缺少 p/c，回退原 Sentinel VM", "warning")
+3025|
+3026|            return None
+3027|
+3028|        return SentinelPayload(
+3029|            p=p_value,
+3030|            t=str(data.get("t") or "").strip(),
+3031|            c=c_value,
+3032|            flow=str(data.get("flow") or flow).strip() or flow,
+3033|        )
+3034|
+3035|
+3036|    def _quickjs_sentinel_payload(
+3037|        self,
+3038|        session,
+3039|        device_id: str,
+3040|        *,
+3041|        flow: str,
+3042|        user_agent: str,
+3043|        label: str,
+3044|        accept_language: str = "",
+3045|    ) -> Optional[SentinelPayload]:
+3046|
+3047|        """VM/PoW 失败后兜底使用真实 OpenAI Sentinel SDK。"""
+3048|
+3049|        if not session:
+3050|
+3051|            return None
+3052|
+3053|        import os as _os_sentinel
+3054|
+3055|        if _os_sentinel.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
+3056|
+3057|            return None
+3058|
+3059|        try:
+3060|
+3061|            from .authflow_experimental.sentinel_quickjs import get_sentinel_tokens_via_quickjs
+3062|
+3063|            token_bundle = get_sentinel_tokens_via_quickjs(
+3064|                session,
+3065|                device_id=device_id,
+3066|                flow=flow,
+3067|                user_agent=user_agent,
+3068|                accept_language=accept_language,
+3069|                log=lambda message: self._log(f"{label} {message}"),
+3070|            )
+3071|            token = str((token_bundle or {}).get("token") or "")
+3072|            so_token = str((token_bundle or {}).get("so_token") or "")
+3073|
+3074|        except Exception as exc:
+3075|
+3076|            self._log(f"{label} QuickJS Sentinel 调用异常，回退原 Sentinel VM: {exc}", "warning")
+3077|
+3078|            return None
+3079|
+3080|        payload = self._parse_sentinel_header_payload(token or "", flow=flow, label=label) if token else None
+3081|
+3082|        if not payload:
+3083|
+3084|            return None
+3085|
+3086|        payload.so_token = so_token
+3087|
+3088|        self._log(
+3089|            f"{label} QuickJS Sentinel 已生成: "
+3090|            f"flow={payload.flow} t_len={len(payload.t)} so_len={len(payload.so_token)}"
+3091|        )
+3092|
+3093|        return payload
+3094|
+3095|
+3096|    def _submit_signup_form(self, did: str, sen_payload: Optional[SentinelPayload]) -> SignupFormResult:
+3097|
+3098|        """
+3099|
+3100|        提交注册表单（通过 authorize/continue 建立 session）
+3101|
+3102|
+3103|
+3104|        Returns:
+3105|
+3106|            SignupFormResult: 提交结果，包含账号状态判断
+3107|
+3108|        """
+3109|
+3110|        try:
+3111|
+3112|            self._device_id = did
+3113|
+3114|            self._signup_sentinel = sen_payload
+3115|
+3116|            self._sentinel_token = sen_payload.c if sen_payload else None
+3117|
+3118|            signup_body = json.dumps(
+3119|                {"username": {"value": self.email, "kind": "email"}, "screen_hint": "signup"},
+3120|                separators=(",", ":"),
+3121|            )
+3122|
+3123|            def _build_signup_headers(current_sentinel: Optional[SentinelPayload]) -> dict:
+3124|                headers = {
+3125|                    "referer": "https://auth.openai.com/create-account",
+3126|                    "accept": "application/json",
+3127|                    "content-type": "application/json",
+3128|                    "sec-fetch-site": "same-origin",
+3129|                    **_generate_datadog_trace_headers(),
+3130|                }
+3131|                if did:
+3132|                    headers["oai-device-id"] = did
+3133|                if current_sentinel:
+3134|                    sentinel = json.dumps(
+3135|                        {
+3136|                            "p": current_sentinel.p,
+3137|                            "t": current_sentinel.t,
+3138|                            "c": current_sentinel.c,
+3139|                            "id": did,
+3140|                            "flow": current_sentinel.flow,
+3141|                        },
+3142|                        separators=(",", ":"),
+3143|                    )
+3144|                    headers["openai-sentinel-token"] = sentinel
+3145|                return headers
+3146|
+3147|            def _post_signup(current_sentinel: Optional[SentinelPayload], label: str):
+3148|                headers = _build_signup_headers(current_sentinel)
+3149|                self._log_auth_state_cookies(f"提交注册表单前 cookie({label})")
+3150|                self._log(
+3151|                    f"提交注册表单请求({label}): POST {OPENAI_API_ENDPOINTS['signup']} "
+3152|                    f"sentinel={'yes' if current_sentinel else 'no'} "
+3153|                    f"flow={getattr(current_sentinel, 'flow', '') or ''}"
+3154|                )
+3155|                return self.session.post(
+3156|                    OPENAI_API_ENDPOINTS["signup"],
+3157|                    headers=headers,
+3158|                    data=signup_body,
+3159|                    timeout=15,
+3160|                )
+3161|
+3162|            response = _post_signup(sen_payload, "initial")
+3163|
+3164|            for retry_index, regenerate_oauth in enumerate((False, True), start=1):
+3165|                if response.status_code != 409 or not self._is_invalid_state_response(response):
+3166|                    break
+3167|                self._log(
+3168|                    f"提交注册表单 invalid_state，第 {retry_index}/2 次重建 authorize 后重试: {response.text}",
+3169|                    "warning",
+3170|                )
+3171|                refreshed_sentinel = self._refresh_signup_authorize_state(
+3172|                    did,
+3173|                    regenerate_oauth=regenerate_oauth,
+3174|                )
+3175|                if refreshed_sentinel:
+3176|                    sen_payload = refreshed_sentinel
+3177|                    self._signup_sentinel = refreshed_sentinel
+3178|                    self._sentinel_token = refreshed_sentinel.c
+3179|                else:
+3180|                    self._log("invalid_state 恢复未取得新 Sentinel，仍按当前会话尝试提交", "warning")
+3181|                response = _post_signup(sen_payload, f"retry{retry_index}")
+3182|
+3183|
+3184|
+3185|            self._log(f"提交注册表单状态: {response.status_code}")
+3186|
+3187|
+3188|
+3189|            if response.status_code != 200:
+3190|
+3191|                return SignupFormResult(
+3192|
+3193|                    success=False,
+3194|
+3195|                    error_message=f"HTTP {response.status_code}: {response.text}"
+3196|
+3197|                )
+3198|
+3199|
+
+===== start L3036 =====
+3036|    def _quickjs_sentinel_payload(
+3037|        self,
+3038|        session,
+3039|        device_id: str,
+3040|        *,
+3041|        flow: str,
+3042|        user_agent: str,
+3043|        label: str,
+3044|        accept_language: str = "",
+3045|    ) -> Optional[SentinelPayload]:
+3046|
+3047|        """VM/PoW 失败后兜底使用真实 OpenAI Sentinel SDK。"""
+3048|
+3049|        if not session:
+3050|
+3051|            return None
+3052|
+3053|        import os as _os_sentinel
+3054|
+3055|        if _os_sentinel.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
+3056|
+3057|            return None
+3058|
+3059|        try:
+3060|
+3061|            from .authflow_experimental.sentinel_quickjs import get_sentinel_tokens_via_quickjs
+3062|
+3063|            token_bundle = get_sentinel_tokens_via_quickjs(
+3064|                session,
+3065|                device_id=device_id,
+3066|                flow=flow,
+3067|                user_agent=user_agent,
+3068|                accept_language=accept_language,
+3069|                log=lambda message: self._log(f"{label} {message}"),
+3070|            )
+3071|            token = str((token_bundle or {}).get("token") or "")
+3072|            so_token = str((token_bundle or {}).get("so_token") or "")
+3073|
+3074|        except Exception as exc:
+3075|
+3076|            self._log(f"{label} QuickJS Sentinel 调用异常，回退原 Sentinel VM: {exc}", "warning")
+3077|
+3078|            return None
+3079|
+3080|        payload = self._parse_sentinel_header_payload(token or "", flow=flow, label=label) if token else None
+3081|
+3082|        if not payload:
+3083|
+3084|            return None
+3085|
+3086|        payload.so_token = so_token
+3087|
+3088|        self._log(
+3089|            f"{label} QuickJS Sentinel 已生成: "
+3090|            f"flow={payload.flow} t_len={len(payload.t)} so_len={len(payload.so_token)}"
+3091|        )
+3092|
+3093|        return payload
+3094|
+3095|
+3096|    def _submit_signup_form(self, did: str, sen_payload: Optional[SentinelPayload]) -> SignupFormResult:
+3097|
+3098|        """
+3099|
+3100|        提交注册表单（通过 authorize/continue 建立 session）
+3101|
+3102|
+3103|
+3104|        Returns:
+3105|
+3106|            SignupFormResult: 提交结果，包含账号状态判断
+3107|
+3108|        """
+3109|
+3110|        try:
+3111|
+3112|            self._device_id = did
+3113|
+3114|            self._signup_sentinel = sen_payload
+3115|
+3116|            self._sentinel_token = sen_payload.c if sen_payload else None
+3117|
+3118|            signup_body = json.dumps(
+3119|                {"username": {"value": self.email, "kind": "email"}, "screen_hint": "signup"},
+3120|                separators=(",", ":"),
+3121|            )
+3122|
+3123|            def _build_signup_headers(current_sentinel: Optional[SentinelPayload]) -> dict:
+3124|                headers = {
+3125|                    "referer": "https://auth.openai.com/create-account",
+3126|                    "accept": "application/json",
+3127|                    "content-type": "application/json",
+3128|                    "sec-fetch-site": "same-origin",
+3129|                    **_generate_datadog_trace_headers(),
+3130|                }
+3131|                if did:
+3132|                    headers["oai-device-id"] = did
+3133|                if current_sentinel:
+3134|                    sentinel = json.dumps(
+3135|                        {
+3136|                            "p": current_sentinel.p,
+3137|                            "t": current_sentinel.t,
+3138|                            "c": current_sentinel.c,
+3139|                            "id": did,
+3140|                            "flow": current_sentinel.flow,
+3141|                        },
+3142|                        separators=(",", ":"),
+3143|                    )
+3144|                    headers["openai-sentinel-token"] = sentinel
+3145|                return headers
+3146|
+3147|            def _post_signup(current_sentinel: Optional[SentinelPayload], label: str):
+3148|                headers = _build_signup_headers(current_sentinel)
+3149|                self._log_auth_state_cookies(f"提交注册表单前 cookie({label})")
+3150|                self._log(
+3151|                    f"提交注册表单请求({label}): POST {OPENAI_API_ENDPOINTS['signup']} "
+3152|                    f"sentinel={'yes' if current_sentinel else 'no'} "
+3153|                    f"flow={getattr(current_sentinel, 'flow', '') or ''}"
+3154|                )
+3155|                return self.session.post(
+3156|                    OPENAI_API_ENDPOINTS["signup"],
+3157|                    headers=headers,
+3158|                    data=signup_body,
+3159|                    timeout=15,
+3160|                )
+3161|
+3162|            response = _post_signup(sen_payload, "initial")
+3163|
+3164|            for retry_index, regenerate_oauth in enumerate((False, True), start=1):
+3165|                if response.status_code != 409 or not self._is_invalid_state_response(response):
+3166|                    break
+3167|                self._log(
+3168|                    f"提交注册表单 invalid_state，第 {retry_index}/2 次重建 authorize 后重试: {response.text}",
+3169|                    "warning",
+3170|                )
+3171|                refreshed_sentinel = self._refresh_signup_authorize_state(
+3172|                    did,
+3173|                    regenerate_oauth=regenerate_oauth,
+3174|                )
+3175|                if refreshed_sentinel:
+3176|                    sen_payload = refreshed_sentinel
+3177|                    self._signup_sentinel = refreshed_sentinel
+3178|                    self._sentinel_token = refreshed_sentinel.c
+3179|                else:
+3180|                    self._log("invalid_state 恢复未取得新 Sentinel，仍按当前会话尝试提交", "warning")
+3181|                response = _post_signup(sen_payload, f"retry{retry_index}")
+3182|
+3183|
+3184|
+3185|            self._log(f"提交注册表单状态: {response.status_code}")
+3186|
+3187|
+3188|
+3189|            if response.status_code != 200:
+3190|
+3191|                return SignupFormResult(
+3192|
+3193|                    success=False,
+3194|
+3195|                    error_message=f"HTTP {response.status_code}: {response.text}"
+3196|
+3197|                )
+3198|
+3199|
+3200|
+3201|            try:
+3202|
+3203|                response_data = response.json()
+3204|
+3205|            except Exception as parse_error:
+3206|
+3207|                self._log(f"signup 响应非 JSON: {parse_error}, body={response.text}", "warning")
+3208|
+3209|                return SignupFormResult(
+3210|
+3211|                    success=False,
+3212|
+3213|                    error_message=f"signup 返回非 JSON: {response.text}",
+3214|
+3215|                    response_data={},
+3216|
+3217|                )
+3218|
+3219|
+3220|
+3221|            if isinstance(response_data, dict):
+3222|
+3223|                err = response_data.get("error") or response_data.get("detail") or ""
+3224|
+3225|                if err:
+3226|
+3227|                    err_msg = err if isinstance(err, str) else json.dumps(err)
+3228|
+3229|                    self._log(f"signup 返回错误: {err_msg}", "warning")
+3230|
+3231|
+3232|
+3233|            page_type = response_data.get("page", {}).get("type", "")
+3234|
+3235|            continue_url = str(response_data.get("continue_url") or "")
+3236|
+3237|            self._log(f"响应页面类型: {page_type}")
+3238|
+3239|
+3240|
+3241|            is_existing = False
+3242|
+3243|            if page_type == OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]:
+3244|
+3245|                self._email_otp_continue_url = continue_url or "https://auth.openai.com/email-verification"
+3246|
+3247|                self._log("已进入邮箱 OTP 验证流程，将显式发送验证码")
+3248|
+3249|
+3250|
+3251|            return SignupFormResult(
+3252|
+3253|                success=True,
+3254|
+3255|                page_type=page_type,

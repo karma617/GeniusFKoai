@@ -1,0 +1,147 @@
+
+[41] BODY p POST https://chatgpt.com/backend-anon/sentinel/chat-requirements/prepare
+  prefix=gAAAAAC suffix=
+  [0] 2494
+  [1] 'Sat Jul 25 2026 01:01:14 GMT+0800 (China Standard Time)'
+  [2] None
+  [3] 1
+  [4] 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0'
+  [5] 'https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload'
+  [6] 'prod-2c08737cf6aa91754c5bf303734db2dba173c6ce'
+  [7] 'en-US'
+  [8] 'en-US,en'
+  [9] 1
+  [10] 'globalPrivacyControl−true'
+  [11] '__reactContainer$t1hbz31hzeg'
+  [12] 'onmouseenter'
+  [13] 8745
+  [14] '6f88fb7a-73d8-480a-8471-259fc73b1ec2'
+  [15] ''
+  [16] 12
+  [17] 1784912465613
+  [18] 0
+  [19] 0
+  [20] 0
+  [21] 0
+  [22] 0
+  [23] 1
+  [24] 1
+
+[215] BODY p POST https://sentinel.openai.com/backend-api/sentinel/req
+  prefix=gAAAAAC suffix=~S
+  [0] 2494
+  [1] 'Sat Jul 25 2026 01:01:47 GMT+0800 (China Standard Time)'
+  [2] None
+  [3] 2
+  [4] 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0'
+  [5] 'https://sentinel.openai.com/sentinel/20260219f9f6/sdk.js'
+  [6] None
+  [7] 'en-US'
+  [8] 'en-US,en'
+  [9] 58
+  [10] 'mozGetUserMedia−function mozGetUserMedia() {\n    [native code]\n}'
+  [11] '_reactListening7ensma8wkr8'
+  [12] 'ondragstart'
+  [13] 23125
+  [14] '4b4e79f2-b6ac-452b-8c8d-f22967241652'
+  [15] ''
+  [16] 12
+  [17] 1784912484120
+  [18] 0
+  [19] 0
+  [20] 0
+  [21] 0
+  [22] 0
+  [23] 1
+  [24] 1
+
+[218] HDR openai-sentinel-token.p https://auth.openai.com/api/accounts/create_account
+  prefix=gAAAAAB suffix=~S flow=oauth_create_account keys=['p', 't', 'c', 'id', 'flow']
+  [0] 2494
+  [1] 'Sat Jul 25 2026 01:01:54 GMT+0800 (China Standard Time)'
+  [2] None
+  [3] 51
+  [4] 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0'
+  [5] 'https://sentinel.openai.com/backend-api/sentinel/sdk.js'
+  [6] None
+  [7] 'en-US'
+  [8] 'en-US,en'
+  [9] 5
+  [10] 'plugins−[object PluginArray]'
+  [11] 'location'
+  [12] 'matchMedia'
+  [13] 30054
+  [14] '4b4e79f2-b6ac-452b-8c8d-f22967241652'
+  [15] ''
+  [16] 12
+  [17] 1784912484120
+  [18] 0
+  [19] 0
+  [20] 0
+  [21] 0
+  [22] 0
+  [23] 1
+  [24] 1
+  so_len=408 c_len=2124
+
+[220] BODY p POST https://sentinel.openai.com/backend-api/sentinel/req
+  prefix=gAAAAAC suffix=~S
+  [0] 2494
+  [1] 'Sat Jul 25 2026 01:01:47 GMT+0800 (China Standard Time)'
+  [2] None
+  [3] 2
+  [4] 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0'
+  [5] 'https://sentinel.openai.com/sentinel/20260219f9f6/sdk.js'
+  [6] None
+  [7] 'en-US'
+  [8] 'en-US,en'
+  [9] 58
+  [10] 'mozGetUserMedia−function mozGetUserMedia() {\n    [native code]\n}'
+  [11] '_reactListening7ensma8wkr8'
+  [12] 'ondragstart'
+  [13] 23125
+  [14] '4b4e79f2-b6ac-452b-8c8d-f22967241652'
+  [15] ''
+  [16] 12
+  [17] 1784912484120
+  [18] 0
+  [19] 0
+  [20] 0
+  [21] 0
+  [22] 0
+  [23] 1
+  [24] 1
+
+[259] BODY p POST https://chatgpt.com/backend-api/sentinel/chat-requirements/prepare
+  prefix=gAAAAAC suffix=
+  [0] 2494
+  [1] 'Sat Jul 25 2026 01:02:03 GMT+0800 (China Standard Time)'
+  [2] None
+  [3] 1
+  [4] 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0'
+  [5] 'https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload'
+  [6] 'prod-2c08737cf6aa91754c5bf303734db2dba173c6ce'
+  [7] 'en-US'
+  [8] 'en-US,en'
+  [9] 4
+  [10] 'vendorSub−'
+  [11] '_reactListeningzthji8sfm0n'
+  [12] 'InstallTrigger'
+  [13] 4728
+  [14] 'db4225f5-5fda-4d06-a25c-8c9f920c040c'
+  [15] ''
+  [16] 12
+  [17] 1784912518792
+  [18] 0
+  [19] 0
+  [20] 0
+  [21] 0
+  [22] 0
+  [23] 1
+  [24] 1
+
+== oai-client-version values ==
+version=prod-2c08737cf6aa91754c5bf303734db2dba173c6ce build=8578659 url=https://chatgpt.com/ces/v1/rgstr?k=client-nb0qtYlZuy2tCMN5s5ncnuIBCJncjRViT0IzFm7GqST&st=javascript-client&sv=3.32.6&t=1
+
+== user-agent values ==
+Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0

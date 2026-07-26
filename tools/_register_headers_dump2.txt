@@ -1,0 +1,1952 @@
+total=8274
+
+===== 1550-1750 =====
+1550|            headers["oai-device-id"] = self._device_id
+1551|        headers["oai-language"] = "en-US"
+1552|        headers["oai-client-version"] = LATEST_CHATGPT_OAI_CLIENT_VERSION
+1553|        headers["oai-client-build-number"] = LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER
+1554|        session_id = str(getattr(self, "_chatgpt_oai_session_id", "") or "").strip()
+1555|        if not session_id:
+1556|            session_id = str(uuid.uuid4())
+1557|            self._chatgpt_oai_session_id = session_id
+1558|        headers["oai-session-id"] = session_id
+1559|        if target_path:
+1560|            headers["x-openai-target-path"] = target_path
+1561|            headers["x-openai-target-route"] = target_path
+1562|        headers["x-oai-is-pending-updates"] = '{"v":3,"updates":[]}'
+1563|        return headers
+1564|
+1565|
+1566|    def _seed_named_cookie(self, name: str, value: str, domains: tuple[str, ...] = (".auth.openai.com", "auth.openai.com", ".openai.com", "openai.com")) -> None:
+1567|        """把关键 cookie 种进协议会话，兼容 curl_cffi CookieJar 的多种 set 签名。"""
+1568|        if not self.session or not name or not value:
+1569|            return
+1570|        try:
+1571|            self.session.cookies.set(name, value)
+1572|        except Exception:
+1573|            pass
+1574|        for domain in domains:
+1575|            try:
+1576|                self.session.cookies.set(name, value, domain=domain, path="/")
+1577|            except TypeError:
+1578|                try:
+1579|                    self.session.cookies.set(name, value, domain=domain)
+1580|                except Exception:
+1581|                    pass
+1582|            except Exception:
+1583|                pass
+1584|
+1585|    def _latest_chatgpt_cookie_names(self) -> set[str]:
+1586|        names: set[str] = set()
+1587|        if not self.session:
+1588|            return names
+1589|        try:
+1590|            if hasattr(self.session.cookies, "items"):
+1591|                names.update(str(k) for k in self.session.cookies.keys())
+1592|        except Exception:
+1593|            pass
+1594|        try:
+1595|            for cookie in self.session.cookies:
+1596|                name = str(getattr(cookie, "name", "") or "").strip()
+1597|                if name:
+1598|                    names.add(name)
+1599|        except Exception:
+1600|            pass
+1601|        return names
+1602|
+1603|    def _latest_chatgpt_has_cf_clearance(self) -> bool:
+1604|        return "cf_clearance" in self._latest_chatgpt_cookie_names()
+1605|
+1606|    def _solve_session_observer_token(
+1607|        self,
+1608|        *,
+1609|        device_id: str,
+1610|        flow: str,
+1611|        challenge: dict,
+1612|        request_p: str,
+1613|        user_agent: str,
+1614|    ) -> str:
+1615|        """用本地 Sentinel VM 解 so.snapshot_dx，生成 HAR 同形态的 openai-sentinel-so-token。"""
+1616|        so_meta = challenge.get("so") if isinstance(challenge, dict) else {}
+1617|        if not isinstance(so_meta, dict) or not so_meta.get("required"):
+1618|            return ""
+1619|        snapshot_dx = str(so_meta.get("snapshot_dx") or "").strip()
+1620|        if not snapshot_dx:
+1621|            return ""
+1622|        try:
+1623|            from .sentinel_vm import solve_turnstile_dx
+1624|            from .constants import SENTINEL_SDK_URL
+1625|
+1626|            so_value = solve_turnstile_dx(
+1627|                snapshot_dx,
+1628|                request_p,
+1629|                user_agent=user_agent,
+1630|                sdk_url=SENTINEL_SDK_URL,
+1631|            )
+1632|        except Exception as exc:
+1633|            self._log(f"Sentinel so VM 失败: flow={flow} {exc}", "warning")
+1634|            return ""
+1635|        so_value = str(so_value or "").strip()
+1636|        if not so_value:
+1637|            return ""
+1638|        token_c = str(challenge.get("token") or "").strip()
+1639|        payload = {
+1640|            "so": so_value,
+1641|            "id": device_id,
+1642|            "flow": flow,
+1643|        }
+1644|        if token_c:
+1645|            payload["c"] = token_c
+1646|        return json.dumps(payload, separators=(",", ":"))
+1647|
+1648|    def _latest_chatgpt_protocol_cookie_items(self) -> list[dict[str, str]]:
+1649|        """导出协议会话 cookie，供无头浏览器同会话注入。"""
+1650|        items: list[dict[str, str]] = []
+1651|        if not self.session:
+1652|            return items
+1653|        seen: set[tuple[str, str, str]] = set()
+1654|
+1655|        def _add(name: str, value: str, domain: str = "", path: str = "/") -> None:
+1656|            name = str(name or "").strip()
+1657|            value = str(value or "")
+1658|            if not name or value == "":
+1659|                return
+1660|            domain = str(domain or "").strip() or ".auth.openai.com"
+1661|            path = str(path or "/").strip() or "/"
+1662|            key = (name, domain, path)
+1663|            if key in seen:
+1664|                return
+1665|            seen.add(key)
+1666|            item = {
+1667|                "name": name,
+1668|                "value": value,
+1669|                "domain": domain,
+1670|                "path": path,
+1671|            }
+1672|            items.append(item)
+1673|
+1674|        try:
+1675|            for cookie in self.session.cookies:
+1676|                name = str(getattr(cookie, "name", "") or "")
+1677|                value = str(getattr(cookie, "value", "") or "")
+1678|                domain = str(getattr(cookie, "domain", "") or "")
+1679|                path = str(getattr(cookie, "path", "") or "/")
+1680|                _add(name, value, domain=domain, path=path)
+1681|        except Exception:
+1682|            pass
+1683|        try:
+1684|            if hasattr(self.session.cookies, "items"):
+1685|                for name, value in self.session.cookies.items():
+1686|                    _add(str(name), str(value), domain=".auth.openai.com", path="/")
+1687|                    _add(str(name), str(value), domain="auth.openai.com", path="/")
+1688|                    if str(name).startswith("__Host-") or str(name).startswith("__Secure-") or str(name) in {
+1689|                        "oai-did",
+1690|                        "__cflb",
+1691|                        "__cf_bm",
+1692|                        "_cfuvid",
+1693|                        "cf_clearance",
+1694|                        "oai-sc",
+1695|                    }:
+1696|                        _add(str(name), str(value), domain=".chatgpt.com", path="/")
+1697|                        _add(str(name), str(value), domain="chatgpt.com", path="/")
+1698|        except Exception:
+1699|            pass
+1700|        if self._device_id:
+1701|            _add("oai-did", str(self._device_id), domain=".auth.openai.com", path="/")
+1702|            _add("oai-did", str(self._device_id), domain="auth.openai.com", path="/")
+1703|            _add("oai-did", str(self._device_id), domain=".chatgpt.com", path="/")
+1704|            _add("oai-did", str(self._device_id), domain="chatgpt.com", path="/")
+1705|        return items
+1706|
+1707|    def _latest_chatgpt_import_browser_cookies(
+1708|        self,
+1709|        cookies: list[dict],
+1710|        *,
+1711|        only_names: set[str] | frozenset[str] | None = None,
+1712|    ) -> None:
+1713|        """把无头浏览器 cookie 回填到协议会话。
+1714|
+1715|        only_names 用于只回填 Cloudflare 相关 cookie，避免 page.goto 产生的新 auth cookie
+1716|        覆盖协议会话中的 oai-client-auth-session / login_session 等关键状态。
+1717|        """
+1718|        if not self.session:
+1719|            return
+1720|        allowed = {str(n).strip() for n in (only_names or set()) if str(n).strip()}
+1721|        for cookie in cookies or []:
+1722|            name = str(cookie.get("name") or "").strip()
+1723|            value = str(cookie.get("value") or "")
+1724|            if not name or value == "":
+1725|                continue
+1726|            if allowed and name not in allowed:
+1727|                continue
+1728|            domain = str(cookie.get("domain") or "").strip()
+1729|            domains = []
+1730|            if domain:
+1731|                domains.append(domain)
+1732|            # 关键域名兜底，避免 CookieJar 域匹配失败。
+1733|            if "auth.openai.com" in domain or not domain:
+1734|                domains.extend([".auth.openai.com", "auth.openai.com", ".openai.com", "openai.com"])
+1735|            if "chatgpt.com" in domain:
+1736|                domains.extend([".chatgpt.com", "chatgpt.com"])
+1737|            if name in {"cf_clearance", "__cf_bm", "__cflb", "_cfuvid", "oai-did"}:
+1738|                domains.extend([".auth.openai.com", "auth.openai.com", ".openai.com", "openai.com"])
+1739|            # de-dup while preserving order
+1740|            uniq_domains = []
+1741|            for d in domains:
+1742|                if d and d not in uniq_domains:
+1743|                    uniq_domains.append(d)
+1744|            self._seed_named_cookie(name, value, domains=tuple(uniq_domains or (".auth.openai.com", "auth.openai.com")))
+1745|
+1746|    def _latest_chatgpt_camoufox_launch_opts(self) -> dict[str, Any]:
+1747|        proxy_cfg = None
+1748|        proxy_url = str(getattr(self, "proxy_url", "") or "").strip()
+1749|        if proxy_url:
+1750|            try:
+
+===== 1850-2100 =====
+1850|            self._log(f"chatgpt_register 无头浏览器 cf_clearance 失败: {exc}", "warning")
+1851|            return False
+1852|
+1853|    def _latest_chatgpt_headless_auth_json(
+1854|        self,
+1855|        *,
+1856|        url: str,
+1857|        body: str,
+1858|        referer: str,
+1859|        headers: dict,
+1860|        label: str,
+1861|    ) -> tuple[int, dict, str]:
+1862|        """关键 Auth JSON 请求改走无头浏览器同源 fetch，保证 CF/TLS 与有头会话一致。"""
+1863|        # 默认关闭关键 Auth JSON 的无头执行：page.goto 容易污染 oai-client-auth-session 并触发 invalid_state。
+1864|        # 仅当显式 OPENAI_PROTOCOL_ENABLE_HEADLESS_AUTH=1 时启用；无头浏览器只用于 CF/参数计算。
+1865|        enable_headless_auth = str(__import__("os").environ.get("OPENAI_PROTOCOL_ENABLE_HEADLESS_AUTH") or "").strip()
+1866|        if not enable_headless_auth:
+1867|            raise RuntimeError("headless_auth_disabled_by_default")
+1868|        if str(__import__("os").environ.get("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH") or "").strip():
+1869|            raise RuntimeError("headless_auth_disabled")
+1870|        if str(__import__("os").environ.get("PYTEST_CURRENT_TEST") or "").strip():
+1871|            raise RuntimeError("headless_auth_disabled_in_pytest")
+1872|        try:
+1873|            from camoufox.sync_api import Camoufox
+1874|            from platforms.chatgpt.browser_register import _browser_fetch
+1875|        except Exception as exc:
+1876|            raise RuntimeError(f"headless_auth_unavailable: {exc}") from exc
+1877|
+1878|        ua = self._latest_chatgpt_user_agent()
+1879|        cookie_items = self._latest_chatgpt_protocol_cookie_items()
+1880|        launch_opts = self._latest_chatgpt_camoufox_launch_opts()
+1881|        with Camoufox(**launch_opts) as browser:
+1882|            page = browser.new_page()
+1883|            try:
+1884|                page.set_extra_http_headers(
+1885|                    {
+1886|                        "user-agent": ua,
+1887|                        "accept-language": self._latest_chatgpt_accept_language(),
+1888|                    }
+1889|                )
+1890|            except Exception:
+1891|                pass
+1892|            if cookie_items:
+1893|                try:
+1894|                    page.context.add_cookies(cookie_items)
+1895|                except Exception as exc:
+1896|                    self._log(f"{label} 注入 cookie 失败: {exc}", "warning")
+1897|            page.goto(referer, wait_until="domcontentloaded", timeout=45000)
+1898|            # 页面内完成 jsd 后再发关键请求。
+1899|            deadline = time.time() + 20
+1900|            while time.time() < deadline:
+1901|                try:
+1902|                    names = {c.get("name") for c in page.context.cookies("https://auth.openai.com")}
+1903|                    if "cf_clearance" in names:
+1904|                        break
+1905|                except Exception:
+1906|                    pass
+1907|                time.sleep(0.4)
+1908|
+1909|            fetch_headers = {
+1910|                "accept": str(headers.get("accept") or "application/json"),
+1911|                "content-type": str(headers.get("content-type") or "application/json"),
+1912|                "origin": str(headers.get("origin") or "https://auth.openai.com"),
+1913|                "referer": referer,
+1914|                "user-agent": ua,
+1915|                "accept-language": self._latest_chatgpt_accept_language(),
+1916|            }
+1917|            for key in (
+1918|                "openai-sentinel-token",
+1919|                "openai-sentinel-so-token",
+1920|                "oai-device-id",
+1921|                "x-access-flow-invocation-id",
+1922|                "x-datadog-origin",
+1923|                "x-datadog-parent-id",
+1924|                "x-datadog-sampling-priority",
+1925|                "x-datadog-trace-id",
+1926|                "traceparent",
+1927|                "tracestate",
+1928|            ):
+1929|                if headers.get(key):
+1930|                    fetch_headers[key] = headers[key]
+1931|
+1932|            result = _browser_fetch(
+1933|                page,
+1934|                url,
+1935|                method="POST",
+1936|                headers=fetch_headers,
+1937|                body=body,
+1938|                redirect="follow",
+1939|                timeout_ms=45000,
+1940|            )
+1941|            try:
+1942|                # 关键 Auth 步骤只允许回填 CF cookie，防止 headless 导航重写 auth state。
+1943|                self._latest_chatgpt_import_browser_cookies(
+1944|                    page.context.cookies(),
+1945|                    only_names={"cf_clearance", "__cf_bm", "__cflb", "_cfuvid"},
+1946|                )
+1947|            except Exception:
+1948|                pass
+1949|            status = int(result.get("status") or 0)
+1950|            text = str(result.get("text") or "")
+1951|            data = result.get("data")
+1952|            if not isinstance(data, dict):
+1953|                try:
+1954|                    data = json.loads(text) if text else {}
+1955|                except Exception:
+1956|                    data = {}
+1957|            self._log(f"{label} 无头浏览器执行状态: {status}")
+1958|            return status, data if isinstance(data, dict) else {}, text
+1959|
+1960|    def _latest_chatgpt_warmup_chatgpt_anon_session(self, device_id: str) -> None:
+1961|        """Replay headed-browser pre-auth warmup: accounts/check + prepare/finalize + cf_clearance."""
+1962|        from .constants import CHATGPT_APP, SENTINEL_SDK_URL
+1963|
+1964|        if not self.session or not device_id:
+1965|            return
+1966|        try:
+1967|            check_headers = self._latest_chatgpt_chatgpt_client_headers(
+1968|                target_path="/backend-anon/accounts/check/v4-2023-04-27",
+1969|            )
+1970|            self.session.get(
+1971|                f"{CHATGPT_APP}/backend-anon/accounts/check/v4-2023-04-27",
+1972|                params={"timezone_offset_min": "-480"},
+1973|                headers=check_headers,
+1974|                timeout=20,
+1975|            )
+1976|        except Exception as exc:
+1977|            self._log(f"chatgpt_register 预热 accounts/check 失败: {exc}", "warning")
+1978|
+1979|        try:
+1980|            ua = self._latest_chatgpt_user_agent()
+1981|            generator = _SentinelTokenGenerator(device_id, ua)
+1982|            prepare_p = generator.generate_requirements_token()
+1983|            prepare_headers = self._latest_chatgpt_chatgpt_client_headers(
+1984|                target_path="/backend-anon/sentinel/chat-requirements/prepare",
+1985|            )
+1986|            prepare_headers["content-type"] = "application/json"
+1987|            prepare_headers["origin"] = CHATGPT_APP
+1988|            resp = self.session.post(
+1989|                f"{CHATGPT_APP}/backend-anon/sentinel/chat-requirements/prepare",
+1990|                headers=prepare_headers,
+1991|                data=json.dumps({"p": prepare_p}, separators=(",", ":")),
+1992|                timeout=20,
+1993|            )
+1994|            status = getattr(resp, "status_code", 0)
+1995|            if status != 200:
+1996|                self._log(f"chatgpt_register 预热 chat-requirements/prepare 状态: {status}", "warning")
+1997|            else:
+1998|                self._log("chatgpt_register 预热 chat-requirements/prepare 完成")
+1999|                prepare_data = self._response_json_dict(resp)
+2000|                prepare_token = str(prepare_data.get("prepare_token") or "").strip()
+2001|                pow_meta = prepare_data.get("proofofwork") or {}
+2002|                turnstile = prepare_data.get("turnstile") or {}
+2003|                finalize_body: dict[str, Any] = {}
+2004|                if prepare_token:
+2005|                    finalize_body["prepare_token"] = prepare_token
+2006|                if isinstance(pow_meta, dict) and pow_meta.get("required") and pow_meta.get("seed"):
+2007|                    finalize_body["proofofwork"] = generator.generate_token(
+2008|                        str(pow_meta.get("seed") or ""),
+2009|                        str(pow_meta.get("difficulty") or "0"),
+2010|                    )
+2011|                dx_b64 = str((turnstile or {}).get("dx") or "").strip()
+2012|                if dx_b64:
+2013|                    try:
+2014|                        from .sentinel_vm import solve_turnstile_dx
+2015|
+2016|                        finalize_body["turnstile"] = solve_turnstile_dx(
+2017|                            dx_b64,
+2018|                            prepare_p,
+2019|                            user_agent=ua,
+2020|                            sdk_url=SENTINEL_SDK_URL,
+2021|                        )
+2022|                    except Exception as exc:
+2023|                        self._log(f"chatgpt_register 预热 finalize turnstile 失败: {exc}", "warning")
+2024|                if prepare_token and finalize_body.get("proofofwork") and finalize_body.get("turnstile"):
+2025|                    finalize_headers = self._latest_chatgpt_chatgpt_client_headers(
+2026|                        target_path="/backend-anon/sentinel/chat-requirements/finalize",
+2027|                    )
+2028|                    finalize_headers["content-type"] = "application/json"
+2029|                    finalize_headers["origin"] = CHATGPT_APP
+2030|                    finalize_resp = self.session.post(
+2031|                        f"{CHATGPT_APP}/backend-anon/sentinel/chat-requirements/finalize",
+2032|                        headers=finalize_headers,
+2033|                        data=json.dumps(finalize_body, separators=(",", ":")),
+2034|                        timeout=30,
+2035|                    )
+2036|                    finalize_status = getattr(finalize_resp, "status_code", 0)
+2037|                    if finalize_status == 200:
+2038|                        self._log("chatgpt_register 预热 chat-requirements/finalize 完成")
+2039|                    else:
+2040|                        self._log(
+2041|                            f"chatgpt_register 预热 chat-requirements/finalize 状态: {finalize_status}",
+2042|                            "warning",
+2043|                        )
+2044|        except Exception as exc:
+2045|            self._log(f"chatgpt_register 预热 chat-requirements/prepare 失败: {exc}", "warning")
+2046|
+2047|
+2048|    def _latest_chatgpt_init_email_oauth(self) -> tuple[bool, str]:
+2049|        """按 chatgpt_register 最新流程初始化邮箱注册，并记录 OpenAI 返回的下一步页面。"""
+2050|        from .constants import CHATGPT_APP
+2051|
+2052|        if not self.session:
+2053|            return False, "session_not_initialized"
+2054|        if not self.email:
+2055|            return False, "email_not_initialized"
+2056|
+2057|        otp_maybe_sent_at = time.time()
+2058|        self._otp_sent_at = None
+2059|        self._latest_chatgpt_init_final_url = ""
+2060|        try:
+2061|            self.session.get(
+2062|                f"{CHATGPT_APP}/",
+2063|                headers=self._latest_chatgpt_nav_headers(sec_fetch_site="none"),
+2064|                timeout=20,
+2065|            )
+2066|            did = self._read_oai_did_cookie()
+2067|            if not did:
+2068|                did = self._seed_oai_did_cookie(self._protocol_device_id())
+2069|            self._device_id = did
+2070|            # Headed-browser HAR always warms chatgpt.com backend-anon before signin.
+2071|            self._latest_chatgpt_warmup_chatgpt_anon_session(did)
+2072|
+2073|            csrf_resp = self.session.get(
+2074|                f"{CHATGPT_APP}/api/auth/csrf",
+2075|                headers=self._latest_chatgpt_browser_headers(
+2076|                    accept="application/json",
+2077|                    referer=f"{CHATGPT_APP}/",
+2078|                    sec_fetch_dest="empty",
+2079|                    sec_fetch_mode="cors",
+2080|                    sec_fetch_site="same-origin",
+2081|                ),
+2082|                timeout=20,
+2083|            )
+2084|            if getattr(csrf_resp, "status_code", 0) != 200:
+2085|                return False, f"csrf_http_{getattr(csrf_resp, 'status_code', 0)}"
+2086|
+2087|            csrf_data = self._response_json_dict(csrf_resp)
+2088|            csrf_token = str(csrf_data.get("csrfToken") or "").strip()
+2089|            if not csrf_token:
+2090|                csrf_cookie = str(self.session.cookies.get("__Host-next-auth.csrf-token", "") or "")
+2091|                csrf_token = csrf_cookie.split("%7C")[0] if "%7C" in csrf_cookie else csrf_cookie.split("|")[0]
+2092|            if not csrf_token:
+2093|                return False, "csrf_token_missing"
+2094|
+2095|            query = urllib.parse.urlencode(
+2096|                {
+2097|                    "prompt": "login",
+2098|                    "ext-oai-did": did,
+2099|                    "auth_session_logging_id": self.protocol_fingerprint.auth_session_logging_id,
+2100|                    "screen_hint": "login_or_signup",
+
+===== 2170-2450 =====
+2170|            return True, ""
+2171|        except Exception as exc:
+2172|            return False, str(exc)
+2173|
+2174|
+2175|    def _latest_chatgpt_validate_email_otp(self, code: str) -> dict:
+2176|        headers = self._latest_chatgpt_json_headers(referer="https://auth.openai.com/email-verification")
+2177|        if self._device_id:
+2178|            otp_sentinel = self._check_sentinel(self._device_id, flow="authorize_continue")
+2179|            if otp_sentinel:
+2180|                headers["openai-sentinel-token"] = self._sentinel_payload_header(otp_sentinel, self._device_id)
+2181|                if otp_sentinel.so_token:
+2182|                    headers["openai-sentinel-so-token"] = otp_sentinel.so_token
+2183|                self._log(
+2184|                    f"chatgpt_register OTP validate Sentinel 已附带: "
+2185|                    f"t_len={len(otp_sentinel.t)} so={'yes' if otp_sentinel.so_token else 'no'}"
+2186|                )
+2187|        body = json.dumps({"code": code}, separators=(",", ":"))
+2188|        status = 0
+2189|        payload: dict = {}
+2190|        response_text = ""
+2191|        used_headless = False
+2192|        try:
+2193|            status, payload, response_text = self._latest_chatgpt_headless_auth_json(
+2194|                url=OPENAI_API_ENDPOINTS["validate_otp"],
+2195|                body=body,
+2196|                referer="https://auth.openai.com/email-verification",
+2197|                headers=headers,
+2198|                label="chatgpt_register OTP validate",
+2199|            )
+2200|            used_headless = True
+2201|            # headless 一旦 409/invalid_state/非 200，立刻回退协议，避免继续污染会话。
+2202|            if status != 200:
+2203|                self._log(
+2204|                    f"chatgpt_register OTP validate 无头浏览器返回 {status}/"
+2205|                    f"{self._openai_error_code_from_payload(payload) or 'non_200'}，回退协议请求",
+2206|                    "warning",
+2207|                )
+2208|                used_headless = False
+2209|        except Exception as exc:
+2210|            if "disabled" not in str(exc).lower():
+2211|                self._log(f"chatgpt_register OTP validate 无头浏览器执行失败，回退协议请求: {exc}", "warning")
+2212|            used_headless = False
+2213|
+2214|        if not used_headless:
+2215|            if self._device_id and not self._latest_chatgpt_has_cf_clearance():
+2216|                self._latest_chatgpt_seed_cf_clearance_via_headless(self._device_id)
+2217|            response = self.session.post(OPENAI_API_ENDPOINTS["validate_otp"], headers=headers, data=body, timeout=30)
+2218|            status = int(getattr(response, "status_code", 0) or 0)
+2219|            payload = self._response_json_dict(response)
+2220|            response_text = str(getattr(response, "text", "") or "")
+2221|
+2222|        class _Resp:
+2223|            def __init__(self, status_code: int, text: str, data: dict):
+2224|                self.status_code = status_code
+2225|                self.text = text
+2226|                self._data = data
+2227|
+2228|            def json(self):
+2229|                return self._data
+2230|
+2231|        response = _Resp(status, response_text, payload)
+2232|        self._otp_page_type = str(((payload.get("page") or {}).get("type")) or "")
+2233|        self._otp_continue_url = str(payload.get("continue_url") or "").strip()
+2234|        self._log(
+2235|            f"chatgpt_register OTP validate 状态: {status} "
+2236|            f"page_type={self._otp_page_type or '(empty)'} continue_url={self._otp_continue_url or '(empty)'}"
+2237|            f"{' [headless]' if used_headless else ''}"
+2238|        )
+2239|        if status != 200:
+2240|            error_code = self._openai_error_code_from_payload(payload)
+2241|            if error_code == "account_deactivated":
+2242|                raise RuntimeError(error_code)
+2243|            if self._device_id:
+2244|                ca_sentinel = self._check_sentinel(self._device_id, flow="authorize_continue")
+2245|                if ca_sentinel:
+2246|                    retry_headers = dict(headers)
+2247|                    retry_headers["openai-sentinel-token"] = self._sentinel_payload_header(ca_sentinel, self._device_id)
+2248|                    self._log("chatgpt_register OTP validate 首次失败，补 authorize_continue Sentinel 后重试", "warning")
+2249|                    response = self.session.post(
+2250|                        OPENAI_API_ENDPOINTS["validate_otp"],
+2251|                        headers=retry_headers,
+2252|                        data=body,
+2253|                        timeout=30,
+2254|                    )
+2255|                    payload = self._response_json_dict(response)
+2256|                    self._otp_page_type = str(((payload.get("page") or {}).get("type")) or "")
+2257|                    self._otp_continue_url = str(payload.get("continue_url") or "").strip()
+2258|                    self._log(
+2259|                        f"chatgpt_register OTP validate Sentinel 重试状态: {getattr(response, 'status_code', 0)} "
+2260|                        f"page_type={self._otp_page_type or '(empty)'} continue_url={self._otp_continue_url or '(empty)'}"
+2261|                    )
+2262|                    if getattr(response, "status_code", 0) == 200:
+2263|                        error_code = self._openai_error_code_from_payload(payload)
+2264|                        if error_code:
+2265|                            raise RuntimeError(error_code)
+2266|                        return payload
+2267|                    error_code = self._openai_error_code_from_payload(payload)
+2268|            raise RuntimeError(error_code or f"email_otp_validate_http_{getattr(response, 'status_code', 0)}")
+2269|        error_code = self._openai_error_code_from_payload(payload)
+2270|        if error_code:
+2271|            raise RuntimeError(error_code)
+2272|        return payload
+2273|
+2274|
+2275|    def _latest_chatgpt_refresh_email_otp_after_invalid_state(self) -> Optional[str]:
+2276|        """最新版注册链 OTP state 失效后，仅刷新当前邮箱的 OAuth/OTP 会话。"""
+2277|        self._log("chatgpt_register OTP validate 返回 invalid_state，刷新当前邮箱 OTP 会话后重试一次...", "warning")
+2278|        self._refresh_mailbox_before_ids()
+2279|        self._reset_latest_chatgpt_session_for_retry()
+2280|        init_ok, init_error = self._latest_chatgpt_init_email_oauth()
+2281|        if not init_ok:
+2282|            raise RuntimeError(f"invalid_state_retry_init_failed: {init_error}")
+2283|        init_final_url = str(getattr(self, "_latest_chatgpt_init_final_url", "") or "")
+2284|        if "/create-account/password" in init_final_url:
+2285|            password_ok, _registered_password = self._register_password()
+2286|            if not password_ok:
+2287|                raise RuntimeError("invalid_state_retry_password_failed")
+2288|        elif init_final_url and "/email-verification" not in init_final_url and "/email-otp" not in init_final_url:
+2289|            raise RuntimeError(f"invalid_state_retry_unexpected_step: {init_final_url}")
+2290|        if not self._send_verification_code():
+2291|            raise RuntimeError("invalid_state_retry_send_otp_failed")
+2292|        code = self._get_verification_code(mark_invalid_on_timeout=False, resend_on_timeout=False)
+2293|        if not code:
+2294|            raise RuntimeError("invalid_state_retry_no_otp")
+2295|        return code
+2296|
+2297|    def _latest_chatgpt_resend_email_otp_after_rejected_code(self, reason: str) -> Optional[str]:
+2298|        """验证码被服务端拒绝后，刷新邮箱基线、重发并只读取新验证码。"""
+2299|        self._log(f"chatgpt_register OTP validate 返回 {reason}，刷新邮箱基线后重发验证码...", "warning")
+2300|        self._refresh_mailbox_before_ids()
+2301|        if not self._send_verification_code():
+2302|            raise RuntimeError(f"{reason}_retry_send_otp_failed")
+2303|        code = self._get_verification_code(mark_invalid_on_timeout=False, resend_on_timeout=False)
+2304|        if not code:
+2305|            raise RuntimeError(f"{reason}_retry_no_otp")
+2306|        return code
+2307|
+2308|
+2309|    def _latest_chatgpt_open_about_you(self, url: str) -> bool:
+2310|        self._last_about_you_error = ""
+2311|        if not url:
+2312|            self._last_about_you_error = "missing_continue_url"
+2313|            self._log("chatgpt_register OTP validate 未返回 about-you continue_url", "warning")
+2314|            return False
+2315|        target = urllib.parse.urljoin("https://auth.openai.com/", url)
+2316|        self._log(f"chatgpt_register about-you 请求目标: {target}")
+2317|        try:
+2318|            response = self.session.get(
+2319|                target,
+2320|                headers=self._latest_chatgpt_nav_headers(
+2321|                    referer="https://auth.openai.com/email-verification",
+2322|                    sec_fetch_site="same-origin",
+2323|                ),
+2324|                timeout=60,
+2325|            )
+2326|            status = getattr(response, "status_code", 0)
+2327|            final_url = str(getattr(response, "url", "") or target)
+2328|            excerpt = self._short_response_excerpt(response, max_length=120)
+2329|            self._log(
+2330|                f"chatgpt_register about-you 导航状态: {status} final_url={final_url} "
+2331|                f"body={excerpt or '(empty)'}"
+2332|            )
+2333|            if status >= 400:
+2334|                self._last_about_you_error = f"http_{status}: target={target} final_url={final_url} body={excerpt or '(empty)'}"
+2335|                return False
+2336|            if "/about-you" not in final_url:
+2337|                self._log(
+2338|                    f"chatgpt_register about-you 最终页面不是 /about-you: {final_url}，按源项目语义继续创建账号资料",
+2339|                    "warning",
+2340|                )
+2341|            return True
+2342|        except Exception as exc:
+2343|            self._log(f"chatgpt_register about-you 导航失败 target={target}: {exc}", "warning")
+2344|            self._last_about_you_error = f"exception: target={target}: {exc}"
+2345|            return False
+2346|
+2347|
+2348|    def _latest_chatgpt_create_user_account(self) -> bool:
+2349|        """按 chatgpt_register 最新链路创建账号资料，不插入旧状态推进请求。"""
+2350|        try:
+2351|            self._last_create_account_error_code = ""
+2352|            self._last_create_account_transport_error = ""
+2353|            user_info = generate_random_user_info()
+2354|            self._log(f"生成用户信息: {user_info['name']}, 生日: {user_info['birthdate']}")
+2355|            headers = self._latest_chatgpt_json_headers(referer="https://auth.openai.com/about-you")
+2356|            if self._device_id:
+2357|                ca_sentinel = self._check_sentinel(self._device_id, flow="oauth_create_account")
+2358|                if ca_sentinel:
+2359|                    headers["openai-sentinel-token"] = self._sentinel_payload_header(ca_sentinel, self._device_id)
+2360|                    if ca_sentinel.so_token:
+2361|                        headers["openai-sentinel-so-token"] = ca_sentinel.so_token
+2362|                    self._log(
+2363|                        f"create_account Sentinel 已获取: "
+2364|                        f"flow={ca_sentinel.flow} t_len={len(ca_sentinel.t)} "
+2365|                        f"so={'yes' if ca_sentinel.so_token else 'no'}"
+2366|                    )
+2367|            body = json.dumps(user_info, separators=(",", ":"))
+2368|            status = 0
+2369|            payload: dict = {}
+2370|            response_text = ""
+2371|            used_headless = False
+2372|            # 默认协议直发；仅显式启用 headless auth 时尝试浏览器同源 fetch。
+2373|            try:
+2374|                status, payload, response_text = self._latest_chatgpt_headless_auth_json(
+2375|                    url=OPENAI_API_ENDPOINTS["create_account"],
+2376|                    body=body,
+2377|                    referer="https://auth.openai.com/about-you",
+2378|                    headers=headers,
+2379|                    label="create_account",
+2380|                )
+2381|                used_headless = True
+2382|            except Exception as exc:
+2383|                # 默认关闭 headless auth 时静默走协议，避免每个账号都刷“disabled”日志。
+2384|                if "disabled" not in str(exc).lower():
+2385|                    self._log(f"create_account 无头浏览器执行失败，回退协议请求: {exc}", "warning")
+2386|                used_headless = False
+2387|
+2388|            if used_headless:
+2389|                invalid_state = (
+2390|                    status != 200
+2391|                    and (
+2392|                        self._openai_error_code_from_payload(payload) == "invalid_state"
+2393|                        or "invalid_state" in response_text
+2394|                        or "no longer valid" in response_text
+2395|                        or status in (401, 403, 409)
+2396|                    )
+2397|                )
+2398|                if invalid_state:
+2399|                    self._log(
+2400|                        f"create_account 无头浏览器返回 {status}/"
+2401|                        f"{self._openai_error_code_from_payload(payload) or 'non_200'}，回退协议请求",
+2402|                        "warning",
+2403|                    )
+2404|                    used_headless = False
+2405|
+2406|            if not used_headless:
+2407|                if self._device_id and not self._latest_chatgpt_has_cf_clearance():
+2408|                    self._latest_chatgpt_seed_cf_clearance_via_headless(
+2409|                        self._device_id,
+2410|                        target_url="https://auth.openai.com/about-you",
+2411|                    )
+2412|                response = self.session.post(
+2413|                    OPENAI_API_ENDPOINTS["create_account"],
+2414|                    headers=headers,
+2415|                    data=body,
+2416|                    timeout=30,
+2417|                )
+2418|                status = int(getattr(response, "status_code", 0) or 0)
+2419|                payload = self._response_json_dict(response)
+2420|                response_text = str(getattr(response, "text", "") or "")
+2421|
+2422|            class _Resp:
+2423|                def __init__(self, status_code: int, text: str, data: dict):
+2424|                    self.status_code = status_code
+2425|                    self.text = text
+2426|                    self._data = data
+2427|
+2428|                def json(self):
+2429|                    return self._data
+2430|
+2431|            response = _Resp(status, response_text, payload)
+2432|            self._log(f"账户创建状态: {status}{' [headless]' if used_headless else ''}")
+2433|            if status != 200:
+2434|                self._log(f"账户创建失败: {response_text}", "warning")
+2435|                self._last_create_account_error_code = self._openai_error_code_from_payload(payload)
+2436|                if self._is_deleted_or_deactivated_account_response(response):
+2437|                    self._last_create_account_error_code = "account_deactivated"
+2438|                    self._log("OpenAI 判定该邮箱关联账号已删除或停用，将改走已注册账号登录流程", "warning")
+2439|                if self._is_user_already_exists_response(response):
+2440|                    self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为别名已上限", "warning")
+2441|                    self._mark_parent_email_exhausted("openai_user_already_exists")
+2442|                    self._user_already_exists = True
+2443|                return False
+2444|            self._create_account_continue_url = str(payload.get("continue_url") or "")
+2445|            if self._create_account_continue_url:
+2446|                self._log(f"create_account continue_url: {self._create_account_continue_url}")
+2447|            return True
+2448|        except Exception as exc:
+2449|            self._last_create_account_transport_error = str(exc)
+2450|            self._log(f"创建账户失败: {exc}", "error")
+
+===== 2800-3200 =====
+2800|            self._log(f"获取 Device ID 失败: {e}", "error")
+2801|
+2802|            return None
+2803|
+2804|
+2805|
+2806|    def _check_sentinel(self, did: str, *, flow: str = "authorize_continue") -> Optional[SentinelPayload]:
+2807|
+2808|        """检查 Sentinel 拦截（动态生成 token + 处理 PoW）"""
+2809|
+2810|        try:
+2811|
+2812|            ua = self.http_client.default_headers.get("User-Agent", "")
+2813|
+2814|            generator = _SentinelTokenGenerator(did, ua)
+2815|
+2816|            sent_p = generator.generate_requirements_token()
+2817|
+2818|            sen_req_body = json.dumps({"p": sent_p, "id": did, "flow": flow}, separators=(",", ":"))
+2819|
+2820|
+2821|
+2822|            response = self.http_client.post(
+2823|
+2824|                OPENAI_API_ENDPOINTS["sentinel"],
+2825|
+2826|                headers=self._latest_chatgpt_sentinel_headers(user_agent=ua),
+2827|
+2828|                data=sen_req_body,
+2829|
+2830|            )
+2831|
+2832|
+2833|
+2834|            if response.status_code == 200:
+2835|
+2836|                data = response.json()
+2837|
+2838|                sen_token = str(data.get("token") or "")
+2839|
+2840|                turnstile = data.get("turnstile") or {}
+2841|
+2842|
+2843|
+2844|                # Handle proofofwork challenge if required
+2845|
+2846|                initial_p = sent_p  # keep for dx decryption
+2847|
+2848|                pow_meta = data.get("proofofwork") or {}
+2849|
+2850|                if pow_meta.get("required") and pow_meta.get("seed"):
+2851|
+2852|                    sent_p = generator.generate_token(
+2853|
+2854|                        str(pow_meta.get("seed") or ""),
+2855|
+2856|                        str(pow_meta.get("difficulty") or "0"),
+2857|
+2858|                    )
+2859|
+2860|                    self._log(f"Sentinel PoW solved: flow={flow}")
+2861|
+2862|
+2863|
+2864|                # Solve turnstile dx with VM
+2865|
+2866|                t_value = ""
+2867|
+2868|                dx_b64 = str(turnstile.get("dx") or "")
+2869|
+2870|                if dx_b64:
+2871|
+2872|                    try:
+2873|
+2874|                        from .sentinel_vm import solve_turnstile_dx
+2875|
+2876|                        from .constants import SENTINEL_SDK_URL
+2877|
+2878|                        t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+2879|
+2880|                        self._log(f"Sentinel VM solved: t_len={len(t_value)} flow={flow}")
+2881|
+2882|                    except Exception as vm_err:
+2883|
+2884|                        self._log(f"Sentinel VM failed: {vm_err}", "warning")
+2885|
+2886|                so_meta = data.get("so") or {}
+2887|                so_token = ""
+2888|                need_t = bool(dx_b64 and not t_value)
+2889|                need_so = bool(isinstance(so_meta, dict) and so_meta.get("required"))
+2890|                # HAR create_account 总是带 openai-sentinel-so-token；优先本地 VM 解 snapshot_dx。
+2891|                if need_so:
+2892|                    so_token = self._solve_session_observer_token(
+2893|                        device_id=did,
+2894|                        flow=flow,
+2895|                        challenge=data if isinstance(data, dict) else {},
+2896|                        request_p=initial_p,
+2897|                        user_agent=ua,
+2898|                    )
+2899|                    if so_token:
+2900|                        self._log(f"Sentinel so VM solved: so_len={len(so_token)} flow={flow}")
+2901|                if need_t or (need_so and not so_token):
+2902|                    quickjs_payload = self._quickjs_sentinel_payload(
+2903|                        getattr(self.http_client, "session", None) or self.session,
+2904|                        did,
+2905|                        flow=flow,
+2906|                        user_agent=ua,
+2907|                        accept_language=self._latest_chatgpt_accept_language(),
+2908|                        label="主注册链路 VM/PoW t/so 补齐",
+2909|                    )
+2910|                    if quickjs_payload:
+2911|                        # HAR shows create_account needs a real long VM t.
+2912|                        # Only take QuickJS t when VM failed; keep VM t when already solved.
+2913|                        if need_t and quickjs_payload.t:
+2914|                            t_value = quickjs_payload.t
+2915|                            if quickjs_payload.p:
+2916|                                sent_p = quickjs_payload.p
+2917|                            if quickjs_payload.c:
+2918|                                sen_token = quickjs_payload.c
+2919|                        if need_so and not so_token and quickjs_payload.so_token:
+2920|                            so_token = quickjs_payload.so_token
+2921|
+2922|                payload = SentinelPayload(
+2923|                    p=sent_p,
+2924|                    c=sen_token,
+2925|                    flow=flow,
+2926|                    t=t_value,
+2927|                    so_token=so_token,
+2928|                )
+2929|
+2930|                self._log(
+2931|                    f"Sentinel token 获取成功: flow={flow} t_len={len(payload.t)} "
+2932|                    f"so_len={len(payload.so_token)}"
+2933|                )
+2934|
+2935|                return payload
+2936|
+2937|            else:
+2938|
+2939|                self._log(f"Sentinel 检查失败: flow={flow} status={response.status_code}", "warning")
+2940|
+2941|                quickjs_payload = self._quickjs_sentinel_payload(
+2942|                    getattr(self.http_client, "session", None) or self.session,
+2943|                    did,
+2944|                    flow=flow,
+2945|                    user_agent=ua,
+2946|                    accept_language=self._latest_chatgpt_accept_language(),
+2947|                    label="主注册链路 VM/PoW 失败后",
+2948|                )
+2949|
+2950|                return quickjs_payload
+2951|
+2952|
+2953|
+2954|        except Exception as e:
+2955|
+2956|            self._log(f"Sentinel VM/PoW 检查异常: flow={flow} {e}", "warning")
+2957|
+2958|            try:
+2959|
+2960|                quickjs_payload = self._quickjs_sentinel_payload(
+2961|                    getattr(self.http_client, "session", None) or self.session,
+2962|                    did,
+2963|                    flow=flow,
+2964|                    user_agent=self.http_client.default_headers.get("User-Agent", ""),
+2965|                    accept_language=self._latest_chatgpt_accept_language(),
+2966|                    label="主注册链路 VM/PoW 异常后",
+2967|                )
+2968|
+2969|                return quickjs_payload
+2970|
+2971|            except Exception as quickjs_error:
+2972|
+2973|                self._log(f"Sentinel QuickJS 兜底异常: flow={flow} {quickjs_error}", "warning")
+2974|
+2975|            return None
+2976|
+2977|
+2978|
+2979|    @staticmethod
+2980|    def _sentinel_payload_header(payload: SentinelPayload, device_id: str) -> str:
+2981|
+2982|        return json.dumps(
+2983|            {
+2984|                "p": payload.p,
+2985|                "t": payload.t,
+2986|                "c": payload.c,
+2987|                "id": device_id,
+2988|                "flow": payload.flow,
+2989|            },
+2990|            separators=(",", ":"),
+2991|        )
+2992|
+2993|
+2994|    def _parse_sentinel_header_payload(
+2995|        self,
+2996|        token: str,
+2997|        *,
+2998|        flow: str,
+2999|        label: str,
+3000|    ) -> Optional[SentinelPayload]:
+3001|
+3002|        try:
+3003|
+3004|            data = json.loads(token or "")
+3005|
+3006|        except Exception as exc:
+3007|
+3008|            self._log(f"{label} QuickJS Sentinel 返回非 JSON: {exc}", "warning")
+3009|
+3010|            return None
+3011|
+3012|        if not isinstance(data, dict):
+3013|
+3014|            self._log(f"{label} QuickJS Sentinel 返回结构异常", "warning")
+3015|
+3016|            return None
+3017|
+3018|        p_value = str(data.get("p") or "").strip()
+3019|
+3020|        c_value = str(data.get("c") or "").strip()
+3021|
+3022|        if not p_value or not c_value:
+3023|
+3024|            self._log(f"{label} QuickJS Sentinel 缺少 p/c，回退原 Sentinel VM", "warning")
+3025|
+3026|            return None
+3027|
+3028|        return SentinelPayload(
+3029|            p=p_value,
+3030|            t=str(data.get("t") or "").strip(),
+3031|            c=c_value,
+3032|            flow=str(data.get("flow") or flow).strip() or flow,
+3033|        )
+3034|
+3035|
+3036|    def _quickjs_sentinel_payload(
+3037|        self,
+3038|        session,
+3039|        device_id: str,
+3040|        *,
+3041|        flow: str,
+3042|        user_agent: str,
+3043|        label: str,
+3044|        accept_language: str = "",
+3045|    ) -> Optional[SentinelPayload]:
+3046|
+3047|        """VM/PoW 失败后兜底使用真实 OpenAI Sentinel SDK。"""
+3048|
+3049|        if not session:
+3050|
+3051|            return None
+3052|
+3053|        import os as _os_sentinel
+3054|
+3055|        if _os_sentinel.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
+3056|
+3057|            return None
+3058|
+3059|        try:
+3060|
+3061|            from .authflow_experimental.sentinel_quickjs import get_sentinel_tokens_via_quickjs
+3062|
+3063|            token_bundle = get_sentinel_tokens_via_quickjs(
+3064|                session,
+3065|                device_id=device_id,
+3066|                flow=flow,
+3067|                user_agent=user_agent,
+3068|                accept_language=accept_language,
+3069|                log=lambda message: self._log(f"{label} {message}"),
+3070|            )
+3071|            token = str((token_bundle or {}).get("token") or "")
+3072|            so_token = str((token_bundle or {}).get("so_token") or "")
+3073|
+3074|        except Exception as exc:
+3075|
+3076|            self._log(f"{label} QuickJS Sentinel 调用异常，回退原 Sentinel VM: {exc}", "warning")
+3077|
+3078|            return None
+3079|
+3080|        payload = self._parse_sentinel_header_payload(token or "", flow=flow, label=label) if token else None
+3081|
+3082|        if not payload:
+3083|
+3084|            return None
+3085|
+3086|        payload.so_token = so_token
+3087|
+3088|        self._log(
+3089|            f"{label} QuickJS Sentinel 已生成: "
+3090|            f"flow={payload.flow} t_len={len(payload.t)} so_len={len(payload.so_token)}"
+3091|        )
+3092|
+3093|        return payload
+3094|
+3095|
+3096|    def _submit_signup_form(self, did: str, sen_payload: Optional[SentinelPayload]) -> SignupFormResult:
+3097|
+3098|        """
+3099|
+3100|        提交注册表单（通过 authorize/continue 建立 session）
+3101|
+3102|
+3103|
+3104|        Returns:
+3105|
+3106|            SignupFormResult: 提交结果，包含账号状态判断
+3107|
+3108|        """
+3109|
+3110|        try:
+3111|
+3112|            self._device_id = did
+3113|
+3114|            self._signup_sentinel = sen_payload
+3115|
+3116|            self._sentinel_token = sen_payload.c if sen_payload else None
+3117|
+3118|            signup_body = json.dumps(
+3119|                {"username": {"value": self.email, "kind": "email"}, "screen_hint": "signup"},
+3120|                separators=(",", ":"),
+3121|            )
+3122|
+3123|            def _build_signup_headers(current_sentinel: Optional[SentinelPayload]) -> dict:
+3124|                headers = {
+3125|                    "referer": "https://auth.openai.com/create-account",
+3126|                    "accept": "application/json",
+3127|                    "content-type": "application/json",
+3128|                    "sec-fetch-site": "same-origin",
+3129|                    **_generate_datadog_trace_headers(),
+3130|                }
+3131|                if did:
+3132|                    headers["oai-device-id"] = did
+3133|                if current_sentinel:
+3134|                    sentinel = json.dumps(
+3135|                        {
+3136|                            "p": current_sentinel.p,
+3137|                            "t": current_sentinel.t,
+3138|                            "c": current_sentinel.c,
+3139|                            "id": did,
+3140|                            "flow": current_sentinel.flow,
+3141|                        },
+3142|                        separators=(",", ":"),
+3143|                    )
+3144|                    headers["openai-sentinel-token"] = sentinel
+3145|                return headers
+3146|
+3147|            def _post_signup(current_sentinel: Optional[SentinelPayload], label: str):
+3148|                headers = _build_signup_headers(current_sentinel)
+3149|                self._log_auth_state_cookies(f"提交注册表单前 cookie({label})")
+3150|                self._log(
+3151|                    f"提交注册表单请求({label}): POST {OPENAI_API_ENDPOINTS['signup']} "
+3152|                    f"sentinel={'yes' if current_sentinel else 'no'} "
+3153|                    f"flow={getattr(current_sentinel, 'flow', '') or ''}"
+3154|                )
+3155|                return self.session.post(
+3156|                    OPENAI_API_ENDPOINTS["signup"],
+3157|                    headers=headers,
+3158|                    data=signup_body,
+3159|                    timeout=15,
+3160|                )
+3161|
+3162|            response = _post_signup(sen_payload, "initial")
+3163|
+3164|            for retry_index, regenerate_oauth in enumerate((False, True), start=1):
+3165|                if response.status_code != 409 or not self._is_invalid_state_response(response):
+3166|                    break
+3167|                self._log(
+3168|                    f"提交注册表单 invalid_state，第 {retry_index}/2 次重建 authorize 后重试: {response.text}",
+3169|                    "warning",
+3170|                )
+3171|                refreshed_sentinel = self._refresh_signup_authorize_state(
+3172|                    did,
+3173|                    regenerate_oauth=regenerate_oauth,
+3174|                )
+3175|                if refreshed_sentinel:
+3176|                    sen_payload = refreshed_sentinel
+3177|                    self._signup_sentinel = refreshed_sentinel
+3178|                    self._sentinel_token = refreshed_sentinel.c
+3179|                else:
+3180|                    self._log("invalid_state 恢复未取得新 Sentinel，仍按当前会话尝试提交", "warning")
+3181|                response = _post_signup(sen_payload, f"retry{retry_index}")
+3182|
+3183|
+3184|
+3185|            self._log(f"提交注册表单状态: {response.status_code}")
+3186|
+3187|
+3188|
+3189|            if response.status_code != 200:
+3190|
+3191|                return SignupFormResult(
+3192|
+3193|                    success=False,
+3194|
+3195|                    error_message=f"HTTP {response.status_code}: {response.text}"
+3196|
+3197|                )
+3198|
+3199|
+3200|
+
+===== 4200-4300 =====
+4200|                ca_sentinel = self._check_sentinel(self._device_id, flow="oauth_create_account")
+4201|
+4202|                if ca_sentinel:
+4203|
+4204|                    create_headers["openai-sentinel-token"] = json.dumps({
+4205|
+4206|                        "p": ca_sentinel.p,
+4207|
+4208|                        "t": ca_sentinel.t,
+4209|
+4210|                        "c": ca_sentinel.c,
+4211|
+4212|                        "id": self._device_id,
+4213|
+4214|                        "flow": ca_sentinel.flow,
+4215|
+4216|                    }, separators=(",", ":"))
+4217|
+4218|                    if ca_sentinel.so_token:
+4219|
+4220|                        create_headers["openai-sentinel-so-token"] = ca_sentinel.so_token
+4221|
+4222|                    self._log(
+4223|                        f"create_account Sentinel 已获取: "
+4224|                        f"flow={ca_sentinel.flow} t_len={len(ca_sentinel.t)} "
+4225|                        f"so={'yes' if ca_sentinel.so_token else 'no'}"
+4226|                    )
+4227|
+4228|
+4229|
+4230|            response = self.session.post(
+4231|
+4232|                OPENAI_API_ENDPOINTS["create_account"],
+4233|
+4234|                headers=create_headers,
+4235|
+4236|                data=create_account_body,
+4237|
+4238|            )
+4239|
+4240|
+4241|
+4242|            self._log(f"账户创建状态: {response.status_code}")
+4243|
+4244|
+4245|
+4246|            if response.status_code != 200:
+4247|
+4248|                self._log(f"账户创建失败: {response.text}", "warning")
+4249|                self._last_create_account_error_code = self._openai_error_code_from_payload(
+4250|                    self._response_json_dict(response)
+4251|                )
+4252|                if self._is_deleted_or_deactivated_account_response(response):
+4253|                    self._log("OpenAI 判定该邮箱关联账号已删除或停用，准备删除当前邮箱", "warning")
+4254|                    self._delete_current_email_after_openai_reject("openai_account_deleted_or_deactivated")
+4255|
+4256|                if self._is_user_already_exists_response(response):
+4257|                    self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为别名已上限", "warning")
+4258|                    self._mark_parent_email_exhausted("openai_user_already_exists")
+4259|                    self._user_already_exists = True
+4260|
+4261|                return False
+4262|
+4263|
+4264|
+4265|            # 提取 continue_url（ChatGPT Web 流程直接返回 OAuth callback URL）
+4266|
+4267|            try:
+4268|
+4269|                resp_data = response.json()
+4270|
+4271|                self._create_account_continue_url = resp_data.get("continue_url", "")
+4272|
+4273|                if self._create_account_continue_url:
+4274|
+4275|                    self._log(f"create_account continue_url: {self._create_account_continue_url}")
+4276|
+4277|            except Exception:
+4278|
+4279|                pass
+4280|
+4281|
+4282|
+4283|            return True
+4284|
+4285|
+4286|
+4287|        except Exception as e:
+4288|
+4289|            self._log(f"创建账户失败: {e}", "error")
+4290|
+4291|            return False
+4292|
+4293|
+4294|
+4295|    def _acquire_codex_callback(self) -> Optional[str]:
+4296|
+4297|        """
+4298|
+4299|        注册完成后，通过 Codex CLI OAuth 完整登录流程获取 callback URL。
+4300|
+
+===== 4850-5150 =====
+4850|            redirect_uri=PLATFORM_OAUTH_REDIRECT_URI,
+4851|
+4852|            client_id=PLATFORM_OAUTH_CLIENT_ID,
+4853|
+4854|        )
+4855|
+4856|
+4857|    def _platform_nav_headers(self, *, referer: str = "") -> dict:
+4858|
+4859|        """Platform OAuth 导航请求头。"""
+4860|
+4861|        default_ua = PLATFORM_REFERENCE_USER_AGENT
+4862|        http_client = getattr(self, "http_client", None)
+4863|        default_headers = getattr(http_client, "default_headers", {}) if http_client else {}
+4864|        fingerprint = getattr(self, "protocol_fingerprint", None)
+4865|        user_agent = default_headers.get("User-Agent") or default_ua
+4866|
+4867|        headers = {
+4868|
+4869|            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+4870|
+4871|            "accept-language": getattr(fingerprint, "accept_language", "en-US,en;q=0.9"),
+4872|
+4873|            "user-agent": user_agent,
+4874|
+4875|            "sec-ch-ua": getattr(fingerprint, "sec_ch_ua", PLATFORM_REFERENCE_SEC_CH_UA),
+4876|
+4877|            "sec-ch-ua-arch": getattr(fingerprint, "sec_ch_ua_arch", '"x86_64"'),
+4878|
+4879|            "sec-ch-ua-bitness": getattr(fingerprint, "sec_ch_ua_bitness", '"64"'),
+4880|
+4881|            "sec-ch-ua-full-version-list": getattr(fingerprint, "sec_ch_ua_full", PLATFORM_REFERENCE_SEC_CH_UA_FULL),
+4882|
+4883|            "sec-ch-ua-mobile": getattr(fingerprint, "sec_ch_ua_mobile", "?0"),
+4884|
+4885|            "sec-ch-ua-model": getattr(fingerprint, "sec_ch_ua_model", '""'),
+4886|
+4887|            "sec-ch-ua-platform": getattr(fingerprint, "sec_ch_ua_platform", '"Windows"'),
+4888|
+4889|            "sec-ch-ua-platform-version": getattr(fingerprint, "sec_ch_ua_platform_version", '"10.0.0"'),
+4890|
+4891|            "sec-fetch-dest": "document",
+4892|
+4893|            "sec-fetch-mode": "navigate",
+4894|
+4895|            "sec-fetch-site": "same-origin",
+4896|
+4897|            "upgrade-insecure-requests": "1",
+4898|
+4899|        }
+4900|
+4901|        if referer:
+4902|
+4903|            headers["referer"] = referer
+4904|
+4905|        return headers
+4906|
+4907|
+4908|    def _platform_json_headers(self, *, device_id: str, referer: str) -> dict:
+4909|
+4910|        """Platform OAuth JSON 请求头。"""
+4911|
+4912|        from .constants import OPENAI_AUTH
+4913|
+4914|        default_ua = PLATFORM_REFERENCE_USER_AGENT
+4915|        http_client = getattr(self, "http_client", None)
+4916|        default_headers = getattr(http_client, "default_headers", {}) if http_client else {}
+4917|        fingerprint = getattr(self, "protocol_fingerprint", None)
+4918|        user_agent = default_headers.get("User-Agent") or default_ua
+4919|
+4920|        headers = {
+4921|
+4922|            "accept": "application/json",
+4923|
+4924|            "accept-language": getattr(fingerprint, "accept_language", "en-US,en;q=0.9"),
+4925|
+4926|            "content-type": "application/json",
+4927|
+4928|            "origin": OPENAI_AUTH,
+4929|
+4930|            "priority": "u=1, i",
+4931|
+4932|            "referer": referer,
+4933|
+4934|            "user-agent": user_agent,
+4935|
+4936|            "oai-device-id": device_id,
+4937|
+4938|            "sec-ch-ua": getattr(fingerprint, "sec_ch_ua", PLATFORM_REFERENCE_SEC_CH_UA),
+4939|
+4940|            "sec-ch-ua-arch": getattr(fingerprint, "sec_ch_ua_arch", '"x86_64"'),
+4941|
+4942|            "sec-ch-ua-bitness": getattr(fingerprint, "sec_ch_ua_bitness", '"64"'),
+4943|
+4944|            "sec-ch-ua-full-version-list": getattr(fingerprint, "sec_ch_ua_full", PLATFORM_REFERENCE_SEC_CH_UA_FULL),
+4945|
+4946|            "sec-ch-ua-mobile": getattr(fingerprint, "sec_ch_ua_mobile", "?0"),
+4947|
+4948|            "sec-ch-ua-model": getattr(fingerprint, "sec_ch_ua_model", '""'),
+4949|
+4950|            "sec-ch-ua-platform": getattr(fingerprint, "sec_ch_ua_platform", '"Windows"'),
+4951|
+4952|            "sec-ch-ua-platform-version": getattr(fingerprint, "sec_ch_ua_platform_version", '"10.0.0"'),
+4953|
+4954|            "sec-fetch-dest": "empty",
+4955|
+4956|            "sec-fetch-mode": "cors",
+4957|
+4958|            "sec-fetch-site": "same-origin",
+4959|
+4960|        }
+4961|
+4962|        headers.update(_generate_datadog_trace_headers())
+4963|
+4964|        return headers
+4965|
+4966|
+4967|    def _build_sentinel_payload_for_client(self, client: OpenAIHTTPClient, device_id: str, flow: str) -> SentinelPayload:
+4968|
+4969|        """为独立 Platform 登录 session 生成单次 Sentinel payload。"""
+4970|
+4971|        ua = client.default_headers.get("User-Agent", "")
+4972|        accept_language = str(client.default_headers.get("Accept-Language") or client.default_headers.get("accept-language") or "")
+4973|
+4974|        try:
+4975|
+4976|            generator = _SentinelTokenGenerator(device_id, ua)
+4977|
+4978|            sent_p = generator.generate_requirements_token()
+4979|
+4980|            response = client.post(
+4981|
+4982|                OPENAI_API_ENDPOINTS["sentinel"],
+4983|
+4984|                headers=self._latest_chatgpt_sentinel_headers(user_agent=ua, accept_language=accept_language),
+4985|
+4986|                data=json.dumps({"p": sent_p, "id": device_id, "flow": flow}, separators=(",", ":")),
+4987|
+4988|            )
+4989|
+4990|            if response.status_code != 200:
+4991|
+4992|                raise RuntimeError(f"sentinel_req_failed_{response.status_code}")
+4993|
+4994|            data = response.json()
+4995|
+4996|            token = str(data.get("token") or "").strip()
+4997|
+4998|            if not token:
+4999|
+5000|                raise RuntimeError("sentinel_req_no_token")
+5001|
+5002|            pow_meta = data.get("proofofwork") or {}
+5003|
+5004|            initial_p = sent_p
+5005|
+5006|            if pow_meta.get("required") and pow_meta.get("seed"):
+5007|
+5008|                sent_p = generator.generate_token(str(pow_meta.get("seed") or ""), str(pow_meta.get("difficulty") or "0"))
+5009|
+5010|            t_value = ""
+5011|
+5012|            dx_b64 = str((data.get("turnstile") or {}).get("dx") or "")
+5013|
+5014|            if dx_b64:
+5015|
+5016|                try:
+5017|
+5018|                    from .sentinel_vm import solve_turnstile_dx
+5019|
+5020|                    from .constants import SENTINEL_SDK_URL
+5021|
+5022|                    t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+5023|
+5024|                except Exception as exc:
+5025|
+5026|                    self._log(f"Platform Sentinel VM 失败: {exc}", "warning")
+5027|
+5028|            so_meta = data.get("so") or {}
+5029|            so_token = ""
+5030|            need_t = bool(dx_b64 and not t_value)
+5031|            need_so = bool(isinstance(so_meta, dict) and so_meta.get("required"))
+5032|            if need_so:
+5033|                so_token = self._solve_session_observer_token(
+5034|                    device_id=device_id,
+5035|                    flow=flow,
+5036|                    challenge=data if isinstance(data, dict) else {},
+5037|                    request_p=initial_p,
+5038|                    user_agent=ua,
+5039|                )
+5040|            if need_t or (need_so and not so_token):
+5041|                quickjs_payload = self._quickjs_sentinel_payload(
+5042|                    getattr(client, "session", None),
+5043|                    device_id,
+5044|                    flow=flow,
+5045|                    user_agent=ua,
+5046|                    accept_language=accept_language or self._latest_chatgpt_accept_language(),
+5047|                    label="Platform 注册链路 VM/PoW t/so 补齐",
+5048|                )
+5049|                if quickjs_payload:
+5050|                    if need_t and quickjs_payload.t:
+5051|                        t_value = quickjs_payload.t
+5052|                        if quickjs_payload.p:
+5053|                            sent_p = quickjs_payload.p
+5054|                        if quickjs_payload.c:
+5055|                            token = quickjs_payload.c
+5056|                    if need_so and not so_token and quickjs_payload.so_token:
+5057|                        so_token = quickjs_payload.so_token
+5058|
+5059|            return SentinelPayload(p=sent_p, t=t_value, c=token, flow=flow, so_token=so_token)
+5060|
+5061|        except Exception as exc:
+5062|
+5063|            self._log(f"Platform Sentinel VM/PoW 失败，尝试 QuickJS 兜底: {exc}", "warning")
+5064|
+5065|            quickjs_payload = self._quickjs_sentinel_payload(
+5066|                getattr(client, "session", None),
+5067|                device_id,
+5068|                flow=flow,
+5069|                user_agent=ua,
+5070|                accept_language=accept_language or self._latest_chatgpt_accept_language(),
+5071|                label="Platform 注册链路 VM/PoW 失败后",
+5072|            )
+5073|
+5074|            if quickjs_payload:
+5075|
+5076|                return quickjs_payload
+5077|
+5078|            raise
+5079|
+5080|
+5081|    def _build_sentinel_header_for_client(self, client: OpenAIHTTPClient, device_id: str, flow: str) -> str:
+5082|
+5083|        """为独立 Platform 登录 session 生成 Sentinel header。"""
+5084|
+5085|        payload = self._build_sentinel_payload_for_client(client, device_id, flow)
+5086|
+5087|        return self._sentinel_payload_header(payload, device_id)
+5088|
+5089|
+5090|    @staticmethod
+5091|    def _set_oai_did_for_session(session, device_id: str) -> None:
+5092|
+5093|        """给独立登录 session 写入 oai-did，减少 device_id 丢失。"""
+5094|
+5095|        for domain in (".auth.openai.com", "auth.openai.com"):
+5096|
+5097|            try:
+5098|
+5099|                session.cookies.set("oai-did", device_id, domain=domain, path="/")
+5100|
+5101|            except TypeError:
+5102|
+5103|                try:
+5104|
+5105|                    session.cookies.set("oai-did", device_id, domain=domain)
+5106|
+5107|                except Exception:
+5108|
+5109|                    pass
+5110|
+5111|            except Exception:
+5112|
+5113|                pass
+5114|
+5115|
+5116|    def _send_platform_login_otp(self, client: OpenAIHTTPClient) -> bool:
+5117|
+5118|        """独立 Platform 登录触发邮箱 OTP 发送。"""
+5119|
+5120|        from .constants import OPENAI_AUTH
+5121|
+5122|        try:
+5123|
+5124|            resp = client.session.get(
+5125|
+5126|                OPENAI_API_ENDPOINTS["send_otp"],
+5127|
+5128|                headers=self._platform_nav_headers(referer=f"{OPENAI_AUTH}/email-verification"),
+5129|
+5130|                allow_redirects=True,
+5131|
+5132|                timeout=15,
+5133|
+5134|            )
+5135|
+5136|            ok = int(getattr(resp, "status_code", 0) or 0) in (200, 302)
+5137|
+5138|            self._log(f"Platform 登录验证码发送状态: {getattr(resp, 'status_code', 0)}")
+5139|
+5140|            if ok:
+5141|
+5142|                self._otp_sent_at = time.time()
+5143|
+5144|            return ok
+5145|
+5146|        except Exception as exc:
+5147|
+5148|            self._log(f"Platform 登录发送验证码失败: {exc}", "warning")
+5149|
+5150|            return False
+
+===== 5600-6000 =====
+5600|
+5601|
+5602|    def _platform_reference_register_user(self, client: OpenAIHTTPClient, device_id: str) -> bool:
+5603|
+5604|        """按 openai_register.py 提交注册密码。"""
+5605|
+5606|        from .constants import OPENAI_AUTH
+5607|
+5608|        if not self.email or not self.password:
+5609|
+5610|            raise RuntimeError("platform_register_missing_email_or_password")
+5611|
+5612|        self._log("开始提交注册密码")
+5613|
+5614|        headers = self._platform_json_headers(device_id=device_id, referer=f"{OPENAI_AUTH}/create-account/password")
+5615|
+5616|        headers["openai-sentinel-token"] = self._build_sentinel_header_for_client(
+5617|
+5618|            client,
+5619|
+5620|            device_id,
+5621|
+5622|            "username_password_create",
+5623|
+5624|        )
+5625|
+5626|        body = json.dumps({"username": self.email, "password": self.password}, separators=(",", ":"))
+5627|
+5628|        resp, error = self._platform_request_with_retry(
+5629|
+5630|            client.session,
+5631|
+5632|            "post",
+5633|
+5634|            OPENAI_API_ENDPOINTS["register"],
+5635|
+5636|            headers=headers,
+5637|
+5638|            data=body,
+5639|
+5640|        )
+5641|
+5642|        status = getattr(resp, "status_code", "unknown") if resp is not None else "none"
+5643|
+5644|        text = getattr(resp, "text", "") if resp is not None else ""
+5645|
+5646|        self._log(f"提交注册密码状态: {status}")
+5647|
+5648|        self._log(f"提交注册密码响应: {text}")
+5649|
+5650|        if resp is None or getattr(resp, "status_code", 0) != 200:
+5651|
+5652|            try:
+5653|
+5654|                data = resp.json() if resp is not None else {}
+5655|
+5656|            except Exception:
+5657|
+5658|                data = {}
+5659|
+5660|            if isinstance(data, dict) and data.get("message") == "Failed to create account. Please try again.":
+5661|
+5662|                self._log("注册失败提示: 邮箱域名很可能因滥用被封禁，请更换邮箱域名", "warning")
+5663|
+5664|            if resp is not None and self._is_invalid_auth_step_response(resp):
+5665|
+5666|                self._is_existing_account = True
+5667|
+5668|                self._log("提交注册密码返回 invalid_auth_step，判定当前邮箱已进入登录流程，跳过密码并继续发送邮箱验证码", "warning")
+5669|
+5670|                return False
+5671|
+5672|            raise RuntimeError(error or f"user_register_http_{status}: {text}")
+5673|
+5674|        try:
+5675|
+5676|            payload = resp.json() or {}
+5677|
+5678|            continue_url = str(payload.get("continue_url") or "").strip()
+5679|
+5680|            if continue_url:
+5681|
+5682|                self._email_otp_continue_url = continue_url
+5683|
+5684|        except Exception:
+5685|
+5686|            pass
+5687|
+5688|        self._log("提交注册密码完成")
+5689|
+5690|        return True
+5691|
+5692|
+5693|    def _platform_reference_send_otp(self, client: OpenAIHTTPClient) -> None:
+5694|
+5695|        """照 openai_register.py：GET email-otp/send，允许跳转到验证页。"""
+5696|
+5697|        from .constants import OPENAI_AUTH
+5698|
+5699|        self._log("开始发送验证码")
+5700|
+5701|        referer = f"{OPENAI_AUTH}/email-verification" if self._is_existing_account else f"{OPENAI_AUTH}/create-account/password"
+5702|
+5703|        resp, error = self._platform_request_with_retry(
+5704|
+5705|            client.session,
+5706|
+5707|            "get",
+5708|
+5709|            OPENAI_API_ENDPOINTS["send_otp"],
+5710|
+5711|            headers=self._platform_nav_headers(referer=referer),
+5712|
+5713|            allow_redirects=True,
+5714|
+5715|        )
+5716|
+5717|        status = getattr(resp, "status_code", "unknown") if resp is not None else "none"
+5718|
+5719|        final_url = getattr(resp, "url", "") if resp is not None else ""
+5720|
+5721|        text = getattr(resp, "text", "") if resp is not None else ""
+5722|
+5723|        self._log(f"验证码发送状态: {status}, final_url={final_url}")
+5724|
+5725|        self._log(f"验证码发送响应: {text}")
+5726|
+5727|        if resp is None or getattr(resp, "status_code", 0) not in (200, 302):
+5728|
+5729|            raise RuntimeError(error or f"send_otp_http_{status}: {text}")
+5730|
+5731|        if self._is_auth_error_url(str(final_url or ""), "invalid_auth_step"):
+5732|
+5733|            raise RuntimeError(f"send_otp_invalid_auth_step: final_url={final_url}")
+5734|
+5735|        self._otp_sent_at = time.time()
+5736|
+5737|        self._log("发送验证码完成")
+5738|
+5739|
+5740|    def _wait_platform_reference_register_code(self, client: OpenAIHTTPClient) -> Optional[str]:
+5741|
+5742|        """等待 platform 注册验证码；沿用本项目三轮 10s 规则，重发仍走参照 send_otp。"""
+5743|
+5744|        import os as _os_otp_timeout
+5745|
+5746|        try:
+5747|
+5748|            otp_timeout = int(
+5749|                (
+5750|                    _os_otp_timeout.environ.get("CHATGPT_OTP_TIMEOUT_SECONDS", "")
+5751|                    or str(CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS)
+5752|                ).strip()
+5753|            )
+5754|
+5755|        except Exception:
+5756|
+5757|            otp_timeout = CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS
+5758|
+5759|        try:
+5760|
+5761|            max_attempts = int((_os_otp_timeout.environ.get("CHATGPT_EMAIL_OTP_MAX_ATTEMPTS", "") or "3").strip())
+5762|
+5763|        except Exception:
+5764|
+5765|            max_attempts = 3
+5766|
+5767|        otp_timeout = max(CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS, otp_timeout)
+5768|
+5769|        max_attempts = max(1, min(max_attempts, 5))
+5770|
+5771|        email_id = self.email_info.get("service_id") if self.email_info else None
+5772|
+5773|        for attempt in range(1, max_attempts + 1):
+5774|
+5775|            if attempt > 1:
+5776|
+5777|                self._log(f"邮箱验证码 {otp_timeout}s 未收到，按 platform 参照流程重发 ({attempt}/{max_attempts})...")
+5778|
+5779|                try:
+5780|
+5781|                    if self._is_existing_account:
+5782|
+5783|                        self._platform_reference_resend_otp(client)
+5784|
+5785|                    else:
+5786|
+5787|                        self._platform_reference_send_otp(client)
+5788|
+5789|                except Exception as exc:
+5790|
+5791|                    self._log(f"第 {attempt}/{max_attempts} 次重发验证码失败: {exc}", "warning")
+5792|
+5793|                    continue
+5794|
+5795|            elapsed_since_send = "?"
+5796|
+5797|            if self._otp_sent_at:
+5798|
+5799|                elapsed_since_send = f"{time.time() - self._otp_sent_at:.0f}s"
+5800|
+5801|            self._log(
+5802|
+5803|                f"正在等待邮箱 {self.email} 的验证码 "
+5804|
+5805|                f"(第 {attempt}/{max_attempts} 轮, 超时: {otp_timeout}s, OTP已发送: {elapsed_since_send}前)..."
+5806|
+5807|            )
+5808|
+5809|            try:
+5810|
+5811|                code = self.email_service.get_verification_code(
+5812|
+5813|                    email=self.email,
+5814|
+5815|                    email_id=email_id,
+5816|
+5817|                    timeout=otp_timeout,
+5818|
+5819|                    pattern=OTP_CODE_PATTERN,
+5820|
+5821|                    otp_sent_at=self._otp_sent_at,
+5822|
+5823|                )
+5824|
+5825|            except TimeoutError as exc:
+5826|
+5827|                self._log(f"第 {attempt}/{max_attempts} 轮等待验证码超时: {exc}", "warning")
+5828|
+5829|                code = None
+5830|
+5831|            if code:
+5832|
+5833|                self._log(f"成功获取验证码: {code}")
+5834|
+5835|                return code
+5836|
+5837|            self._log(
+5838|
+5839|                f"第 {attempt}/{max_attempts} 轮等待验证码超时",
+5840|
+5841|                "warning" if attempt < max_attempts else "error",
+5842|
+5843|            )
+5844|
+5845|        self._log(f"等待验证码超时，已尝试 {max_attempts} 轮", "error")
+5846|
+5847|        self._email_otp_exhausted = True
+5848|
+5849|        self._mark_current_email_invalid("invalid_email_no_otp")
+5850|
+5851|        return None
+5852|
+5853|
+5854|    def _platform_reference_validate_otp(self, client: OpenAIHTTPClient, device_id: str, code: str) -> dict:
+5855|
+5856|        """按 openai_register.py 校验邮箱验证码；首次失败补 authorize_continue Sentinel。"""
+5857|
+5858|        self._log(f"开始校验验证码 {code}")
+5859|
+5860|        resp = self._validate_platform_login_otp(client, device_id, code)
+5861|
+5862|        status = getattr(resp, "status_code", "unknown") if resp is not None else "none"
+5863|
+5864|        text = getattr(resp, "text", "") if resp is not None else ""
+5865|
+5866|        self._log(f"验证码校验状态: {status}")
+5867|
+5868|        self._log(f"验证码校验响应: {text}")
+5869|
+5870|        if resp is None or getattr(resp, "status_code", 0) != 200:
+5871|
+5872|            raise RuntimeError(f"validate_otp_http_{status}_body={text}")
+5873|
+5874|        try:
+5875|
+5876|            payload = resp.json() or {}
+5877|
+5878|        except Exception:
+5879|
+5880|            payload = {}
+5881|
+5882|        self._otp_page_type = str(((payload.get("page") or {}).get("type")) or "")
+5883|
+5884|        continue_url = str(payload.get("continue_url") or "").strip()
+5885|
+5886|        if continue_url:
+5887|
+5888|            self._create_account_continue_url = continue_url
+5889|
+5890|        self._log("验证码校验完成")
+5891|
+5892|        return payload
+5893|
+5894|
+5895|    def _platform_reference_create_account(self, client: OpenAIHTTPClient, device_id: str) -> None:
+5896|
+5897|        """按 openai_register.py 创建账号资料。"""
+5898|
+5899|        from .constants import OPENAI_AUTH
+5900|
+5901|        user_info = generate_random_user_info()
+5902|
+5903|        self._log(f"开始创建账号资料: {user_info.get('name')}, 生日: {user_info.get('birthdate')}")
+5904|
+5905|        headers = self._platform_json_headers(device_id=device_id, referer=f"{OPENAI_AUTH}/about-you")
+5906|
+5907|        create_sentinel = self._build_sentinel_payload_for_client(client, device_id, "oauth_create_account")
+5908|
+5909|        headers["openai-sentinel-token"] = self._sentinel_payload_header(create_sentinel, device_id)
+5910|
+5911|        if create_sentinel.so_token:
+5912|
+5913|            headers["openai-sentinel-so-token"] = create_sentinel.so_token
+5914|
+5915|        resp, error = self._platform_request_with_retry(
+5916|
+5917|            client.session,
+5918|
+5919|            "post",
+5920|
+5921|            OPENAI_API_ENDPOINTS["create_account"],
+5922|
+5923|            headers=headers,
+5924|
+5925|            data=json.dumps(user_info, separators=(",", ":")),
+5926|
+5927|        )
+5928|
+5929|        status = getattr(resp, "status_code", "unknown") if resp is not None else "none"
+5930|
+5931|        text = getattr(resp, "text", "") if resp is not None else ""
+5932|
+5933|        self._log(f"创建账号资料状态: {status}")
+5934|
+5935|        self._log(f"创建账号资料响应: {text}")
+5936|
+5937|        if resp is None or getattr(resp, "status_code", 0) not in (200, 302):
+5938|
+5939|            if resp is not None and self._is_deleted_or_deactivated_account_response(resp):
+5940|
+5941|                self._log("OpenAI 判定该邮箱关联账号已删除或停用，准备删除当前邮箱", "warning")
+5942|
+5943|                self._delete_current_email_after_openai_reject("openai_account_deleted_or_deactivated")
+5944|
+5945|            if resp is not None and self._is_user_already_exists_response(resp):
+5946|
+5947|                self._log("OpenAI 返回 user_already_exists，父邮箱别名配额已耗尽，标记父邮箱为别名已上限", "warning")
+5948|
+5949|                self._mark_parent_email_exhausted("openai_user_already_exists")
+5950|
+5951|                raise RuntimeError("EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - parent email alias quota exhausted")
+5952|
+5953|            raise RuntimeError(error or f"create_account_http_{status}: {text}")
+5954|
+5955|        try:
+5956|
+5957|            payload = resp.json() or {}
+5958|
+5959|        except Exception:
+5960|
+5961|            payload = {}
+5962|
+5963|        continue_url = str(payload.get("continue_url") or "").strip()
+5964|
+5965|        if continue_url:
+5966|
+5967|            self._create_account_continue_url = continue_url
+5968|
+5969|            self._log(f"create_account continue_url: {continue_url}")
+5970|
+5971|        self._log("创建账号资料完成")
+5972|
+5973|
+5974|    def _preferred_k12_workspace_id_from_payload(self, payload: dict) -> str:
+5975|        auth_session = payload.get("oai-client-auth-session") if isinstance(payload, dict) else {}
+5976|        auth_session = auth_session if isinstance(auth_session, dict) else {}
+5977|        workspaces = auth_session.get("workspaces") or []
+5978|        workspace_items = [item for item in workspaces if isinstance(item, dict)]
+5979|        workspace_ids = [str(item.get("id") or "").strip() for item in workspace_items if str(item.get("id") or "").strip()]
+5980|        configured_ids: list[str] = []
+5981|        try:
+5982|            from platforms.chatgpt.k12_join import parse_workspace_ids
+5983|
+5984|            configured_ids = parse_workspace_ids(str(getattr(self, "k12_workspace_ids", "") or ""))
+5985|        except Exception:
+5986|            configured_ids = []
+5987|        for configured_id in configured_ids:
+5988|            if configured_id in workspace_ids:
+5989|                return configured_id
+5990|        for item in workspace_items:
+5991|            if str(item.get("kind") or "").strip().lower() == "organization":
+5992|                workspace_id = str(item.get("id") or "").strip()
+5993|                if workspace_id:
+5994|                    return workspace_id
+5995|        return workspace_ids[0] if workspace_ids else ""
+5996|
+5997|    def _is_existing_k12_workspace_payload(self, payload: dict) -> bool:
+5998|        """OTP response is already on the auth.openai.com workspace selection branch."""
+5999|        if not isinstance(payload, dict):
+6000|            return False

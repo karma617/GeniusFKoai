@@ -72,7 +72,15 @@ def _result_dict(result: Any) -> dict:
 
 class _MailboxEmailService:
 
-    def __init__(self, *, mailbox, mailbox_account, provider: str, log_fn: Callable[[str], None] | None = None):
+    def __init__(
+        self,
+        *,
+        mailbox,
+        mailbox_account,
+        provider: str,
+        log_fn: Callable[[str], None] | None = None,
+        initial_before_ids: set | None = None,
+    ):
 
         self.service_type = type("ST", (), {"value": provider})()
 
@@ -82,7 +90,9 @@ class _MailboxEmailService:
 
         self._acct = None
 
-        self._before_ids = None
+        self._before_ids = set(initial_before_ids or set()) if initial_before_ids is not None else None
+
+        self._before_ids_fresh = initial_before_ids is not None
 
         self._log_fn = log_fn or print
 
@@ -104,13 +114,24 @@ class _MailboxEmailService:
 
         self._acct = self._mailbox_account
 
+        if self._before_ids_fresh:
+            return {
+                "email": self._mailbox_account.email,
+                "service_id": getattr(self._mailbox_account, "account_id", ""),
+                "token": getattr(self._mailbox_account, "account_id", ""),
+            }
+
         try:
 
             self._before_ids = self._mailbox.get_current_ids(self._mailbox_account)
 
+            self._before_ids_fresh = True
+
         except Exception:
 
             self._before_ids = set()
+
+            self._before_ids_fresh = False
 
         return {
 
@@ -192,6 +213,9 @@ class _MailboxEmailService:
 
     def refresh_before_ids(self) -> set:
         """刷新已见邮件集合，用于 OTP 会话失效后忽略旧验证码邮件。"""
+        if self._before_ids_fresh:
+            self._before_ids_fresh = False
+            return set(self._before_ids or set())
         try:
             self._before_ids = set(self._mailbox.get_current_ids(self._mailbox_account) or set())
         except Exception:
@@ -254,6 +278,7 @@ class ChatGPTProtocolMailboxWorker:
         proxy_url: str | None = None,
 
         log_fn: Callable[[str], None] = print,
+        initial_before_ids: set | None = None,
         skip_post_register_oauth: bool = False,
         k12_workspace_ids: str = "",
         remote_upload_enabled: bool = False,
@@ -285,6 +310,8 @@ class ChatGPTProtocolMailboxWorker:
             provider=provider,
 
             log_fn=log_fn,
+
+            initial_before_ids=initial_before_ids,
 
         )
 

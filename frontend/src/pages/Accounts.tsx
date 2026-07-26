@@ -382,11 +382,7 @@ function getAccountPlanPillClassName(acc: any, planLabel: string) {
 }
 
 function getAccountJsonText(acc: any) {
-  try {
-    return JSON.stringify(acc, null, 2)
-  } catch {
-    return String(acc || '')
-  }
+  return getChatgptSessionText(acc)
 }
 
 function getAccountJsonLength(acc: any) {
@@ -4973,6 +4969,7 @@ export default function Accounts() {
                       const tokenOk = Boolean(primaryToken)
                       const jsonText = getAccountJsonText(acc)
                       const jsonLength = getAccountJsonLength(acc)
+                      const hasSessionJson = Boolean(jsonText)
                       const createdLabel = getAccountCreatedAtLabel(acc, language)
                       const validityLabel = getAccountValidityWindowLabel(acc)
                       const status = getDisplayStatus(acc)
@@ -5061,11 +5058,12 @@ export default function Accounts() {
                           </td>
                           <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
                             <button
-                              onClick={() => copy(jsonText)}
-                              className="inline-flex min-w-[142px] items-center justify-center rounded border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-1.5 text-[12px] font-bold text-[var(--accent)] shadow-sm transition-colors hover:border-[var(--accent-edge)] hover:bg-[var(--accent-soft)]"
-                              title="复制当前账号完整 JSON"
+                              onClick={() => { if (hasSessionJson) copy(jsonText) }}
+                              disabled={!hasSessionJson}
+                              className="inline-flex min-w-[142px] items-center justify-center rounded border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-1.5 text-[12px] font-bold text-[var(--accent)] shadow-sm transition-colors hover:border-[var(--accent-edge)] hover:bg-[var(--accent-soft)] disabled:cursor-not-allowed disabled:text-[var(--text-muted)] disabled:hover:border-[var(--border-soft)] disabled:hover:bg-[var(--bg-card)]"
+                              title={hasSessionJson ? '复制 api/auth/session 返回的完整 JSON' : '当前账号未保存 api/auth/session JSON'}
                             >
-                              {jsonLength} 复制完整 JSON
+                              {hasSessionJson ? `${jsonLength} 复制完整 JSON` : '无 Session JSON'}
                             </button>
                           </td>
                           <td className="px-3 py-3 align-middle">

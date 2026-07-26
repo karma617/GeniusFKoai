@@ -1,0 +1,328 @@
+
+===== snip L466 =====
+466|class _SentinelTokenGenerator:
+467|
+468|    """Dynamic sentinel token generator – mirrors browser_register._SentinelTokenGenerator."""
+469|
+470|
+471|
+472|    def __init__(self, device_id: str, user_agent: str):
+473|
+474|        self.device_id = device_id or str(uuid.uuid4())
+475|
+476|        self.user_agent = user_agent
+477|
+478|        self.sid = str(uuid.uuid4())
+479|
+480|
+481|
+482|    @staticmethod
+483|
+484|    def _fnv1a32(text: str) -> str:
+485|
+486|        h = 2166136261
+487|
+488|        for ch in text:
+489|
+490|            h ^= ord(ch)
+491|
+492|            h = (h * 16777619) & 0xFFFFFFFF
+493|
+494|        h ^= (h >> 16)
+495|
+496|        h = (h * 2246822507) & 0xFFFFFFFF
+497|
+498|        h ^= (h >> 13)
+499|
+500|        h = (h * 3266489909) & 0xFFFFFFFF
+501|
+502|        h ^= (h >> 16)
+503|
+504|        return f"{h & 0xFFFFFFFF:08x}"
+505|
+506|
+507|
+508|    @staticmethod
+509|
+510|    def _b64(data) -> str:
+511|
+512|        return base64.b64encode(json.dumps(data, separators=(",", ":")).encode("utf-8")).decode("ascii")
+513|
+514|
+515|
+516|    def _config(self) -> list:
+517|
+518|        # Keep this fingerprint array aligned with headed-browser HAR samples:
+519|        # [screen, date, null, nonce, ua, sdk_url, null, lang, langs, elapsed,
+520|        #  capability probe, react listener, event name, perf, sid, "", cores,
+521|        #  origin_ms, zeros..., flags]
+522|        now_ms = int(time.time() * 1000)
+523|        perf_now = 1000 + random.random() * 49000
+524|        locale_date = time.strftime("%a %b %d %Y %H:%M:%S GMT+0800 (China Standard Time)", time.localtime())
+525|        return [
+526|            4800,
+527|            locale_date,
+528|            None,
+529|            random.random(),
+530|            self.user_agent,
+531|            SENTINEL_SDK_URL,
+532|            None,
+533|            "en-US",
+534|            "en-US,en",
+535|            round(5 + random.random() * 45),
+536|            "languages−en-US,en",
+537|            f"_reactListening{secrets.token_hex(6)}",
+538|            random.choice(["onbeforetoggle", "onbeforeunload", "location"]),
+539|            int(perf_now),
+540|            self.sid,
+541|            "",
+542|            random.choice([8, 12, 16]),
+543|            now_ms - int(perf_now),
+544|            0,
+545|            0,
+
+===== snip L555 =====
+555|    def generate_requirements_token(self) -> str:
+556|
+557|        cfg = self._config()
+558|        # Headed HAR initial /sentinel/req p points at backend-api/sdk.js entry.
+559|        cfg[5] = "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
+560|        cfg[3] = 1
+561|        cfg[9] = round(5 + random.random() * 45)
+562|        return "gAAAAAC" + self._b64(cfg)
+563|
+564|
+565|
+566|    def generate_token(self, seed: str, difficulty: str) -> str:
+567|
+568|        max_attempts = 500000
+569|        cfg = self._config()
+570|        # Headed HAR final create_account p points at versioned sentinel sdk.js.
+571|        cfg[5] = SENTINEL_SDK_URL
+572|        start_ms = int(time.time() * 1000)
+573|        diff = str(difficulty or "0")
+574|        for nonce in range(max_attempts):
+575|            cfg[3] = nonce
+576|            cfg[9] = round(int(time.time() * 1000) - start_ms)
+577|            encoded = self._b64(cfg)
+578|            digest = self._fnv1a32((seed or "") + encoded)
+579|            if digest[: len(diff)] <= diff:
+580|                return "gAAAAAB" + encoded + "~S"
+581|        return "gAAAAAB" + self._b64(None)
+582|
+583|
+584|
+585|
+586|
+587|class RegistrationEngine:
+588|
+589|    """
+590|
+591|    注册引擎
+592|
+593|    负责协调邮箱服务、OAuth 流程和 OpenAI API 调用
+594|
+595|    """
+596|
+597|
+598|
+599|    def __init__(
+600|
+601|        self,
+602|
+603|        email_service: Any,
+604|
+605|        proxy_url: Optional[str] = None,
+606|
+607|        callback_logger: Optional[Callable[[str], None]] = None,
+608|
+609|        task_uuid: Optional[str] = None
+610|
+611|    ):
+612|
+613|        """
+614|
+615|        初始化注册引擎
+616|
+617|
+618|
+619|        Args:
+620|
+621|            email_service: 邮箱服务实例
+622|
+623|            proxy_url: 代理 URL
+624|
+625|            callback_logger: 日志回调函数
+626|
+627|            task_uuid: 任务 UUID（用于数据库记录）
+628|
+629|        """
+630|
+631|        self.email_service = email_service
+632|
+633|        self.proxy_url = proxy_url
+634|
+
+===== snip L566 =====
+566|    def generate_token(self, seed: str, difficulty: str) -> str:
+567|
+568|        max_attempts = 500000
+569|        cfg = self._config()
+570|        # Headed HAR final create_account p points at versioned sentinel sdk.js.
+571|        cfg[5] = SENTINEL_SDK_URL
+572|        start_ms = int(time.time() * 1000)
+573|        diff = str(difficulty or "0")
+574|        for nonce in range(max_attempts):
+575|            cfg[3] = nonce
+576|            cfg[9] = round(int(time.time() * 1000) - start_ms)
+577|            encoded = self._b64(cfg)
+578|            digest = self._fnv1a32((seed or "") + encoded)
+579|            if digest[: len(diff)] <= diff:
+580|                return "gAAAAAB" + encoded + "~S"
+581|        return "gAAAAAB" + self._b64(None)
+582|
+583|
+584|
+585|
+586|
+587|class RegistrationEngine:
+588|
+589|    """
+590|
+591|    注册引擎
+592|
+593|    负责协调邮箱服务、OAuth 流程和 OpenAI API 调用
+594|
+595|    """
+596|
+597|
+598|
+599|    def __init__(
+600|
+601|        self,
+602|
+603|        email_service: Any,
+604|
+605|        proxy_url: Optional[str] = None,
+606|
+607|        callback_logger: Optional[Callable[[str], None]] = None,
+608|
+609|        task_uuid: Optional[str] = None
+610|
+611|    ):
+612|
+613|        """
+614|
+615|        初始化注册引擎
+616|
+617|
+618|
+619|        Args:
+620|
+621|            email_service: 邮箱服务实例
+622|
+623|            proxy_url: 代理 URL
+624|
+625|            callback_logger: 日志回调函数
+626|
+627|            task_uuid: 任务 UUID（用于数据库记录）
+628|
+629|        """
+630|
+631|        self.email_service = email_service
+632|
+633|        self.proxy_url = proxy_url
+634|
+635|        self.callback_logger = callback_logger or (lambda msg: logger.info(msg))
+636|
+637|        self.task_uuid = task_uuid
+638|
+639|        self.protocol_fingerprint = ProtocolFingerprint.create()
+640|
+641|
+642|
+643|        # 创建 HTTP 客户端
+644|
+645|        self.http_client = OpenAIHTTPClient(proxy_url=proxy_url)
+
+===== snip L2806 =====
+2806|    def _check_sentinel(self, did: str, *, flow: str = "authorize_continue") -> Optional[SentinelPayload]:
+2807|
+2808|        """检查 Sentinel 拦截（动态生成 token + 处理 PoW）"""
+2809|
+2810|        try:
+2811|
+2812|            ua = self.http_client.default_headers.get("User-Agent", "")
+2813|
+2814|            generator = _SentinelTokenGenerator(did, ua)
+2815|
+2816|            sent_p = generator.generate_requirements_token()
+2817|
+2818|            sen_req_body = json.dumps({"p": sent_p, "id": did, "flow": flow}, separators=(",", ":"))
+2819|
+2820|
+2821|
+2822|            response = self.http_client.post(
+2823|
+2824|                OPENAI_API_ENDPOINTS["sentinel"],
+2825|
+2826|                headers=self._latest_chatgpt_sentinel_headers(user_agent=ua),
+2827|
+2828|                data=sen_req_body,
+2829|
+2830|            )
+2831|
+2832|
+2833|
+2834|            if response.status_code == 200:
+2835|
+2836|                data = response.json()
+2837|
+2838|                sen_token = str(data.get("token") or "")
+2839|
+2840|                turnstile = data.get("turnstile") or {}
+2841|
+2842|
+2843|
+2844|                # Handle proofofwork challenge if required
+2845|
+2846|                initial_p = sent_p  # keep for dx decryption
+2847|
+2848|                pow_meta = data.get("proofofwork") or {}
+2849|
+2850|                if pow_meta.get("required") and pow_meta.get("seed"):
+2851|
+2852|                    sent_p = generator.generate_token(
+2853|
+2854|                        str(pow_meta.get("seed") or ""),
+2855|
+2856|                        str(pow_meta.get("difficulty") or "0"),
+2857|
+2858|                    )
+2859|
+2860|                    self._log(f"Sentinel PoW solved: flow={flow}")
+2861|
+2862|
+2863|
+2864|                # Solve turnstile dx with VM
+2865|
+2866|                t_value = ""
+2867|
+2868|                dx_b64 = str(turnstile.get("dx") or "")
+2869|
+2870|                if dx_b64:
+2871|
+2872|                    try:
+2873|
+2874|                        from .sentinel_vm import solve_turnstile_dx
+2875|
+2876|                        from .constants import SENTINEL_SDK_URL
+2877|
+2878|                        t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+2879|
+2880|                        self._log(f"Sentinel VM solved: t_len={len(t_value)} flow={flow}")
+2881|
+2882|                    except Exception as vm_err:
+2883|
+2884|                        self._log(f"Sentinel VM failed: {vm_err}", "warning")
+2885|

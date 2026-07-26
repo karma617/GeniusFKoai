@@ -1,0 +1,398 @@
+======================================== platforms\chatgpt\constants.py
+L71: # Sentinel（PoW 防护）- 版本号可能随 OpenAI 更新而变化（支持通过环境变量覆盖）
+L72: SENTINEL_BASE = os.environ.get("SENTINEL_BASE_URL", "https://sentinel.openai.com")
+L73: SENTINEL_SDK_VERSION = os.environ.get("SENTINEL_SDK_VERSION", "20260219f9f6")
+L74: SENTINEL_FRAME_VERSION = os.environ.get("SENTINEL_FRAME_VERSION", "20260219f9f6")
+L75: SENTINEL_SDK_URL = f"{SENTINEL_BASE}/sentinel/{SENTINEL_SDK_VERSION}/sdk.js"
+L76: SENTINEL_REQ_URL = f"{SENTINEL_BASE}/backend-api/sentinel/req"
+L77: SENTINEL_FRAME_URL = f"{SENTINEL_BASE}/backend-api/sentinel/frame.html?sv={SENTINEL_FRAME_VERSION}"
+L84:     "sentinel": SENTINEL_REQ_URL,
+L195: def generate_random_user_info() -> dict:
+======================================== platforms\chatgpt\sentinel_vm.py
+L1: """Pure-Python implementation of the Sentinel SDK VM for solving turnstile dx challenges."""
+L91:     """Browser window mock with realistic API surface for sentinel VM."""
+L93:     def __init__(self, user_agent: str = "", sdk_url: str = ""):
+L130:             href="https://sentinel.openai.com/backend-api/sentinel/frame.html",
+L131:             origin="https://sentinel.openai.com",
+L132:             pathname="/backend-api/sentinel/frame.html",
+L134:             host="sentinel.openai.com",
+L135:             hostname="sentinel.openai.com",
+L141:         scripts_list = [_make_obj(src=sdk_url)] if sdk_url else []
+L482: class SentinelVM:
+L485:     def __init__(self, user_agent: str = "", sdk_url: str = ""):
+L487:         self._win = _FakeWindow(user_agent, sdk_url)
+L800: def solve_turnstile_dx(dx_b64: str, p_token: str, user_agent: str = "", sdk_url: str = "") -> str:
+L801:     """Solve a Sentinel turnstile dx challenge.
+L804:         dx_b64: Base64-encoded dx value from sentinel/req response
+L805:         p_token: The 'p' requirements token sent in the sentinel/req request
+L807:         sdk_url: URL of the sentinel SDK script
+L810:         The 't' value for the sentinel token header
+L812:     vm = SentinelVM(user_agent=user_agent, sdk_url=sdk_url)
+======================================== platforms\chatgpt\authflow_experimental\sentinel.py
+L2: OpenAI Sentinel Token 生成（纯 Python 方案）。
+L5: （platforms/chatgpt/sentinel_token.py，MIT License）。
+L7: 旧实现见 sentinel_v1_legacy.py：先在本地 SHA3-512 算 PoW 再发，被 OpenAI 服务端
+L9:   1. 第一次 POST /sentinel/req 发 `requirements_token`（不带真 PoW），仅声明
+L15:      `https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js`。
+L17: 公开 API `get_sentinel_token(session, device_id, flow, user_agent)` 保持不变，
+L35: SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
+L36: SENTINEL_REFERER = "https://sentinel.openai.com/backend-api/sentinel/frame.html"
+L37: SENTINEL_SDK_URL = "https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js"
+L49: class SentinelTokenGenerator:
+L50:     """Sentinel Token 纯 Python 生成器。
+L53:     - `t` 字段固定空串；上游接口（`/sentinel/req`）的返回会判定能否接受。
+L62:         self.requirements_seed = str(random.random())
+L97:             SENTINEL_SDK_URL,
+L127:     def generate_token(self, seed: str | None = None, difficulty: str | None = None) -> str:
+L128:         seed = seed or self.requirements_seed
+L138:     def generate_requirements_token(self) -> str:
+L145: def fetch_sentinel_challenge(
+L154:     """POST `/sentinel/req` 并返回响应 JSON。失败返回 None。"""
+L155:     generator = SentinelTokenGenerator(device_id=device_id, user_agent=user_agent)
+L157:         "p": str(request_p or "").strip() or generator.generate_requirements_token(),
+L165:         "Referer": SENTINEL_REFERER,
+L166:         "Origin": "https://sentinel.openai.com",
+L179:         response = session.post(SENTINEL_REQ_URL, **kwargs)
+L182:         logger.warning(f"Sentinel /req 非 200: {response.status_code}")
+L184:         logger.warning(f"Sentinel /req 异常: {exc}")
+L189: def build_sentinel_token(
+L197:     """完整 Sentinel token：fetch challenge → 用 server-given seed/difficulty 解 PoW → 拼装。
+L201:     challenge = fetch_sentinel_challenge(
+L214:         logger.warning("Sentinel 响应缺 token 字段")
+L217:     generator = SentinelTokenGenerator(device_id=device_id, user_agent=user_agent)
+L220:         p_value = generator.generate_token(
+L225:         p_value = generator.generate_requirements_token()
+L237: def get_sentinel_token(
+L246:       1. QuickJS 路径 (`sentinel_quickjs.get_sentinel_token_via_quickjs`)
+L247:          在 Node 子进程里跑 OpenAI 真实 sdk.js，返回服务端可深层校验的 token。
+L249:       2. 纯 Python 路径 (`build_sentinel_token`) — 只做表层 PoW，能通过
+L251:          或 sdk.js 下载失败时的兜底。
+L254:     禁用 QuickJS：`export OPENAI_SENTINEL_DISABLE_QUICKJS=1`。
+L256:     if not os.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
+L258:             from .sentinel_quickjs import get_sentinel_token_via_quickjs
+L259:             qtoken = get_sentinel_token_via_quickjs(
+L266:                 logger.info(f"Sentinel Token 组装完成 (QuickJS 长度: {len(qtoken)})")
+L268:             logger.warning("Sentinel QuickJS 失败，回退到纯 Python")
+L270:             logger.warning(f"Sentinel QuickJS 加载/调用异常，回退到纯 Python: {e}")
+L272:     token = build_sentinel_token(
+L279:         logger.info(f"Sentinel Token 组装完成 (纯 Python 长度: {len(token)})")
+L282:     logger.warning("Sentinel /req 也失败，回退到无 challenge 模式")
+L283:     fallback_p = SentinelTokenGenerator(
+L285:     ).generate_requirements_token()
+======================================== platforms\chatgpt\authflow_experimental\sentinel_quickjs.py
+L1: """QuickJS-driven Sentinel token generator.
+L5: platforms/chatgpt/sentinel_browser.py:`_get_sentinel_token_via_quickjs`
+L6: + scripts/js/openai_sentinel_quickjs.js (MIT License).
+L9:   Pure-Python `sentinel.py` computes a synthetic PoW that *passes* OpenAI's
+L10:   surface validation (200 OK on `/sentinel/req`, `/authorize/continue`, etc.)
+L11:   but the OTP-dispatch service runs the actual sentinel SDK JS server-side
+L13:   silent-drop. To pass, we must run OpenAI's real `sdk.js` (downloaded from
+L14:   `sentinel.openai.com/sentinel/<ver>/sdk.js`) inside a JS VM and emit the
+L19:   - Wrapper loads OpenAI's sdk.js + `openai_sentinel_quickjs.js` (a thin
+L20:     adapter that exposes `requirements`/`solve` actions over stdin/stdout)
+L21:   - Two passes: action=requirements → `request_p`, then `/sentinel/req` →
+L24:     pure-Python `build_sentinel_token`, so callers don't need to change
+L27:   - `get_sentinel_token_via_quickjs(session, device_id, flow, ...) -> str | None`
+L28:   - `get_sentinel_tokens_via_quickjs(session, device_id, flow, ...) -> dict | None`
+L44: SENTINEL_VERSION = "20260219f9f6"
+L45: SENTINEL_SDK_URL = f"https://sentinel.openai.com/sentinel/{SENTINEL_VERSION}/sdk.js"
+L46: SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
+L50:     return (os.getenv("OPENAI_SENTINEL_NODE_PATH", "") or "").strip() or "node"
+L54:     return Path(__file__).resolve().parent / "openai_sentinel_quickjs.js"
+L69:     """Download OpenAI's actual sdk.js to /tmp cache (one-shot per version)."""
+L70:     cache_dir = Path(tempfile.gettempdir()) / "openai-sentinel-demo" / SENTINEL_VERSION
+L72:     sdk_file = cache_dir / "sdk.js"
+L77:         SENTINEL_SDK_URL,
+L89:         raise RuntimeError(f"下载 sdk.js 失败: HTTP {resp.status_code}")
+L92:         raise RuntimeError("下载 sdk.js 失败: 响应为空")
+L99: const timeoutMs = Number(process.env.OPENAI_SENTINEL_VM_TIMEOUT_MS || '10000');
+L100: const sdkFile = process.env.OPENAI_SENTINEL_SDK_FILE;
+L101: const scriptFile = process.env.OPENAI_SENTINEL_QUICKJS_SCRIPT;
+L157:             "OPENAI_SENTINEL_SDK_FILE": str(sdk_file),
+L158:             "OPENAI_SENTINEL_QUICKJS_SCRIPT": str(quickjs_script),
+L159:             "OPENAI_SENTINEL_VM_TIMEOUT_MS": str(min(timeout_ms, 30000)),
+L173: def _fetch_sentinel_challenge(
+L185:         SENTINEL_REQ_URL,
+L188:             "origin": "https://sentinel.openai.com",
+L189:             "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_VERSION}",
+L202:         raise RuntimeError(f"/sentinel/req HTTP {resp.status_code}")
+L205:         raise RuntimeError("Sentinel challenge 响应不是 JSON 对象")
+L209: def get_sentinel_tokens_via_quickjs(
+L221:     Caller is expected to fall back to pure-Python sentinel on None.
+L226:         log(f"Sentinel QuickJS 脚本不存在: {quickjs_script}")
+L234:         requirements = _run_quickjs_action(
+L235:             action="requirements",
+L247:         request_p = str(requirements.get("request_p") or "").strip()
+L249:             log("Sentinel QuickJS 失败: requirements 未返回 request_p")
+L252:         challenge = _fetch_sentinel_challenge(
+L263:             log("Sentinel QuickJS 失败: challenge token 为空")
+L284:             log("Sentinel QuickJS 失败: solve 未返回 final_p")
+L290:             log("Sentinel QuickJS 失败: solve 未返回有效 t")
+L300:             "Sentinel QuickJS 成功 "
+L306:         log(f"Sentinel QuickJS 异常: {e}")
+L310: def get_sentinel_token_via_quickjs(
+L320:     """Backward-compatible wrapper returning only `openai-sentinel-token`."""
+L321:     bundle = get_sentinel_tokens_via_quickjs(
+======================================== tools\_register_snip.py
+L42: from .oauth import OAuthManager, OAuthStart, generate_oauth_url, submit_callback_url
+L58:     generate_random_user_info,
+L70:     SENTINEL_SDK_URL,
+L227: class SentinelPayload:
+L229:     """Sentinel 请求结果。"""
+L403: def _generate_pkce_pair() -> tuple[str, str]:
+L432: # ─── Sentinel helpers (ported from browser_register.py) ──────────
+L436: def _generate_datadog_trace_headers() -> dict:
+L466: class _SentinelTokenGenerator:
+L468:     """Dynamic sentinel token generator – mirrors browser_register._SentinelTokenGenerator."""
+L519:         # [screen, date, null, nonce, ua, sdk_url, null, lang, langs, elapsed,
+L531:             SENTINEL_SDK_URL,
+L555:     def generate_requirements_token(self) -> str:
+L558:         # Headed HAR initial /sentinel/req p points at backend-api/sdk.js entry.
+L559:         cfg[5] = "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
+L566:     def generate_token(self, seed: str, difficulty: str) -> str:
+L570:         # Headed HAR final create_account p points at versioned sentinel sdk.js.
+L571:         cfg[5] = SENTINEL_SDK_URL
+L694:         self._sentinel_token: Optional[str] = None
+L696:         self._signup_sentinel: Optional[SentinelPayload] = None
+L698:         self._password_sentinel: Optional[SentinelPayload] = None
+L955:     def _refresh_signup_authorize_state(self, did: str, *, regenerate_oauth: bool = False) -> Optional[SentinelPayload]:
+L957:         """重建 authorize 状态并重新生成 authorize_continue Sentinel。"""
+L959:         if regenerate_oauth:
+L1013:         return self._check_sentinel(did, flow="authorize_continue")
+L1017:     def _generate_password(self, length: int = DEFAULT_PASSWORD_LENGTH) -> str:
+L1421:             headers.update(_generate_datadog_trace_headers())
+L1439:     def _latest_chatgpt_sentinel_headers(self, *, user_agent: str = "", accept_language: str = "") -> dict:
+L1440:         """Sentinel iframe/SDK 内部 req 请求头，保持与当前注册会话 UA/语言一致。"""
+L1441:         from .constants import SENTINEL_FRAME_URL
+L1447:             "origin": "https://sentinel.openai.com",
+L1448:             "referer": SENTINEL_FRAME_URL,
+L1615:         """用本地 Sentinel VM 解 so.snapshot_dx，生成 HAR 同形态的 openai-sentinel-so-token。"""
+L1619:         snapshot_dx = str(so_meta.get("snapshot_dx") or "").strip()
+L1620:         if not snapshot_dx:
+L1623:             from .sentinel_vm import solve_turnstile_dx
+L1624:             from .constants import SENTINEL_SDK_URL
+L1627:                 snapshot_dx,
+L1630:                 sdk_url=SENTINEL_SDK_URL,
+L1633:             self._log(f"Sentinel so VM 失败: flow={flow} {exc}", "warning")
+L1918:                 "openai-sentinel-token",
+L1919:                 "openai-sentinel-so-token",
+L1962:         from .constants import CHATGPT_APP, SENTINEL_SDK_URL
+L1981:             generator = _SentinelTokenGenerator(device_id, ua)
+L1982:             prepare_p = generator.generate_requirements_token()
+L1984:                 target_path="/backend-anon/sentinel/chat-requirements/prepare",
+L1989:                 f"{CHATGPT_APP}/backend-anon/sentinel/chat-requirements/prepare",
+L1996:                 self._log(f"chatgpt_register 预热 chat-requirements/prepare 状态: {status}", "warning")
+L1998:                 self._log("chatgpt_register 预热 chat-requirements/prepare 完成")
+L2007:                     finalize_body["proofofwork"] = generator.generate_token(
+L2014:                         from .sentinel_vm import solve_turnstile_dx
+L2020:                             sdk_url=SENTINEL_SDK_URL,
+L2026:                         target_path="/backend-anon/sentinel/chat-requirements/finalize",
+L2031:                         f"{CHATGPT_APP}/backend-anon/sentinel/chat-requirements/finalize",
+L2038:                         self._log("chatgpt_register 预热 chat-requirements/finalize 完成")
+L2041:                             f"chatgpt_register 预热 chat-requirements/finalize 状态: {finalize_status}",
+L2045:             self._log(f"chatgpt_register 预热 chat-requirements/prepare 失败: {exc}", "warning")
+L2178:             otp_sentinel = self._check_sentinel(self._device_id, flow="authorize_continue")
+L2179:             if otp_sentinel:
+L2180:                 headers["openai-sentinel-token"] = self._sentinel_payload_header(otp_sentinel, self._device_id)
+L2181:                 if otp_sentinel.so_token:
+L2182:                     headers["openai-sentinel-so-token"] = otp_sentinel.so_token
+L2184:                     f"chatgpt_register OTP validate Sentinel 已附带: "
+L2185:                     f"t_len={len(otp_sentinel.t)} so={'yes' if otp_sentinel.so_token else 'no'}"
+L2244:                 ca_sentinel = self._check_sentinel(self._device_id, flow="authorize_continue")
+L2245:                 if ca_sentinel:
+L2247:                     retry_headers["openai-sentinel-token"] = self._sentinel_payload_header(ca_sentinel, self._device_id)
+L2248:              self._log("chatgpt_register OTP validate 首次失败，补 authorize_continue Sentinel 后重试", "warning")
+L2259:                         f"chatgpt_register OTP validate Sentinel 重试状态: {getattr(response, 'status_code', 0)} "
+L2353:             user_info = generate_random_user_info()
+L2357:                 ca_sentinel = self._check_sentinel(self._device_id, flow="oauth_create_account")
+L2358:                 if ca_sentinel:
+L2359:                     headers["openai-sentinel-token"] = self._sentinel_payload_header(ca_sentinel, self._device_id)
+L2360:                     if ca_sentinel.so_token:
+L2361:                         headers["openai-sentinel-so-token"] = ca_sentinel.so_token
+L2363:                         f"create_account Sentinel 已获取: "
+L2364:                         f"flow={ca_sentinel.flow} t_len={len(ca_sentinel.t)} "
+L2365:                         f"so={'yes' if ca_sentinel.so_token else 'no'}"
+L2544:         # HAR 注册后会立刻打 backend-api chat-requirements/prepare；补一次降低“空会话”特征。
+L2549:                 generator = _SentinelTokenGenerator(self._device_id, ua)
+L2550:                 prepare_p = generator.generate_requirements_token()
+L2552:                     target_path="/backend-api/sentinel/chat-requirements/prepare",
+L2558:                     f"{CHATGPT_APP}/backend-api/sentinel/chat-requirements/prepare",
+L2564:                     f"chatgpt_register 注册后 chat-requirements/prepare 状态: "
+L2568:             self._log(f"chatgpt_register 注册后 chat-requirements/prepare 失败: {exc}", "warning")
+L2650:                 self.password = self._generate_password()
+L2806:     def _check_sentinel(self, did: str, *, flow: str = "authorize_continue") -> Optional[SentinelPayload]:
+L2808:         """检查 Sentinel 拦截（动态生成 token + 处理 PoW）"""
+L2814:             generator = _SentinelTokenGenerator(did, ua)
+L2816:             sent_p = generator.generate_requirements_token()
+L2824:                 OPENAI_API_ENDPOINTS["sentinel"],
+L2826:                 headers=self._latest_chatgpt_sentinel_headers(user_agent=ua),
+L2852:                     sent_p = generator.generate_token(
+L2860:                     self._log(f"Sentinel PoW solved: flow={flow}")
+L2874:                         from .sentinel_vm import solve_turnstile_dx
+L2876:                         from .constants import SENTINEL_SDK_URL
+L2878:                  t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+L2880:                         self._log(f"Sentinel VM solved: t_len={len(t_value)} flow={flow}")
+L2884:                         self._log(f"Sentinel VM failed: {vm_err}", "warning")
+L2890:                 # HAR create_account 总是带 openai-sentinel-so-token；优先本地 VM 解 snapshot_dx。
+L2900:                         self._log(f"Sentinel so VM solved: so_len={len(so_token)} flow={flow}")
+L2902:                     quickjs_payload = self._quickjs_sentinel_payload(
+L2922:                 payload = SentinelPayload(
+L2931:                     f"Sentinel token 获取成功: flow={flow} t_len={len(payload.t)} "
+L2939:                 self._log(f"Sentinel 检查失败: flow={flow} status={response.status_code}", "warning")
+L2941:                 quickjs_payload = self._quickjs_sentinel_payload(
+L2956:             self._log(f"Sentinel VM/PoW 检查异常: flow={flow} {e}", "warning")
+L2960:                 quickjs_payload = self._quickjs_sentinel_payload(
+L2973:                 self._log(f"Sentinel QuickJS 兜底异常: flow={flow} {quickjs_error}", "warning")
+L2980:     def _sentinel_payload_header(payload: SentinelPayload, device_id: str) -> str:
+L2994:     def _parse_sentinel_header_payload(
+L3000:     ) -> Optional[SentinelPayload]:
+L3008:             self._log(f"{label} QuickJS Sentinel 返回非 JSON: {exc}", "warning")
+L3014:             self._log(f"{label} QuickJS Sentinel 返回结构异常", "warning")
+L3024:             self._log(f"{label} QuickJS Sentinel 缺少 p/c，回退原 Sentinel VM", "warning")
+L3028:         return SentinelPayload(
+L3036:     def _quickjs_sentinel_payload(
+L3045:     ) -> Optional[SentinelPayload]:
+L3047:         """VM/PoW 失败后兜底使用真实 OpenAI Sentinel SDK。"""
+L3053:         import os as _os_sentinel
+L3055:         if _os_sentinel.environ.get("OPENAI_SENTINEL_DISABLE_QUICKJS"):
+L3061:             from .authflow_experimental.sentinel_quickjs import get_sentinel_tokens_via_quickjs
+L3063:             token_bundle = get_sentinel_tokens_via_quickjs(
+L3076:             self._log(f"{label} QuickJS Sentinel 调用异常，回退原 Sentinel VM: {exc}", "warning")
+L3080:         payload = self._parse_sentinel_header_payload(token or "", flow=flow, label=label) if token else None
+L3089:             f"{label} QuickJS Sentinel 已生成: "
+L3096:     def _submit_signup_form(self, did: str, sen_payload: Optional[SentinelPayload]) -> SignupFormResult:
+L3114:             self._signup_sentinel = sen_payload
+L3116:             self._sentinel_token = sen_payload.c if sen_payload else None
+L3123:             def _build_signup_headers(current_sentinel: Optional[SentinelPayload]) -> dict:
+L3129:                     **_generate_datadog_trace_headers(),
+L3133:                 if current_sentinel:
+L3134:                     sentinel = json.dumps(
+L3136:                             "p": current_sentinel.p,
+L3137:                             "t": current_sentinel.t,
+L3138:                             "c": current_sentinel.c,
+L3140:                             "flow": current_sentinel.flow,
+L3144:                     headers["openai-sentinel-token"] = sentinel
+L3147:             def _post_signup(current_sentinel: Optional[SentinelPayload], label: str):
+L3148:                 headers = _build_signup_headers(current_sentinel)
+L3152:                     f"sentinel={'yes' if current_sentinel else 'no'} "
+L3153:                     f"flow={getattr(current_sentinel, 'flow', '') or ''}"
+L3164:             for retry_index, regenerate_oauth in enumerate((False, True), start=1):
+L3171:                 refreshed_sentinel = self._refresh_signup_authorize_state(
+L3173:                     regenerate_oauth=regenerate_oauth,
+L3175:                 if refreshed_sentinel:
+L3176:                     sen_payload = refreshed_sentinel
+L3177:                     self._signup_sentinel = refreshed_sentinel
+L3178:                     self._sentinel_token = refreshed_sentinel.c
+L3180:                     self._log("invalid_state 恢复未取得新 Sentinel，仍按当前会话尝试提交", "warning")
+L3283:                 pwd = self._generate_password()
+L3297:                 # Reload page + refresh sentinel for each attempt (tokens are single-use)
+L3303:                     self._password_sentinel = self._check_sentinel(self._device_id, flow="username_password_create")
+L3305:                     if self._password_sentinel:
+L3309:                             f"密码阶段 Sentinel 已刷新: flow={self._password_sentinel.flow} "
+L3311:                             f"turnstile={'yes' if self._password_sentinel.t else 'no'}"
+L3339:                 if self._password_sentinel and self._device_id:
+L3341:                     register_headers["openai-sentinel-token"] = json.dumps({
+L3343:                         "p": self._password_sentinel.p,
+L3345:                         "t": self._password_sentinel.t,
+L3347:                         "c": self._password_sentinel.c,
+L3351:                         "flow": self._password_sentinel.flow,
+L4027:             self._sentinel_token = None
+L4028:             self._signup_sentinel = None
+L4041:             sen_payload = self._check_sentinel(did)
+L4138:             user_info = generate_random_user_info()
+L4186:                 **_generate_datadog_trace_headers(),
+L4196:             # create_account 也需要 sentinel token (flow=oauth_create_account)
+L4200:                 ca_sentinel = self._check_sentinel(self._device_id, flow="oauth_create_account")
+L4202:                 if ca_sentinel:
+L4204:                     create_headers["openai-sentinel-token"] = json.dumps({
+L4206:                         "p": ca_sentinel.p,
+L4208:                         "t": ca_sentinel.t,
+L4210:                         "c": ca_sentinel.c,
+L4214:                         "flow": ca_sentinel.flow,
+L4218:                     if ca_sentinel.so_token:
+L4220:                         create_headers["openai-sentinel-so-token"] = ca_sentinel.so_token
+L4223:                         f"create_account Sentinel 已获取: "
+L4224:                         f"flow={ca_sentinel.flow} t_len={len(ca_sentinel.t)} "
+L4225:                         f"so={'yes' if ca_sentinel.so_token else 'no'}"
+L4334:             codex_oauth = generate_oauth_url(
+L4364:             # 4. 获取 Sentinel token
+L4372:                 generator = _SentinelTokenGenerator(did, ua)
+L4374:                 sent_p = generator.generate_requirements_token()
+L4380:                 from .constants import SENTINEL_FRAME_URL
+L4384:                     OPENAI_API_ENDPOINTS["sentinel"],
+L4388:                         "origin": "https://sentinel.openai.com",
+L4390:                         "referer": SENTINEL_FRAME_URL,
+L4410:                         sent_p = generator.generate_token(
+L4432:                     sen_payload = SentinelPayload(p=sent_p, t=t_val, c=str(data.get("token") or ""), flow="authorize_continue")
+L4434:                     self._log("Codex login Sentinel 已获取")
+L4438:                 self._log(f"Codex login Sentinel 失败: {e}", "warning")
+L4458:                 headers["openai-sentinel-token"] = json.dumps({
+L4576:                 # 加载密码页获取 sentinel
+L4580:                 pwd_sentinel = None
+L4586:                     gen2 = _SentinelTokenGenerator(did, ua2)
+L4588:                     sp2 = gen2.generate_requirements_token()
+L4592:                     from .constants import SENTINEL_FRAME_URL as SF2
+L4596:                         OPENAI_API_ENDPOINTS["sentinel"],
+L4598:                         headers={"origin": "https://sentinel.openai.com", "referer": SF2, "content-type": "text/plain;charset=UTF-8"},
+L4612:                             sp2 = gen2.generate_token(str(pm2.get("seed") or ""), str(pm2.get("difficulty") or "0"))
+L4624:                         pwd_sentinel = SentinelPayload(p=sp2, t=tv2, c=str(d2.get("token") or ""), flow="login_password")
+L4626:                         self._log("Codex login 密码 Sentinel 已获取")
+L4630:                     self._log(f"Codex login 密码 Sentinel 失败: {e}", "warning")
+L4650:                 if pwd_sentinel:
+L4652:                     pwd_headers["openai-sentinel-token"] = json.dumps({
+L4654:                         "p": pwd_sentinel.p, "t": pwd_sentinel.t, "c": pwd_sentinel.c,
+L4656:                         "id": did, "flow": pwd_sentinel.flow,
+L4802:         code_verifier, code_challenge = _generate_pkce_pair()
+L4962:         headers.update(_generate_datadog_trace_headers())
+L4967:     def _build_sentinel_payload_for_client(self, client: OpenAIHTTPClient, device_id: str, flow: str) -> SentinelPayload:
+L4969:         """为独立 Platform 登录 session 生成单次 Sentinel payload。"""
+L4976:             generator = _SentinelTokenGenerator(device_id, ua)
+L4978:             sent_p = generator.generate_requirements_token()
+L4982:                 OPENAI_API_ENDPOINTS["sentinel"],
+L4984:                 headers=self._latest_chatgpt_sentinel_headers(user_agent=ua, accept_language=accept_language),
+L4992:                 raise RuntimeError(f"sentinel_req_failed_{response.status_code}")
+L5000:                 raise RuntimeError("sentinel_req_no_token")
+L5008:                 sent_p = generator.generate_token(str(pow_meta.get("seed") or ""), str(pow_meta.get("difficulty") or "0"))
+L5018:                     from .sentinel_vm import solve_turnstile_dx
+L5020:                     from .constants import SENTINEL_SDK_URL
+L5022:                  t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+L5026:                     self._log(f"Platform Sentinel VM 失败: {exc}", "warning")
+L5041:                 quickjs_payload = self._quickjs_sentinel_payload(
+L5059:             return SentinelPayload(p=sent_p, t=t_value, c=token, flow=flow, so_token=so_token)
+L5063:             self._log(f"Platform Sentinel VM/PoW 失败，尝试 QuickJS 兜底: {exc}", "warning")
+L5065:             quickjs_payload = self._quickjs_sentinel_payload(
+L5081:     def _build_sentinel_header_for_client(self, client: OpenAIHTTPClient, device_id: str, flow: str) -> str:
+L5083:         """为独立 Platform 登录 session 生成 Sentinel header。"""
+L5085:         payload = self._build_sentinel_payload_for_client(client, device_id, flow)
+L5087:         return self._sentinel_payload_header(payload, device_id)
+L5241:         """校验独立 Platform 登录邮箱 OTP；失败时补 Sentinel 再试一次。"""
+L5271:             headers["openai-sentinel-token"] = self._build_sentinel_header_for_client(client, device_id, "authorize_continue")
+L5287:             self._log(f"Platform 登录验证码补 Sentinel 失败: {exc}", "warning")
+L5616:         headers["openai-sentinel-token"] = self._build_sentinel_header_for_client(
+L5856:         """按 openai_register.py 校验邮箱验证码；首次失败补 authorize_continue Sentinel。"""
+L5901:         user_info = generate_random_user_info()
+L5907:         create_sentinel = self._build_sentinel_payload_for_client(client, device_id, "oauth_create_account")
+L5909:         headers["openai-sentinel-token"] = self._sentinel_payload_header(create_sentinel, device_id)
+L5911:         if create_sentinel.so_token:
+L5913:             headers["openai-sentinel-so-token"] = create_sentinel.so_token
+L6249:             self.password = self._generate_password()
+L7033:             headers["openai-sentinel-token"] = self._build_sentinel_header_for_client(client, device_id, "authorize_continue")
+L7057:                 headers["openai-sentinel-token"] = self._build_sentinel_header_for_client(client, device_id, "authorize_continue")
+L7083:             pwd_headers["openai-sentinel-token"] = self._build_sentinel_header_for_client(client, device_id, "password_verify")
+L7584:             # 6. 检查 Sentinel 拦截
+L7586:             self._log("6. 检查 Sentinel 拦截...")
+L7588:             sen_payload = self._check_sentinel(did)
+L7592:                 self._log("Sentinel 检查通过")
+L7596:                 self._log("Sentinel 检查失败或未启用", "warning")
+L7826:                     OPENAI_AUTH, SENTINEL_FRAME_URL,
+L7834:                 codex_oauth = generate_oauth_url(
+L7865:                 # 获取 sentinel（用 login_client）
+L7873:                     gen2 = _SentinelTokenGenerator(did2, ua2)
+L7875:                     sp2 = gen2.generate_requirements_token()
+L7881:                         OPENAI_API_ENDPOINTS["sentinel"],
+L7883:                         headers={"origin": "https://sentinel.openai.com", "referer": SENTINEL_FRAME_URL, "content-type": "text/plain;charset=UTF-8"},
+L7897:                             sp2 = gen2.generate_token(str(pm2.get("seed") or ""), str(pm2.get("difficulty") or "0"))
+L7909:                         sen2 = SentinelPayload(p=sp2, t=tv2, c=str(d2.get("token") or ""), flow="authorize_continue")
+L7911:                         self._log("Codex sentinel 获取成功")
+L7915:                     self._log(f"Codex sentinel 失败: {e}", "warning")
+L7933:                     signup_headers["openai-sentinel-token"] = json.dumps({

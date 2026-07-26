@@ -1,0 +1,120 @@
+[35] POST 200 https://chatgpt.com/api/auth/signin/openai?prompt=login&ext-oai-did=15a3b48e-c795-4c96-a999-ab526a97901d&auth_session_logging_id=de0dd237-ee8c-4897-b111-2c63e6eec5d0&screen_hint=login_or_signup&login_hint=ArlanBrando0806
+[154] GET 302 https://auth.openai.com/api/accounts/authorize?client_id=app_X8zY6vW2pQ9tR3dE7nK1jL5gH&scope=openid%20email%20profile%20offline_access%20model.request%20model.read%20organization.read%20organization.write&response_type=c
+[209] POST 200 https://auth.openai.com/api/accounts/email-otp/validate
+[215] POST 200 https://sentinel.openai.com/backend-api/sentinel/req
+[218] POST 200 https://auth.openai.com/api/accounts/create_account
+[219] GET 302 https://chatgpt.com/api/auth/callback/openai?code=ac_qupZYGJyigbPtH_bvQ1b9Mt-1AkF5AjKLz8L3pM7TN4.j0rflajHyahFPv4RaVJ-6seJnUk9buzsNo3dowxsFTY&scope=openid+email+profile+offline_access+model.request+model.read+organization
+[220] POST 200 https://sentinel.openai.com/backend-api/sentinel/req
+[409] GET 200 https://chatgpt.com/api/auth/session
+
+== create_account full interesting headers ==
+accept: application/json
+accept-encoding: gzip, deflate, br, zstd
+accept-language: en-US,en;q=0.5
+connection: keep-alive
+content-length: 52
+content-type: application/json
+cookie_names=['oai-did', 'oai-did', 'oai-login-csrf_dev_3772291445', 'oai-did', 'rg_context', 'iss_context', 'auth_provider', 'login_session', 'hydra_redirect', 'oai-client-auth-session', 'auth-session-minimized', 'auth-session-minimized-client-checksum', 'oaicom-stable-id', '__cf_bm', '__cflb', '_cfuvid', '_dd_s', 'cf_clearance', 'oai-sc']
+host: auth.openai.com
+openai-sentinel-so-token: {"so":"QxMZABYGGhACE2pVcVJsRQUMDB4aBxccCgAMCBpybw8FEwIQDwcABg4TFBB7cBMPGh0MCgAfFgcaCwxxeQwTEBQTFgUWBhwQAhNtcwUMDB4aBx0cAQcMCBpybw8FEwIQCwkABgkTFBB7cBMPGh0MBwEfGAEaCwxxeQwTEBQTGwIWCRYQAhNtY2FmbFV9cGZzW3hsWmFzb2MFDAweGgAfHA4HDAgacn9rb3NJd3l5b1Fyc3wKfXVJDwUTAhALBgAGDRMUEHtwEw8aHQwHCR8aARoLDHF5DBMQFBMcABYHFhACE2pzBQwMHhoFGhwJCQwIGnVJYwUTAhALHxwGGgsMcV8MExAUExgAFgYcEAITbXMFDAweGgAeHAEIDAgacm8PBRMCEAofH
+openai-sentinel-token: {"p":"gAAAAABWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo1NCBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhcmQgVGltZSkiLG51bGwsNTEsIk1vemlsbGEvNS4wIChNYWNpbnRvc2g7IEludGVsIE1hYyBPUyBYIDEwLjE1OyBydjoxMzUuMCkgR2Vja28vMjAxMDAxMDEgRmlyZWZveC8xMzUuMCIsImh0dHBzOi8vc2VudGluZWwub3BlbmFpLmNvbS9iYWNrZW5kLWFwaS9zZW50aW5lbC9zZGsuanMiLG51bGwsImVuLVVTIiwiZW4tVVMsZW4iLDUsInBsdWdpbnPiiJJbb2JqZWN0IFBsdWdpbkFycmF5XSIsImxvY2F0aW9uIiwibWF
+origin: https://auth.openai.com
+referer: https://auth.openai.com/about-you
+sec-fetch-dest: empty
+sec-fetch-mode: cors
+sec-fetch-site: same-origin
+traceparent: 00-00000000000000003a53763baf179afd-73e9c048bebca8bf-01
+tracestate: dd=s:1;o:rum
+user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0
+x-access-flow-invocation-id: 70a00160-de04-4af0-9d29-f3f69d157c10
+x-datadog-origin: rum
+x-datadog-parent-id: 8352418402605508799
+x-datadog-sampling-priority: 1
+x-datadog-trace-id: 4202832875979512573
+body={"name":"Joseph Hernandez","birthdate":"1991-07-25"}
+openai-sentinel-token keys=['p', 't', 'c', 'id', 'flow']
+  p: len=517 head=gAAAAABWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo1NCBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhc
+  p_decoded=b'[2494,"Sat Jul 25 2026 01:01:54 GMT+0800 (China Standard Time)",null,51,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0","https://sentinel.openai.com/backend-api/sentinel/sdk.js",null,"en-US","en-US,en",5,"plugins\xe2\x88\x92[object PluginArray]","location","matchMedia",30054,"4b4e79f2-b6ac-452b-8c8d-f22967241652","",12,1784912484120,0,0,0,0,0,1,1]'
+  t: len=1332 head=TRscARwCAQwNEHRRTWAQGhsYDxwPDQwNEHROXQoQGhsdBxwAAAwNEGJrWmB0Z15pcWNOdmt2RXtxf3ZR
+  c: len=2124 head=gAAAAABqY5p97rIsLiOccsrVXTZMDtqZ2ixWZ31eK0Y1ADShA49Otz7HK8-e0JKUQ3sHJ10J6Y5g_vRC
+openai-sentinel-so-token keys=['so', 'c', 'id', 'flow']
+  so: len=408 head=QxMZABYGGhACE2pVcVJsRQUMDB4aBxccCgAMCBpybw8FEwIQDwcABg4TFBB7cBMPGh0MCgAfFgcaCwxx
+  c: len=2124 head=gAAAAABqY5p97rIsLiOccsrVXTZMDtqZ2ixWZ31eK0Y1ADShA49Otz7HK8-e0JKUQ3sHJ10J6Y5g_vRC
+
+== sentinel/req bodies ==
+[215] referer=https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6
+body={"p":"gAAAAACWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo0NyBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhcmQgVGltZSkiLG51bGwsMiwiTW96aWxsYS81LjAgKE1hY2ludG9zaDsgSW50ZWwgTWFjIE9TIFggMTAuMTU7IHJ2OjEzNS4wKSBHZWNrby8yMDEwMDEwMSBGaXJlZm94LzEzNS4wIiwiaHR0cHM6Ly9zZW50aW5lbC5vcGVuYWkuY29tL3NlbnRpbmVsLzIwMjYwMjE5ZjlmNi9zZGsuanMiLG51bGwsImVuLVVTIiwiZW4tVVMsZW4iLDU4LCJtb3pHZXRVc2VyTWVkaWHiiJJmdW5jdGlvbiBtb3pHZXRVc2VyTWVkaWEoKSB7XG4gICAgW25hdGl2ZSBjb2RlXVxufSIsIl9yZWFjdExpc3RlbmluZzdlbnNtYTh3a3I4Iiwib25kcmFnc3RhcnQiLDIzMTI1LCI0YjRlNzlmMi1iNmFjLTQ1MmItOGM4ZC1mMjI5NjcyNDE2NTIiLCIiLDEyLDE3ODQ5MTI0ODQxMjAsMCwwLDAsMCwwLDEsMV0=~S","id":"15a3b48e-c795-4c96-a999-ab526a97901d","flow":"oauth_create_account"}
+p_decoded=b'[2494,"Sat Jul 25 2026 01:01:47 GMT+0800 (China Standard Time)",null,2,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0","https://sentinel.openai.com/sentinel/20260219f9f6/sdk.js",null,"en-US","en-US,en",58,"mozGetUserMedia\xe2\x88\x92function mozGetUserMedia() {\\n    [native code]\\n}","_reactListening7ensma8wkr8","ondragstart",23125,"4b4e79f2-b6ac-452b-8c8d-f22967241652","",12,1784912484120,0,0,0,0,0,1,1]'
+[220] referer=https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6
+body={"p":"gAAAAACWzI0OTQsIlNhdCBKdWwgMjUgMjAyNiAwMTowMTo0NyBHTVQrMDgwMCAoQ2hpbmEgU3RhbmRhcmQgVGltZSkiLG51bGwsMiwiTW96aWxsYS81LjAgKE1hY2ludG9zaDsgSW50ZWwgTWFjIE9TIFggMTAuMTU7IHJ2OjEzNS4wKSBHZWNrby8yMDEwMDEwMSBGaXJlZm94LzEzNS4wIiwiaHR0cHM6Ly9zZW50aW5lbC5vcGVuYWkuY29tL3NlbnRpbmVsLzIwMjYwMjE5ZjlmNi9zZGsuanMiLG51bGwsImVuLVVTIiwiZW4tVVMsZW4iLDU4LCJtb3pHZXRVc2VyTWVkaWHiiJJmdW5jdGlvbiBtb3pHZXRVc2VyTWVkaWEoKSB7XG4gICAgW25hdGl2ZSBjb2RlXVxufSIsIl9yZWFjdExpc3RlbmluZzdlbnNtYTh3a3I4Iiwib25kcmFnc3RhcnQiLDIzMTI1LCI0YjRlNzlmMi1iNmFjLTQ1MmItOGM4ZC1mMjI5NjcyNDE2NTIiLCIiLDEyLDE3ODQ5MTI0ODQxMjAsMCwwLDAsMCwwLDEsMV0=~S","id":"15a3b48e-c795-4c96-a999-ab526a97901d","flow":"oauth_create_account"}
+p_decoded=b'[2494,"Sat Jul 25 2026 01:01:47 GMT+0800 (China Standard Time)",null,2,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0","https://sentinel.openai.com/sentinel/20260219f9f6/sdk.js",null,"en-US","en-US,en",58,"mozGetUserMedia\xe2\x88\x92function mozGetUserMedia() {\\n    [native code]\\n}","_reactListening7ensma8wkr8","ondragstart",23125,"4b4e79f2-b6ac-452b-8c8d-f22967241652","",12,1784912484120,0,0,0,0,0,1,1]'
+
+== register.py constant/string presence ==
+MISSING LATEST_CHATGPT_FIREFOX_USER_AGENT\s*=\s*[\"']([^\"']+)
+MISSING PLATFORM_REFERENCE_SEC_CH_UA\s*=\s*[\"']([^\"']+)
+FOUND oauth_create_account: oauth_create_account
+FOUND openai-sentinel-so-token: openai-sentinel-so-token
+FOUND x-access-flow-invocation-id: x-access-flow-invocation-id
+MISSING oaicom-stable-id
+MISSING oai-asli
+FOUND cf_clearance: cf_clearance
+FOUND Mozilla/5.0: Mozilla/5.0
+FOUND sec-ch-ua: sec-ch-ua
+FOUND Firefox/135: Firefox/135
+FOUND Chrome/: Chrome/
+FOUND screen_hint: screen_hint
+FOUND login_or_signup: login_or_signup
+MISSING passwordless
+FOUND auth_session_logging_id: auth_session_logging_id
+MISSING sentinel/frame
+MISSING 20260219f9f6
+FOUND sdk\.js: sdk.js
+
+== header builder defs ==
+L358: def _cookies_to_header
+L436: def _generate_datadog_trace_headers
+L1345: def _latest_chatgpt_signin_no_authorize_error
+L1359: def _latest_chatgpt_user_agent
+L1369: def _latest_chatgpt_accept_language
+L1381: def _latest_chatgpt_browser_headers
+L1425: def _latest_chatgpt_json_headers
+L1439: def _latest_chatgpt_sentinel_headers
+L1456: def _latest_chatgpt_nav_headers
+L1535: def _latest_chatgpt_chatgpt_client_headers
+L1585: def _latest_chatgpt_cookie_names
+L1603: def _latest_chatgpt_has_cf_clearance
+L1648: def _latest_chatgpt_protocol_cookie_items
+L1707: def _latest_chatgpt_import_browser_cookies
+L1746: def _latest_chatgpt_camoufox_launch_opts
+L1772: def _latest_chatgpt_seed_cf_clearance_via_headless
+L1853: def _latest_chatgpt_headless_auth_json
+L1960: def _latest_chatgpt_warmup_chatgpt_anon_session
+L2048: def _latest_chatgpt_init_email_oauth
+L2175: def _latest_chatgpt_validate_email_otp
+L2275: def _latest_chatgpt_refresh_email_otp_after_invalid_state
+L2297: def _latest_chatgpt_resend_email_otp_after_rejected_code
+L2309: def _latest_chatgpt_open_about_you
+L2348: def _latest_chatgpt_create_user_account
+L2454: def _latest_chatgpt_create_account_with_retry
+L2474: def _latest_chatgpt_fetch_session_result
+L2578: def _latest_chatgpt_login_after_account_deactivated
+L2806: def _check_sentinel
+L2980: def _sentinel_payload_header
+L2994: def _parse_sentinel_header_payload
+L3036: def _quickjs_sentinel_payload
+L3123: def _build_signup_headers
+L3552: def _header_value
+L3560: def _build_send_headers
+L4857: def _platform_nav_headers
+L4908: def _platform_json_headers
+L5081: def _build_sentinel_header_for_client
+L5292: def _platform_request_with_retry
+L5315: def _platform_reference_authorize
+L5364: def _platform_reference_prepare_existing_login_otp
+L5549: def _platform_reference_resend_otp
+L5602: def _platform_reference_register_user
+L5693: def _platform_reference_send_otp
+L5854: def _platform_reference_validate_otp
+L5895: def _platform_reference_create_account
+L6039: def _platform_reference_complete_existing_callback_session
+L6091: def _platform_reference_complete_existing_k12_session

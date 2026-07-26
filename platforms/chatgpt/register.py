@@ -84,11 +84,18 @@ from .constants import (
 CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 10
 CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS = 10
 LATEST_CHATGPT_FIREFOX_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) "
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) "
     "Gecko/20100101 Firefox/135.0"
 )
-LATEST_CHATGPT_OAI_CLIENT_VERSION = "prod-7fc3ff5bcd034a91578eeeb94258b0210e7ff3b2"
-LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER = "8494897"
+# Headed Camoufox HAR 2026-07-25 register capture.
+LATEST_CHATGPT_OAI_CLIENT_VERSION = "prod-2c08737cf6aa91754c5bf303734db2dba173c6ce"
+LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER = "8578659"
+LATEST_CHATGPT_SENTINEL_SCREEN = 2494
+LATEST_CHATGPT_SENTINEL_CORES = 12
+LATEST_CHATGPT_CF_JSD_SCRIPT_URL = (
+    "https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload"
+)
+LATEST_CHATGPT_SENTINEL_ENTRY_SDK_URL = "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
 
 
 logger = logging.getLogger(__name__)
@@ -464,83 +471,116 @@ def _generate_datadog_trace_headers() -> dict:
 
 
 class _SentinelTokenGenerator:
+    """Dynamic sentinel token generator aligned with headed Firefox HAR."""
 
-    """Dynamic sentinel token generator – mirrors browser_register._SentinelTokenGenerator."""
+    _MINUS = "\u2212"  # U+2212 minus used by real Sentinel SDK probe strings
 
-
-
-    def __init__(self, device_id: str, user_agent: str):
-
+    def __init__(self, device_id: str, user_agent: str, *, client_version: str = ""):
         self.device_id = device_id or str(uuid.uuid4())
-
         self.user_agent = user_agent
-
+        self.client_version = str(client_version or LATEST_CHATGPT_OAI_CLIENT_VERSION)
         self.sid = str(uuid.uuid4())
-
-
+        self._origin_ms = int(time.time() * 1000) - random.randint(8000, 40000)
+        self._is_firefox = "Firefox/" in (user_agent or "")
+        self._is_mac = "Macintosh" in (user_agent or "") or "Mac OS X" in (user_agent or "")
 
     @staticmethod
-
     def _fnv1a32(text: str) -> str:
-
         h = 2166136261
-
         for ch in text:
-
             h ^= ord(ch)
-
             h = (h * 16777619) & 0xFFFFFFFF
-
         h ^= (h >> 16)
-
         h = (h * 2246822507) & 0xFFFFFFFF
-
         h ^= (h >> 13)
-
         h = (h * 3266489909) & 0xFFFFFFFF
-
         h ^= (h >> 16)
-
         return f"{h & 0xFFFFFFFF:08x}"
 
-
-
     @staticmethod
-
     def _b64(data) -> str:
-
         return base64.b64encode(json.dumps(data, separators=(",", ":")).encode("utf-8")).decode("ascii")
 
+    def _capability_probe(self, *, stage: str) -> str:
+        minus = self._MINUS
+        if stage == "chat_prepare":
+            return random.choice(
+                [
+                    f"globalPrivacyControl{minus}true",
+                    f"vendorSub{minus}",
+                    f"productSub{minus}20100101",
+                ]
+            )
+        if stage == "sentinel_req":
+            if self._is_firefox:
+                return (
+                    f"mozGetUserMedia{minus}function mozGetUserMedia() {{\n"
+                    f"    [native code]\n}}"
+                )
+            return f"webkitGetUserMedia{minus}function webkitGetUserMedia() {{ [native code] }}"
+        # final enforcement token (create_account)
+        if self._is_firefox:
+            return f"plugins{minus}[object PluginArray]"
+        return f"languages{minus}en-US,en"
 
+    def _event_probe(self, *, stage: str) -> str:
+        if stage == "chat_prepare":
+            return random.choice(["onmouseenter", "InstallTrigger", "onpointerenter", "onwheel"])
+        if stage == "sentinel_req":
+            return random.choice(["ondragstart", "onanimationstart", "ontransitionrun", "onlostpointercapture"])
+        return random.choice(["matchMedia", "location", "onbeforetoggle", "onbeforeunload"])
 
-    def _config(self) -> list:
+    def _react_probe(self, *, stage: str) -> str:
+        if stage == "chat_prepare":
+            return f"__reactContainer${secrets.token_hex(6)}"
+        return f"_reactListening{secrets.token_hex(6)}"
 
-        # Keep this fingerprint array aligned with headed-browser HAR samples:
-        # [screen, date, null, nonce, ua, sdk_url, null, lang, langs, elapsed,
-        #  capability probe, react listener, event name, perf, sid, "", cores,
-        #  origin_ms, zeros..., flags]
+    def _config(self, *, stage: str = "final") -> list:
+        # Headed HAR shape:
+        # [screen, date, null, nonce, ua, script_url, client_or_null, lang, langs, elapsed,
+        #  capability, react, event, perf, sid, "", cores, origin_ms, zeros..., flags]
         now_ms = int(time.time() * 1000)
-        perf_now = 1000 + random.random() * 49000
-        locale_date = time.strftime("%a %b %d %Y %H:%M:%S GMT+0800 (China Standard Time)", time.localtime())
+        if stage == "chat_prepare":
+            perf_now = random.randint(3000, 12000)
+            elapsed = random.randint(1, 8)
+            script_url = LATEST_CHATGPT_CF_JSD_SCRIPT_URL
+            client_or_null = self.client_version
+        elif stage == "sentinel_req":
+            perf_now = random.randint(15000, 35000)
+            elapsed = random.randint(20, 90)
+            script_url = SENTINEL_SDK_URL  # versioned /sentinel/<ver>/sdk.js
+            client_or_null = None
+        else:
+            perf_now = random.randint(20000, 45000)
+            elapsed = random.randint(3, 20)
+            script_url = LATEST_CHATGPT_SENTINEL_ENTRY_SDK_URL  # backend-api/sentinel/sdk.js
+            client_or_null = None
+
+        locale_date = time.strftime(
+            "%a %b %d %Y %H:%M:%S GMT+0800 (China Standard Time)",
+            time.localtime(),
+        )
+        screen = LATEST_CHATGPT_SENTINEL_SCREEN if self._is_mac or self._is_firefox else 4800
+        cores = LATEST_CHATGPT_SENTINEL_CORES if self._is_mac or self._is_firefox else random.choice([8, 12, 16])
         return [
-            4800,
+            screen,
             locale_date,
             None,
             random.random(),
             self.user_agent,
-            SENTINEL_SDK_URL,
-            None,
+            script_url,
+            client_or_null,
             "en-US",
             "en-US,en",
-            round(5 + random.random() * 45),
-            "languages−en-US,en",
-            f"_reactListening{secrets.token_hex(6)}",
-            random.choice(["onbeforetoggle", "onbeforeunload", "location"]),
+            elapsed,
+            self._capability_probe(stage=stage),
+            self._react_probe(stage=stage),
+            self._event_probe(stage=stage),
             int(perf_now),
             self.sid,
             "",
-            random.choice([8, 12, 16]),
-            now_ms - int(perf_now),
+            cores,
+            self._origin_ms,
             0,
             0,
             0,
@@ -550,38 +590,32 @@ class _SentinelTokenGenerator:
             1,
         ]
 
-
-
     def generate_requirements_token(self) -> str:
+        """Initial /sentinel/req requirements p from headed HAR (versioned sdk.js, gAAAAAC...~S)."""
+        cfg = self._config(stage="sentinel_req")
+        cfg[3] = random.randint(1, 4)
+        return "gAAAAAC" + self._b64(cfg) + "~S"
 
-        cfg = self._config()
-        # Headed HAR initial /sentinel/req p points at backend-api/sdk.js entry.
-        cfg[5] = "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
+    def generate_chat_requirements_token(self) -> str:
+        """chatgpt.com chat-requirements/prepare p from headed HAR (jsd script + client version)."""
+        cfg = self._config(stage="chat_prepare")
         cfg[3] = 1
-        cfg[9] = round(5 + random.random() * 45)
         return "gAAAAAC" + self._b64(cfg)
 
-
-
     def generate_token(self, seed: str, difficulty: str) -> str:
-
+        """Final enforcement p used on create_account (backend-api/sdk.js, gAAAAAB...~S)."""
         max_attempts = 500000
-        cfg = self._config()
-        # Headed HAR final create_account p points at versioned sentinel sdk.js.
-        cfg[5] = SENTINEL_SDK_URL
+        cfg = self._config(stage="final")
         start_ms = int(time.time() * 1000)
         diff = str(difficulty or "0")
         for nonce in range(max_attempts):
             cfg[3] = nonce
-            cfg[9] = round(int(time.time() * 1000) - start_ms)
+            cfg[9] = max(1, round(int(time.time() * 1000) - start_ms))
             encoded = self._b64(cfg)
             digest = self._fnv1a32((seed or "") + encoded)
             if digest[: len(diff)] <= diff:
                 return "gAAAAAB" + encoded + "~S"
-        return "gAAAAAB" + self._b64(None)
-
-
-
+        return "gAAAAAB" + self._b64(None) + "~S"
 
 
 class RegistrationEngine:
@@ -714,6 +748,7 @@ class RegistrationEngine:
         self._user_already_exists: bool = False
         self._last_create_account_error_code: str = ""
         self._last_create_account_transport_error: str = ""
+        self._latest_chatgpt_cf_attempted: bool = False
 
         self._platform_authorize_final_url: str = ""
 
@@ -1430,8 +1465,8 @@ class RegistrationEngine:
             content_type="application/json",
             include_datadog=True,
         )
-        if self._device_id:
-            headers["oai-device-id"] = self._device_id
+        # Headed auth.openai.com JSON (email-otp/create_account) does not send oai-device-id;
+        # device identity is carried by oai-did cookie + sentinel id field.
         headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
         return headers
 
@@ -1781,12 +1816,16 @@ class RegistrationEngine:
             return False
         if (not force) and self._latest_chatgpt_has_cf_clearance():
             return True
+        if (not force) and getattr(self, "_latest_chatgpt_cf_attempted", False):
+            self._log("chatgpt_register 本次注册已尝试无头浏览器 cf_clearance，跳过重复启动", "warning")
+            return False
         if str(__import__("os").environ.get("OPENAI_PROTOCOL_DISABLE_HEADLESS_CF") or "").strip():
             self._log("chatgpt_register 已禁用无头浏览器 cf_clearance 补齐", "warning")
             return False
         if str(__import__("os").environ.get("PYTEST_CURRENT_TEST") or "").strip():
             # 单元测试不启动 Camoufox，避免卡死；生产注册链路仍走无头浏览器参数计算。
             return False
+        self._latest_chatgpt_cf_attempted = True
         try:
             from camoufox.sync_api import Camoufox
         except Exception as exc:
@@ -1978,8 +2017,8 @@ class RegistrationEngine:
 
         try:
             ua = self._latest_chatgpt_user_agent()
-            generator = _SentinelTokenGenerator(device_id, ua)
-            prepare_p = generator.generate_requirements_token()
+            generator = _SentinelTokenGenerator(device_id, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
+            prepare_p = generator.generate_chat_requirements_token()
             prepare_headers = self._latest_chatgpt_chatgpt_client_headers(
                 target_path="/backend-anon/sentinel/chat-requirements/prepare",
             )
@@ -2238,7 +2277,7 @@ class RegistrationEngine:
         )
         if status != 200:
             error_code = self._openai_error_code_from_payload(payload)
-            if error_code == "account_deactivated":
+            if error_code in {"account_deactivated", "wrong_email_otp_code", "invalid_state"}:
                 raise RuntimeError(error_code)
             if self._device_id:
                 ca_sentinel = self._check_sentinel(self._device_id, flow="authorize_continue")
@@ -2481,7 +2520,20 @@ class RegistrationEngine:
         callback_url = urllib.parse.urljoin("https://auth.openai.com/", callback_url)
 
         cb_resp = self.session.get(callback_url, allow_redirects=True, timeout=30)
-        self._log(f"chatgpt_register callback 状态: {getattr(cb_resp, 'status_code', 0)}")
+        callback_status = int(getattr(cb_resp, "status_code", 0) or 0)
+        self._log(f"chatgpt_register callback 状态: {callback_status}")
+        if callback_status >= 400:
+            callback_body = str(getattr(cb_resp, "text", "") or "")
+            callback_kind = (
+                "cloudflare_managed_challenge"
+                if is_cloudflare_managed_challenge_html(callback_body)
+                else "http_rejected"
+            )
+            self._log(
+                f"chatgpt_register callback 拒绝诊断: type={callback_kind} "
+                f"body={self._short_response_excerpt(cb_resp) or '(empty)'}",
+                "warning",
+            )
 
         session_token = str(self.session.cookies.get("__Secure-next-auth.session-token") or "").strip()
         account_cookie = str(self.session.cookies.get("_account") or "").strip()
@@ -2492,7 +2544,20 @@ class RegistrationEngine:
             headers={"accept": "application/json"},
             timeout=20,
         )
-        self._log(f"chatgpt_register session API 状态: {getattr(session_resp, 'status_code', 0)}")
+        session_status = int(getattr(session_resp, "status_code", 0) or 0)
+        self._log(f"chatgpt_register session API 状态: {session_status}")
+        if session_status >= 400:
+            session_body = str(getattr(session_resp, "text", "") or "")
+            session_kind = (
+                "cloudflare_managed_challenge"
+                if is_cloudflare_managed_challenge_html(session_body)
+                else "http_rejected"
+            )
+            self._log(
+                f"chatgpt_register session 拒绝诊断: type={session_kind} "
+                f"body={self._short_response_excerpt(session_resp) or '(empty)'}",
+                "warning",
+            )
         session_data = self._response_json_dict(session_resp)
         access_token = str(session_data.get("accessToken") or "").strip()
         session_token = str(session_data.get("sessionToken") or session_token or "").strip()
@@ -2504,7 +2569,10 @@ class RegistrationEngine:
             or account_cookie
         )
         if not access_token:
-            result.error_message = "chatgpt.com session 未返回 accessToken"
+            result.error_message = (
+                "chatgpt.com session 未返回 accessToken "
+                f"(callback_status={callback_status}, session_status={session_status})"
+            )
             return result
         if not account_id:
             result.error_message = "chatgpt.com session 未返回 account_id"
@@ -2547,7 +2615,7 @@ class RegistrationEngine:
             if access_token and self._device_id:
                 ua = self._latest_chatgpt_user_agent()
                 generator = _SentinelTokenGenerator(self._device_id, ua)
-                prepare_p = generator.generate_requirements_token()
+                prepare_p = generator.generate_chat_requirements_token()
                 prep_headers = self._latest_chatgpt_chatgpt_client_headers(
                     target_path="/backend-api/sentinel/chat-requirements/prepare",
                 )
@@ -2712,7 +2780,7 @@ class RegistrationEngine:
                     last_otp_error = str(exc)
                     if last_otp_error == "account_deactivated":
                         return self._latest_chatgpt_login_after_account_deactivated(result)
-                    if last_otp_error == "invalid_state":
+                    if last_otp_error == "invalid_state" and otp_validate_attempt < 3:
                         code = self._latest_chatgpt_refresh_email_otp_after_invalid_state()
                         self._log("invalid_state 恢复: 重新提交刷新后的邮箱验证码...")
                         continue
@@ -2811,7 +2879,7 @@ class RegistrationEngine:
 
             ua = self.http_client.default_headers.get("User-Agent", "")
 
-            generator = _SentinelTokenGenerator(did, ua)
+            generator = _SentinelTokenGenerator(did, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
 
             sent_p = generator.generate_requirements_token()
 
@@ -2847,17 +2915,19 @@ class RegistrationEngine:
 
                 pow_meta = data.get("proofofwork") or {}
 
+                # Headed HAR create_account always uses final enforcement p
+                # (gAAAAAB + backend-api/sentinel/sdk.js), not the initial requirements p.
                 if pow_meta.get("required") and pow_meta.get("seed"):
-
                     sent_p = generator.generate_token(
-
                         str(pow_meta.get("seed") or ""),
-
                         str(pow_meta.get("difficulty") or "0"),
-
                     )
-
                     self._log(f"Sentinel PoW solved: flow={flow}")
+                else:
+                    sent_p = generator.generate_token(
+                        str(pow_meta.get("seed") or ""),
+                        str(pow_meta.get("difficulty") or "0"),
+                    )
 
 
 
@@ -3725,6 +3795,7 @@ class RegistrationEngine:
                 otp_timeout = CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS
 
             max_attempts = max(1, min(max_attempts, 5))
+            mailbox_transport_failed = False
 
             for attempt in range(1, max_attempts + 1):
 
@@ -3783,6 +3854,8 @@ class RegistrationEngine:
                         if mark_invalid_on_timeout:
                             self._mark_current_email_invalid("mailbox_account_not_found")
                         return None
+                    if self._is_temporary_mailbox_otp_error(exc):
+                        mailbox_transport_failed = True
                     self._log(f"第 {attempt}/{max_attempts} 轮等待验证码超时: {exc}", "warning")
 
                     code = None
@@ -3803,6 +3876,10 @@ class RegistrationEngine:
 
             self._log(f"等待验证码超时，已尝试 {max_attempts} 轮", "error")
             self._email_otp_exhausted = True
+            if mailbox_transport_failed:
+                self._email_otp_failure_reason = "mailbox_transport_timeout"
+                self._log("邮箱接口传输超时，已保留当前邮箱标签", "error")
+                return None
             self._email_otp_failure_reason = "invalid_email_no_otp"
             if mark_invalid_on_timeout:
                 self._mark_current_email_invalid("invalid_email_no_otp")
@@ -3837,12 +3914,36 @@ class RegistrationEngine:
         )
         return any(marker in text for marker in markers)
 
+    @staticmethod
+    def _is_temporary_mailbox_otp_error(exc: Exception) -> bool:
+        """识别邮箱接口传输失败，避免将服务超时误判为邮箱未收到验证码。"""
+        text = str(exc or "").lower()
+        if "最后一次错误" not in text and "last error" not in text:
+            return False
+        markers = (
+            "read timed out",
+            "connectionpool",
+            "connection aborted",
+            "connection reset",
+            "connection refused",
+            "http 502",
+            "http 503",
+            "http 504",
+            "bad gateway",
+            "temporarily unavailable",
+            "请求异常",
+            "超过本轮截止时间",
+        )
+        return any(marker in text for marker in markers)
+
 
 
     def _email_otp_failure_message(self, fallback: str = "获取验证码失败") -> str:
         reason = str(getattr(self, "_email_otp_failure_reason", "") or "")
         if reason == "mailbox_account_not_found":
             return "邮箱账号不存在或不可读，已标记无效邮箱"
+        if reason == "mailbox_transport_timeout":
+            return "邮箱接口传输超时，已保留当前邮箱标签"
         if self._email_otp_exhausted:
             return "邮箱验证码三轮未收到，已标记无效邮箱"
         return fallback
@@ -4369,7 +4470,7 @@ class RegistrationEngine:
 
                 ua = login_client.default_headers.get("User-Agent", "")
 
-                generator = _SentinelTokenGenerator(did, ua)
+                generator = _SentinelTokenGenerator(did, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
 
                 sent_p = generator.generate_requirements_token()
 
@@ -4973,7 +5074,7 @@ class RegistrationEngine:
 
         try:
 
-            generator = _SentinelTokenGenerator(device_id, ua)
+            generator = _SentinelTokenGenerator(device_id, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
 
             sent_p = generator.generate_requirements_token()
 

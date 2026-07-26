@@ -24,6 +24,8 @@ OUTLOOK_EMAIL_LOCAL_RESERVATION_TTL_SECONDS = 30 * 60
 OUTLOOK_EMAIL_RETRY_STATUS_CODES = {502, 503, 504}
 OUTLOOK_EMAIL_RETRY_ATTEMPTS = 3
 OUTLOOK_EMAIL_RETRY_DELAY_SECONDS = 0.6
+OUTLOOK_EMAIL_BASELINE_TIMEOUT_SECONDS = 5
+OUTLOOK_EMAIL_POLL_REQUEST_TIMEOUT_SECONDS = 10
 OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT = 10000
 OUTLOOK_EMAIL_ASYNC_PROBE_POLL_SECONDS = 1
 OUTLOOK_EMAIL_ALIAS_EXHAUSTED_TAG_NAMES = ["别名已上限"]
@@ -397,19 +399,22 @@ class OutlookEmailMailbox(BaseMailbox):
         path: str,
         *,
         retry_status_codes: set[int] | None = None,
+        request_timeout: float = 15,
+        retry_attempts: int = OUTLOOK_EMAIL_RETRY_ATTEMPTS,
         **kwargs: Any,
     ):
         retry_status_codes = OUTLOOK_EMAIL_RETRY_STATUS_CODES if retry_status_codes is None else retry_status_codes
         method_upper = method.upper()
         url = f"{self.api}{path}"
         active_session = session
-        for attempt in range(OUTLOOK_EMAIL_RETRY_ATTEMPTS):
+        retry_attempts = max(int(retry_attempts or 1), 1)
+        for attempt in range(retry_attempts):
             try:
                 with suppress_insecure_request_warning():
                     request_fn = getattr(active_session, method.lower())
-                    response = request_fn(url, timeout=15, **kwargs)
+                    response = request_fn(url, timeout=request_timeout, **kwargs)
             except requests.RequestException as exc:
-                if attempt < OUTLOOK_EMAIL_RETRY_ATTEMPTS - 1:
+                if attempt < retry_attempts - 1:
                     if self._reset_thread_session_if_current(active_session):
                         active_session = self._get_session()
                     time.sleep(OUTLOOK_EMAIL_RETRY_DELAY_SECONDS * (attempt + 1))
@@ -417,7 +422,7 @@ class OutlookEmailMailbox(BaseMailbox):
                 raise RuntimeError(
                     f"outlookEmail {method_upper} {path} \u8bf7\u6c42\u5f02\u5e38: {exc}"
                 ) from exc
-            if response.status_code in retry_status_codes and attempt < OUTLOOK_EMAIL_RETRY_ATTEMPTS - 1:
+            if response.status_code in retry_status_codes and attempt < retry_attempts - 1:
                 time.sleep(OUTLOOK_EMAIL_RETRY_DELAY_SECONDS * (attempt + 1))
                 continue
             return response
@@ -431,7 +436,14 @@ class OutlookEmailMailbox(BaseMailbox):
             raise RuntimeError(f"{label} \u54cd\u5e94\u4e0d\u662f JSON: HTTP {response.status_code}") from exc
         return payload if isinstance(payload, dict) else {"items": payload}
 
-    def _get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _get_json(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        request_timeout: float = 15,
+        retry_attempts: int = OUTLOOK_EMAIL_RETRY_ATTEMPTS,
+    ) -> dict[str, Any]:
         session = self._get_session()
         clean_params = {
             key: value
@@ -446,6 +458,8 @@ class OutlookEmailMailbox(BaseMailbox):
             "GET",
             path,
             retry_status_codes=retry_status_codes,
+            request_timeout=request_timeout,
+            retry_attempts=retry_attempts,
             params=clean_params,
         )
         label = f"outlookEmail GET {path}"
@@ -462,6 +476,23 @@ class OutlookEmailMailbox(BaseMailbox):
             message = _outlook_email_error_message(payload, response.status_code)
             raise RuntimeError(f"{label} \u8bf7\u6c42\u5931\u8d25: {message}")
         return payload if isinstance(payload, dict) else {"items": payload}
+
+    def _get_json_before_deadline(
+        self,
+        path: str,
+        params: dict[str, Any] | None,
+        *,
+        deadline: float,
+    ) -> dict[str, Any]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OutlookEmailTemporaryUnavailable("outlookEmail 邮件请求超过本轮截止时间")
+        return self._get_json(
+            path,
+            params,
+            request_timeout=max(min(remaining, OUTLOOK_EMAIL_POLL_REQUEST_TIMEOUT_SECONDS), 0.1),
+            retry_attempts=1,
+        )
 
     @staticmethod
     def _is_endpoint_not_found(payload: dict[str, Any]) -> bool:
@@ -1230,13 +1261,21 @@ class OutlookEmailMailbox(BaseMailbox):
             items = payload_data.get("items") if isinstance(payload_data.get("items"), list) else []
         return [item for item in items if isinstance(item, dict)]
 
-    def _list_external_emails(self, account: MailboxAccount, runtime_keyword: str = "") -> list[dict[str, Any]]:
+    def _list_external_emails(
+        self,
+        account: MailboxAccount,
+        runtime_keyword: str = "",
+        *,
+        deadline: float | None = None,
+    ) -> list[dict[str, Any]]:
         """旧版 external/emails 也按目录拆查，避免 folder=all 漏掉 junkemail。"""
         items: list[dict[str, Any]] = []
         for folder in self._message_folders():
-            payload = self._get_json(
-                "/api/external/emails",
-                self._email_query_params(account, runtime_keyword, folder=folder),
+            params = self._email_query_params(account, runtime_keyword, folder=folder)
+            payload = (
+                self._get_json_before_deadline("/api/external/emails", params, deadline=deadline)
+                if deadline is not None
+                else self._get_json("/api/external/emails", params)
             )
             folder_items = self._emails_from_payload(self._data_payload(payload))
             for item in folder_items:
@@ -1244,17 +1283,23 @@ class OutlookEmailMailbox(BaseMailbox):
             items.extend(folder_items)
         return items
 
-    def _list_emails(self, account: MailboxAccount, runtime_keyword: str = "") -> list[dict[str, Any]]:
+    def _list_emails(
+        self,
+        account: MailboxAccount,
+        runtime_keyword: str = "",
+        *,
+        deadline: float | None = None,
+    ) -> list[dict[str, Any]]:
         if self._api_variant.startswith("plus"):
-            payload_data = {"emails": self._list_plus_messages(account)}
+            payload_data = {"emails": self._list_plus_messages(account, deadline=deadline)}
         else:
             try:
-                return self._list_external_emails(account, runtime_keyword)
+                return self._list_external_emails(account, runtime_keyword, deadline=deadline)
             except OutlookEmailEndpointNotFound:
-                payload_data = {"emails": self._list_plus_messages(account)}
+                payload_data = {"emails": self._list_plus_messages(account, deadline=deadline)}
             except RuntimeError as exc:
                 if self._is_temporary_unavailable_error(exc):
-                    payload_data = {"emails": self._list_plus_messages(account)}
+                    payload_data = {"emails": self._list_plus_messages(account, deadline=deadline)}
                 else:
                     raise
         return self._emails_from_payload(payload_data)
@@ -1269,7 +1314,13 @@ class OutlookEmailMailbox(BaseMailbox):
             params["email"] = account.email
         return params
 
-    def _load_message_detail(self, account: MailboxAccount, mail: dict[str, Any]) -> dict[str, Any] | None:
+    def _load_message_detail(
+        self,
+        account: MailboxAccount,
+        mail: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> dict[str, Any] | None:
         """摘要不含验证码时读取详情正文；失败不打断轮询。"""
         message_id = self._message_id(mail)
         if not message_id:
@@ -1279,9 +1330,12 @@ class OutlookEmailMailbox(BaseMailbox):
         encoded_id = quote(message_id, safe="")
         for folder in folders:
             try:
-                payload = self._get_json(
-                    f"/api/external/messages/{encoded_id}",
-                    self._message_scope_params(account, folder=folder),
+                path = f"/api/external/messages/{encoded_id}"
+                params = self._message_scope_params(account, folder=folder)
+                payload = (
+                    self._get_json_before_deadline(path, params, deadline=deadline)
+                    if deadline is not None
+                    else self._get_json(path, params)
                 )
                 detail = self._data_payload(payload)
                 if isinstance(detail, dict) and detail:
@@ -1311,9 +1365,13 @@ class OutlookEmailMailbox(BaseMailbox):
         pattern: re.Pattern,
         baseline_ids: set,
         otp_sent_at: float | None,
+        deadline: float | None = None,
     ) -> str | None:
         mid = self._message_id(mail)
         if not mid:
+            return None
+        message_epoch = self._message_epoch(mail)
+        if otp_sent_at and message_epoch is not None and message_epoch < float(otp_sent_at) - 30:
             return None
         if mid in baseline_ids and not self._is_after_otp_sent(mail, otp_sent_at):
             return None
@@ -1325,7 +1383,7 @@ class OutlookEmailMailbox(BaseMailbox):
         match = pattern.search(text)
         if match:
             return match.group(1) if match.groups() else match.group(0)
-        detail = self._load_message_detail(account, mail)
+        detail = self._load_message_detail(account, mail, deadline=deadline)
         if not detail:
             return None
         combined = {**mail, **detail}
@@ -1350,6 +1408,7 @@ class OutlookEmailMailbox(BaseMailbox):
         pattern: re.Pattern,
         baseline_ids: set,
         otp_sent_at: float | None,
+        deadline: float,
     ) -> str | None:
         if not self._async_probe_supported_for_account(account, otp_sent_at):
             return None
@@ -1366,7 +1425,11 @@ class OutlookEmailMailbox(BaseMailbox):
         if self.email_from_contains:
             params["from_contains"] = self.email_from_contains
         try:
-            payload = self._get_json("/api/external/wait-message", params)
+            payload = self._get_json_before_deadline(
+                "/api/external/wait-message",
+                params,
+                deadline=deadline,
+            )
         except OutlookEmailEndpointNotFound:
             return None
         except Exception as exc:
@@ -1379,11 +1442,14 @@ class OutlookEmailMailbox(BaseMailbox):
             return None
 
         encoded_probe_id = quote(probe_id, safe="")
-        deadline = time.time() + max(int(timeout or 1), 1)
         last_error: Exception | None = None
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try:
-                status_payload = self._get_json(f"/api/external/probe/{encoded_probe_id}")
+                status_payload = self._get_json_before_deadline(
+                    f"/api/external/probe/{encoded_probe_id}",
+                    None,
+                    deadline=deadline,
+                )
                 status_data = self._data_payload(status_payload)
             except Exception as exc:
                 last_error = exc
@@ -1399,6 +1465,7 @@ class OutlookEmailMailbox(BaseMailbox):
                         pattern=pattern,
                         baseline_ids=baseline_ids,
                         otp_sent_at=otp_sent_at,
+                        deadline=deadline,
                     )
                     if code:
                         return code
@@ -1406,15 +1473,21 @@ class OutlookEmailMailbox(BaseMailbox):
             if status in {"timeout", "error", "cancelled"}:
                 last_error = RuntimeError(status_data.get("error_message") or status)
                 break
-            time.sleep(min(OUTLOOK_EMAIL_ASYNC_PROBE_POLL_SECONDS, max(deadline - time.time(), 0)))
+            time.sleep(min(OUTLOOK_EMAIL_ASYNC_PROBE_POLL_SECONDS, max(deadline - time.monotonic(), 0)))
         if last_error is not None:
             raise OutlookEmailTemporaryUnavailable(str(last_error)) from last_error
         return None
 
-    def _list_plus_messages(self, account: MailboxAccount) -> list[dict[str, Any]]:
+    def _list_plus_messages(
+        self,
+        account: MailboxAccount,
+        *,
+        deadline: float | None = None,
+        folders: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         last_error: Exception | None = None
-        for folder in self._message_folders():
+        for folder in folders or self._message_folders():
             params: dict[str, Any] = {
                 **self._message_scope_params(account, folder=folder),
                 "top": self.email_top,
@@ -1425,7 +1498,11 @@ class OutlookEmailMailbox(BaseMailbox):
             if self.email_from_contains:
                 params["from_contains"] = self.email_from_contains
             try:
-                payload = self._get_json("/api/external/messages", params)
+                payload = (
+                    self._get_json_before_deadline("/api/external/messages", params, deadline=deadline)
+                    if deadline is not None
+                    else self._get_json("/api/external/messages", params)
+                )
             except Exception as exc:
                 last_error = exc
                 if self._is_temporary_unavailable_error(exc):
@@ -1462,10 +1539,12 @@ class OutlookEmailMailbox(BaseMailbox):
             )
 
     def get_current_ids(self, account: MailboxAccount) -> set:
-        try:
-            return {self._message_id(mail) for mail in self._list_emails(account) if self._message_id(mail)}
-        except OutlookEmailTemporaryUnavailable:
-            return set()
+        deadline = time.monotonic() + OUTLOOK_EMAIL_BASELINE_TIMEOUT_SECONDS
+        return {
+            self._message_id(mail)
+            for mail in self._list_emails(account, deadline=deadline)
+            if self._message_id(mail)
+        }
 
     def _matches_keyword(self, mail: dict[str, Any], runtime_keyword: str = "") -> bool:
         text = self._message_text(mail).lower()
@@ -1485,7 +1564,7 @@ class OutlookEmailMailbox(BaseMailbox):
     ) -> str:
         baseline_ids = set(before_ids or [])
         pattern = re.compile(code_pattern or DEFAULT_CODE_PATTERN)
-        started = time.time()
+        deadline = time.monotonic() + max(int(timeout or 1), 1)
         last_error: Exception | None = None
 
         try:
@@ -1496,28 +1575,51 @@ class OutlookEmailMailbox(BaseMailbox):
                 pattern=pattern,
                 baseline_ids=baseline_ids,
                 otp_sent_at=otp_sent_at,
+                deadline=deadline,
             )
             if async_code:
                 return async_code
         except OutlookEmailTemporaryUnavailable as exc:
             last_error = exc
 
-        while time.time() - started < timeout:
-            try:
-                for mail in self._list_emails(account, runtime_keyword=keyword):
-                    code = self._code_from_message(
-                        account,
-                        mail,
-                        keyword=keyword,
-                        pattern=pattern,
-                        baseline_ids=baseline_ids,
-                        otp_sent_at=otp_sent_at,
-                    )
-                    if code:
-                        return code
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-            time.sleep(self.poll_interval)
+        while time.monotonic() < deadline:
+            if self._api_variant.startswith("plus"):
+                for folder in self._message_folders():
+                    try:
+                        messages = self._list_plus_messages(account, deadline=deadline, folders=[folder])
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = exc
+                        continue
+                    for mail in messages:
+                        code = self._code_from_message(
+                            account,
+                            mail,
+                            keyword=keyword,
+                            pattern=pattern,
+                            baseline_ids=baseline_ids,
+                            otp_sent_at=otp_sent_at,
+                            deadline=deadline,
+                        )
+                        if code:
+                            return code
+            else:
+                try:
+                    messages = self._list_emails(account, runtime_keyword=keyword, deadline=deadline)
+                    for mail in messages:
+                        code = self._code_from_message(
+                            account,
+                            mail,
+                            keyword=keyword,
+                            pattern=pattern,
+                            baseline_ids=baseline_ids,
+                            otp_sent_at=otp_sent_at,
+                            deadline=deadline,
+                        )
+                        if code:
+                            return code
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+            time.sleep(min(self.poll_interval, max(deadline - time.monotonic(), 0)))
 
         message = f"等待验证码超时 ({timeout}s)"
         if last_error:

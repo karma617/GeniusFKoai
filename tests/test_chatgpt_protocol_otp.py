@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from platforms.chatgpt.constants import OPENAI_PAGE_TYPES
 from platforms.chatgpt import register as register_module
 from platforms.chatgpt.register import RegistrationEngine, SentinelPayload, SignupFormResult
@@ -541,7 +543,7 @@ def test_latest_chatgpt_json_headers_include_access_flow_id():
     engine = _bare_engine()
     engine._device_id = "device-id"
     headers = engine._latest_chatgpt_json_headers(referer="https://auth.openai.com/about-you")
-    assert headers["oai-device-id"] == "device-id"
+    assert "oai-device-id" not in headers  # headed auth.openai.com JSON omits this header
     assert headers["x-access-flow-invocation-id"]
     assert headers["content-type"] == "application/json"
 
@@ -1004,6 +1006,39 @@ def test_latest_chatgpt_fetch_session_marks_otp_callback_as_existing_account():
     assert result.metadata["chatgpt_session_source"] == "latest_otp_external_callback"
 
 
+def test_latest_chatgpt_fetch_session_logs_403_diagnostics():
+    engine = _bare_engine()
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "outlook_email_api"})()
+
+    class Response:
+        status_code = 403
+        text = "request rejected"
+
+        def json(self):
+            return {}
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+
+        def get(self, url, **kwargs):
+            return Response()
+
+    engine.email_service = EmailService()
+    engine.session = Session()
+    engine._create_account_continue_url = "https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1"
+
+    result = engine._latest_chatgpt_fetch_session_result(register_module.RegistrationResult(success=False))
+
+    assert result.success is False
+    assert "callback_status=403" in result.error_message
+    assert "session_status=403" in result.error_message
+    assert any("callback 拒绝诊断: type=http_rejected" in message for message in engine.logs)
+    assert any("session 拒绝诊断: type=http_rejected" in message for message in engine.logs)
+
+
 def test_latest_chatgpt_register_submits_password_before_waiting_for_otp(monkeypatch):
     engine = _bare_engine()
     calls = []
@@ -1211,7 +1246,7 @@ def test_latest_chatgpt_validate_email_otp_uses_auth_json_browser_headers(monkey
     assert headers["content-type"] == "application/json"
     assert headers["origin"] == "https://auth.openai.com"
     assert headers["referer"] == "https://auth.openai.com/email-verification"
-    assert headers["oai-device-id"] == "device-id"
+    assert "oai-device-id" not in headers  # headed auth.openai.com omits this header
     assert headers["sec-fetch-dest"] == "empty"
     assert headers["sec-fetch-mode"] == "cors"
     assert headers["sec-fetch-site"] == "same-origin"
@@ -1283,6 +1318,52 @@ def test_latest_chatgpt_validate_email_otp_retries_with_authorize_continue_senti
     assert any("补 authorize_continue Sentinel 后重试" in message for message in engine.logs)
 
 
+@pytest.mark.parametrize(
+    ("status_code", "error_code"),
+    [(401, "wrong_email_otp_code"), (409, "invalid_state")],
+)
+def test_latest_chatgpt_validate_email_otp_does_not_retry_terminal_otp_errors(
+    monkeypatch,
+    status_code,
+    error_code,
+):
+    monkeypatch.setenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", "1")
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    sentinel_calls = []
+
+    class Response:
+        text = json.dumps({"error": {"code": error_code}})
+
+        def __init__(self):
+            self.status_code = status_code
+
+        def json(self):
+            return {"error": {"code": error_code}}
+
+    class Session:
+        def __init__(self):
+            self.posts = []
+
+        def post(self, url, headers=None, data=None, **kwargs):
+            self.posts.append((url, headers or {}, data, kwargs))
+            return Response()
+
+    def fake_check_sentinel(did, flow="authorize_continue"):
+        sentinel_calls.append((did, flow))
+        return SentinelPayload(p="proof", t="turnstile", c="challenge", flow=flow)
+
+    engine.session = Session()
+    engine._check_sentinel = fake_check_sentinel
+    engine._latest_chatgpt_has_cf_clearance = lambda: True
+
+    with pytest.raises(RuntimeError, match=error_code):
+        engine._latest_chatgpt_validate_email_otp("123456")
+
+    assert len(engine.session.posts) == 1
+    assert sentinel_calls == [("device-id", "authorize_continue")]
+
+
 
 def test_import_browser_cookies_only_names_filters_auth_state():
     engine = _bare_engine()
@@ -1318,6 +1399,18 @@ def test_import_browser_cookies_only_names_filters_auth_state():
     assert "__cf_bm" in names
     assert "oai-client-auth-session" not in names
     assert "login_session" not in names
+
+
+def test_headless_cf_failure_is_not_retried_in_same_registration():
+    engine = RegistrationEngine.__new__(RegistrationEngine)
+    engine.session = object()
+    engine._latest_chatgpt_cf_attempted = True
+    engine._latest_chatgpt_has_cf_clearance = lambda: False
+    logs = []
+    engine._log = lambda message, level="info": logs.append((message, level))
+
+    assert engine._latest_chatgpt_seed_cf_clearance_via_headless("device-1") is False
+    assert any("跳过重复启动" in message for message, _level in logs)
 
 
 def test_latest_chatgpt_headless_auth_disabled_by_default(monkeypatch):
@@ -1382,7 +1475,7 @@ def test_latest_chatgpt_create_account_uses_auth_json_browser_headers(monkeypatc
     assert headers["content-type"] == "application/json"
     assert headers["origin"] == "https://auth.openai.com"
     assert headers["referer"] == "https://auth.openai.com/about-you"
-    assert headers["oai-device-id"] == "device-id"
+    assert "oai-device-id" not in headers  # headed auth.openai.com omits this header
     assert headers["sec-fetch-dest"] == "empty"
     assert headers["sec-fetch-mode"] == "cors"
     assert headers["sec-fetch-site"] == "same-origin"
@@ -1641,6 +1734,46 @@ def test_latest_chatgpt_register_refreshes_otp_once_after_invalid_state(monkeypa
     assert calls["send"] == 1
     assert calls["otp"] == [(True, False), (False, False)]
     assert calls["validate"] == ["111111", "222222"]
+
+
+def test_latest_chatgpt_register_does_not_fetch_unsubmittable_otp_after_last_invalid_state(monkeypatch):
+    engine = _bare_engine()
+    calls = {"refresh": 0, "validate": []}
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "outlook_email_api"})()
+
+        def create_email(self):
+            return {"email": "new@example.com", "service_id": "mailbox-1"}
+
+    engine.email_service = EmailService()
+    engine._init_latest_chatgpt_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: None
+
+    def init_oauth():
+        engine._latest_chatgpt_init_final_url = "https://auth.openai.com/email-verification"
+        return True, ""
+
+    def refresh_after_invalid_state():
+        calls["refresh"] += 1
+        return str(calls["refresh"] + 1) * 6
+
+    def validate_email_otp(code):
+        calls["validate"].append(code)
+        raise RuntimeError("invalid_state")
+
+    engine._latest_chatgpt_init_email_oauth = init_oauth
+    engine._get_verification_code = lambda **_kwargs: "111111"
+    engine._latest_chatgpt_refresh_email_otp_after_invalid_state = refresh_after_invalid_state
+    engine._latest_chatgpt_validate_email_otp = validate_email_otp
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    result = engine.run_chatgpt_register_latest()
+
+    assert result.success is False
+    assert result.error_message == "invalid_state"
+    assert calls["validate"] == ["111111", "222222", "333333"]
+    assert calls["refresh"] == 2
 
 
 def test_latest_chatgpt_register_resends_after_wrong_email_otp_code(monkeypatch):
@@ -1909,6 +2042,34 @@ def test_get_verification_code_marks_invalid_email_after_three_timeouts(monkeypa
     assert any("邮箱无效打标完成: 当前邮箱 new@example.com; 无效邮箱" in message for message in engine.logs)
 
 
+def test_get_verification_code_keeps_email_when_mailbox_transport_times_out(monkeypatch):
+    engine = _bare_engine()
+    engine._otp_sent_at = 1000.0
+    marks = []
+
+    class EmailService:
+        def get_verification_code(self, **kwargs):
+            raise TimeoutError(
+                "等待验证码超时 (10s)，最后一次错误: "
+                "outlookEmail GET /api/external/messages 请求异常: "
+                "HTTPConnectionPool(host='127.0.0.1', port=5000): Read timed out"
+            )
+
+        def mark_invalid_email(self, *, reason: str = ""):
+            marks.append(reason)
+            return ["无效邮箱"]
+
+    engine.email_service = EmailService()
+    engine._send_verification_code = lambda: True
+    monkeypatch.setenv("CHATGPT_OTP_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("CHATGPT_EMAIL_OTP_MAX_ATTEMPTS", "3")
+
+    assert engine._get_verification_code(resend_on_timeout=False) is None
+    assert marks == []
+    assert engine._email_otp_failure_reason == "mailbox_transport_timeout"
+    assert engine._email_otp_failure_message() == "邮箱接口传输超时，已保留当前邮箱标签"
+
+
 def test_get_verification_code_can_skip_invalid_mark_for_token_subflows(monkeypatch):
     engine = _bare_engine()
     marks = []
@@ -2162,3 +2323,57 @@ def test_create_user_account_deletes_mailbox_when_openai_marks_email_deactivated
     assert engine._create_user_account() is False
     assert deleted["reason"] == "openai_account_deleted_or_deactivated"
     assert any("已通过邮箱接口删除不可用邮箱" in message for message in engine.logs)
+
+
+def test_sentinel_token_shapes_match_headed_har():
+    import base64
+    import json
+    from platforms.chatgpt.constants import SENTINEL_SDK_URL
+    from platforms.chatgpt.register import (
+        LATEST_CHATGPT_CF_JSD_SCRIPT_URL,
+        LATEST_CHATGPT_FIREFOX_USER_AGENT,
+        LATEST_CHATGPT_OAI_CLIENT_VERSION,
+        LATEST_CHATGPT_SENTINEL_ENTRY_SDK_URL,
+        _SentinelTokenGenerator,
+    )
+
+    def _decode(p: str):
+        raw = p
+        suffix = ""
+        if raw.endswith("~S"):
+            raw = raw[:-2]
+            suffix = "~S"
+        for pref in ("gAAAAAC", "gAAAAAB", "gAAAAA"):
+            if raw.startswith(pref):
+                prefix = pref
+                raw = raw[len(pref):]
+                break
+        else:
+            prefix = ""
+        idx = raw.find("Wz")
+        if idx < 0:
+            idx = 0
+        chunk = raw[idx:]
+        pad = (-len(chunk)) % 4
+        arr = json.loads(base64.b64decode(chunk + "=" * pad).decode("utf-8"))
+        return prefix, suffix, arr
+
+    gen = _SentinelTokenGenerator("did", LATEST_CHATGPT_FIREFOX_USER_AGENT)
+    pref, suf, arr = _decode(gen.generate_requirements_token())
+    assert pref == "gAAAAAC"
+    assert suf == "~S"
+    assert arr[5] == SENTINEL_SDK_URL
+    assert "mozGetUserMedia" in str(arr[10])
+
+    pref, suf, arr = _decode(gen.generate_token("seed", "0"))
+    assert pref == "gAAAAAB"
+    assert suf == "~S"
+    assert arr[5] == LATEST_CHATGPT_SENTINEL_ENTRY_SDK_URL
+    assert "plugins" in str(arr[10])
+
+    pref, suf, arr = _decode(gen.generate_chat_requirements_token())
+    assert pref == "gAAAAAC"
+    assert suf == ""
+    assert arr[5] == LATEST_CHATGPT_CF_JSD_SCRIPT_URL
+    assert arr[6] == LATEST_CHATGPT_OAI_CLIENT_VERSION
+    assert "Macintosh" in LATEST_CHATGPT_FIREFOX_USER_AGENT
