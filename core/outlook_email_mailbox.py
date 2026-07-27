@@ -26,6 +26,7 @@ OUTLOOK_EMAIL_RETRY_ATTEMPTS = 3
 OUTLOOK_EMAIL_RETRY_DELAY_SECONDS = 0.6
 OUTLOOK_EMAIL_BASELINE_TIMEOUT_SECONDS = 5
 OUTLOOK_EMAIL_POLL_REQUEST_TIMEOUT_SECONDS = 10
+OUTLOOK_EMAIL_OTP_FAST_TOP = 3
 OUTLOOK_EMAIL_SELECTION_SCAN_LIMIT = 10000
 OUTLOOK_EMAIL_ASYNC_PROBE_POLL_SECONDS = 1
 OUTLOOK_EMAIL_ALIAS_EXHAUSTED_TAG_NAMES = ["别名已上限"]
@@ -297,6 +298,7 @@ class OutlookEmailMailbox(BaseMailbox):
         self.account_tag_ids = _text(account_tag_ids)
         self.account_include_untagged = _truthy(account_include_untagged)
         self.email_folder = _text(email_folder).lower() or "all"
+        self._email_top_configured = bool(_text(email_top))
         self.email_top = _bounded_int(email_top, default=10, minimum=1, maximum=50)
         self.email_subject_contains = _text(email_subject_contains)
         self.email_from_contains = _text(email_from_contains)
@@ -743,11 +745,12 @@ class OutlookEmailMailbox(BaseMailbox):
         runtime_keyword: str = "",
         *,
         folder: str | None = None,
+        top: int | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "email": account.email,
             "folder": (folder or self.email_folder),
-            "top": self.email_top,
+            "top": top or self.email_top,
         }
         if self.email_subject_contains:
             params["subject_contains"] = self.email_subject_contains
@@ -1267,11 +1270,12 @@ class OutlookEmailMailbox(BaseMailbox):
         runtime_keyword: str = "",
         *,
         deadline: float | None = None,
+        top: int | None = None,
     ) -> list[dict[str, Any]]:
         """旧版 external/emails 也按目录拆查，避免 folder=all 漏掉 junkemail。"""
         items: list[dict[str, Any]] = []
         for folder in self._message_folders():
-            params = self._email_query_params(account, runtime_keyword, folder=folder)
+            params = self._email_query_params(account, runtime_keyword, folder=folder, top=top)
             payload = (
                 self._get_json_before_deadline("/api/external/emails", params, deadline=deadline)
                 if deadline is not None
@@ -1289,17 +1293,18 @@ class OutlookEmailMailbox(BaseMailbox):
         runtime_keyword: str = "",
         *,
         deadline: float | None = None,
+        top: int | None = None,
     ) -> list[dict[str, Any]]:
         if self._api_variant.startswith("plus"):
-            payload_data = {"emails": self._list_plus_messages(account, deadline=deadline)}
+            payload_data = {"emails": self._list_plus_messages(account, deadline=deadline, top=top)}
         else:
             try:
-                return self._list_external_emails(account, runtime_keyword, deadline=deadline)
+                return self._list_external_emails(account, runtime_keyword, deadline=deadline, top=top)
             except OutlookEmailEndpointNotFound:
-                payload_data = {"emails": self._list_plus_messages(account, deadline=deadline)}
+                payload_data = {"emails": self._list_plus_messages(account, deadline=deadline, top=top)}
             except RuntimeError as exc:
                 if self._is_temporary_unavailable_error(exc):
-                    payload_data = {"emails": self._list_plus_messages(account, deadline=deadline)}
+                    payload_data = {"emails": self._list_plus_messages(account, deadline=deadline, top=top)}
                 else:
                     raise
         return self._emails_from_payload(payload_data)
@@ -1484,13 +1489,14 @@ class OutlookEmailMailbox(BaseMailbox):
         *,
         deadline: float | None = None,
         folders: list[str] | None = None,
+        top: int | None = None,
     ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         last_error: Exception | None = None
         for folder in folders or self._message_folders():
             params: dict[str, Any] = {
                 **self._message_scope_params(account, folder=folder),
-                "top": self.email_top,
+                "top": top or self.email_top,
                 "skip": 0,
             }
             if self.email_subject_contains:
@@ -1566,6 +1572,7 @@ class OutlookEmailMailbox(BaseMailbox):
         pattern = re.compile(code_pattern or DEFAULT_CODE_PATTERN)
         deadline = time.monotonic() + max(int(timeout or 1), 1)
         last_error: Exception | None = None
+        fast_top = self.email_top if self._email_top_configured else min(self.email_top, OUTLOOK_EMAIL_OTP_FAST_TOP)
 
         try:
             async_code = self._wait_for_code_via_async_probe(
@@ -1586,7 +1593,7 @@ class OutlookEmailMailbox(BaseMailbox):
             if self._api_variant.startswith("plus"):
                 for folder in self._message_folders():
                     try:
-                        messages = self._list_plus_messages(account, deadline=deadline, folders=[folder])
+                        messages = self._list_plus_messages(account, deadline=deadline, folders=[folder], top=fast_top)
                     except Exception as exc:  # noqa: BLE001
                         last_error = exc
                         continue
@@ -1604,7 +1611,7 @@ class OutlookEmailMailbox(BaseMailbox):
                             return code
             else:
                 try:
-                    messages = self._list_emails(account, runtime_keyword=keyword, deadline=deadline)
+                    messages = self._list_emails(account, runtime_keyword=keyword, deadline=deadline, top=fast_top)
                     for mail in messages:
                         code = self._code_from_message(
                             account,

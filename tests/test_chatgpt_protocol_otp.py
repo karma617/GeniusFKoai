@@ -1039,6 +1039,58 @@ def test_latest_chatgpt_fetch_session_logs_403_diagnostics():
     assert any("session 拒绝诊断: type=http_rejected" in message for message in engine.logs)
 
 
+def test_latest_chatgpt_fetch_session_uses_browser_fallback_after_403(monkeypatch):
+    engine = _bare_engine()
+
+    class Response:
+        status_code = 403
+        text = "request rejected"
+
+        def json(self):
+            return {}
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+
+        def get(self, url, **kwargs):
+            return Response()
+
+    fallback_calls = []
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "outlook_email_api"})()
+
+    def browser_fallback(callback_url):
+        fallback_calls.append(callback_url)
+        return (
+            200,
+            200,
+            {
+                "accessToken": "access-token-1",
+                "sessionToken": "session-token-1",
+                "account": {"id": "account-1"},
+                "user": {"email": "new@example.com"},
+            },
+            "session-token-1",
+            "account-cookie-1",
+            "__Secure-next-auth.session-token=session-token-1",
+        )
+
+    engine.email_service = EmailService()
+    engine.session = Session()
+    engine._create_account_continue_url = "https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1"
+    monkeypatch.setattr(engine, "_latest_chatgpt_fetch_session_via_headless_callback", browser_fallback)
+
+    result = engine._latest_chatgpt_fetch_session_result(register_module.RegistrationResult(success=False))
+
+    assert result.success is True
+    assert result.access_token == "access-token-1"
+    assert result.session_token == "session-token-1"
+    assert result.account_id == "account-1"
+    assert fallback_calls == ["https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1"]
+
+
 def test_latest_chatgpt_register_submits_password_before_waiting_for_otp(monkeypatch):
     engine = _bare_engine()
     calls = []
@@ -2001,7 +2053,7 @@ def test_get_verification_code_stops_on_mailbox_account_not_found(monkeypatch):
     assert any("邮箱账号不可读，停止等待验证码" in message for message in engine.logs)
 
 
-def test_get_verification_code_defaults_to_10s_timeout(monkeypatch):
+def test_get_verification_code_defaults_to_30s_timeout(monkeypatch):
     engine = _bare_engine()
     engine._otp_sent_at = 1000.0
     waits = []
@@ -2016,7 +2068,7 @@ def test_get_verification_code_defaults_to_10s_timeout(monkeypatch):
     monkeypatch.delenv("CHATGPT_EMAIL_OTP_MAX_ATTEMPTS", raising=False)
 
     assert engine._get_verification_code() == "654321"
-    assert [item["timeout"] for item in waits] == [10]
+    assert [item["timeout"] for item in waits] == [30]
 
 
 def test_get_verification_code_marks_invalid_email_after_three_timeouts(monkeypatch):

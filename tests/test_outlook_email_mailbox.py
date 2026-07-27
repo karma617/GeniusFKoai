@@ -1118,6 +1118,7 @@ def test_outlook_email_plus_scans_inbox_before_requesting_junk(monkeypatch):
     assert mailbox.wait_for_code(account, timeout=10) == "340139"
     assert len(session.calls) == 1
     assert session.calls[0]["kwargs"]["params"]["folder"] == "inbox"
+    assert session.calls[0]["kwargs"]["params"]["top"] == 3
     assert 5 < session.calls[0]["kwargs"]["timeout"] <= 10
 
 

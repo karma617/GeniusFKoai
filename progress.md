@@ -6313,3 +6313,66 @@ egister.py` 通过。
 - `docs/chatgpt-register-flow.md`：记录 `mailbox_transport_timeout` 与 `invalid_email_no_otp` 的边界。
 - `progress.md`：追加本轮实现与验证记录。
 - 回滚方式：撤销以上七个文件中与 10 秒请求上限、逐目录扫描、`mailbox_transport_timeout` 及本任务记录有关的本轮 diff；目标邮箱标签已恢复为回归前状态，如需重现旧状态可在邮箱管理页重新添加“无效邮箱”。
+
+## 2026-07-27 - Task: 放宽 ChatGPT 邮箱 OTP 等待并加速 Outlook 取码
+
+### What was done
+- 将 ChatGPT 邮箱 OTP 单轮默认等待从 10 秒放宽到 30 秒，避免本地 outlookEmail API 一次拉信接近 10 秒时整轮直接耗尽。
+- Outlook OTP 轮询在未显式配置 `outlook_email_top` 时优先只拉最新 3 封邮件，减少列表请求耗时；显式配置的 `outlook_email_top` 继续按用户配置执行。
+- 已用当前本地 outlookEmail API 实测 `TildaQuandt499316@hotmail.com`：接口能读到 2026-07-26 16:46:51Z 的 ChatGPT 验证码邮件，修复后 `wait_for_code(timeout=30)` 成功提取 6 位验证码（明文不写入日志）。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\outlook_email_mailbox.py platforms\chatgpt\register.py tests\test_outlook_email_mailbox.py tests\test_chatgpt_protocol_otp.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py tests\test_base_identity.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short`：106 passed。
+- 真实邮箱 API 快速核验：目标邮箱最新 ChatGPT 邮件在收件箱第一项；修复后取码耗时约 10.1 秒并成功返回验证码。
+- `git diff --check -- core/outlook_email_mailbox.py platforms/chatgpt/register.py tests/test_outlook_email_mailbox.py tests/test_chatgpt_protocol_otp.py`：通过，仅提示仓库既有 LF/CRLF 转换信息。
+
+### Notes
+- `core/outlook_email_mailbox.py`：为 OTP 轮询增加默认最新 3 封快速拉取，保留显式 `outlook_email_top` 配置优先级。
+- `platforms/chatgpt/register.py`：将邮箱 OTP 默认等待时间调整为 30 秒。
+- `tests/test_outlook_email_mailbox.py`：补充 Outlook Plus 默认 OTP 拉取数量断言。
+- `tests/test_chatgpt_protocol_otp.py`：同步默认 OTP 超时断言为 30 秒。
+- `docs/outlook-email-provider.md`：记录 Outlook OTP 默认快速拉取最新 3 封的规则。
+- `docs/chatgpt-register-flow.md`：记录 ChatGPT OTP 默认等待 30 秒和 Outlook 快速取码规则。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上七个文件中与 `CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 30`、`OUTLOOK_EMAIL_OTP_FAST_TOP`、默认 `top=3` 取码及本任务记录相关的本轮 diff。
+
+## 2026-07-27 - Task: 修复 ChatGPT callback/session 403 后直接失败
+
+### What was done
+- 确认本次失败发生在验证码通过和 `create_account` 成功之后，`chatgpt.com/api/auth/callback/openai` 与 `/api/auth/session` 返回 403，属于最终 NextAuth Web session 落地阶段的拒绝，不是邮箱验证码问题。
+- 在协议 callback/session 返回 4xx 且没有 `accessToken` 时，新增 Camoufox 浏览器兜底：注入当前协议 cookie，浏览器跟随 callback，再在浏览器上下文读取 `/api/auth/session` 并回填 NextAuth cookies。
+- 保留原协议路径为优先路径；只有 callback/session 已经失败时才进入浏览器兜底，避免影响 OTP validate 和 create_account 的协议状态机。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_fetch_session_logs_403_diagnostics tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_fetch_session_uses_browser_fallback_after_403 -q --disable-warnings --tb=short`：2 passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py tests\test_base_identity.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short`：107 passed。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py progress.md core/outlook_email_mailbox.py tests/test_outlook_email_mailbox.py`：通过，仅提示仓库既有 LF/CRLF 转换信息。
+
+### Notes
+- `platforms/chatgpt/register.py`：新增 callback/session 403 后的 Camoufox 浏览器兜底取 session 路径，并在成功时继续使用同一结果落库。
+- `tests/test_chatgpt_protocol_otp.py`：新增 callback/session 403 后浏览器兜底成功的回归测试。
+- `docs/chatgpt-register-flow.md`：记录最终 callback/session 4xx 后的浏览器兜底规则。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上四个文件中与 `_latest_chatgpt_fetch_session_via_headless_callback`、403 fallback 测试、callback/session 4xx 文档和本任务记录相关的本轮 diff。
+
+## 2026-07-27 - Task: 补强 ChatGPT callback/session 纯协议请求形态
+
+### What was done
+- 保留纯协议完成 callback 和 session 读取作为优先路径，不把 Camoufox 变成默认主链。
+- 将最终 ChatGPT callback 请求补齐为浏览器导航形态：带 `auth.openai.com` referer、Firefox UA、Accept-Language、`sec-fetch-*` 和 `upgrade-insecure-requests`。
+- 在读取 `/api/auth/session` 前先访问一次 `chatgpt.com/`，随后按同源 fetch 形态读取 session，减少直接裸 GET session 被拒的概率。
+- Camoufox 仍只在纯协议 callback/session 返回 4xx 且没有 `accessToken` 时兜底。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_fetch_session_marks_otp_callback_as_existing_account tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_fetch_session_logs_403_diagnostics tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_fetch_session_uses_browser_fallback_after_403 -q --disable-warnings --tb=short`：3 passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_outlook_email_mailbox.py tests\test_base_identity.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short`：107 passed。
+- `git diff --check -- platforms/chatgpt/register.py tests/test_chatgpt_protocol_otp.py progress.md core/outlook_email_mailbox.py tests/test_outlook_email_mailbox.py`：通过，仅提示仓库既有 LF/CRLF 转换信息。
+
+### Notes
+- `platforms/chatgpt/register.py`：最终 callback/session 纯协议请求改用浏览器导航与同源 fetch 形态，并保留 4xx 后的 Camoufox 兜底。
+- `docs/chatgpt-register-flow.md`：记录最终 callback/session 的纯协议请求顺序和兜底边界。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上三个文件中与 callback 导航 headers、`chatgpt.com/` 预访问、session headers 和本任务记录相关的本轮 diff。

@@ -81,7 +81,7 @@ from .constants import (
 
 
 
-CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 10
+CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 30
 CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS = 10
 LATEST_CHATGPT_FIREFOX_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) "
@@ -1996,6 +1996,90 @@ class RegistrationEngine:
             self._log(f"{label} 无头浏览器执行状态: {status}")
             return status, data if isinstance(data, dict) else {}, text
 
+    def _latest_chatgpt_fetch_session_via_headless_callback(
+        self,
+        callback_url: str,
+    ) -> tuple[int, int, dict, str, str, str] | None:
+        """用浏览器完成 ChatGPT NextAuth callback，并回填 session cookie。"""
+        if str(__import__("os").environ.get("PYTEST_CURRENT_TEST") or "").strip():
+            return None
+        try:
+            from camoufox.sync_api import Camoufox
+            from platforms.chatgpt.browser_register import _browser_fetch
+        except Exception as exc:
+            self._log(f"chatgpt_register callback 浏览器兜底不可用: {exc}", "warning")
+            return None
+
+        from .constants import CHATGPT_APP
+
+        ua = self._latest_chatgpt_user_agent()
+        cookie_items = self._latest_chatgpt_protocol_cookie_items()
+        launch_opts = self._latest_chatgpt_camoufox_launch_opts()
+        try:
+            with Camoufox(**launch_opts) as browser:
+                page = browser.new_page()
+                try:
+                    page.set_extra_http_headers(
+                        {
+                            "user-agent": ua,
+                            "accept-language": self._latest_chatgpt_accept_language(),
+                        }
+                    )
+                except Exception:
+                    pass
+                if cookie_items:
+                    try:
+                        page.context.add_cookies(cookie_items)
+                    except Exception as exc:
+                        self._log(f"chatgpt_register callback 浏览器注入 cookie 失败: {exc}", "warning")
+
+                callback_resp = page.goto(callback_url, wait_until="domcontentloaded", timeout=60000)
+                callback_status = int(getattr(callback_resp, "status", 0) or 0)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
+
+                session_result = _browser_fetch(
+                    page,
+                    f"{CHATGPT_APP}/api/auth/session",
+                    method="GET",
+                    headers={"accept": "application/json"},
+                    redirect="follow",
+                    timeout_ms=30000,
+                )
+                session_status = int(session_result.get("status") or 0)
+                session_data = session_result.get("data")
+                if not isinstance(session_data, dict):
+                    session_data = {}
+
+                browser_cookies = []
+                try:
+                    browser_cookies = page.context.cookies()
+                except Exception:
+                    browser_cookies = []
+                if browser_cookies:
+                    self._latest_chatgpt_import_browser_cookies(browser_cookies)
+
+                session_token = ""
+                account_cookie = ""
+                for cookie in browser_cookies:
+                    name = str(cookie.get("name") or "")
+                    if name == "__Secure-next-auth.session-token":
+                        session_token = str(cookie.get("value") or "")
+                    elif name == "_account":
+                        account_cookie = str(cookie.get("value") or "")
+
+                session_cookies_header = _cookies_to_header(self.session.cookies)
+                self._log(
+                    "chatgpt_register callback 浏览器兜底完成: "
+                    f"callback_status={callback_status}, session_status={session_status}, cookies={len(browser_cookies)}"
+                )
+                return callback_status, session_status, session_data, session_token, account_cookie, session_cookies_header
+        except Exception as exc:
+            self._log(f"chatgpt_register callback 浏览器兜底失败: {exc}", "warning")
+            return None
+
     def _latest_chatgpt_warmup_chatgpt_anon_session(self, device_id: str) -> None:
         """Replay headed-browser pre-auth warmup: accounts/check + prepare/finalize + cf_clearance."""
         from .constants import CHATGPT_APP, SENTINEL_SDK_URL
@@ -2519,7 +2603,17 @@ class RegistrationEngine:
             return result
         callback_url = urllib.parse.urljoin("https://auth.openai.com/", callback_url)
 
-        cb_resp = self.session.get(callback_url, allow_redirects=True, timeout=30)
+        callback_referer = (
+            str(getattr(self, "_email_otp_continue_url", "") or "").strip()
+            or str(getattr(self, "_latest_chatgpt_init_final_url", "") or "").strip()
+            or "https://auth.openai.com/about-you"
+        )
+        cb_resp = self.session.get(
+            callback_url,
+            headers=self._latest_chatgpt_nav_headers(referer=callback_referer, sec_fetch_site="cross-site"),
+            allow_redirects=True,
+            timeout=45,
+        )
         callback_status = int(getattr(cb_resp, "status_code", 0) or 0)
         self._log(f"chatgpt_register callback 状态: {callback_status}")
         if callback_status >= 400:
@@ -2539,9 +2633,24 @@ class RegistrationEngine:
         account_cookie = str(self.session.cookies.get("_account") or "").strip()
         session_cookies_header = _cookies_to_header(self.session.cookies)
 
+        try:
+            self.session.get(
+                f"{CHATGPT_APP}/",
+                headers=self._latest_chatgpt_nav_headers(referer=callback_url, sec_fetch_site="same-origin"),
+                timeout=15,
+            )
+        except Exception:
+            pass
+
         session_resp = self.session.get(
             f"{CHATGPT_APP}/api/auth/session",
-            headers={"accept": "application/json"},
+            headers=self._latest_chatgpt_browser_headers(
+                accept="application/json",
+                referer=f"{CHATGPT_APP}/",
+                sec_fetch_dest="empty",
+                sec_fetch_mode="cors",
+                sec_fetch_site="same-origin",
+            ),
             timeout=20,
         )
         session_status = int(getattr(session_resp, "status_code", 0) or 0)
@@ -2560,6 +2669,22 @@ class RegistrationEngine:
             )
         session_data = self._response_json_dict(session_resp)
         access_token = str(session_data.get("accessToken") or "").strip()
+        if not access_token and (callback_status >= 400 or session_status >= 400):
+            browser_session = self._latest_chatgpt_fetch_session_via_headless_callback(callback_url)
+            if browser_session:
+                (
+                    callback_status,
+                    session_status,
+                    session_data,
+                    browser_session_token,
+                    browser_account_cookie,
+                    session_cookies_header,
+                ) = browser_session
+                access_token = str(session_data.get("accessToken") or "").strip()
+                if browser_session_token:
+                    session_token = browser_session_token
+                if browser_account_cookie:
+                    account_cookie = browser_account_cookie
         session_token = str(session_data.get("sessionToken") or session_token or "").strip()
         account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
         user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
