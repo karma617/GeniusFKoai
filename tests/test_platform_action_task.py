@@ -36,6 +36,7 @@ class _FakeLogger:
         self.result_data = None
         self.finished = None
         self.cancel_requested = False
+        self._subtask = ("", "")
 
     def log(self, message, **kwargs):
         self.events.append(("log", message, kwargs))
@@ -56,10 +57,15 @@ class _FakeLogger:
         return self.cancel_requested
 
     def set_subtask(self, subtask_id, label=""):
+        self._subtask = (subtask_id, label)
         self.events.append(("subtask", subtask_id, {"label": label}))
 
     def clear_subtask(self):
+        self._subtask = ("", "")
         self.events.append(("clear_subtask", "", {}))
+
+    def _current_subtask(self):
+        return self._subtask
 
     def finish(self, status, *, error=""):
         self.finished = (status, error)
@@ -1087,6 +1093,43 @@ def test_chatgpt_trial_post_register_check_logs_network_retries(monkeypatch):
     assert any("第 1/3 次查询失败" in event[1] for event in logger.events)
     assert any("第 2/3 次查询失败" in event[1] for event in logger.events)
     assert any("已确认免费领取 Plus 权益" in event[1] for event in logger.events)
+
+
+def test_chatgpt_trial_post_register_check_runs_in_background_with_subtask(monkeypatch):
+    submitted = []
+    calls = []
+
+    class _ImmediateExecutor:
+        def submit(self, fn):
+            submitted.append(fn)
+            fn()
+
+    def _fake_check(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(tasks_module, "_CHATGPT_TRIAL_CHECK_EXECUTOR", _ImmediateExecutor())
+    monkeypatch.setattr(tasks_module, "_run_chatgpt_trial_post_register_check", _fake_check)
+    logger = _FakeLogger()
+    logger.set_subtask("worker_3", "账号 #3")
+
+    tasks_module._schedule_chatgpt_trial_post_register_check(
+        account=Account(platform="chatgpt", email="trial-background@example.com", password="Secret123!"),
+        saved_account_id=123,
+        logger=logger,
+        proxy="http://proxy.example:1000",
+    )
+
+    assert len(submitted) == 1
+    assert calls == [{
+        "account": Account(platform="chatgpt", email="trial-background@example.com", password="Secret123!"),
+        "saved_account_id": 123,
+        "logger": logger,
+        "proxy": "http://proxy.example:1000",
+    }]
+    assert ("subtask", "worker_3", {"label": "账号 #3"}) in logger.events
+    assert ("clear_subtask", "", {}) in logger.events
+    assert any("已转入低优先级后台" in event[1] for event in logger.events)
 
 
 def test_chatgpt_free_plus_trial_does_not_retry_http_failure(monkeypatch):

@@ -681,6 +681,7 @@ function SimpleTaskLogDialog({
   taskId,
   onClose,
   onDone,
+  showMomoTrialStats = false,
 }: {
   open: boolean
   title: string
@@ -688,14 +689,17 @@ function SimpleTaskLogDialog({
   taskId: string
   onClose: () => void
   onDone?: (status: string) => void
+  showMomoTrialStats?: boolean
 }) {
   const [lines, setLines] = useState<string[]>([])
   const [status, setStatus] = useState<string>('running')
   const [error, setError] = useState('')
+  const [task, setTask] = useState<any | null>(null)
   const seenRef = useRef<Set<number>>(new Set())
   const cursorRef = useRef(0)
   const doneRef = useRef(false)
   const onDoneRef = useRef(onDone)
+  const eventSourceRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
     onDoneRef.current = onDone
@@ -709,6 +713,7 @@ function SimpleTaskLogDialog({
     setLines([])
     setStatus('running')
     setError('')
+    setTask(null)
 
     const pushLine = (line: string, eventId = 0) => {
       if (eventId && seenRef.current.has(eventId)) return
@@ -727,6 +732,8 @@ function SimpleTaskLogDialog({
     const markDone = (nextStatus: string) => {
       if (doneRef.current) return
       doneRef.current = true
+      eventSourceRef.current?.close()
+      eventSourceRef.current = null
       setStatus(String(nextStatus || 'succeeded'))
       try { onDoneRef.current?.(String(nextStatus || 'succeeded')) } catch {}
     }
@@ -748,6 +755,7 @@ function SimpleTaskLogDialog({
 
     const syncTask = async () => {
       const latest = await apiFetch(`/tasks/${taskId}`)
+      setTask(latest)
       if (latest?.status) setStatus(String(latest.status))
       if (isTerminalTaskStatus(latest?.status) && !doneRef.current) {
         await fetchMissing()
@@ -756,6 +764,7 @@ function SimpleTaskLogDialog({
     }
 
     const es = new EventSource(`${API_BASE}/tasks/${taskId}/logs/stream`)
+    eventSourceRef.current = es
     es.onmessage = (e) => {
       try {
         const payload = JSON.parse(e.data)
@@ -781,6 +790,7 @@ function SimpleTaskLogDialog({
 
     return () => {
       es.close()
+      if (eventSourceRef.current === es) eventSourceRef.current = null
       window.clearInterval(progressPoll)
       window.clearInterval(fallbackPoll)
     }
@@ -789,6 +799,9 @@ function SimpleTaskLogDialog({
   if (!open || !taskId) return null
   const text = lines.join('\n')
   const running = !['succeeded', 'failed', 'cancelled', 'canceled', 'success', 'error'].includes(String(status || '').toLowerCase())
+  const momoStats = showMomoTrialStats
+    ? (task?.data && typeof task.data === 'object' ? task.data : task?.result?.data || {})
+    : null
   return createPortal(
     <div className="dialog-backdrop" onClick={onClose}>
       <div
@@ -827,6 +840,21 @@ function SimpleTaskLogDialog({
         {error && (
           <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
             {error}
+          </div>
+        )}
+        {momoStats && (
+          <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[
+              ['帐号总数', momoStats.total ?? 0],
+              ['有资格', momoStats.ready ?? 0],
+              ['无资格', momoStats.ineligible ?? 0],
+              ['任务剩余数', momoStats.remaining ?? 0],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)]/40 px-3 py-2">
+                <div className="text-[11px] text-[var(--text-muted)]">{label}</div>
+                <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">{value}</div>
+              </div>
+            ))}
           </div>
         )}
         <pre className="max-h-[60vh] overflow-auto rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/40 p-3 text-xs leading-6 whitespace-pre-wrap">
@@ -4620,6 +4648,7 @@ export default function Accounts() {
           title="检测MOMO试用资格"
           subtitle="后台批量检测 · 同时具备试用和 MoMo 时打标签「MOMO试用」"
           taskId={oauthTaskId}
+          showMomoTrialStats
           onClose={() => setOauthTaskId('')}
           onDone={handleOAuthTaskDone}
         />

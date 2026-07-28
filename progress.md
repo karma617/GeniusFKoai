@@ -6959,3 +6959,76 @@ egister.py` 通过。
 - `docs/pp-plus-ba.md`：记录 BA 链 Stripe 请求的超时收口规则。
 - `progress.md`：追加本轮修改、验证和回滚说明。
 - 回滚方式：移除 `STRIPE_HTTP_TIMEOUT_SECONDS` 并恢复 `_request()` 中的无 timeout 调用，同时移除本轮测试、文档和本段记录。
+
+## 2026-07-28 - Task: 注册后试用权益查询转低优先级后台
+
+### What was done
+- 将 ChatGPT 账号保存后的免费 Plus 试用权益查询提交到独立的低优先级后台队列，最多并发 2 个，不再占用注册主任务的 worker 槽位。
+- 保留原有查询、重试和 `试用` 标签逻辑；后台日志继续绑定原注册子任务，主流程会立即记录已转入后台。
+- 普通注册和两处 GoPay 注册流程统一使用后台查询入口。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -q --disable-warnings --tb=short -k "trial"` 通过：`7 passed, 90 deselected, 1 warning`。
+- `git diff --check -- application\tasks.py tests\test_platform_action_task.py docs\chatgpt-register-flow.md progress.md` 通过。
+
+### Notes
+- `application/tasks.py`：新增有界试用权益后台队列和调度入口，替换三处注册保存后的同步查询调用。
+- `tests/test_platform_action_task.py`：增加后台调度、子任务日志继承的回归测试。
+- `docs/chatgpt-register-flow.md`：记录后台队列并发和日志行为。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：移除 `CHATGPT_TRIAL_CHECK_BACKGROUND_CONCURRENCY`、`_CHATGPT_TRIAL_CHECK_EXECUTOR` 与 `_schedule_chatgpt_trial_post_register_check()`，将三处调用恢复为 `_run_chatgpt_trial_post_register_check()`，并移除本轮测试、文档和本段记录。
+
+## 2026-07-28 - Task: MoMo 检测实时统计与失败日志收口
+
+### What was done
+- 核对本次 50 个账号日志：45 个已完成检测但没有 MoMo 支付方式，5 个在 checkout 阶段遇到 `ProxyError` 或 `Timeout`；这些请求异常不再混入无资格统计。
+- MoMo 检测任务持续写入帐号总数、有资格、无资格、失败、已完成和剩余数，弹窗顶部实时显示帐号总数、有资格、无资格、任务剩余数。
+- 修复检测任务结束后 SSE 自动重连反复追加“任务失败”的问题；终态事件到达后会立即关闭事件流。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py application\momo_trial_probe.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_momo_trial_probe.py tests\test_task_cancellation_state.py -q --disable-warnings --tb=short` 通过：`8 passed, 1 warning`。
+- `npm run build`（`frontend`）通过。
+- `git diff --check -- application\tasks.py frontend\src\pages\Accounts.tsx tests\test_momo_trial_probe.py docs\momo-trial-probe.md progress.md` 通过。
+
+### Notes
+- `application/tasks.py`：为 MoMo 检测维护实时结果统计，明确区分无资格和请求失败。
+- `frontend/src/pages/Accounts.tsx`：MoMo 日志弹窗展示实时统计，并在终态关闭 SSE。
+- `tests/test_momo_trial_probe.py`：增加请求失败不计入无资格的统计回归测试。
+- `docs/momo-trial-probe.md`：记录统计口径。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：移除 `_momo_trial_probe_result_data()` 和 MoMo 任务中的 `_publish_progress()` 调用；移除 `SimpleTaskLogDialog` 的 `showMomoTrialStats`、任务状态与 SSE 引用处理，再移除本轮测试、文档和本段记录。
+
+## 2026-07-28 - Task: MoMo 检测网络异常重试
+
+### What was done
+- checkout 与 Stripe init 的代理、超时等请求异常现在会额外重试 5 次，每次间隔 1 秒。
+- 每次重试均写入账号日志；第 5 次重试仍失败后，才按原有逻辑记录该账号检测失败。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\momo_trial_probe.py application\tasks.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_momo_trial_probe.py tests\test_task_cancellation_state.py -q --disable-warnings --tb=short` 通过：`9 passed, 1 warning`。
+- `git diff --check -- application\momo_trial_probe.py tests\test_momo_trial_probe.py docs\momo-trial-probe.md progress.md` 通过。
+
+### Notes
+- `application/momo_trial_probe.py`：新增网络请求重试 helper，并应用到 checkout 与 Stripe init。
+- `tests/test_momo_trial_probe.py`：覆盖 checkout 连续 5 次网络异常后第 6 次请求成功的场景。
+- `docs/momo-trial-probe.md`：记录网络异常重试规则。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：移除 `MOMO_TRIAL_NETWORK_RETRY_COUNT`、`_retry_network_operation()` 及 checkout/Stripe init 对它的调用，恢复为单次请求；移除本轮测试、文档和本段记录。
+
+## 2026-07-28 - Task: 任务失败明细可折叠
+
+### What was done
+- 将任务日志弹窗的失败明细区域改为默认折叠，保留失败数量并可点击标题展开或收起完整明细。
+- 任务切换时重置为折叠状态，避免大量失败条目占用实时日志区域。
+
+### Testing
+- `npm run build`（`frontend`）通过。
+- `git diff --check -- frontend\src\components\tasks\TaskLogPanel.tsx progress.md` 通过。
+
+### Notes
+- `frontend/src/components/tasks/TaskLogPanel.tsx`：增加失败明细展开状态和标题折叠控件。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：移除 `failureDetailsExpanded` 状态和失败明细标题按钮，恢复失败明细始终展开的渲染。

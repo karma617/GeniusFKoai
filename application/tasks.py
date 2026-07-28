@@ -76,6 +76,11 @@ CHATGPT_RELOGIN_REQUIRED_STATUS = "relogin_required"
 CHATGPT_FREE_PLUS_CAMPAIGN_ID = "plus-1-month-free"
 CHATGPT_ACCOUNTS_CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480"
 CHATGPT_TRIAL_CHECK_MAX_ATTEMPTS = 3
+CHATGPT_TRIAL_CHECK_BACKGROUND_CONCURRENCY = 2
+_CHATGPT_TRIAL_CHECK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=CHATGPT_TRIAL_CHECK_BACKGROUND_CONCURRENCY,
+    thread_name_prefix="chatgpt-trial-check",
+)
 CHATGPT_HEALTH_CHECK_NETWORK_RETRIES = 3
 CHATGPT_HEALTH_CHECK_GLOBAL_CONCURRENCY = 1
 CHATGPT_HEALTH_CHECK_MIN_INTERVAL_SECONDS = 1.2
@@ -2513,6 +2518,36 @@ def _run_chatgpt_trial_post_register_check(
     _mark_chatgpt_trial_account(saved_account_id, trial_info)
     logger.log(f"  [试用] 已确认免费领取 Plus 权益并打标签 {CHATGPT_TRIAL_LABEL}")
     return True
+
+
+def _schedule_chatgpt_trial_post_register_check(
+    *,
+    account,
+    saved_account_id: int,
+    logger: TaskLogger,
+    proxy: str | None,
+) -> None:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "chatgpt":
+        return
+
+    subtask_id, subtask_label = logger._current_subtask()
+
+    def _run_in_background() -> None:
+        if subtask_id:
+            logger.set_subtask(subtask_id, subtask_label)
+        try:
+            _run_chatgpt_trial_post_register_check(
+                account=account,
+                saved_account_id=saved_account_id,
+                logger=logger,
+                proxy=proxy,
+            )
+        finally:
+            if subtask_id:
+                logger.clear_subtask()
+
+    _CHATGPT_TRIAL_CHECK_EXECUTOR.submit(_run_in_background)
+    logger.log("  [试用] 权益检查已转入低优先级后台")
 
 
 
@@ -6334,7 +6369,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(shared_mailbox, account, "registration_success", logger)
             saved_account_id = _saved_account_id(saved_model, account)
-            _run_chatgpt_trial_post_register_check(
+            _schedule_chatgpt_trial_post_register_check(
                 account=account,
                 saved_account_id=saved_account_id,
                 logger=logger,
@@ -9756,7 +9791,7 @@ def _register_chatgpt_shortlink_grab_for_gopay(
             account = platform.register()
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
-            _run_chatgpt_trial_post_register_check(
+            _schedule_chatgpt_trial_post_register_check(
                 account=account,
                 saved_account_id=_saved_account_id(saved_model, account),
                 logger=logger,
@@ -9935,7 +9970,7 @@ def _register_chatgpt_accounts_for_gopay(
 
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
 
-            _run_chatgpt_trial_post_register_check(
+            _schedule_chatgpt_trial_post_register_check(
                 account=account,
                 saved_account_id=_saved_account_id(None, account),
                 logger=logger,
@@ -10244,6 +10279,26 @@ def _mark_momo_trial_account(saved_account_id: int, probe: dict[str, Any]) -> No
         session.commit()
 
 
+def _momo_trial_probe_result_data(
+    *,
+    total: int,
+    ready: int,
+    ineligible: int,
+    failed: int,
+    completed: int,
+) -> dict[str, int]:
+    total = max(int(total or 0), 0)
+    completed = min(max(int(completed or 0), 0), total)
+    return {
+        "total": total,
+        "ready": max(int(ready or 0), 0),
+        "ineligible": max(int(ineligible or 0), 0),
+        "failed": max(int(failed or 0), 0),
+        "completed": completed,
+        "remaining": max(total - completed, 0),
+    }
+
+
 def _execute_momo_trial_probe_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     """批量检测账号是否具备越南 MoMo + 真实试用资格。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10296,9 +10351,23 @@ def _execute_momo_trial_probe_task(payload: dict[str, Any], logger: TaskLogger) 
 
     success = 0
     ready = 0
+    ineligible = 0
     failed = 0
     progress_lock = threading.Lock()
     done_count = 0
+
+    def _publish_progress() -> None:
+        logger.set_result_data(
+            _momo_trial_probe_result_data(
+                total=total,
+                ready=ready,
+                ineligible=ineligible,
+                failed=failed,
+                completed=done_count,
+            )
+        )
+
+    _publish_progress()
 
     def _resolve_proxy_for_account(account: Any) -> str:
         explicit = ""
@@ -10365,6 +10434,7 @@ def _execute_momo_trial_probe_task(payload: dict[str, Any], logger: TaskLogger) 
                 with progress_lock:
                     done_count += 1
                     logger.set_progress(done_count, total)
+                    _publish_progress()
                 continue
 
             decision = str(result.get("decision") or "")
@@ -10395,6 +10465,7 @@ def _execute_momo_trial_probe_task(payload: dict[str, Any], logger: TaskLogger) 
                     )
                 else:
                     success += 1
+                    ineligible += 1
                     prefix = "·"
                     summary = "未达到 MoMo 试用条件"
                     if decision == "momo_not_enabled":
@@ -10409,8 +10480,10 @@ def _execute_momo_trial_probe_task(payload: dict[str, Any], logger: TaskLogger) 
             with progress_lock:
                 done_count += 1
                 logger.set_progress(done_count, total)
+                _publish_progress()
 
     logger.log(f"MoMo 试用检测完成：ready={ready} 完成={success} 失败={failed} 总计={total}")
+    _publish_progress()
     if logger.is_cancel_requested():
         logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
     else:

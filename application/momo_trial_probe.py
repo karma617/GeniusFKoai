@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable
 
 from application.ba_link_extract import (
@@ -24,6 +25,7 @@ MOMO_TRIAL_LABEL = "MOMO试用"
 DEFAULT_TRIAL_DAYS = 30
 DEFAULT_BILLING_COUNTRY = "VN"
 DEFAULT_BILLING_CURRENCY = "VND"
+MOMO_TRIAL_NETWORK_RETRY_COUNT = 5
 
 
 def _log(log_fn: LogFn, message: str) -> None:
@@ -32,6 +34,21 @@ def _log(log_fn: LogFn, message: str) -> None:
             log_fn(message)
         except Exception:
             pass
+
+
+def _retry_network_operation(*, name: str, operation: Callable[[], Any], log_fn: LogFn) -> Any:
+    for retry in range(MOMO_TRIAL_NETWORK_RETRY_COUNT + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            if retry >= MOMO_TRIAL_NETWORK_RETRY_COUNT:
+                raise
+            _log(
+                log_fn,
+                f"[MOMO试用] {name} 网络异常: {type(exc).__name__}，"
+                f"第 {retry + 1}/{MOMO_TRIAL_NETWORK_RETRY_COUNT} 次重试，1s 后继续",
+            )
+            time.sleep(1)
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -275,7 +292,11 @@ def probe_momo_trial(
 
     _log(log_fn, f"[MOMO试用] checkout country={country} currency={currency} trial_days={days}")
     try:
-        resp = session.post(PAYMENT_CHECKOUT_URL, headers=headers, json=payload, timeout=45)
+        resp = _retry_network_operation(
+            name="checkout",
+            operation=lambda: session.post(PAYMENT_CHECKOUT_URL, headers=headers, json=payload, timeout=45),
+            log_fn=log_fn,
+        )
     except Exception as exc:
         return {
             "ok": False,
@@ -382,7 +403,11 @@ def probe_momo_trial(
     amount_due = None
     currency_out = currency
     try:
-        init_payload = stripe_init(session, cs_id=cs_id, publishable_key=publishable_key)
+        init_payload = _retry_network_operation(
+            name="stripe init",
+            operation=lambda: stripe_init(session, cs_id=cs_id, publishable_key=publishable_key),
+            log_fn=log_fn,
+        )
         if not isinstance(init_payload, dict):
             raise RuntimeError("stripe init 响应非对象")
         payment_methods = _payment_method_types(init_payload)
