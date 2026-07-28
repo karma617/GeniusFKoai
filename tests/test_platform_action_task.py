@@ -65,6 +65,13 @@ class _FakeLogger:
         self.finished = (status, error)
 
 
+def test_register_task_average_duration_formats_seconds():
+    assert tasks_module._format_register_task_average_duration(179.0, 3) == (
+        "平均耗时: 59.7 秒/任务（总耗时 179.0 秒，已处理 3 个）"
+    )
+    assert tasks_module._format_register_task_average_duration(10.0, 0) == ""
+
+
 def _make_openai_access_token(*, account_id: str, user_id: str) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
     payload = {
@@ -313,6 +320,44 @@ def test_refresh_session_task_deletes_banned_account(monkeypatch):
 
     assert logger.result_data["results"][0]["deleted"] is True
     assert logger.finished == (tasks_module.TASK_STATUS_FAILED, "全部账号重新登录失败")
+
+
+def test_refresh_session_task_keeps_validate_otp_403_banned_account(monkeypatch):
+    with Session(engine) as session:
+        model = AccountModel(platform="chatgpt", email="validate-otp-403@test.com", password="Secret123!")
+        session.add(model)
+        session.commit()
+        session.refresh(model)
+        account_id = int(model.id or 0)
+
+    class FakeRuntime:
+        def execute_action(self, command, *, log_fn=None, cancel_check=None):
+            return ActionExecutionResult(
+                ok=False,
+                error='validate_otp_http_403_body={"error":"blocked"}',
+                data={"error_type": "account_banned", "mark_local_account_banned": True},
+            )
+
+    monkeypatch.setattr(tasks_module, "PlatformRuntime", FakeRuntime)
+    logger = _FakeLogger()
+
+    tasks_module._execute_refresh_session_task(
+        {"platform": "chatgpt", "ids": [account_id], "concurrency": 1},
+        logger,
+    )
+
+    with Session(engine) as session:
+        assert session.get(AccountModel, account_id) is not None
+        graph = load_account_graphs(session, [account_id])[account_id]
+
+    assert graph["overview"]["lifecycle_status"] == "banned"
+    assert graph["overview"]["display_status"] == "banned"
+    assert graph["overview"]["validity_status"] == "invalid"
+
+    result = logger.result_data["results"][0]
+    assert result["deleted"] is False
+    assert result["marked_banned"] is True
+    assert any(isinstance(event[1], str) and "账号已标记为封禁" in event[1] for event in logger.events)
 
 
 def test_refresh_session_task_keeps_account_on_normal_failure(monkeypatch):

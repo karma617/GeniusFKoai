@@ -2284,12 +2284,6 @@ class RegistrationEngine:
                 self._log(f"chatgpt_register 初始化最终状态: {getattr(final_resp, 'status_code', 0)}")
             if current_url:
                 self._log(f"chatgpt_register 初始化最终页面: {current_url}")
-            # 有头 HAR：进入 email-verification 后才完成 CF jsd；此时才注入完整 auth cookie 解 clearance。
-            if "/email-verification" in current_url or "/email-otp" in current_url or "/about-you" in current_url:
-                self._latest_chatgpt_seed_cf_clearance_via_headless(
-                    did,
-                    target_url=current_url if current_url.startswith("http") else "https://auth.openai.com/email-verification",
-                )
             return True, ""
         except Exception as exc:
             return False, str(exc)
@@ -2335,8 +2329,6 @@ class RegistrationEngine:
             used_headless = False
 
         if not used_headless:
-            if self._device_id and not self._latest_chatgpt_has_cf_clearance():
-                self._latest_chatgpt_seed_cf_clearance_via_headless(self._device_id)
             response = self.session.post(OPENAI_API_ENDPOINTS["validate_otp"], headers=headers, data=body, timeout=30)
             status = int(getattr(response, "status_code", 0) or 0)
             payload = self._response_json_dict(response)
@@ -2527,11 +2519,6 @@ class RegistrationEngine:
                     used_headless = False
 
             if not used_headless:
-                if self._device_id and not self._latest_chatgpt_has_cf_clearance():
-                    self._latest_chatgpt_seed_cf_clearance_via_headless(
-                        self._device_id,
-                        target_url="https://auth.openai.com/about-you",
-                    )
                 response = self.session.post(
                     OPENAI_API_ENDPOINTS["create_account"],
                     headers=headers,

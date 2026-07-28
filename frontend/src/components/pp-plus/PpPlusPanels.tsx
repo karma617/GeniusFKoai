@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { apiFetch, cn } from '@/lib/utils'
 import { getConfigOptions } from '@/lib/app-data'
 import { Button } from '@/components/ui/button'
-import { Copy, Loader2, X } from 'lucide-react'
+import { Copy, Loader2, Search, X } from 'lucide-react'
 
 export type PpPlusSettings = {
   sms_provider: string
   sms_country: string
+  sms_service_code: string
   flow_country: string
   max_card_attempts: number
   max_phone_changes: number
@@ -55,7 +56,7 @@ const FLOW_COUNTRY_OPTIONS = [
 ]
 
 const SMS_PROVIDER_FALLBACK = [
-  { value: 'herosms_api', label: 'HeroSMS' },
+  { value: 'herosms_api', label: 'HeroSMS', service_code: 'ts' },
   { value: 'smsbower_api', label: 'SMSBower' },
   { value: 'grizzlysms_api', label: 'GrizzlySMS' },
   { value: 'sms_activate_api', label: 'SMS-Activate' },
@@ -64,6 +65,198 @@ const SMS_PROVIDER_FALLBACK = [
   { value: 'five_sim_api', label: '5sim' },
   { value: 'nexsms_api', label: 'NexSMS' },
 ]
+
+type SmsCountryOption = { id: string; chn?: string; eng?: string }
+type SelectOption = { value: string; label: string }
+
+function formatSmsCountryOption(item?: SmsCountryOption | null): string {
+  if (!item) return ''
+  return `${item.chn || item.eng || item.id} (${item.id})`
+}
+
+function SearchableSmsCountrySelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string
+  options: SmsCountryOption[]
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const selectOptions = useMemo(() => options.map((item) => ({
+    value: item.id,
+    label: formatSmsCountryOption(item),
+  })), [options])
+  const filtered = search
+    ? selectOptions.filter((item) => item.label.toLowerCase().includes(search.toLowerCase()) || item.value.includes(search))
+    : selectOptions
+  const selectedLabel = selectOptions.find((item) => item.value === value)?.label || ''
+
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  useEffect(() => {
+    if (open && inputRef.current) inputRef.current.focus()
+  }, [open])
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => { setOpen(!open); setSearch('') }}
+        className="control-surface w-full text-left flex items-center justify-between"
+      >
+        <span className={selectedLabel ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}>
+          {selectedLabel || value || '请选择接码地区'}
+        </span>
+        <svg className="h-4 w-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={open ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7'} />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] shadow-lg">
+          <div className="p-2 border-b border-[var(--border)]">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)]" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+                placeholder="搜索..."
+                className="w-full rounded-md border border-[var(--border-soft)] bg-[var(--bg-base)] pl-8 pr-3 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+              />
+            </div>
+          </div>
+          <div className="max-h-48 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-[var(--text-muted)]">无匹配结果</div>
+            ) : filtered.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => { onChange(item.value); setOpen(false); setSearch('') }}
+                className={cn(
+                  'w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--chip-bg)]',
+                  item.value === value ? 'bg-[var(--accent)]/10 text-[var(--accent)] font-medium' : 'text-[var(--text-primary)]',
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SearchableOptionSelect({
+  value,
+  options,
+  placeholder,
+  onChange,
+}: {
+  value: string
+  options: SelectOption[]
+  placeholder: string
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const normalized = useMemo(() => {
+    const seen = new Set<string>()
+    const rows: SelectOption[] = []
+    for (const item of options || []) {
+      const optionValue = String(item?.value || '').trim()
+      if (!optionValue || seen.has(optionValue)) continue
+      seen.add(optionValue)
+      rows.push({ value: optionValue, label: String(item?.label || optionValue) })
+    }
+    if (value && !seen.has(value)) rows.unshift({ value, label: `当前值 ${value}` })
+    return rows
+  }, [options, value])
+  const filtered = search
+    ? normalized.filter((item) => item.label.toLowerCase().includes(search.toLowerCase()) || item.value.toLowerCase().includes(search.toLowerCase()))
+    : normalized
+  const selectedLabel = normalized.find((item) => item.value === value)?.label || ''
+
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  useEffect(() => {
+    if (open && inputRef.current) inputRef.current.focus()
+  }, [open])
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => { setOpen(!open); setSearch('') }}
+        className="control-surface w-full text-left flex items-center justify-between"
+      >
+        <span className={selectedLabel || value ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}>
+          {selectedLabel || value || placeholder}
+        </span>
+        <svg className="h-4 w-4 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={open ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7'} />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute z-50 mt-1 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] shadow-lg">
+          <div className="p-2 border-b border-[var(--border)]">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--text-muted)]" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+                placeholder="搜索..."
+                className="w-full rounded-md border border-[var(--border-soft)] bg-[var(--bg-base)] pl-8 pr-3 py-1.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+              />
+            </div>
+          </div>
+          <div className="max-h-48 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-[var(--text-muted)]">无匹配结果</div>
+            ) : filtered.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => { onChange(item.value); setOpen(false); setSearch('') }}
+                className={cn(
+                  'w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--chip-bg)]',
+                  item.value === value ? 'bg-[var(--accent)]/10 text-[var(--accent)] font-medium' : 'text-[var(--text-primary)]',
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function resolveSmsCountriesUrl(provider: string): string {
   const key = String(provider || '').toLowerCase()
@@ -78,9 +271,42 @@ function resolveSmsCountriesUrl(provider: string): string {
   return ''
 }
 
+function resolveSmsServicesUrl(provider: string): string {
+  const key = String(provider || '').toLowerCase()
+  if (key.includes('smsbower')) return '/sms/smsbower/services'
+  if (key.includes('grizzly')) return '/sms/grizzlysms/services'
+  if (key.includes('verification_number')) return '/sms/sms-verification-number/services'
+  if (key.includes('smspool')) return '/sms/smspool/services'
+  if (key.includes('five_sim') || key === '5sim' || key.includes('fivesim')) return '/sms/five-sim/services'
+  if (key.includes('nexsms')) return '/sms/nexsms/services'
+  if (key.includes('herosms')) return '/sms/herosms/services'
+  return ''
+}
+
+function formatSmsServiceOption(item: any): SelectOption | null {
+  if (!item) return null
+  if (typeof item !== 'object') {
+    const value = String(item).trim()
+    return value ? { value, label: value } : null
+  }
+  const value = String(item.value ?? item.id ?? item.service ?? item.code ?? item.product ?? '').trim()
+  if (!value) return null
+  const rawLabel = String(item.label ?? item.name ?? item.title ?? item.eng ?? item.chn ?? value).trim()
+  const label = rawLabel && !rawLabel.includes(`(${value})`) && !rawLabel.includes(`（${value}）`)
+    ? `${rawLabel} (${value})`
+    : (rawLabel || value)
+  return { value, label }
+}
+
+function pickPreferredPaypalService(options: SelectOption[]): string {
+  const paypal = options.find(item => /paypal/i.test(item.label) || /paypal/i.test(item.value))
+  return paypal?.value || options[0]?.value || ''
+}
+
 const DEFAULT_SETTINGS: PpPlusSettings = {
   sms_provider: 'herosms_api',
   sms_country: '73',
+  sms_service_code: 'pp',
   flow_country: 'BR',
   max_card_attempts: 5,
   max_phone_changes: 5,
@@ -129,10 +355,12 @@ export async function fetchPpPlusStatus(): Promise<PpPlusStatus> {
 
 export function PpPlusSettingsDialog({
   open,
+  selectedAccountIds = [],
   onClose,
   onStarted,
 }: {
   open: boolean
+  selectedAccountIds?: number[]
   onClose: () => void
   onStarted: (status: PpPlusStatus) => void
 }) {
@@ -146,6 +374,9 @@ export function PpPlusSettingsDialog({
   const [smsProviderOptions, setSmsProviderOptions] = useState<Array<{ value: string; label: string; service_code?: string }>>(SMS_PROVIDER_FALLBACK)
   const [countries, setCountries] = useState<Array<{ id: string; chn?: string; eng?: string }>>([])
   const [countryManual, setCountryManual] = useState(false)
+  const [smsServiceOptions, setSmsServiceOptions] = useState<SelectOption[]>([])
+  const [smsServiceLoading, setSmsServiceLoading] = useState(false)
+  const [smsServiceManual, setSmsServiceManual] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -194,10 +425,11 @@ export function PpPlusSettingsDialog({
         if (preferred?.value) nextSettings.sms_provider = preferred.value
       }
 
+      const matched = options.find((item) => item.value === nextSettings.sms_provider)
+      nextSettings.sms_service_code = String(nextSettings.sms_service_code || data?.sms_service_code || matched?.service_code || 'pp')
       setSettings(nextSettings)
       setRuntime(data?.runtime || {})
-      const matched = options.find((item) => item.value === nextSettings.sms_provider)
-      setSmsServiceCode(String(matched?.service_code || data?.sms_service_code || 'pp'))
+      setSmsServiceCode(nextSettings.sms_service_code)
     } catch (exc: any) {
       setError(exc?.message || '加载设置失败')
     } finally {
@@ -244,9 +476,65 @@ export function PpPlusSettingsDialog({
   }, [open, settings.sms_provider])
 
   useEffect(() => {
+    if (!open) return
+    let active = true
+    const provider = settings.sms_provider || 'herosms_api'
+    const url = resolveSmsServicesUrl(provider)
+    if (!url) {
+      setSmsServiceOptions([])
+      setSmsServiceManual(true)
+      return () => { active = false }
+    }
+    setSmsServiceLoading(true)
+    setSmsServiceManual(false)
+    const country = encodeURIComponent(settings.sms_country || '')
+    apiFetch(`${url}${country ? `?country=${country}` : ''}`)
+      .then((resp) => {
+        if (!active) return
+        const list = Array.isArray(resp?.services) ? resp.services : Array.isArray(resp) ? resp : []
+        const mapped = list.map(formatSmsServiceOption).filter(Boolean) as SelectOption[]
+        setSmsServiceOptions(mapped)
+        setSmsServiceManual(mapped.length === 0)
+        setSettings((current) => {
+          const currentService = String(current.sms_service_code || '').trim()
+          const hasCurrent = mapped.some(item => item.value === currentService)
+          if (currentService && hasCurrent) return current
+          const preferred = pickPreferredPaypalService(mapped)
+          if (!preferred) return current
+          if (currentService && !['pp', 'paypal'].includes(currentService.toLowerCase())) return current
+          setSmsServiceCode(preferred)
+          return { ...current, sms_service_code: preferred }
+        })
+      })
+      .catch(() => {
+        if (!active) return
+        setSmsServiceOptions([])
+        setSmsServiceManual(true)
+      })
+      .finally(() => {
+        if (active) setSmsServiceLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [open, settings.sms_provider, settings.sms_country])
+
+  useEffect(() => {
     const matched = smsProviderOptions.find((item) => item.value === settings.sms_provider)
-    if (matched?.service_code) setSmsServiceCode(String(matched.service_code))
-  }, [settings.sms_provider, smsProviderOptions])
+    setSmsServiceCode(String(settings.sms_service_code || matched?.service_code || 'pp'))
+  }, [settings.sms_provider, settings.sms_service_code, smsProviderOptions])
+
+  const changeSmsProvider = (value: string) => {
+    const matched = smsProviderOptions.find((item) => item.value === value)
+    const nextServiceCode = String(matched?.service_code || 'pp')
+    setSettings((s) => ({ ...s, sms_provider: value, sms_service_code: nextServiceCode }))
+    setSmsServiceCode(nextServiceCode)
+  }
+
+  const changeSmsServiceCode = (value: string) => {
+    setSettings((s) => ({ ...s, sms_service_code: value }))
+    setSmsServiceCode(value)
+  }
 
   if (!open) return null
 
@@ -269,6 +557,10 @@ export function PpPlusSettingsDialog({
   }
 
   const start = async () => {
+    if (selectedAccountIds.length === 0) {
+      setError('请先勾选要开通 PLUS 的账号')
+      return
+    }
     setStarting(true)
     setError('')
     try {
@@ -276,7 +568,10 @@ export function PpPlusSettingsDialog({
         method: 'POST',
         body: JSON.stringify(settings),
       })
-      const status = await apiFetch('/pp-plus/start', { method: 'POST', body: '{}' })
+      const status = await apiFetch('/pp-plus/start', {
+        method: 'POST',
+        body: JSON.stringify({ account_ids: selectedAccountIds }),
+      })
       onStarted(status)
       onClose()
     } catch (exc: any) {
@@ -296,7 +591,7 @@ export function PpPlusSettingsDialog({
           <div>
             <h2 className="text-base font-semibold text-[var(--text-primary)]">PLUS 开通设置</h2>
             <p className="mt-1 text-xs text-[var(--text-muted)]">
-              所有账号共用接码平台与代理池；API Key 使用系统已有配置，PayPal service 固定为平台对应代码。
+              所有账号共用接码平台与代理池；API Key 使用系统已有配置，接码服务代码可按平台自行调整。
             </p>
           </div>
           <button onClick={onClose} className="rounded-lg p-1 text-[var(--text-muted)] hover:bg-[var(--bg-pane)]">
@@ -313,7 +608,8 @@ export function PpPlusSettingsDialog({
             <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/40 p-3 text-xs text-[var(--text-secondary)]">
               <div>最近接码手机号：{runtime.last_phone || '-'}</div>
               <div className="mt-1">接码成功次数：{Number(runtime.last_phone_success_count || 0)}</div>
-              <div className="mt-1">PayPal service 代码：{smsServiceCode || 'pp'}（写死，不可改）</div>
+              <div className="mt-1">PayPal service 代码：{smsServiceCode || 'pp'}</div>
+              <div className="mt-1">本次任务账号：已勾选 {selectedAccountIds.length} 个</div>
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
@@ -321,13 +617,36 @@ export function PpPlusSettingsDialog({
                 <span className="text-[var(--text-secondary)]">接码平台</span>
                 <select
                   value={settings.sms_provider}
-                  onChange={(e) => setSettings((s) => ({ ...s, sms_provider: e.target.value }))}
+                  onChange={(e) => changeSmsProvider(e.target.value)}
                   className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
                 >
                   {smsProviderOptions.map((item) => (
                     <option key={item.value} value={item.value}>{item.label}</option>
                   ))}
                 </select>
+              </label>
+
+              <label className="space-y-1 text-xs">
+                <span className="text-[var(--text-secondary)]">接码服务</span>
+                {smsServiceLoading ? (
+                  <div className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-muted)]">
+                    加载服务列表...
+                  </div>
+                ) : smsServiceManual ? (
+                  <input
+                    value={settings.sms_service_code || smsServiceCode}
+                    onChange={(e) => changeSmsServiceCode(e.target.value)}
+                    placeholder="如 ts / pp / paypal"
+                    className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
+                  />
+                ) : (
+                  <SearchableOptionSelect
+                    value={settings.sms_service_code || smsServiceCode}
+                    options={smsServiceOptions}
+                    placeholder="请选择接码服务"
+                    onChange={changeSmsServiceCode}
+                  />
+                )}
               </label>
 
               <label className="space-y-1 text-xs">
@@ -340,15 +659,11 @@ export function PpPlusSettingsDialog({
                     className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
                   />
                 ) : (
-                  <select
+                  <SearchableSmsCountrySelect
                     value={settings.sms_country}
-                    onChange={(e) => setSettings((s) => ({ ...s, sms_country: e.target.value }))}
-                    className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
-                  >
-                    {countries.map((item) => (
-                      <option key={item.id} value={item.id}>{item.chn || item.id} ({item.id})</option>
-                    ))}
-                  </select>
+                    options={countries}
+                    onChange={(value) => setSettings((s) => ({ ...s, sms_country: value }))}
+                  />
                 )}
               </label>
 
@@ -614,7 +929,7 @@ export function PpPlusFloatingWidget({
               <div>
                 <h2 className="text-base font-semibold">PLUS 开通任务</h2>
                 <p className="mt-1 text-xs text-[var(--text-muted)]">
-                  {status?.stopping ? '停止中：等待当前账号任务结束后终止' : '任务进行中（串行）'}
+                  {status?.stopping ? '停止中：正在中断当前账号任务' : '任务进行中（串行）'}
                 </p>
               </div>
               <button onClick={() => setOpen(false)} className="rounded-lg p-1 text-[var(--text-muted)] hover:bg-[var(--bg-pane)]"><X className="h-4 w-4" /></button>
@@ -634,14 +949,14 @@ export function PpPlusFloatingWidget({
               )}
               <Button
                 variant="outline"
-                disabled={stopping || Boolean(status?.stopping)}
+                disabled={stopping}
                 onClick={async () => {
                   setStopping(true)
                   try { await onStop() } finally { setStopping(false) }
                 }}
               >
                 {stopping || status?.stopping ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-                停止任务
+                {status?.stopping ? '再次停止' : '停止任务'}
               </Button>
             </div>
           </div>

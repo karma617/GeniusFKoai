@@ -9,11 +9,11 @@ import { formatDateTime, translateAccountStatus } from '@/lib/i18n'
 import { useI18n } from '@/lib/i18n-context'
 import { buildExecutorOptions, buildRegistrationOptions, hasReusableOAuthBrowser, pickOAuthExecutor } from '@/lib/registration'
 import { TaskLogPanel } from '@/components/tasks/TaskLogPanel'
-import { PpBaTokenDialog, PpPlusFloatingWidget, PpPlusSettingsDialog, PpTaskCell, PpTaskLogDialog, fetchPpPlusStatus, getAccountPpTask, type PpAccountTask, type PpPlusStatus } from '@/components/pp-plus/PpPlusPanels'
+import { PpBaTokenDialog, PpPlusFloatingWidget, PpPlusSettingsDialog, PpTaskCell, PpTaskLogDialog, fetchPpPlusStatus, getAccountBaToken, getAccountPpTask, type PpAccountTask, type PpPlusStatus } from '@/components/pp-plus/PpPlusPanels'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { getTaskStatusText, TASK_STATUS_VARIANTS } from '@/lib/tasks'
+import { getTaskStatusText, TASK_STATUS_VARIANTS, isTerminalTaskStatus } from '@/lib/tasks'
 import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search, ListChecks } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
@@ -81,7 +81,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'invalid',
   'banned',
 ]
-const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', '协议模式', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
+const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'MOMO试用', '协议模式', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
 const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -381,18 +381,6 @@ function getAccountPlanPillClassName(acc: any, planLabel: string) {
   return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 shadow-sm dark:text-emerald-300'
 }
 
-function getAccountJsonText(acc: any) {
-  return getChatgptSessionText(acc)
-}
-
-function getAccountJsonLength(acc: any) {
-  return getAccountJsonText(acc).length
-}
-
-function getTokenStatusLabel(acc: any) {
-  return getPrimaryToken(acc) ? 'AT可用' : '无AT'
-}
-
 function getAccessTokenCopyCount(acc: any) {
   const raw = getAccountOverview(acc)?.access_token_copy_count
   const count = typeof raw === 'number' ? raw : Number(raw || 0)
@@ -503,6 +491,7 @@ function loadBaExtractSettings(): Record<string, string> {
     promo_country: 'TR',
     billing_currency: 'USD',
     confirm_mode: 'pm',
+    promo_create_mode: 'update_after_checkout',
     max_attempts: '20',
   }
   if (typeof window === 'undefined') return defaults
@@ -523,6 +512,406 @@ function saveBaExtractSettings(settings: Record<string, string>) {
   } catch {
     // ignore
   }
+}
+
+type BaExtractTaskState = {
+  task_id?: string
+  account_id?: number
+  email?: string
+  status?: string
+  stage?: string
+  step?: number
+  total?: number
+  attempt?: number
+  max_attempts?: number
+  ba_token?: string
+  ba_url?: string
+  region_combo?: string
+  error?: string
+  logs?: string[]
+  updated_at?: number
+}
+
+function getAccountBaExtractTask(acc: any, live?: BaExtractTaskState | null): BaExtractTaskState {
+  const overview = getAccountOverview(acc)
+  return {
+    task_id: String(live?.task_id || overview?.ba_extract_task_id || ''),
+    account_id: Number(acc?.id || live?.account_id || 0),
+    email: String(acc?.email || live?.email || ''),
+    status: String(live?.status || overview?.ba_extract_status || 'idle'),
+    stage: String(live?.stage || overview?.ba_extract_stage || ''),
+    step: Number(live?.step ?? overview?.ba_extract_step ?? 0),
+    total: Number(live?.total ?? overview?.ba_extract_total ?? 7),
+    attempt: Number(live?.attempt ?? overview?.ba_extract_attempt ?? 0),
+    max_attempts: Number(live?.max_attempts ?? overview?.ba_extract_max_attempts ?? 20),
+    ba_token: String(live?.ba_token || overview?.pp_ba_token || overview?.ba_token || ''),
+    ba_url: String(live?.ba_url || overview?.ba_extract_ba_url || ''),
+    region_combo: String(live?.region_combo || overview?.ba_extract_region_combo || ''),
+    error: String(live?.error || overview?.ba_extract_error || ''),
+    logs: Array.isArray(live?.logs) ? live?.logs : Array.isArray(overview?.ba_extract_logs) ? overview.ba_extract_logs : [],
+    updated_at: Number(live?.updated_at ?? overview?.ba_extract_updated_at ?? 0),
+  }
+}
+
+function isBaExtractTaskRunning(task: BaExtractTaskState): boolean {
+  // cancelling 也算占用中（用于进度展示）；真正禁点「提取」用 isBaExtractTaskActive
+  return ['queued', 'started', 'running', 'cancelling'].includes(String(task?.status || '').toLowerCase())
+}
+
+function isBaExtractTaskActive(task: BaExtractTaskState): boolean {
+  // 仅真正执行中禁止重复点；cancelling/终态允许再次 force 启动
+  return ['queued', 'started', 'running'].includes(String(task?.status || '').toLowerCase())
+}
+
+function formatBaExtractLogTime(value?: number): string {
+  const date = value ? new Date(Number(value) * 1000) : new Date()
+  const pad = (num: number) => String(num).padStart(2, '0')
+  return `[${date.getFullYear()}年${pad(date.getMonth() + 1)}月${pad(date.getDate())}日 ${pad(date.getHours())}时${pad(date.getMinutes())}分${pad(date.getSeconds())}秒]`
+}
+
+function withBaExtractLogTime(line: string, time?: number): string {
+  const text = String(line || '').trim()
+  if (!text) return ''
+  if (/^\[\d{4}年\d{2}月\d{2}日 \d{2}时\d{2}分\d{2}秒\]/.test(text)) return text
+  return `${formatBaExtractLogTime(time)} ${text}`
+}
+
+function formatBaExtractLogs(logs?: string[], fallbackTime?: number): string {
+  return (Array.isArray(logs) ? logs : [])
+    .map(line => withBaExtractLogTime(line, fallbackTime))
+    .join('\n')
+}
+
+function BaExtractTaskLogDialog({
+  open,
+  task,
+  onClose,
+  onStop,
+  stopping = false,
+}: {
+  open: boolean
+  task: BaExtractTaskState | null
+  onClose: () => void
+  onStop?: () => void | Promise<void>
+  stopping?: boolean
+}) {
+  if (!open || !task) return null
+  const text = formatBaExtractLogs(task.logs, Number(task.updated_at || 0))
+  const status = String(task.status || 'idle').toLowerCase()
+  const running = isBaExtractTaskRunning(task)
+  const cancelling = status === 'cancelling' || stopping
+  const canStop = Boolean(onStop) && (running || cancelling)
+  const progressLabel = task.step
+    ? `步骤 ${Number(task.step || 0)}/${Number(task.total || 7)}`
+    : ''
+  return createPortal(
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div
+        className="w-[min(760px,94vw)] max-h-[88vh] overflow-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-base)] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">BA链提取日志</h2>
+            <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
+              {task.email || '-'} · {task.status || 'idle'} · {task.stage || '-'}
+              {progressLabel ? ` · ${progressLabel}` : ''}
+              {cancelling ? ' · 终止中' : running ? ' · 实时更新中' : ''}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {canStop && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={cancelling}
+                onClick={() => { void onStop?.() }}
+                className="border-red-500/30 text-red-600 hover:border-red-500/50 hover:bg-red-500/10 dark:text-red-300"
+                title="终止当前 BA 链提取任务"
+              >
+                {cancelling ? (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                {cancelling ? '终止中' : '终止任务'}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!text}
+              onClick={() => {
+                try { navigator.clipboard.writeText(text || '') } catch {}
+              }}
+            >
+              <Copy className="mr-1.5 h-3.5 w-3.5" /> 复制全部
+            </Button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1 text-[var(--text-muted)] hover:bg-[var(--bg-pane)]"
+              aria-label="关闭"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        {task.error && (
+          <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            {task.error}
+          </div>
+        )}
+        {task.ba_token && (
+          <div className="mb-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+            BA: {task.ba_token}{task.region_combo ? ` · IP地区 ${task.region_combo}` : ''}
+          </div>
+        )}
+        <pre className="max-h-[60vh] overflow-auto rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/40 p-3 text-xs leading-6 whitespace-pre-wrap">
+          {text || '暂无日志'}
+        </pre>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function SimpleTaskLogDialog({
+  open,
+  title,
+  subtitle,
+  taskId,
+  onClose,
+  onDone,
+}: {
+  open: boolean
+  title: string
+  subtitle?: string
+  taskId: string
+  onClose: () => void
+  onDone?: (status: string) => void
+}) {
+  const [lines, setLines] = useState<string[]>([])
+  const [status, setStatus] = useState<string>('running')
+  const [error, setError] = useState('')
+  const seenRef = useRef<Set<number>>(new Set())
+  const cursorRef = useRef(0)
+  const doneRef = useRef(false)
+  const onDoneRef = useRef(onDone)
+
+  useEffect(() => {
+    onDoneRef.current = onDone
+  }, [onDone])
+
+  useEffect(() => {
+    if (!open || !taskId) return
+    seenRef.current = new Set()
+    cursorRef.current = 0
+    doneRef.current = false
+    setLines([])
+    setStatus('running')
+    setError('')
+
+    const pushLine = (line: string, eventId = 0) => {
+      if (eventId && seenRef.current.has(eventId)) return
+      if (eventId) {
+        seenRef.current.add(eventId)
+        cursorRef.current = Math.max(cursorRef.current, eventId)
+      }
+      if (!line) return
+      setLines(prev => {
+        const next = [...prev, line]
+        if (next.length > 800) next.splice(0, next.length - 800)
+        return next
+      })
+    }
+
+    const markDone = (nextStatus: string) => {
+      if (doneRef.current) return
+      doneRef.current = true
+      setStatus(String(nextStatus || 'succeeded'))
+      try { onDoneRef.current?.(String(nextStatus || 'succeeded')) } catch {}
+    }
+
+    const fetchMissing = async () => {
+      let guard = 0
+      while (guard < 20) {
+        guard += 1
+        const data = await apiFetch(`/tasks/${taskId}/events?since=${cursorRef.current}&limit=500`)
+        const items = data.items || []
+        for (const item of items) {
+          const eventId = Number(item?.id || 0)
+          if (item?.line) pushLine(String(item.line), eventId)
+          if (item?.done) markDone(item.status || 'succeeded')
+        }
+        if (items.length < 500) break
+      }
+    }
+
+    const syncTask = async () => {
+      const latest = await apiFetch(`/tasks/${taskId}`)
+      if (latest?.status) setStatus(String(latest.status))
+      if (isTerminalTaskStatus(latest?.status) && !doneRef.current) {
+        await fetchMissing()
+        markDone(latest.status)
+      }
+    }
+
+    const es = new EventSource(`${API_BASE}/tasks/${taskId}/logs/stream`)
+    es.onmessage = (e) => {
+      try {
+        const payload = JSON.parse(e.data)
+        const eventId = Number(payload?.id || 0)
+        if (payload?.line) pushLine(String(payload.line), eventId)
+        if (payload?.done) markDone(payload.status || 'succeeded')
+      } catch {}
+    }
+    es.onerror = () => {
+      // fallback poll handles recovery
+    }
+
+    syncTask().catch((exc: any) => setError(String(exc?.message || '任务日志加载失败')))
+
+    const progressPoll = window.setInterval(() => {
+      if (doneRef.current) return
+      syncTask().catch(() => {})
+    }, 1500)
+    const fallbackPoll = window.setInterval(() => {
+      if (doneRef.current) return
+      fetchMissing().catch(() => {})
+    }, 1200)
+
+    return () => {
+      es.close()
+      window.clearInterval(progressPoll)
+      window.clearInterval(fallbackPoll)
+    }
+  }, [open, taskId])
+
+  if (!open || !taskId) return null
+  const text = lines.join('\n')
+  const running = !['succeeded', 'failed', 'cancelled', 'canceled', 'success', 'error'].includes(String(status || '').toLowerCase())
+  return createPortal(
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div
+        className="w-[min(760px,94vw)] max-h-[88vh] overflow-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-base)] p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-[var(--text-primary)]">{title}</h2>
+            <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
+              {subtitle || '-'} · {status || 'idle'}
+              {running ? ' · 实时更新中' : ''}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!text}
+              onClick={() => {
+                try { navigator.clipboard.writeText(text || '') } catch {}
+              }}
+            >
+              <Copy className="mr-1.5 h-3.5 w-3.5" /> 复制全部
+            </Button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1 text-[var(--text-muted)] hover:bg-[var(--bg-pane)]"
+              aria-label="关闭"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        {error && (
+          <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+        <pre className="max-h-[60vh] overflow-auto rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/40 p-3 text-xs leading-6 whitespace-pre-wrap">
+          {text || '暂无日志'}
+        </pre>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function BaExtractTaskCell({
+  task,
+  onViewLogs,
+}: {
+  task: BaExtractTaskState
+  onViewLogs: () => void
+}) {
+  const status = String(task?.status || 'idle').toLowerCase()
+  const running = isBaExtractTaskRunning(task)
+  const success = status === 'success'
+  const error = status === 'error'
+  const logs = Array.isArray(task?.logs) ? task.logs : []
+  const latest = logs.length > 0 ? logs[logs.length - 1] : (task?.stage || '')
+  const percent = Math.max(0, Math.min(100, ((Number(task?.step || 0)) / (Number(task?.total || 7) || 7)) * 100))
+  const cancelled = status === 'cancelled'
+  const label = success ? '已提取' : cancelled ? '已终止' : error ? '失败' : running ? (status === 'cancelling' ? '终止中' : '进行中') : task?.ba_token ? '已填写' : '未开始'
+  const canOpenLogs = logs.length > 0 || Boolean(task?.stage) || Boolean(task?.error) || Boolean(task?.ba_token) || running
+  return (
+    <div
+      className={cn(
+        'flex min-w-[150px] max-w-[190px] flex-col gap-1 rounded-md p-0.5',
+        canOpenLogs ? 'cursor-pointer hover:bg-[var(--bg-pane)]/60' : '',
+      )}
+      onClick={canOpenLogs ? onViewLogs : undefined}
+      title={canOpenLogs ? '查看BA链提取日志' : undefined}
+      role={canOpenLogs ? 'button' : undefined}
+      tabIndex={canOpenLogs ? 0 : undefined}
+      onKeyDown={canOpenLogs ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onViewLogs()
+        }
+      } : undefined}
+    >
+      <div className="flex items-center gap-1.5">
+        <span
+          className={cn(
+            'inline-flex min-w-[54px] items-center justify-center rounded border px-1.5 py-0.5 text-[11px] font-bold',
+            success || task?.ba_token
+              ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+              : error
+                ? 'border-red-500/25 bg-red-500/10 text-red-600 dark:text-red-300'
+                : running
+                  ? 'border-sky-500/25 bg-sky-500/10 text-sky-600 dark:text-sky-300'
+                  : 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]',
+          )}
+        >
+          {running && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+          {label}
+        </span>
+        {canOpenLogs && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onViewLogs()
+            }}
+            className="rounded border border-[var(--border-soft)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:border-[var(--accent-edge)] hover:text-[var(--accent)]"
+            title="查看BA链提取日志"
+          >
+            日志
+          </button>
+        )}
+      </div>
+      {running && (
+        <div className="h-1 overflow-hidden rounded-full bg-[var(--bg-pane)]">
+          <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${percent}%` }} />
+        </div>
+      )}
+      <div className="truncate text-[11px] text-[var(--text-muted)]" title={latest || task?.ba_token || ''}>
+        {latest ? compactBaExtractStepDesc(latest) : task?.ba_token ? `${task.ba_token}${task.region_combo ? ` · ${task.region_combo}` : ''}` : '-'}
+      </div>
+    </div>
+  )
 }
 
 
@@ -727,13 +1116,12 @@ function RegisterModal({
   const [registerCountMode, setRegisterCountMode] = useState<RegisterCountMode>('child')
   const [registerCountNotice, setRegisterCountNotice] = useState('')
   const [concurrency, setConcurrency] = useState(1)
-  // chatgpt 平台特定：注册成功后是否自动获取支付链接（保存到账号 cashier_url 字段，
-  // 后续点"打开支付链接"直接复用）。仅当 platform === 'chatgpt' 时显示开关。
-  const [autoPaymentLink, setAutoPaymentLink] = useState(false)
+  // chatgpt 平台特定：注册成功后自动获取支付链接能力保留；当前仅前端隐藏入口。
+  const [autoPaymentLink] = useState(false)
   const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
   const [agentIdentityAuthJsonMode, setAgentIdentityAuthJsonMode] = useState(false)
   const [k12BatchUploadEnabled, setK12BatchUploadEnabled] = useState(false)
-  const [bugfreeMode, setBugfreeMode] = useState(false)
+  const [bugfreeMode] = useState(false)
   const [k12Join, setK12Join] = useState(false)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
   const [authflowExperimental] = useState(false)
@@ -1039,7 +1427,7 @@ function RegisterModal({
       if (platform === 'chatgpt') {
         extra.remote_upload_enabled = remoteUploadEnabled
         extra.agent_identity_auth_json_mode = agentIdentityAuthJsonMode
-        extra.k12_batch_upload_enabled = k12BatchUploadEnabled
+        extra.k12_batch_upload_enabled = remoteUploadEnabled && k12BatchUploadEnabled
         extra.bugfree_mode = bugfreeMode
       }
       const res = await apiFetch('/tasks/register', {
@@ -1214,7 +1602,7 @@ function RegisterModal({
                   </div>
                   <div>
                     <label className="text-xs text-[var(--text-muted)] block mb-1">{t('accounts.concurrency')}</label>
-                    <input type="number" min={1} max={5} value={concurrency}
+                    <input type="number" min={1} max={10} value={concurrency}
                       onChange={e => setConcurrency(Number(e.target.value))}
                       className="control-surface control-surface-compact text-center" />
                   </div>
@@ -1384,79 +1772,46 @@ function RegisterModal({
                 )}
 
                 {platform === 'chatgpt' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
-                    <input
-                      type="checkbox"
-                      checked={bugfreeMode}
-                      onChange={(e) => setBugfreeMode(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
-                    />
-                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        BUGFREE模式
+                  <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3">
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={remoteUploadEnabled}
+                        onChange={(e) => {
+                          const checked = e.target.checked
+                          setRemoteUploadEnabled(checked)
+                          if (!checked) setK12BatchUploadEnabled(false)
+                        }}
+                        className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                      />
+                      <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          是否启用上传到远端
+                        </div>
+                        <div className="mt-0.5">
+                          默认不上传远端，只在本地生成 data/sub2api 和 data/cpa JSON；勾选后按当前流程上传到远端。
+                        </div>
                       </div>
-                      <div className="mt-0.5">
-                        勾选后注册成功会查询 ChatGPT 额度刷新周期；仅当 primary_window.reset_at 距当前约 7 天时才计入成功，并给账号打 BUGFREE 标签。
-                      </div>
-                    </div>
-                  </label>
-                )}
-
-                {platform === 'chatgpt' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
-                    <input
-                      type="checkbox"
-                      checked={k12BatchUploadEnabled}
-                      onChange={(e) => setK12BatchUploadEnabled(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
-                    />
-                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        是否打包上传
-                      </div>
-                      <div className="mt-0.5">
-                        勾选后按当前流程在任务结束后合并 SUB2API JSON 并统一上传；未勾选则恢复为每个账号成功后逐个上传。仅在强入K12空间并启用远端上传时生效。
-                      </div>
-                    </div>
-                  </label>
-                )}
-
-                {platform === 'chatgpt' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
-                    <input
-                      type="checkbox"
-                      checked={remoteUploadEnabled}
-                      onChange={(e) => setRemoteUploadEnabled(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
-                    />
-                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        是否启用上传到远端
-                      </div>
-                      <div className="mt-0.5">
-                        默认不上传远端，只在本地生成 data/sub2api 和 data/cpa JSON；勾选后按当前流程上传到远端。
-                      </div>
-                    </div>
-                  </label>
-                )}
-
-                {platform === 'chatgpt' && (
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
-                    <input
-                      type="checkbox"
-                      checked={autoPaymentLink}
-                      onChange={(e) => setAutoPaymentLink(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
-                    />
-                    <div className="flex-1 text-xs text-[var(--text-secondary)]">
-                      <div className="text-sm font-medium text-[var(--text-primary)]">
-                        注册成功后自动获取支付链接
-                      </div>
-                      <div className="mt-0.5">
-                        生成 Plus 支付链接（不自动 checkout）并保存到账号，后续点"打开支付链接"直接复用。
-                      </div>
-                    </div>
-                  </label>
+                    </label>
+                    {remoteUploadEnabled && (
+                      <label className="mt-3 flex items-start gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-card)]/60 px-3 py-2 cursor-pointer hover:border-[var(--accent)]/60">
+                        <input
+                          type="checkbox"
+                          checked={k12BatchUploadEnabled}
+                          onChange={(e) => setK12BatchUploadEnabled(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                        />
+                        <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                          <div className="text-sm font-medium text-[var(--text-primary)]">
+                            是否打包上传
+                          </div>
+                          <div className="mt-0.5">
+                            勾选后按当前流程在任务结束后合并 SUB2API JSON 并统一上传；未勾选则恢复为每个账号成功后逐个上传。
+                          </div>
+                        </div>
+                      </label>
+                    )}
+                  </div>
                 )}
 
                 <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 text-xs text-[var(--text-secondary)]">
@@ -1468,23 +1823,33 @@ function RegisterModal({
                   )}
                 </div>
 
-                <Button
-                  onClick={start}
-                  disabled={starting || !selection.identityProvider || !selection.executorType}
-                  className="w-full"
-                >
-                  {starting ? t('accounts.starting') : t('accounts.startAutoRegister')}
-                </Button>
               </>
             )
           ) : (
             <TaskLogPanel taskId={taskId} onDone={handleDone} />
           )}
         </div>
-        <div className="px-6 py-3 border-t border-[var(--border)] flex justify-end">
-          <Button variant="outline" size="sm" onClick={onClose}>
-            {done ? t('common.close') : t('common.cancel')}
-          </Button>
+        <div className="shrink-0 px-6 py-3 border-t border-[var(--border)] bg-[var(--bg-base)]">
+          {!taskId ? (
+            <div className="flex gap-3">
+              <Button
+                onClick={start}
+                disabled={starting || !selection.identityProvider || !selection.executorType}
+                className="flex-1"
+              >
+                {starting ? t('accounts.starting') : t('accounts.startAutoRegister')}
+              </Button>
+              <Button variant="outline" size="sm" onClick={onClose} className="px-5">
+                {t('common.cancel')}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" onClick={onClose}>
+                {done ? t('common.close') : t('common.cancel')}
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -2876,9 +3241,11 @@ export default function Accounts() {
   const [baExtractAccount, setBaExtractAccount] = useState<any | null>(null)
   const [baExtractForm, setBaExtractForm] = useState<Record<string, string>>(() => loadBaExtractSettings())
   const [baExtractRunning, setBaExtractRunning] = useState(false)
-  const [baExtractProgress, setBaExtractProgress] = useState<{ step: number; total: number; desc: string; status: string; logs: string[]; attempt: number; maxAttempts: number }>({ step: 0, total: 7, desc: '', status: 'idle', logs: [], attempt: 0, maxAttempts: 0 })
-  const baExtractAbortRef = useRef<AbortController | null>(null)
+  const [baExtractTasks, setBaExtractTasks] = useState<Record<string, BaExtractTaskState>>({})
+  const baExtractTaskStreamRefs = useRef<Record<string, AbortController>>({})
   const [ppLogTask, setPpLogTask] = useState<PpAccountTask | null>(null)
+  const [baExtractLogTaskId, setBaExtractLogTaskId] = useState<number | null>(null)
+  const [baExtractStopping, setBaExtractStopping] = useState(false)
   const [platformsMap, setPlatformsMap] = useState<Record<string, any>>({})
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
@@ -3012,6 +3379,28 @@ export default function Accounts() {
     })
   }, [accounts])
 
+  useEffect(() => {
+    setBaExtractTasks(prev => {
+      const next = { ...prev }
+      for (const acc of accounts) {
+        const key = String(acc?.id || '')
+        if (!key) continue
+        const persisted = getAccountBaExtractTask(acc)
+        const live = next[key]
+        if (live && isBaExtractTaskRunning(live)) continue
+        if (
+          persisted.status !== 'idle'
+          || persisted.ba_token
+          || persisted.stage
+          || (persisted.logs || []).length > 0
+        ) {
+          next[key] = persisted
+        }
+      }
+      return next
+    })
+  }, [accounts])
+
   
   useEffect(() => {
     let active = true
@@ -3061,6 +3450,369 @@ export default function Accounts() {
     const live = ppLiveMap[String(acc?.id)] || (ppPlusStatus?.current && Number(ppPlusStatus.current.account_id) === Number(acc?.id) ? ppPlusStatus.current : null)
     return getAccountPpTask(acc, live)
   }
+  const resolveBaExtractTask = (acc: any): BaExtractTaskState => (
+    getAccountBaExtractTask(acc, baExtractTasks[String(acc?.id)] || null)
+  )
+  const baExtractLogTask = (() => {
+    if (!baExtractLogTaskId) return null
+    const live = baExtractTasks[String(baExtractLogTaskId)]
+    if (live) return live
+    const acc = accounts.find(item => Number(item?.id) === Number(baExtractLogTaskId))
+    return acc ? resolveBaExtractTask(acc) : null
+  })()
+
+  const applyBaExtractEvent = useCallback((accountId: number, evt: any) => {
+    if (!Number.isFinite(accountId) || !evt || typeof evt !== 'object') return
+    setBaExtractTasks(prev => {
+      const key = String(accountId)
+      const current = prev[key] || { account_id: accountId, status: 'idle', step: 0, total: 7, logs: [] }
+      const logs = Array.isArray(current.logs) ? [...current.logs] : []
+      const pushLog = (line: string) => {
+        if (!line) return
+        logs.push(withBaExtractLogTime(line, Number(evt.time || 0)))
+        if (logs.length > 300) logs.splice(0, logs.length - 300)
+      }
+      let next: BaExtractTaskState = { ...current, account_id: accountId, logs }
+      const type = String(evt.type || '')
+      const currentStatus = String(current.status || '').toLowerCase()
+      const incomingStatus = String(evt.status || '').toLowerCase()
+      const sameTask = !evt.task_id || !current.task_id || String(evt.task_id) === String(current.task_id)
+      if (
+        currentStatus === 'cancelled'
+        && sameTask
+        && (
+          ['progress', 'saved'].includes(type)
+          || (type === 'snapshot' && ['queued', 'started', 'running', 'cancelling'].includes(incomingStatus))
+        )
+      ) {
+        return prev
+      }
+      if (evt.task_id) next.task_id = String(evt.task_id)
+      if (evt.time) next.updated_at = Number(evt.time)
+      if (evt.region_combo) next.region_combo = String(evt.region_combo)
+      if (type === 'snapshot') {
+        next = { ...next, ...evt, account_id: accountId, logs: Array.isArray(evt.logs) ? evt.logs : logs }
+      } else if (type === 'started') {
+        // 新任务/重启：清空旧日志，避免「再次执行仍显示上次日志」
+        const stage = String(evt.desc || '任务已开始')
+        next = {
+          ...next,
+          status: String(evt.status || 'running'),
+          stage,
+          step: 0,
+          attempt: 0,
+          error: '',
+          ba_url: '',
+          max_attempts: Number(evt.max_attempts || next.max_attempts || 20),
+          logs: stage ? [withBaExtractLogTime(stage, Number(evt.time || 0))] : [],
+        }
+        // 已直接写入 logs，跳过 pushLog 追加
+        return { ...prev, [key]: next }
+      } else if (type === 'progress') {
+        next.step = Number(evt.step || next.step || 0)
+        next.total = Number(evt.total || next.total || 7)
+        next.attempt = Number(evt.attempt || next.attempt || 0)
+        next.stage = String(evt.desc || next.stage || '')
+        next.status = /终止/.test(next.stage) ? 'cancelling' : 'running'
+        pushLog(`步骤 ${next.step}/${next.total}: ${next.stage}`)
+      } else if (type === 'saved') {
+        next.ba_token = String(evt.ba_token || next.ba_token || '')
+        next.stage = '已写回 BA 链'
+        pushLog(`已写回 BA: ${next.ba_token}`)
+      } else if (type === 'done') {
+        if (evt.ok) {
+          next.status = 'success'
+          next.ba_token = String(evt.ba_token || next.ba_token || '')
+          next.ba_url = String(evt.ba_url || next.ba_url || '')
+          const combo = String(evt.region_combo || next.region_combo || '')
+          next.region_combo = combo
+          next.stage = next.ba_token ? `成功 ${next.ba_token}${combo ? ` · ${combo}` : ''}` : '提取成功'
+          next.error = ''
+          pushLog(next.stage)
+        } else if (evt.cancelled || /终止|取消/.test(String(evt.error || ''))) {
+          next.status = 'cancelled'
+          next.error = String(evt.error || '任务已终止')
+          next.stage = next.error
+          pushLog(`已终止: ${next.error}`)
+        } else {
+          next.status = 'error'
+          next.error = String(evt.error || '提取失败')
+          next.stage = next.error
+          pushLog(`失败: ${next.error}`)
+        }
+      } else if (type === 'error') {
+        next.status = 'error'
+        next.error = String(evt.error || '错误')
+        next.stage = next.error
+        pushLog(`错误: ${next.error}`)
+      }
+      return { ...prev, [key]: next }
+    })
+  }, [])
+
+  const subscribeBaExtractTask = useCallback((accountId: number) => {
+    if (!Number.isFinite(accountId) || accountId <= 0) return
+    const key = String(accountId)
+    baExtractTaskStreamRefs.current[key]?.abort()
+    const controller = new AbortController()
+    baExtractTaskStreamRefs.current[key] = controller
+    ;(async () => {
+      try {
+        const token = getAuthTokenForStream()
+        const res = await fetch(`${API_BASE}/pp-plus/accounts/${accountId}/extract-ba-events`, {
+          method: 'GET',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: controller.signal,
+        })
+        if (!res.ok || !res.body) throw new Error(`BA链任务事件订阅失败 HTTP ${res.status}`)
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder('utf-8')
+        let buffer = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const chunks = buffer.split(/\n\n/)
+          buffer = chunks.pop() || ''
+          for (const chunk of chunks) {
+            for (const line of chunk.split(/\r?\n/)) {
+              if (!line.startsWith('data:')) continue
+              const raw = line.slice(5).trim()
+              if (!raw) continue
+              try {
+                applyBaExtractEvent(accountId, JSON.parse(raw))
+              } catch {
+                // ignore malformed SSE line
+              }
+            }
+          }
+        }
+      } catch (exc: any) {
+        if (exc?.name !== 'AbortError') {
+          applyBaExtractEvent(accountId, { type: 'error', error: exc?.message || 'BA链任务事件订阅失败' })
+        }
+      } finally {
+        if (baExtractTaskStreamRefs.current[key] === controller) {
+          delete baExtractTaskStreamRefs.current[key]
+        }
+      }
+    })()
+  }, [applyBaExtractEvent])
+
+  useEffect(() => {
+    for (const acc of accounts) {
+      const accountId = Number(acc?.id)
+      if (!Number.isFinite(accountId) || accountId <= 0) continue
+      const key = String(accountId)
+      const task = getAccountBaExtractTask(acc, baExtractTasks[key] || null)
+      if (task.task_id && isBaExtractTaskRunning(task) && !baExtractTaskStreamRefs.current[key]) {
+        subscribeBaExtractTask(accountId)
+      }
+    }
+  }, [accounts, baExtractTasks, subscribeBaExtractTask])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      for (const acc of accounts) {
+        const accountId = Number(acc?.id)
+        if (!Number.isFinite(accountId) || accountId <= 0) continue
+        const task = getAccountBaExtractTask(acc, baExtractTasks[String(accountId)] || null)
+        if (!task.task_id || !isBaExtractTaskRunning(task)) continue
+        apiFetch(`/pp-plus/accounts/${accountId}/extract-ba-task`)
+          .then((data) => {
+            if (data?.task) applyBaExtractEvent(accountId, { type: 'snapshot', ...data.task })
+          })
+          .catch(() => {})
+      }
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [accounts, applyBaExtractEvent, baExtractTasks])
+
+  const openBaExtractLogs = useCallback((accountId: number) => {
+    const id = Number(accountId)
+    if (!Number.isFinite(id) || id <= 0) return
+    setBaExtractLogTaskId(id)
+    const key = String(id)
+    // 打开日志时若尚未订阅，立即接上 SSE（运行中可持续更新；结束任务也能拿到快照）
+    if (!baExtractTaskStreamRefs.current[key]) {
+      subscribeBaExtractTask(id)
+    }
+  }, [subscribeBaExtractTask])
+
+
+  const stopBaExtractTask = useCallback(async (accountId?: number) => {
+    const id = Number(accountId || baExtractLogTaskId || 0)
+    if (!Number.isFinite(id) || id <= 0) return
+    setBaExtractStopping(true)
+    applyBaExtractEvent(id, {
+      type: 'done',
+      cancelled: true,
+      error: '任务已终止',
+      ok: false,
+    })
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 5000)
+    try {
+      const data = await apiFetch(`/pp-plus/accounts/${id}/extract-ba-task/cancel`, {
+        method: 'POST',
+        body: '{}',
+        signal: controller.signal,
+      })
+      const task = data?.task
+      if (task && typeof task === 'object') {
+        applyBaExtractEvent(id, {
+          type: task.status === 'cancelled' ? 'done' : 'progress',
+          cancelled: task.status === 'cancelled',
+          status: task.status,
+          desc: task.stage || (task.status === 'cancelled' ? '任务已终止' : '正在终止任务...'),
+          step: task.step,
+          total: task.total,
+          attempt: task.attempt,
+          error: task.error,
+          ok: false,
+        })
+      } else {
+        applyBaExtractEvent(id, { type: 'progress', desc: '正在终止任务...', step: 0, total: 7 })
+      }
+      // 确保继续吃 SSE，直到 worker 收口
+      if (!baExtractTaskStreamRefs.current[String(id)]) {
+        subscribeBaExtractTask(id)
+      }
+    } catch (exc: any) {
+      if (exc?.name !== 'AbortError') {
+        setError(exc?.message || '终止 BA 链任务失败')
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      setBaExtractStopping(false)
+    }
+  }, [applyBaExtractEvent, baExtractLogTaskId, subscribeBaExtractTask])
+
+
+  const startBaExtractForAccount = useCallback(async (acc: any, form: Record<string, string>) => {
+    const accountId = Number(acc?.id)
+    if (!Number.isFinite(accountId) || accountId <= 0) return
+    const billingProxy = String(form.billing_proxy || '').trim()
+    const promoProxy = String(form.promo_proxy || '').trim()
+    if (!billingProxy || !promoProxy) {
+      setError('请填写账单IP和优惠IP代理池')
+      return
+    }
+    const billingCountry = inferRegionFromProxyText(billingProxy, form.billing_country || 'US') || 'US'
+    const promoCountry = inferRegionFromProxyText(promoProxy, form.promo_country || 'TR') || 'TR'
+    const billingCurrency = baExtractCurrencyForCountry(billingCountry)
+    const conf = {
+      billing_proxy: billingProxy,
+      promo_proxy: promoProxy,
+      billing_country: billingCountry,
+      promo_country: promoCountry,
+      billing_currency: String(form.billing_currency || billingCurrency || 'USD').toUpperCase(),
+      confirm_mode: String(form.confirm_mode || 'pm'),
+      promo_create_mode: String(form.promo_create_mode || 'update_after_checkout'),
+      max_attempts: String(form.max_attempts || '20'),
+    }
+    saveBaExtractSettings(conf)
+    setBaExtractForm(current => ({ ...current, ...conf }))
+    setError('')
+    setBaExtractRunning(true)
+
+    // 立刻打开日志框 + 清空本地旧日志（后端 force 重启也会清）
+    const key = String(accountId)
+    baExtractTaskStreamRefs.current[key]?.abort()
+    delete baExtractTaskStreamRefs.current[key]
+    setBaExtractTasks(prev => ({
+      ...prev,
+      [key]: {
+        account_id: accountId,
+        email: String(acc?.email || ''),
+        task_id: '',
+        status: 'queued',
+        stage: '任务已提交',
+        step: 0,
+        total: 7,
+        attempt: 0,
+        max_attempts: Number(conf.max_attempts || 20),
+        ba_token: '',
+        ba_url: '',
+        region_combo: `${conf.billing_country}+${conf.promo_country}`,
+        error: '',
+        logs: [withBaExtractLogTime('任务已提交')],
+        updated_at: Date.now() / 1000,
+      },
+    }))
+    setBaExtractLogTaskId(accountId)
+    setBaExtractAccount(null)
+
+    try {
+      const data = await apiFetch(`/pp-plus/accounts/${accountId}/extract-ba-task`, {
+        method: 'POST',
+        body: JSON.stringify({
+          billing_proxy: conf.billing_proxy,
+          promo_proxy: conf.promo_proxy,
+          billing_country: conf.billing_country,
+          promo_country: conf.promo_country,
+          billing_currency: conf.billing_currency,
+          confirm_mode: conf.confirm_mode,
+          promo_create_mode: conf.promo_create_mode,
+          max_attempts: Number(conf.max_attempts || 20),
+          force: true,
+        }),
+      })
+      if (data?.task) {
+        setBaExtractTasks(prev => ({
+          ...prev,
+          [key]: {
+            ...getAccountBaExtractTask(acc, prev[key] || null),
+            ...(data.task || {}),
+            // 以后端返回为准；若后端带回旧 logs 仍用返回值（force 后应为空/新日志）
+            logs: Array.isArray(data.task?.logs) ? data.task.logs : (prev[key]?.logs || []),
+          },
+        }))
+      }
+      subscribeBaExtractTask(accountId)
+      setBaExtractLogTaskId(accountId)
+    } catch (exc: any) {
+      const msg = exc?.message || 'BA链任务启动失败'
+      setError(msg)
+      applyBaExtractEvent(accountId, { type: 'error', error: msg })
+      setBaExtractLogTaskId(accountId)
+    } finally {
+      setBaExtractRunning(false)
+    }
+  }, [applyBaExtractEvent, subscribeBaExtractTask])
+
+  const clearPpBaToken = useCallback(async (acc: any) => {
+    const accountId = Number(acc?.id)
+    if (!Number.isFinite(accountId) || accountId <= 0) return
+    if (!confirm(`确认清除该账号的 BA 链？\n${acc?.email || ''}`)) return
+    setError('')
+    try {
+      await apiFetch(`/pp-plus/accounts/${accountId}/ba-token`, { method: 'DELETE' })
+      setBaExtractTasks(prev => {
+        const key = String(accountId)
+        const current = prev[key]
+        if (!current) return prev
+        return {
+          ...prev,
+          [key]: {
+            ...current,
+            ba_token: '',
+          },
+        }
+      })
+      await load()
+    } catch (exc: any) {
+      setError(exc?.message || '清除 BA 链失败')
+    }
+  }, [load])
+
+
+  useEffect(() => {
+    return () => {
+      Object.values(baExtractTaskStreamRefs.current).forEach(controller => controller.abort())
+      baExtractTaskStreamRefs.current = {}
+    }
+  }, [])
 
   const getRtAnyModeEligibleIds = selectedAccounts
     .filter(isGetRtTargetModeAccount)
@@ -3355,27 +4107,26 @@ export default function Accounts() {
     }
   }
 
-  const startCodexOAuth = async () => {
-    setError('')
-    const ids = [...selectedIds].map(Number)
-    if (ids.length === 0) {
-      setError('请选择至少 1 个账户进行 Codex OAuth')
-      return
-    }
+  const startMomoTrialProbe = async () => {
     setOauthBusy(true)
+    setError('')
     try {
-      const data = await apiFetch('/tasks/codex-oauth', {
+      // 有勾选则检测勾选；无勾选则传空 ids，后端按 platform 检测全部
+      const ids = selectedIds.size > 0 ? [...selectedIds].map(Number) : []
+      const data = await apiFetch('/tasks/momo-trial-probe', {
         method: 'POST',
         body: JSON.stringify({
-          platform: 'chatgpt',
           ids,
-          browser_mode: browserMode,
-          concurrency: Math.max(Number(actionConcurrency || 1), 1),
+          platform: tab || 'chatgpt',
+          concurrency: Math.max(1, Math.min(Number(actionConcurrency) || 3, 10)),
         }),
       })
-      setOauthTaskId(String(data?.task_id || data?.id || ''))
-    } catch (exc: any) {
-      setError(exc?.message || t('login.requestFailed'))
+      if (data.task_id) {
+        setOauthTaskId(data.task_id)
+        setOauthConfirmOpen(false)
+      }
+    } catch (e: any) {
+      setError(e.message)
     } finally {
       setOauthBusy(false)
     }
@@ -3598,6 +4349,7 @@ export default function Accounts() {
       {showPpPlusSettings && (
         <PpPlusSettingsDialog
           open={showPpPlusSettings}
+          selectedAccountIds={[...selectedIds].map(Number)}
           onClose={() => setShowPpPlusSettings(false)}
           onStarted={(status) => {
             setPpPlusStatus(status)
@@ -3630,10 +4382,6 @@ export default function Accounts() {
               <button
                 type="button"
                 onClick={() => {
-                  if (baExtractRunning) {
-                    baExtractAbortRef.current?.abort()
-                    setBaExtractRunning(false)
-                  }
                   setBaExtractAccount(null)
                 }}
                 className="rounded-lg p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-pane)] hover:text-[var(--text-primary)]"
@@ -3756,57 +4504,27 @@ export default function Accounts() {
                       <option value="direct">direct（直连 confirm）</option>
                     </select>
                   </label>
+                  <label className="space-y-1 text-xs">
+                    <span className="text-[var(--text-secondary)]">优惠应用模式</span>
+                    <select
+                      className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 text-sm"
+                      value={baExtractForm.promo_create_mode || 'update_after_checkout'}
+                      disabled={baExtractRunning}
+                      onChange={e => setBaExtractForm(current => ({ ...current, promo_create_mode: e.target.value }))}
+                    >
+                      <option value="update_after_checkout">后置 update（默认）</option>
+                      <option value="create_with_promo">创建时带 promo</option>
+                    </select>
+                  </label>
                   <div className="rounded-lg border border-dashed border-[var(--border-soft)] bg-[var(--bg-base)]/40 px-3 py-2 text-[11px] leading-5 text-[var(--text-muted)]">
-                    代理池格式支持：host:port:user:pass、user:pass@host:port、http(s)/socks5 URL、host:port##user##pass。不带协议默认 http://。
+                    代理池格式支持：host:port:user:pass、user:pass@host:port、http(s)/socks5 URL、host:port##user##pass。不带协议默认 http://。多行代理按重试次数顺序轮换。
                   </div>
                 </div>
               </div>
 
-              <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/30 p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="text-[11px] font-medium tracking-wide text-[var(--text-secondary)]">
-                    进度{baExtractProgress.attempt > 0 ? ` · 第 ${baExtractProgress.attempt}/${baExtractProgress.maxAttempts || Number(baExtractForm.max_attempts || 20)} 轮` : ''}
-                  </div>
-                  <div className={`text-[11px] ${baExtractProgress.status === 'error' ? 'text-red-500' : baExtractProgress.status === 'success' ? 'text-emerald-500' : baExtractProgress.status === 'cancelled' ? 'text-amber-500' : baExtractRunning ? 'text-sky-500' : 'text-[var(--text-muted)]'}`}>
-                    {baExtractProgress.status === 'success' ? '提取成功' : baExtractProgress.status === 'error' ? '提取失败' : baExtractProgress.status === 'cancelled' ? '已停止' : baExtractRunning ? '任务进行中' : baExtractProgress.status === 'started' ? '任务已开始' : '等待开始'}
-                  </div>
-                </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--bg-input)]">
-                  <div
-                    className={`h-full rounded-full transition-all duration-300 ${baExtractProgress.status === 'error' ? 'bg-red-500' : baExtractProgress.status === 'success' ? 'bg-emerald-500' : baExtractProgress.status === 'cancelled' ? 'bg-amber-500' : 'bg-sky-500'}`}
-                    style={{ width: `${Math.max(0, Math.min(100, ((baExtractProgress.step || 0) / (baExtractProgress.total || 7)) * 100))}%` }}
-                  />
-                </div>
-                <div className="mt-2 max-h-20 overflow-y-auto break-all rounded-lg bg-[var(--bg-base)]/40 px-2 py-1 text-xs leading-5 text-[var(--text-secondary)]">
-                  {baExtractProgress.step > 0
-                    ? `步骤 ${baExtractProgress.step}/${baExtractProgress.total || 7}：${compactBaExtractStepDesc(baExtractProgress.desc)}`
-                    : '点击开始提取后，这里会实时显示 SSE 进度'}
-                </div>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <div className="text-[11px] font-medium text-[var(--text-secondary)]">日志</div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-[11px]"
-                    disabled={(baExtractProgress.logs || []).length === 0}
-                    onClick={() => copy((baExtractProgress.logs || []).join('\n'))}
-                  >
-                    <Copy className="mr-1 h-3 w-3" />
-                    复制完整日志
-                  </Button>
-                </div>
-                <div className="mt-2 max-h-36 overflow-auto rounded-lg border border-[var(--border-soft)] bg-[var(--bg-base)] px-2 py-1.5 font-mono text-[11px] leading-5 text-[var(--text-muted)]">
-                  {(baExtractProgress.logs || []).length === 0 ? (
-                    <div className="text-[var(--text-muted)]">暂无日志</div>
-                  ) : (
-                    baExtractProgress.logs.slice(-40).map((line, idx) => (
-                      <div key={`${idx}-${line.slice(0, 12)}`} className="break-all">{line}</div>
-                    ))
-                  )}
-                </div>
+              <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/30 p-3 text-xs leading-5 text-[var(--text-muted)]">
+                点击“开始提取”后会创建后台任务并自动打开日志查看框；列表“BA链任务”列也会同步显示当前步骤。每个账号使用独立任务，互不影响。点击任务格或“日志”可再次打开日志。
               </div>
-            </div>
 
             <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button
@@ -3818,199 +4536,33 @@ export default function Accounts() {
               >
                 取消
               </Button>
-              {baExtractRunning && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-9 min-w-[104px] border-amber-400/60 text-amber-600 hover:bg-amber-500/10"
-                  onClick={() => {
-                    baExtractAbortRef.current?.abort()
-                    setBaExtractRunning(false)
-                    setBaExtractProgress(prev => ({
-                      ...prev,
-                      status: 'cancelled',
-                      desc: '正在停止',
-                      logs: [...prev.logs, '用户请求停止任务'],
-                    }))
-                  }}
-                >
-                  停止任务
-                </Button>
-              )}
               <Button
                 type="button"
                 className="h-9 min-w-[120px]"
                 disabled={baExtractRunning}
-                onClick={async () => {
-                  const billingProxy = String(baExtractForm.billing_proxy || '').trim()
-                  const promoProxy = String(baExtractForm.promo_proxy || '').trim()
-                  if (!billingProxy) {
-                    setError('请填写账单代理池')
-                    return
-                  }
-                  if (!promoProxy) {
-                    setError('请填写优惠代理池')
-                    return
-                  }
-                  const billingCountry = inferRegionFromProxyText(billingProxy, baExtractForm.billing_country || 'US') || 'US'
-                  const promoCountry = inferRegionFromProxyText(promoProxy, baExtractForm.promo_country || 'TR') || 'TR'
-                  const billingCurrency = baExtractCurrencyForCountry(billingCountry)
-                  const conf = {
-                    billing_proxy: billingProxy,
-                    promo_proxy: promoProxy,
-                    billing_country: billingCountry,
-                    promo_country: promoCountry,
-                    billing_currency: billingCurrency,
-                    confirm_mode: String(baExtractForm.confirm_mode || 'pm'),
-                    max_attempts: String(baExtractForm.max_attempts || '20'),
-                  }
-                  saveBaExtractSettings(conf)
-                  setBaExtractForm(current => ({ ...current, ...conf }))
-                  setError('')
-                  setBaExtractRunning(true)
-                  setBaExtractProgress({ step: 0, total: 7, desc: '任务已开始', status: 'started', logs: ['任务已开始'], attempt: 0, maxAttempts: Number(conf.max_attempts || 20) })
-                  const controller = new AbortController()
-                  baExtractAbortRef.current = controller
-                  const acc = baExtractAccount
-                  try {
-                    const token = getAuthTokenForStream()
-                    const res = await fetch(`${API_BASE}/pp-plus/accounts/${acc.id}/extract-ba-stream`, {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                      },
-                      body: JSON.stringify({
-                        billing_proxy: conf.billing_proxy,
-                        promo_proxy: conf.promo_proxy,
-                        billing_country: conf.billing_country,
-                        promo_country: conf.promo_country,
-                        billing_currency: conf.billing_currency,
-                        confirm_mode: conf.confirm_mode,
-                        max_attempts: Number(conf.max_attempts || 20),
-                      }),
-                      signal: controller.signal,
-                    })
-                    if (!res.ok || !res.body) {
-                      const msg = await res.text()
-                      throw new Error(msg || `SSE 启动失败 HTTP ${res.status}`)
-                    }
-                    const reader = res.body.getReader()
-                    const decoder = new TextDecoder('utf-8')
-                    let buffer = ''
-                    let finalPayload: any = null
-                    while (true) {
-                      const { done, value } = await reader.read()
-                      if (done) break
-                      buffer += decoder.decode(value, { stream: true })
-                      const chunks = buffer.split(/\n\n/)
-                      buffer = chunks.pop() || ''
-                      for (const chunk of chunks) {
-                        const lines = chunk.split(/\r?\n/)
-                        for (const line of lines) {
-                          if (!line.startsWith('data:')) continue
-                          const raw = line.slice(5).trim()
-                          if (!raw) continue
-                          let evt: any = null
-                          try { evt = JSON.parse(raw) } catch { continue }
-                          if (!evt || typeof evt !== 'object') continue
-                          if (evt.type === 'started') {
-                            setBaExtractProgress(prev => ({
-                              ...prev,
-                              status: 'started',
-                              desc: '任务已开始',
-                              maxAttempts: Number(evt.max_attempts || conf.max_attempts || prev.maxAttempts || 20),
-                              logs: [...prev.logs, `started pool=${evt.billing_pool_size || 0}/${evt.promo_pool_size || 0} max=${evt.max_attempts || conf.max_attempts}`],
-                            }))
-                          } else if (evt.type === 'progress') {
-                            const step = Number(evt.step || 0)
-                            const total = Number(evt.total || 7)
-                            const desc = String(evt.desc || '')
-                            const attempt = Number(evt.attempt || 0)
-                            setBaExtractProgress(prev => ({
-                              step,
-                              total,
-                              desc,
-                              status: 'running',
-                              attempt: attempt || prev.attempt,
-                              maxAttempts: prev.maxAttempts || Number(conf.max_attempts || 20),
-                              logs: [...prev.logs, `步骤 ${step}/${total}: ${desc}`],
-                            }))
-                          } else if (evt.type === 'saved') {
-                            setBaExtractProgress(prev => ({
-                              ...prev,
-                              logs: [...prev.logs, `已写回 BA: ${evt.ba_token || ''}`],
-                            }))
-                          } else if (evt.type === 'done') {
-                            finalPayload = evt
-                            if (evt.ok) {
-                              setBaExtractProgress(prev => ({
-                                step: prev.total || 7,
-                                total: prev.total || 7,
-                                desc: `成功 ${evt.ba_token || ''}`,
-                                status: 'success',
-                                attempt: Number(evt.attempt || prev.attempt || 0),
-                                maxAttempts: prev.maxAttempts || Number(conf.max_attempts || 20),
-                                logs: [...prev.logs, `成功: ${evt.ba_token || ''}`],
-                              }))
-                            } else {
-                              setBaExtractProgress(prev => ({
-                                ...prev,
-                                status: 'error',
-                                desc: String(evt.error || '提取失败'),
-                                logs: [...prev.logs, `失败: ${evt.error || '提取失败'}`],
-                              }))
-                            }
-                          } else if (evt.type === 'error') {
-                            setBaExtractProgress(prev => ({
-                              ...prev,
-                              status: 'error',
-                              desc: String(evt.error || '错误'),
-                              logs: [...prev.logs, `错误: ${evt.error || ''}`],
-                            }))
-                          }
-                        }
-                      }
-                    }
-                    if (finalPayload?.ok) {
-                      setActionResult({
-                        title: `提取BA链 - ${acc.email}`,
-                        payload: {
-                          ba_token: finalPayload.ba_token,
-                          ba_url: finalPayload.ba_url,
-                          message: `已提取并保存 BA 链 ${finalPayload.ba_token || ''}`,
-                          ...(finalPayload.data || {}),
-                        },
-                      })
-                      await load()
-                    } else if (finalPayload && !finalPayload.ok) {
-                      setError(String(finalPayload.error || '提取 BA 链失败'))
-                    }
-                  } catch (exc: any) {
-                    if (exc?.name === 'AbortError') {
-                      setBaExtractProgress(prev => ({ ...prev, status: 'cancelled', desc: '已停止', logs: [...prev.logs, '已停止'] }))
-                    } else {
-                      const msg = exc?.message || '提取 BA 链失败'
-                      setError(msg)
-                      setBaExtractProgress(prev => ({ ...prev, status: 'error', desc: msg, logs: [...prev.logs, msg] }))
-                    }
-                  } finally {
-                    setBaExtractRunning(false)
-                    baExtractAbortRef.current = null
-                  }
-                }}
+                onClick={() => startBaExtractForAccount(baExtractAccount, baExtractForm)}
               >
-                {baExtractRunning ? '提取中...' : '开始提取'}
+                {baExtractRunning ? '启动中...' : '开始提取'}
               </Button>
+            </div>
             </div>
           </div>
         </div>
       )}
-{ppLogTask && (
+      {ppLogTask && (
         <PpTaskLogDialog
           open={Boolean(ppLogTask)}
           task={ppLogTask}
           onClose={() => setPpLogTask(null)}
+        />
+      )}
+      {baExtractLogTask && (
+        <BaExtractTaskLogDialog
+          open={Boolean(baExtractLogTask)}
+          task={baExtractLogTask}
+          onClose={() => setBaExtractLogTaskId(null)}
+          onStop={() => stopBaExtractTask(Number(baExtractLogTask.account_id || baExtractLogTaskId || 0))}
+          stopping={baExtractStopping || String(baExtractLogTask.status || '').toLowerCase() === 'cancelling'}
         />
       )}
       <PpPlusFloatingWidget
@@ -4063,10 +4615,11 @@ export default function Accounts() {
         />
       )}
       {oauthTaskId && (
-        <TaskLogDialog
-          title="Codex OAuth"
+        <SimpleTaskLogDialog
+          open={Boolean(oauthTaskId)}
+          title="检测MOMO试用资格"
+          subtitle="后台批量检测 · 同时具备试用和 MoMo 时打标签「MOMO试用」"
           taskId={oauthTaskId}
-          taskStatus={null}
           onClose={() => setOauthTaskId('')}
           onDone={handleOAuthTaskDone}
         />
@@ -4085,10 +4638,10 @@ export default function Accounts() {
               <div className="shrink-0 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">
-                    Codex OAuth
+                    检测MOMO试用资格
                   </h2>
                   <div className="mt-1 text-xs help-text">
-                    {t('accounts.selected', { count: selectedIds.size })}
+                    {selectedIds.size > 0 ? t('accounts.selected', { count: selectedIds.size }) : '未勾选：将检测当前平台全部账号'}
                   </div>
                 </div>
                 <button
@@ -4099,34 +4652,23 @@ export default function Accounts() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
-                {getRtExecutorType !== 'protocol' && (
-                  <div>
-                    <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
-                      {t('accounts.browserMode')}
-                    </label>
-                    <select
-                      value={browserMode}
-                      onChange={event => setBrowserMode(event.target.value)}
-                      className="control-surface control-surface-compact w-full"
-                    >
-                      {BROWSER_MODE_OPTIONS.map(option => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <p className="text-sm text-[var(--text-secondary)]">
+                  {selectedIds.size > 0
+                    ? `将检测已勾选的 ${selectedIds.size} 个账号。`
+                    : '未勾选账号，将检测当前平台全部账号。'}
+                  任务在后台运行；检测到同时具备试用资格和 MoMo 支付方式时自动打标签「MOMO试用」。
+                </p>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
-                    {t('accounts.concurrency')}
+                    并发线程数（1-10）
                   </label>
                   <input
                     type="number"
                     min={1}
+                    max={10}
                     value={actionConcurrency}
                     onChange={event =>
-                      setActionConcurrency(Math.max(Number(event.target.value || 1), 1))
+                      setActionConcurrency(Math.max(1, Math.min(10, Number(event.target.value || 1))))
                     }
                     className="control-surface control-surface-compact w-full text-center"
                   />
@@ -4145,16 +4687,16 @@ export default function Accounts() {
                   size="sm"
                   onClick={async () => {
                     setOauthConfirmOpen(false)
-                    await startCodexOAuth()
+                    await startMomoTrialProbe()
                   }}
-                  disabled={oauthBusy || selectedIds.size === 0}
+                  disabled={oauthBusy}
                 >
                   {oauthBusy ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
                     <ShieldCheck className="mr-2 h-4 w-4" />
                   )}
-                  {t('accounts.startGetRt')}
+                  开始检测
                 </Button>
               </div>
             </div>
@@ -4650,10 +5192,7 @@ export default function Accounts() {
                 disabled={oauthBusy}
                 onClick={() => {
                   setError('')
-                  if (selectedCount === 0) {
-                    setError(t('accounts.selectAtLeastOne'))
-                    return
-                  }
+                  setActionConcurrency(prev => Math.max(1, Math.min(10, Number(prev) || 3)))
                   setOauthConfirmOpen(true)
                 }}
                 className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
@@ -4663,7 +5202,7 @@ export default function Accounts() {
                 ) : (
                   <ShieldCheck className="mr-2 h-4 w-4" />
                 )}
-                {t('accounts.codexOAuth')}
+                检测MOMO试用资格
               </Button>
             ) : null}
             {tab === 'chatgpt' ? (
@@ -4900,24 +5439,22 @@ export default function Accounts() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1820px] border-collapse text-left text-[12px]">
+              <table className="w-full min-w-[1620px] border-collapse text-left text-[12px]">
                 <colgroup>
                   <col className="w-[44px]" />
                   <col className="w-[210px]" />
                   <col className="w-[82px]" />
-                  <col className="w-[92px]" />
                   <col className="w-[112px]" />
                   <col className="w-[148px]" />
-                  <col className="w-[150px]" />
-                  <col className="w-[170px]" />
                   <col className="w-[110px]" />
                   <col className="w-[106px]" />
                   {tab === 'chatgpt' ? <col className="w-[88px]" /> : null}
-                  <col className="w-[248px]" />
+                  <col className="w-[150px]" />
+                  <col className="w-[320px]" />
                 </colgroup>
                 <thead>
                   <tr className="border-y border-[var(--border-soft)] bg-[var(--bg-pane)]/45 text-[12px] text-[var(--text-secondary)]">
-                    <th className="px-3 py-3 text-center font-semibold">
+                    <th className="sticky left-0 z-30 w-[44px] min-w-[44px] max-w-[44px] bg-[var(--bg-pane)] px-3 py-3 text-center font-semibold">
                       <input
                         type="checkbox"
                         checked={allSelectedOnPage}
@@ -4925,19 +5462,17 @@ export default function Accounts() {
                         className="checkbox-accent rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
                       />
                     </th>
-                    <th className="px-3 py-3 font-semibold">账号</th>
+                    <th className="sticky left-[44px] z-30 w-[210px] min-w-[210px] max-w-[210px] border-r border-[var(--border-soft)] bg-[var(--bg-pane)] px-3 py-3 font-semibold shadow-[8px_0_12px_-10px_rgba(0,0,0,0.28)]">账号</th>
                     <th className="px-3 py-3 font-semibold">套餐</th>
-                    <th className="px-3 py-3 font-semibold">Token</th>
                     <th className="px-3 py-3 font-semibold">账号状态</th>
                     <th className="px-3 py-3 font-semibold">标签</th>
-                    <th className="px-3 py-3 font-semibold">创建时间</th>
-                    <th className="px-3 py-3 font-semibold">完整 JSON</th>
                     <th className="px-3 py-3 font-semibold">有效期</th>
-                    <th className="px-3 py-3 font-semibold">支付长链</th>
+                    <th className="px-3 py-3 font-semibold">BA链任务</th>
                     {tab === 'chatgpt' && (
                       <th className="w-[88px] max-w-[88px] px-2 py-3 font-semibold">任务日志</th>
                     )}
-                    <th className="sticky right-0 z-20 w-[248px] min-w-[248px] max-w-[248px] border-l border-[var(--border-soft)] bg-[var(--bg-pane)] px-2 py-3 text-center font-semibold shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.28)]">
+                    <th className="px-3 py-3 font-semibold">创建时间</th>
+                    <th className="sticky right-0 z-20 w-[320px] min-w-[320px] max-w-[320px] border-l border-[var(--border-soft)] bg-[var(--bg-pane)] px-2 py-3 text-center font-semibold shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.28)]">
                       {t('common.actions')}
                     </th>
                   </tr>
@@ -4945,7 +5480,7 @@ export default function Accounts() {
                 <tbody className="divide-y divide-[var(--border-soft)]">
                   {accounts.length === 0 && (
                     <tr>
-                      <td colSpan={tab === 'chatgpt' ? 12 : 11} className="px-6 py-20 text-center">
+                      <td colSpan={tab === 'chatgpt' ? 10 : 9} className="px-6 py-20 text-center">
                         <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
                           <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--bg-pane)]">
                             <Mail className="h-5 w-5 text-[var(--text-muted)]" />
@@ -4964,12 +5499,9 @@ export default function Accounts() {
                     (() => {
                       const primaryToken = getPrimaryToken(acc)
                       const accessTokenCopyCount = getAccessTokenCopyCount(acc)
-                      const cashierUrl = getCashierUrl(acc)
                       const planLabel = getAccountPlanLabel(acc)
-                      const tokenOk = Boolean(primaryToken)
-                      const jsonText = getAccountJsonText(acc)
-                      const jsonLength = getAccountJsonLength(acc)
-                      const hasSessionJson = Boolean(jsonText)
+                      const sessionText = getChatgptSessionText(acc)
+                      const hasSessionJson = Boolean(sessionText)
                       const createdLabel = getAccountCreatedAtLabel(acc, language)
                       const validityLabel = getAccountValidityWindowLabel(acc)
                       const status = getDisplayStatus(acc)
@@ -4983,14 +5515,19 @@ export default function Accounts() {
                       } as Record<string, string>)[statusVariant]) || 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-secondary)]'
                       const displayBadges = getDisplayBadges(acc)
                       const isBusy = (actionId: string) => rowActionBusy === `${acc.id}:${actionId}`
+                      const baTask = resolveBaExtractTask(acc)
+                      const baTaskActive = isBaExtractTaskActive(baTask)
+                      const ppBaToken = getAccountBaToken(acc)
 
                       return (
                         <tr
                           key={acc.id}
-                          className="group cursor-pointer bg-[var(--bg-card)] transition-colors hover:bg-[var(--bg-pane)]/35"
-                          onClick={() => setDetail(acc)}
+                          className="group bg-[var(--bg-card)] transition-colors hover:bg-[var(--bg-pane)]/35"
                         >
-                          <td className="px-3 py-3 text-center align-middle" onClick={e => e.stopPropagation()}>
+                          <td
+                            className="sticky left-0 z-20 w-[44px] min-w-[44px] max-w-[44px] bg-[var(--bg-card)] px-3 py-3 text-center align-middle group-hover:bg-[var(--bg-pane)]"
+                            onClick={e => e.stopPropagation()}
+                          >
                             <input
                               type="checkbox"
                               checked={selectedIds.has(acc.id)}
@@ -4998,7 +5535,7 @@ export default function Accounts() {
                               className="checkbox-accent rounded border-[var(--border)] text-[var(--accent)] opacity-60 transition-opacity group-hover:opacity-100 focus:ring-[var(--accent)]"
                             />
                           </td>
-                          <td className="overflow-hidden px-3 py-3 align-middle">
+                          <td className="sticky left-[44px] z-20 w-[210px] min-w-[210px] max-w-[210px] overflow-hidden border-r border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-3 align-middle shadow-[8px_0_12px_-10px_rgba(0,0,0,0.28)] group-hover:bg-[var(--bg-pane)]">
                             <div className="flex min-w-0 items-center gap-2">
                               <span
                                 className="truncate font-mono text-[12px] font-bold tracking-tight text-[var(--text-primary)]"
@@ -5022,18 +5559,6 @@ export default function Accounts() {
                             </span>
                           </td>
                           <td className="px-3 py-3 align-middle">
-                            <span
-                              className={cn(
-                                'inline-flex min-w-[58px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm',
-                                tokenOk
-                                  ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                  : 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]',
-                              )}
-                            >
-                              {getTokenStatusLabel(acc)}
-                            </span>
-                          </td>
-                          <td className="px-3 py-3 align-middle">
                             <span className={cn('inline-flex min-w-[72px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm', statusPillClass)}>
                               {translateAccountStatus(status, language)}
                             </span>
@@ -5053,19 +5578,6 @@ export default function Accounts() {
                               </span>
                             )}
                           </td>
-                          <td className="whitespace-nowrap px-3 py-3 align-middle font-mono text-[12px] text-[var(--text-secondary)]">
-                            {createdLabel}
-                          </td>
-                          <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
-                            <button
-                              onClick={() => { if (hasSessionJson) copy(jsonText) }}
-                              disabled={!hasSessionJson}
-                              className="inline-flex min-w-[142px] items-center justify-center rounded border border-[var(--border-soft)] bg-[var(--bg-card)] px-3 py-1.5 text-[12px] font-bold text-[var(--accent)] shadow-sm transition-colors hover:border-[var(--accent-edge)] hover:bg-[var(--accent-soft)] disabled:cursor-not-allowed disabled:text-[var(--text-muted)] disabled:hover:border-[var(--border-soft)] disabled:hover:bg-[var(--bg-card)]"
-                              title={hasSessionJson ? '复制 api/auth/session 返回的完整 JSON' : '当前账号未保存 api/auth/session JSON'}
-                            >
-                              {hasSessionJson ? `${jsonLength} 复制完整 JSON` : '无 Session JSON'}
-                            </button>
-                          </td>
                           <td className="px-3 py-3 align-middle">
                             <span
                               className={cn(
@@ -5078,17 +5590,11 @@ export default function Accounts() {
                               {validityLabel}
                             </span>
                           </td>
-                          <td className="px-3 py-3 align-middle">
-                            <span
-                              className={cn(
-                                'inline-flex min-w-[58px] items-center justify-center rounded border px-2 py-1 text-[12px] font-medium shadow-sm',
-                                cashierUrl
-                                  ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                                  : 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]',
-                              )}
-                            >
-                              {cashierUrl ? '已提取' : '未提取'}
-                            </span>
+                          <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
+                            <BaExtractTaskCell
+                              task={baTask}
+                              onViewLogs={() => openBaExtractLogs(Number(acc.id))}
+                            />
                           </td>
                           {tab === 'chatgpt' && (
                             <td className="w-[88px] max-w-[88px] px-2 py-3 align-middle" onClick={e => e.stopPropagation()}>
@@ -5098,17 +5604,20 @@ export default function Accounts() {
                               />
                             </td>
                           )}
+                          <td className="whitespace-nowrap px-3 py-3 align-middle font-mono text-[12px] text-[var(--text-secondary)]">
+                            {createdLabel}
+                          </td>
                           <td
-                            className="sticky right-0 z-10 w-[248px] min-w-[248px] max-w-[248px] border-l border-[var(--border-soft)] bg-[var(--bg-card)] px-2 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.28)] group-hover:bg-[var(--bg-pane)]"
+                            className="sticky right-0 z-10 w-[320px] min-w-[320px] max-w-[320px] border-l border-[var(--border-soft)] bg-[var(--bg-card)] px-2 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.28)] group-hover:bg-[var(--bg-pane)]"
                             onClick={e => e.stopPropagation()}
                           >
-                            <div className="flex w-[232px] flex-wrap content-start items-center gap-1.5">
+                            <div className="flex w-[304px] flex-wrap content-start items-center gap-1.5">
                               {tab === 'chatgpt' && (
                                 <button
-                                  onClick={() => setPpBaAccount(acc)}
-                                  className="table-action-btn"
+                                  onClick={() => ppBaToken ? clearPpBaToken(acc) : setPpBaAccount(acc)}
+                                  className={cn('table-action-btn', ppBaToken ? 'border-red-500/25 bg-red-500/5 text-red-600 hover:border-red-500/45 hover:bg-red-500/10 dark:text-red-300' : '')}
                                 >
-                                  填写BA链
+                                  {ppBaToken ? '清除BA链' : '填写BA链'}
                                 </button>
                               )}
                               {tab === 'chatgpt' && (
@@ -5117,13 +5626,32 @@ export default function Accounts() {
                                     setBaExtractForm(loadBaExtractSettings())
                                     setBaExtractAccount(acc)
                                   }}
-                                  disabled={isBusy('extract_ba_link')}
+                                  disabled={baTaskActive}
                                   className="table-action-btn"
                                 >
-                                  {isBusy('extract_ba_link') ? '提取中' : '提取BA链'}
+                                  {baTaskActive ? 'BA任务中' : '提取BA链'}
                                 </button>
                               )}
                               <button onClick={() => setDetail(acc)} className="table-action-btn">查看</button>
+                              {tab === 'chatgpt' && (
+                                <button
+                                  onClick={() => { if (hasSessionJson) copy(sessionText) }}
+                                  disabled={!hasSessionJson}
+                                  className="table-action-btn"
+                                  title={hasSessionJson ? '复制 api/auth/session session 数据' : '当前账号未保存 api/auth/session'}
+                                >
+                                  复制SESSION
+                                </button>
+                              )}
+                              {tab === 'chatgpt' && (
+                                <button
+                                  onClick={() => runInlineAccountAction(acc, 'upload_sub2api', `上传 SUB2API - ${acc.email}`)}
+                                  disabled={isBusy('upload_sub2api')}
+                                  className="table-action-btn"
+                                >
+                                  {isBusy('upload_sub2api') ? '上传中' : '上传SUB2API'}
+                                </button>
+                              )}
                               <button
                                 onClick={() => copyAccessToken(acc, primaryToken)}
                                 disabled={!primaryToken || copyingAccessTokenId === acc.id}
@@ -5280,13 +5808,10 @@ export default function Accounts() {
                 variant="outline"
                 onClick={() => {
                   setError('')
-                  if (selectedIds.size === 0) {
-                    setError('请选择至少 1 个账户进行 Codex OAuth')
-                    return
-                  }
+                  setActionConcurrency(prev => Math.max(1, Math.min(10, Number(prev) || 3)))
                   setOauthConfirmOpen(true)
                 }}
-                disabled={oauthBusy || selectedCount === 0}
+                disabled={oauthBusy}
                 className={ACCOUNT_TOOL_BUTTON_CLASS}
               >
                 {oauthBusy ? (
@@ -5294,7 +5819,7 @@ export default function Accounts() {
                 ) : (
                   <ShieldCheck className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 )}
-                Codex OAuth
+                检测MOMO试用资格
               </Button>
             )}
             {tab === 'chatgpt' && (
@@ -5510,7 +6035,7 @@ export default function Accounts() {
               <th className="px-3 py-2 text-left">{t('common.email')}</th>
               <th className="px-3 py-2 text-left">{t('common.password')}</th>
               <th className="px-3 py-2 text-left">{t('common.status')}</th>
-              <th className="px-3 py-2 text-left">{t('accounts.link')}</th>
+              <th className="px-3 py-2 text-left">{tab === 'chatgpt' ? 'BA链任务' : t('accounts.link')}</th>
               <th className="px-3 py-2 text-left">{t('accounts.registeredAt')}</th>
               <th className="px-3 py-2 text-right">{t('common.actions')}</th>
             </tr>
@@ -5535,9 +6060,12 @@ export default function Accounts() {
                 const verificationMailbox = getVerificationMailbox(acc)
                 const primaryMetrics = getPrimaryMetrics(acc)
                 const displayBadges = getDisplayBadges(acc)
+                const baTask = resolveBaExtractTask(acc)
+                const baTaskActive = isBaExtractTaskActive(baTask)
+                const ppBaToken = getAccountBaToken(acc)
                 return (
-              <tr key={acc.id} className="group border-b border-[var(--border)]/30 hover:bg-[var(--text-primary)]/[0.02] transition-colors cursor-pointer"
-                  onClick={() => setDetail(acc)}>
+              <tr key={acc.id} className="group border-b border-[var(--border)]/30 hover:bg-[var(--text-primary)]/[0.02] transition-colors"
+>
                 <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
@@ -5623,8 +6151,13 @@ export default function Accounts() {
                     )}
                   </div>
                 </td>
-                <td className="px-3 py-2.5 align-top">
-                  {getCashierUrl(acc) ? (
+                <td className="px-3 py-2.5 align-top" onClick={e => e.stopPropagation()}>
+                  {tab === 'chatgpt' ? (
+                    <BaExtractTaskCell
+                      task={baTask}
+                      onViewLogs={() => openBaExtractLogs(Number(acc.id))}
+                    />
+                  ) : getCashierUrl(acc) ? (
                     <div className="flex items-center gap-1.5 whitespace-nowrap opacity-70 group-hover:opacity-100 transition-opacity">
                       <button onClick={e => { e.stopPropagation(); copy(getCashierUrl(acc)) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5 rounded hover:bg-[var(--bg-pane)]" title="复制链接"><Copy className="h-3 w-3" /></button>
                       <a href={getCashierUrl(acc)} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors p-0.5 rounded hover:bg-[var(--bg-pane)]" title="打开收银台"><ExternalLink className="h-3 w-3" /></a>
@@ -5649,8 +6182,27 @@ export default function Accounts() {
                 <td className="px-3 py-2.5 align-top" onClick={e => e.stopPropagation()}>
                   <div className="flex items-center justify-end gap-1.5 opacity-60 group-hover:opacity-100 transition-opacity">
                     {tab === 'chatgpt' && (
-                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => setPpBaAccount(acc)}>
-                        填写BA链
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className={cn('h-7 px-2 text-[11px]', ppBaToken ? 'border-red-500/25 bg-red-500/5 text-red-600 hover:bg-red-500/10 dark:text-red-300' : '')}
+                        onClick={() => ppBaToken ? clearPpBaToken(acc) : setPpBaAccount(acc)}
+                      >
+                        {ppBaToken ? '清除BA链' : '填写BA链'}
+                      </Button>
+                    )}
+                    {tab === 'chatgpt' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-[11px]"
+                        disabled={baTaskActive}
+                        onClick={() => {
+                          setBaExtractForm(loadBaExtractSettings())
+                          setBaExtractAccount(acc)
+                        }}
+                      >
+                        {baTaskActive ? 'BA任务中' : '提取BA链'}
                       </Button>
                     )}
                     <ActionMenu

@@ -29,6 +29,50 @@ def test_refresh_session_failed_result_only_flags_confirmed_banned_accounts():
     assert banned["data"]["delete_local_account"] is True
 
 
+def test_refresh_session_validate_otp_403_marks_banned_without_delete(monkeypatch):
+    account = Account(
+        platform="chatgpt",
+        email="refresh-403@test.com",
+        password="Secret123!",
+        user_id="acct-refresh-403",
+    )
+    platform = ChatGPTPlatform(RegisterConfig())
+    monkeypatch.setattr(
+        platform,
+        "_build_refresh_session_mailbox_email_service",
+        lambda _account, _log_fn, _proxy: (object(), ""),
+    )
+
+    class FakeRegistrationEngine:
+        def __init__(self, *args, **kwargs):
+            self.email = ""
+            self.password = ""
+            self.k12_join_enabled = True
+
+        def run(self):
+            return type(
+                "Result",
+                (),
+                {
+                    "success": False,
+                    "error_message": "validate_otp_http_403_body={\"error\":\"account blocked\"}",
+                },
+            )()
+
+    import platforms.chatgpt.register as register_module
+
+    monkeypatch.setattr(register_module, "RegistrationEngine", FakeRegistrationEngine)
+
+    result = platform._handle_refresh_session(account, {})
+
+    assert result["ok"] is False
+    assert result["error_type"] == "account_banned"
+    assert result["lifecycle_status"] == "banned"
+    assert result["summary_updates"]["display_status"] == "banned"
+    assert result["data"]["mark_local_account_banned"] is True
+    assert result["data"].get("delete_local_account") is None
+
+
 def test_cloudflare_managed_challenge_html_is_detected():
     body = """
     <!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title></head>

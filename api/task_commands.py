@@ -45,6 +45,11 @@ class CodexOAuthTaskRequest(BaseModel):
     concurrency: int = 1
 
 
+class MomoTrialProbeTaskRequest(BaseModel):
+    ids: list[int] = []
+    platform: str = "chatgpt"
+    concurrency: int = 3
+
 class GoPayPayChatGptTaskRequest(BaseModel):
     """GoPay 协议付款 ChatGPT Plus。
 
@@ -142,6 +147,11 @@ def create_phone_bind_task(body: PhoneBindTaskRequest):
 @router.post("/codex-oauth")
 def create_codex_oauth_task(body: CodexOAuthTaskRequest):
     return command_service.create_codex_oauth_task(body.model_dump())
+
+
+@router.post("/momo-trial-probe")
+def create_momo_trial_probe_task(body: MomoTrialProbeTaskRequest):
+    return command_service.create_momo_trial_probe_task(body.model_dump())
 
 
 class GetRtTaskRequest(BaseModel):

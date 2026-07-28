@@ -46,12 +46,12 @@ class _StubSession:
         self.resp = resp
         self.calls = []
 
-    def post(self, url, *, data=None, headers=None):
-        self.calls.append({"method": "POST", "url": url, "data": data})
+    def post(self, url, *, data=None, headers=None, timeout=None):
+        self.calls.append({"method": "POST", "url": url, "data": data, "timeout": timeout})
         return self.resp
 
-    def get(self, url, *, params=None, headers=None):
-        self.calls.append({"method": "GET", "url": url, "params": params})
+    def get(self, url, *, params=None, headers=None, timeout=None):
+        self.calls.append({"method": "GET", "url": url, "params": params, "timeout": timeout})
         return self.resp
 
 
@@ -258,3 +258,4 @@ def test_stripe_post_success_200_returns_json_payload():
     session = _StubSession(resp)
     result = stripe_http._post(session, "https://api.stripe.com/v1/x", {"k": "v"})
     assert result == payload
+    assert session.calls[0]["timeout"] == stripe_http.STRIPE_HTTP_TIMEOUT_SECONDS

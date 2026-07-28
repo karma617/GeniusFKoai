@@ -27,13 +27,9 @@ from sqlmodel import Session, select, func
 
 
 from core.account_graph import (
-
     load_account_graphs,
-
     patch_account_graph,
-
     recover_lifecycle_status_for_valid_account,
-
 )
 
 from core.base_platform import AccountStatus, RegisterConfig
@@ -63,6 +59,7 @@ TASK_TYPE_PLATFORM_ACTION = "platform_action"
 TASK_TYPE_PHONE_BIND = "phone_bind"
 
 TASK_TYPE_CODEX_OAUTH = "codex_oauth"
+TASK_TYPE_MOMO_TRIAL_PROBE = "momo_trial_probe"
 TASK_TYPE_GET_RT = "get_rt"
 TASK_TYPE_GET_RT_BYPASS = "get_rt_bypass"
 TASK_TYPE_REFRESH_SESSION = "refresh_session"
@@ -74,6 +71,7 @@ TASK_DB_WRITE_ATTEMPTS = 5
 
 BUGFREE_LABEL = "BUGFREE"
 CHATGPT_TRIAL_LABEL = "试用"
+MOMO_TRIAL_LABEL = "MOMO试用"
 CHATGPT_RELOGIN_REQUIRED_STATUS = "relogin_required"
 CHATGPT_FREE_PLUS_CAMPAIGN_ID = "plus-1-month-free"
 CHATGPT_ACCOUNTS_CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480"
@@ -708,7 +706,7 @@ def _task_account_keys(task_type: str, payload: dict[str, Any]) -> list[str]:
             # 防止多个批量测活任务同时打 ChatGPT，触发 WAF/IP 403。
             keys.append("chatgpt-health-check")
         return keys
-    if task_type in {TASK_TYPE_PHONE_BIND, TASK_TYPE_CODEX_OAUTH}:
+    if task_type in {TASK_TYPE_PHONE_BIND, TASK_TYPE_CODEX_OAUTH, TASK_TYPE_MOMO_TRIAL_PROBE}:
         ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
         if not ids and int(payload.get("account_id") or 0) > 0:
             ids = [int(payload.get("account_id") or 0)]
@@ -735,6 +733,12 @@ def serialize_task(task: TaskModel) -> dict[str, Any]:
 
     progress_current = int(task.progress_current or 0)
 
+    status = task.status
+
+    if status == TASK_STATUS_CANCEL_REQUESTED and progress_total > 0 and progress_current >= progress_total:
+
+        status = TASK_STATUS_CANCELLED
+
     return {
 
         "id": task.id,
@@ -745,11 +749,11 @@ def serialize_task(task: TaskModel) -> dict[str, Any]:
 
         "platform": task.platform,
 
-        "status": task.status,
+        "status": status,
 
-        "terminal": task.status in TERMINAL_TASK_STATUSES,
+        "terminal": status in TERMINAL_TASK_STATUSES,
 
-        "cancellable": task.status in {TASK_STATUS_PENDING, TASK_STATUS_CLAIMED, TASK_STATUS_RUNNING, TASK_STATUS_CANCEL_REQUESTED},
+        "cancellable": status in {TASK_STATUS_PENDING, TASK_STATUS_CLAIMED, TASK_STATUS_RUNNING},
 
         "progress": f"{progress_current}/{progress_total}" if progress_total else "0/0",
 
@@ -1040,6 +1044,63 @@ def create_codex_oauth_task(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+
+
+
+
+def create_momo_trial_probe_task(payload: dict[str, Any]) -> dict[str, Any]:
+    """创建后台任务：批量检测账号是否具备越南 MoMo 试用资格。
+
+    payload:
+      - ids: 账号 ID 列表；为空表示当前 platform 下全部账号
+      - platform: 默认 chatgpt
+      - concurrency: 并发线程数，默认 3，上限 10
+    """
+    raw_ids = payload.get("ids") or []
+    ids: list[int] = []
+    for item in raw_ids:
+        try:
+            value = int(item)
+        except Exception:
+            continue
+        if value > 0:
+            ids.append(value)
+    # 去重保序
+    seen: set[int] = set()
+    uniq_ids: list[int] = []
+    for value in ids:
+        if value in seen:
+            continue
+        seen.add(value)
+        uniq_ids.append(value)
+    ids = uniq_ids
+
+    platform = str(payload.get("platform") or "chatgpt").strip().lower() or "chatgpt"
+    try:
+        concurrency = int(payload.get("concurrency") or 3)
+    except Exception:
+        concurrency = 3
+    concurrency = max(1, min(concurrency, 10))
+
+    # ids 为空时按平台全量探测：先统计数量作为 progress_total
+    if ids:
+        total = len(ids)
+    else:
+        with Session(engine) as session:
+            q = select(AccountModel).where(AccountModel.platform == platform)
+            total = len(session.exec(q).all())
+
+    task_payload = {
+        "ids": ids,
+        "platform": platform,
+        "concurrency": concurrency,
+    }
+    return create_task(
+        task_type=TASK_TYPE_MOMO_TRIAL_PROBE,
+        platform=platform,
+        payload=task_payload,
+        progress_total=max(int(total or 0), 1),
+    )
 
 
 
@@ -1458,6 +1519,20 @@ def _request_cancel_mutation(task: TaskModel) -> None:
         task.finished_at = _utcnow()
 
         task.error = task.error or "任务在开始前被取消"
+
+    elif task.status == TASK_STATUS_CANCEL_REQUESTED:
+
+        progress_total = int(task.progress_total or 0)
+
+        progress_current = int(task.progress_current or 0)
+
+        if progress_total > 0 and progress_current >= progress_total:
+
+            task.status = TASK_STATUS_CANCELLED
+
+            task.finished_at = task.finished_at or _utcnow()
+
+            task.error = task.error or "任务已取消"
 
     else:
 
@@ -3649,6 +3724,7 @@ def execute_task(task_id: str) -> None:
         TASK_TYPE_PHONE_BIND: _execute_phone_bind_task,
 
         TASK_TYPE_CODEX_OAUTH: _execute_codex_oauth_task,
+        TASK_TYPE_MOMO_TRIAL_PROBE: _execute_momo_trial_probe_task,
         TASK_TYPE_GET_RT: _execute_get_rt_task,
         TASK_TYPE_GET_RT_BYPASS: _execute_get_rt_bypass_task,
         TASK_TYPE_REFRESH_SESSION: _execute_refresh_session_task,
@@ -5615,7 +5691,17 @@ def _auto_followup_chatgpt_plus_payment(
 
 
 
+def _format_register_task_average_duration(elapsed_seconds: float, completed_count: int) -> str:
+    elapsed = max(float(elapsed_seconds or 0), 0.0)
+    completed = max(int(completed_count or 0), 0)
+    if completed <= 0:
+        return ""
+    return f"平均耗时: {elapsed / completed:.1f} 秒/任务（总耗时 {elapsed:.1f} 秒，已处理 {completed} 个）"
+
+
 def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+
+    register_started_at = time.monotonic()
 
     from core.proxy_pool import proxy_pool
 
@@ -6855,6 +6941,12 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     summary = f"完成: 成功 {success} 个, 失败 {len(errors)} 个"
     logger.log(summary, event_type="summary")
+    average_duration = _format_register_task_average_duration(
+        time.monotonic() - register_started_at,
+        success + len(errors),
+    )
+    if average_duration:
+        logger.log(average_duration, event_type="summary")
     final_status = TASK_STATUS_FAILED if errors and success == 0 else TASK_STATUS_SUCCEEDED
     if final_status == TASK_STATUS_SUCCEEDED:
         final_error = ""
@@ -8259,6 +8351,27 @@ def _execute_refresh_session_task(payload: dict[str, Any], logger: TaskLogger) -
     consecutive_cloudflare_challenges = 0
     stop_for_cloudflare_challenge = False
 
+    def mark_account_banned(account_id: int, error: str) -> None:
+        with Session(engine) as session:
+            model = session.get(AccountModel, account_id)
+            if not model:
+                return
+            patch_account_graph(
+                session,
+                model,
+                lifecycle_status="banned",
+                summary_updates={
+                    "valid": False,
+                    "validity_status": "invalid",
+                    "display_status": "banned",
+                    "health_error": error,
+                    "deactivated_reason": error,
+                },
+            )
+            model.updated_at = _utcnow()
+            session.add(model)
+            session.commit()
+
     def run_one(index: int, account_id: int) -> dict[str, Any]:
         logger.set_subtask(f"refresh_session_{index + 1}", f"账号 {account_id}")
         try:
@@ -8283,10 +8396,8 @@ def _execute_refresh_session_task(payload: dict[str, Any], logger: TaskLogger) -
             error = str(result.error or "重新登录失败")
             data = result.data if isinstance(result.data, dict) else {}
             error_type = str(data.get("error_type") or "")
-            should_delete = (
-                bool(data.get("delete_local_account"))
-                or error_type == "account_banned"
-            )
+            should_delete = bool(data.get("delete_local_account"))
+            should_mark_banned = error_type == "account_banned" and not should_delete
             deleted = False
             if should_delete:
                 deleted = AccountsRepository().delete(account_id)
@@ -8295,9 +8406,22 @@ def _execute_refresh_session_task(payload: dict[str, Any], logger: TaskLogger) -
                     f"[{index + 1}/{total}] 重新登录失败，账号已封禁/注销，{delete_note} #{account_id}: {error}",
                     level="error",
                 )
+            elif should_mark_banned:
+                mark_account_banned(account_id, error)
+                logger.log(
+                    f"[{index + 1}/{total}] 重新登录失败，账号已标记为封禁 #{account_id}: {error}",
+                    level="error",
+                )
             else:
                 logger.log(f"[{index + 1}/{total}] 重新登录失败 #{account_id}: {error}", level="error")
-            return {"ok": False, "account_id": account_id, "error": error, "deleted": deleted, "error_type": error_type}
+            return {
+                "ok": False,
+                "account_id": account_id,
+                "error": error,
+                "deleted": deleted,
+                "marked_banned": should_mark_banned,
+                "error_type": error_type,
+            }
         except Exception as exc:
             logger.log(f"[{index + 1}/{total}] 重新登录异常 #{account_id}: {exc}", level="error")
             return {"ok": False, "account_id": account_id, "error": str(exc)}
@@ -10076,3 +10200,219 @@ def _execute_account_health_check_task(payload: dict[str, Any], logger: TaskLogg
     result = {**counts, "total": total, "items": [item for item in items if item is not None]}
     logger.set_result_data(result)
     logger.finish(TASK_STATUS_SUCCEEDED if counts["error"] == 0 else TASK_STATUS_FAILED)
+
+
+def _is_momo_trial_result_taggable(result: dict[str, Any]) -> bool:
+    decision = str(result.get("decision") or "")
+    has_momo = bool(result.get("has_momo"))
+    return has_momo and (bool(result.get("supported")) or decision == "ready")
+
+
+
+def _mark_momo_trial_account(saved_account_id: int, probe: dict[str, Any]) -> None:
+    if saved_account_id <= 0:
+        return
+    with Session(engine) as session:
+        model = session.get(AccountModel, saved_account_id)
+        if not model:
+            return
+        graph = load_account_graphs(session, [saved_account_id]).get(saved_account_id, {})
+        overview = dict(graph.get("overview") or {})
+        chips = [
+            str(item).strip()
+            for item in (overview.get("chips") or [])
+            if str(item or "").strip()
+        ]
+        if MOMO_TRIAL_LABEL not in chips:
+            chips.append(MOMO_TRIAL_LABEL)
+        trial = probe.get("trial") if isinstance(probe.get("trial"), dict) else {}
+        patch_account_graph(
+            session,
+            model,
+            summary_updates={
+                "chips": chips,
+                "momo_trial": True,
+                "momo_trial_decision": str(probe.get("decision") or "ready"),
+                "momo_trial_has_momo": bool(probe.get("has_momo")),
+                "momo_trial_one_click": trial.get("one_click_trial_eligible"),
+                "momo_trial_period_days": trial.get("trial_period_days"),
+                "momo_trial_checked_at": _utcnow_iso(),
+            },
+        )
+        model.updated_at = _utcnow()
+        session.add(model)
+        session.commit()
+
+
+def _execute_momo_trial_probe_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    """批量检测账号是否具备越南 MoMo + 真实试用资格。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from core.platform_accounts import build_platform_account
+    from core.proxy_pool import resolve_runtime_proxy
+    from application.momo_trial_probe import probe_momo_trial
+
+    raw_ids = payload.get("ids") or []
+    ids: list[int] = []
+    for item in raw_ids:
+        try:
+            value = int(item)
+        except Exception:
+            continue
+        if value > 0:
+            ids.append(value)
+    platform = str(payload.get("platform") or "chatgpt").strip().lower() or "chatgpt"
+    try:
+        concurrency = int(payload.get("concurrency") or 3)
+    except Exception:
+        concurrency = 3
+    concurrency = max(1, min(concurrency, 10))
+
+    with Session(engine) as session:
+        q = select(AccountModel)
+        if platform:
+            q = q.where(AccountModel.platform == platform)
+        if ids:
+            q = q.where(AccountModel.id.in_(ids))  # type: ignore[attr-defined]
+        models = list(session.exec(q.order_by(AccountModel.id.asc())).all())
+        account_rows: list[tuple[int, Any]] = []
+        for model in models:
+            try:
+                account = build_platform_account(session, model)
+            except Exception as exc:
+                logger.log(f"账号 #{model.id} 构建失败: {type(exc).__name__}", level="warning")
+                continue
+            account_rows.append((int(model.id), account))
+
+    total = len(account_rows)
+    if total <= 0:
+        logger.log("没有可检测的账号")
+        logger.set_progress(0, 0)
+        logger.finish(TASK_STATUS_SUCCEEDED)
+        return
+
+    logger.set_progress(0, total)
+    logger.log(f"开始 MoMo 试用资格检测：共 {total} 个账号，并发 {concurrency}")
+
+    success = 0
+    ready = 0
+    failed = 0
+    progress_lock = threading.Lock()
+    done_count = 0
+
+    def _resolve_proxy_for_account(account: Any) -> str:
+        explicit = ""
+        try:
+            extra = getattr(account, "extra", None) or {}
+            if isinstance(extra, dict):
+                explicit = str(extra.get("proxy") or extra.get("proxy_url") or "").strip()
+        except Exception:
+            explicit = ""
+        try:
+            return str(
+                resolve_runtime_proxy(
+                    explicit_proxy=explicit or None,
+                    region="VN",
+                )
+                or ""
+            )
+        except Exception:
+            return explicit or ""
+
+    def _worker(account_id: int, account: Any) -> dict[str, Any]:
+        email = str(getattr(account, "email", "") or "")
+        label = email or f"#{account_id}"
+        access_token = _extract_chatgpt_access_token(account)
+        cookies = _extract_chatgpt_cookies(account)
+        if not access_token:
+            return {
+                "account_id": account_id,
+                "label": label,
+                "decision": "credential_invalid",
+                "supported": False,
+                "error": "缺少 access_token",
+            }
+        proxy = _resolve_proxy_for_account(account)
+        try:
+            result = probe_momo_trial(
+                access_token=access_token,
+                proxy=proxy,
+                cookies=cookies,
+                log_fn=lambda msg: logger.log(f"[{label}] {msg}"),
+            )
+        except Exception as exc:
+            return {
+                "account_id": account_id,
+                "label": label,
+                "decision": "checkout_failed",
+                "supported": False,
+                "error": f"{type(exc).__name__}",
+            }
+        result = dict(result or {})
+        result["account_id"] = account_id
+        result["label"] = label
+        return result
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {pool.submit(_worker, account_id, account): account_id for account_id, account in account_rows}
+        for fut in as_completed(futures):
+            account_id = futures[fut]
+            try:
+                result = fut.result()
+            except Exception as exc:
+                failed += 1
+                logger.log(f"账号 #{account_id} 异常: {type(exc).__name__}", level="error")
+                with progress_lock:
+                    done_count += 1
+                    logger.set_progress(done_count, total)
+                continue
+
+            decision = str(result.get("decision") or "")
+            label = str(result.get("label") or f"#{account_id}")
+            supported = bool(result.get("supported"))
+            trial = result.get("trial") if isinstance(result.get("trial"), dict) else {}
+            momo_taggable = _is_momo_trial_result_taggable(result)
+            if momo_taggable:
+                if supported or decision == "ready":
+                    ready += 1
+                success += 1
+                try:
+                    _mark_momo_trial_account(int(result.get("account_id") or account_id), result)
+                    logger.log(
+                        f"✓ {label} 具备 MoMo 试用资格 decision={decision} "
+                        f"momo={result.get('has_momo')}，已打标签 {MOMO_TRIAL_LABEL}"
+                    )
+                except Exception as exc:
+                    logger.log(f"{label} 打标签失败: {type(exc).__name__}", level="warning")
+                    logger.log(f"✓ {label} 具备 MoMo 试用资格（标签写入失败） decision={decision}")
+            else:
+                # 非 MoMo 试用可用；credential/checkout 类计 failed
+                if decision in {"credential_invalid", "checkout_failed", "stripe_init_failed", "cloudflare", "rate_limited"}:
+                    failed += 1
+                    logger.log(
+                        f"✗ {label} 决策={decision} error={result.get('error') or result.get('reason') or ''}",
+                        level="warning",
+                    )
+                else:
+                    success += 1
+                    prefix = "·"
+                    summary = "未达到 MoMo 试用条件"
+                    if decision == "momo_not_enabled":
+                        summary = "有试用但 MoMo 不可用，未打标签"
+                    logger.log(
+                        f"{prefix} {label} {summary} decision={decision} "
+                        f"trial={trial.get('has_real_trial')} "
+                        f"momo={result.get('has_momo')} "
+                        f"methods={result.get('payment_method_types') or []}"
+                    )
+
+            with progress_lock:
+                done_count += 1
+                logger.set_progress(done_count, total)
+
+    logger.log(f"MoMo 试用检测完成：ready={ready} 完成={success} 失败={failed} 总计={total}")
+    if logger.is_cancel_requested():
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+    else:
+        logger.finish(TASK_STATUS_SUCCEEDED if failed == 0 else TASK_STATUS_FAILED)
+

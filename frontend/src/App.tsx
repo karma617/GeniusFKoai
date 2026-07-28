@@ -58,7 +58,6 @@ const WORKBENCH_ITEMS: NavItem[] = [
   { path: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, exact: true },
   { path: "/ctf-gpt-plus", labelKey: "nav.ctfGptPlus", icon: Sparkles },
   { path: "/gopay-gpt-plus", labelKey: "nav.gopayGptPlus", icon: Sparkles },
-  { path: "/plus-manager", labelKey: "nav.plusManager", icon: Sparkles },
   { path: "/accounts/chatgpt", labelKey: "nav.chatgptFree", icon: Users },
   { path: "/history", labelKey: "nav.tasks", icon: History },
 ];

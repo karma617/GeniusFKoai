@@ -50,7 +50,7 @@ const ZH_MESSAGES = {
 
   "nav.workbench": "\u5de5\u4f5c\u53f0",
   "nav.dashboard": "总览",
-  "nav.tasks": "任务",
+  "nav.tasks": "任务记录",
   "nav.ctfGptPlus": "PayPal生成GPTplus",
   "nav.gopayGptPlus": "GoPay生成GPTplus",
   "nav.plusManager": "GPT Plus 管理",

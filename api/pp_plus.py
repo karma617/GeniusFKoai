@@ -18,6 +18,7 @@ router = APIRouter(prefix="/pp-plus", tags=["pp-plus"])
 class SettingsUpdateRequest(BaseModel):
     sms_provider: str | None = None
     sms_country: str | None = None
+    sms_service_code: str | None = None
     flow_country: str | None = None
     max_card_attempts: int | None = None
     max_phone_changes: int | None = None
@@ -30,6 +31,10 @@ class SettingsUpdateRequest(BaseModel):
 
 class BaTokenRequest(BaseModel):
     ba_token: str = Field(default="")
+
+
+class StartRequest(BaseModel):
+    account_ids: list[int] = Field(default_factory=list)
 
 
 @router.get("/status")
@@ -65,8 +70,11 @@ def pp_plus_save_settings(body: SettingsUpdateRequest) -> dict[str, Any]:
 
 
 @router.post("/start")
-def pp_plus_start() -> dict[str, Any]:
-    return get_pp_plus_worker().start()
+def pp_plus_start(body: StartRequest) -> dict[str, Any]:
+    try:
+        return get_pp_plus_worker().start(body.account_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/stop")
@@ -90,6 +98,14 @@ def pp_plus_save_ba_token(account_id: int, body: BaTokenRequest) -> dict[str, An
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.delete("/accounts/{account_id}/ba-token")
+def pp_plus_delete_ba_token(account_id: int) -> dict[str, Any]:
+    try:
+        return get_pp_plus_worker().remove_ba_token(account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class BaExtractStreamRequest(BaseModel):
     billing_proxy: str = ""
     promo_proxy: str = ""
@@ -97,11 +113,66 @@ class BaExtractStreamRequest(BaseModel):
     promo_country: str = ""
     billing_currency: str = ""
     confirm_mode: str = "pm"
+    promo_create_mode: str = "update_after_checkout"
     max_attempts: int = 20
+    force: bool = False
 
 
 def _sse_pack(payload: dict) -> str:
     return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+
+@router.post("/accounts/{account_id}/extract-ba-task")
+def pp_plus_start_ba_extract_task(account_id: int, body: BaExtractStreamRequest) -> dict[str, Any]:
+    from application.ba_extract_tasks import get_ba_extract_task_manager
+
+    try:
+        task = get_ba_extract_task_manager().start_task(int(account_id), body.model_dump())
+        return {"ok": True, "task": task}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/accounts/{account_id}/extract-ba-task")
+def pp_plus_get_ba_extract_task(account_id: int) -> dict[str, Any]:
+    from application.ba_extract_tasks import get_ba_extract_task_manager
+
+    task = get_ba_extract_task_manager().get_task(int(account_id))
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    return {"ok": True, "task": task}
+
+
+@router.post("/accounts/{account_id}/extract-ba-task/cancel")
+def pp_plus_cancel_ba_extract_task(account_id: int) -> dict[str, Any]:
+    from application.ba_extract_tasks import get_ba_extract_task_manager
+
+    try:
+        task = get_ba_extract_task_manager().cancel_task(int(account_id))
+        return {"ok": True, "task": task}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/accounts/{account_id}/extract-ba-events")
+def pp_plus_ba_extract_events(account_id: int, after_seq: int = 0):
+    from application.ba_extract_tasks import get_ba_extract_task_manager
+
+    def generate():
+        yield ": keep-alive" + "\n\n"
+        for event in get_ba_extract_task_manager().stream_events(int(account_id), after_seq=int(after_seq or 0)):
+            yield _sse_pack(event)
+        yield ": done" + "\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @router.post("/accounts/{account_id}/extract-ba-stream")
 def pp_plus_extract_ba_stream(account_id: int, body: BaExtractStreamRequest):
@@ -156,6 +227,7 @@ def pp_plus_extract_ba_stream(account_id: int, body: BaExtractStreamRequest):
                 promo_country=promo_country,
                 billing_currency=body.billing_currency or "",
                 confirm_mode=body.confirm_mode or "pm",
+                promo_create_mode=body.promo_create_mode or "update_after_checkout",
                 max_attempts=int(body.max_attempts or 20),
                 progress_cb=progress_cb,
                 cancel_check=cancel_event.is_set,

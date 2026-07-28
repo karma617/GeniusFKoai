@@ -169,6 +169,10 @@ def _is_chatgpt_deleted_or_deactivated_error(message: str) -> bool:
     )
 
 
+def _is_validate_otp_http_403_error(message: str) -> bool:
+    return "validate_otp_http_403_body" in str(message or "").lower()
+
+
 def _is_cloudflare_managed_challenge_error(message: str) -> bool:
     text = str(message or "").lower()
     if not text:
@@ -831,6 +835,8 @@ class ChatGPTPlatform(BasePlatform):
                  {"key": "billing_currency", "label": "账单币种（可空）", "type": "text"},
                  {"key": "confirm_mode", "label": "Confirm模式", "type": "select",
                   "options": ["pm", "direct"]},
+                 {"key": "promo_create_mode", "label": "优惠应用模式", "type": "select",
+                  "options": ["update_after_checkout", "create_with_promo"]},
                  {"key": "max_attempts", "label": "最大重试次数", "type": "number"},
              ]},
             {"id": "upload_cpa", "label": "上传 CPA",
@@ -1744,6 +1750,7 @@ class ChatGPTPlatform(BasePlatform):
         *,
         account_banned: bool = False,
         error_type: str = "",
+        delete_local_account: bool = True,
     ) -> dict:
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         resolved_error_type = error_type or ("account_banned" if account_banned else "session_refresh_failed")
@@ -1764,8 +1771,17 @@ class ChatGPTPlatform(BasePlatform):
         }
         if account_banned:
             result["lifecycle_status"] = "banned"
-            result["summary_updates"]["deactivated_reason"] = message
-            result["data"]["delete_local_account"] = True
+            result["summary_updates"].update(
+                {
+                    "deactivated_reason": message,
+                    "valid": False,
+                    "validity_status": "invalid",
+                    "display_status": "banned",
+                }
+            )
+            result["data"]["mark_local_account_banned"] = True
+            if delete_local_account:
+                result["data"]["delete_local_account"] = True
         return result
 
     def _handle_refresh_session(self, account: Account, params: dict) -> dict:
@@ -1806,11 +1822,13 @@ class ChatGPTPlatform(BasePlatform):
         except Exception as exc:
             message = f"重新登录异常: {exc}"
             cloudflare_challenge = _is_cloudflare_managed_challenge_error(message)
+            validate_otp_http_403 = _is_validate_otp_http_403_error(message)
             return self._refresh_session_failed_result(
                 account,
                 message,
-                account_banned=_is_chatgpt_deleted_or_deactivated_error(message),
+                account_banned=validate_otp_http_403 or _is_chatgpt_deleted_or_deactivated_error(message),
                 error_type="cloudflare_managed_challenge" if cloudflare_challenge else "",
+                delete_local_account=not validate_otp_http_403,
             )
 
         if callable(cancel_fn) and cancel_fn():
@@ -1819,11 +1837,13 @@ class ChatGPTPlatform(BasePlatform):
         if not result or not getattr(result, "success", False):
             error = str(getattr(result, "error_message", "") or "重新登录失败")
             cloudflare_challenge = _is_cloudflare_managed_challenge_error(error)
+            validate_otp_http_403 = _is_validate_otp_http_403_error(error)
             return self._refresh_session_failed_result(
                 account,
                 error,
-                account_banned=_is_chatgpt_deleted_or_deactivated_error(error),
+                account_banned=validate_otp_http_403 or _is_chatgpt_deleted_or_deactivated_error(error),
                 error_type="cloudflare_managed_challenge" if cloudflare_challenge else "",
+                delete_local_account=not validate_otp_http_403,
             )
 
         metadata = getattr(result, "metadata", None) or {}
@@ -2440,6 +2460,7 @@ class ChatGPTPlatform(BasePlatform):
             promo_country=str(params.get("promo_country") or "TR"),
             billing_currency=str(params.get("billing_currency") or params.get("currency") or ""),
             confirm_mode=str(params.get("confirm_mode") or "pm"),
+            promo_create_mode=str(params.get("promo_create_mode") or "update_after_checkout"),
             max_attempts=_int_param(params, "max_attempts", 20),
             log_fn=log_fn,
             cancel_check=getattr(self, "_cancel_check_fn", None),

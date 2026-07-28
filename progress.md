@@ -6376,3 +6376,586 @@ egister.py` 通过。
 - `docs/chatgpt-register-flow.md`：记录最终 callback/session 的纯协议请求顺序和兜底边界。
 - `progress.md`：追加本轮实现与验证记录。
 - 回滚方式：撤销以上三个文件中与 callback 导航 headers、`chatgpt.com/` 预访问、session headers 和本任务记录相关的本轮 diff。
+
+## 2026-07-27 - Task: BA链提取改为账号级后台任务
+
+### What was done
+- 将「提取BA链」从弹窗前台 SSE 执行改为账号级后台任务；每个账号独立启动、独立记录事件和日志，多个账号可同时运行。
+- 账号列表原「支付长链」列改为「BA链任务」，直接显示任务状态、步骤进度、最近 SSE 日志，并支持复制该账号任务日志。
+- 弹窗只负责填写参数和提交任务，启动后关闭；SSE 订阅断开不终止后台任务，任务状态写入账号 overview 用于列表回显。
+- 增加后台任务 API 和并发隔离测试，保留旧 stream 接口兼容旧入口。
+- 更新 BA 链文档，说明后台任务、列表显示和 SSE 订阅边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\ba_extract_tasks.py api\pp_plus.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_ba_extract_tasks.py -q --disable-warnings --tb=short`：1 passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_ba_extract_tasks.py tests\test_ba_link_extract.py -q --disable-warnings --tb=short`：8 passed。
+- `npm run build`（frontend）：通过；仅保留 Vite chunk size 提示。
+
+### Notes
+- `application/ba_extract_tasks.py`：新增 BA 链账号级后台任务管理器、事件流、状态持久化和账号隔离执行。
+- `api/pp_plus.py`：新增启动、查询、订阅 BA 链后台任务的 API。
+- `frontend/src/pages/Accounts.tsx`：列表列名和单元格改为 BA 链任务状态，提取按钮按账号任务运行态禁用，弹窗改为提交后台任务。
+- `tests/test_ba_extract_tasks.py`：覆盖两个账号并发启动时任务 ID、成功状态和日志互不串扰。
+- `docs/pp-plus-ba.md`：记录 BA 链后台任务、列表回显和 SSE 订阅边界。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：删除 `application/ba_extract_tasks.py` 和 `tests/test_ba_extract_tasks.py`，撤销 `api/pp_plus.py`、`frontend/src/pages/Accounts.tsx`、`docs/pp-plus-ba.md`、`progress.md` 中与 BA 链后台任务、列表「BA链任务」列和本记录相关的本轮 diff。
+
+## 2026-07-27 - Task: BA链任务日志改为弹窗查看
+
+### What was done
+- 将账号列表「BA链任务」列的「日志」按钮从直接复制改为弹出 BA 链提取日志查看框。
+- 日志弹窗展示账号、状态、阶段、步骤进度、错误信息、BA 结果和完整 SSE 日志，并支持复制全部。
+- 任务进行中打开日志框时，继续跟随当前账号后台任务的实时日志更新。
+
+### Testing
+- 代码替换已核对：`BaExtractTaskLogDialog`、`onViewLogs`、主表/紧凑表两处入口均已接入。
+- `npm run build`（frontend）：通过；仅保留 Vite chunk size 提示。
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：新增 BA 链提取日志弹窗；「日志」按钮改为打开弹窗。
+- `docs/pp-plus-ba.md`：补充「日志」按钮弹出查看框说明。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上三个文件中与 `BaExtractTaskLogDialog`、`baExtractLogTaskId`、日志按钮弹窗入口和本记录相关的本轮 diff。
+
+
+## 2026-07-27 - Task: BA链任务整格可点开日志
+
+### What was done
+- 在已有「日志」按钮弹窗基础上，补强「BA链任务」单元格整格可点击打开日志。
+- 日志按钮继续可用，并阻止冒泡，避免重复触发。
+
+### Testing
+- 代码结构核对：`BaExtractTaskCell` 整格 onClick / 键盘 Enter/Space / 日志按钮 stopPropagation 均已接入。
+- `npm run build`（frontend）：通过；仅保留 Vite chunk size 提示。
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：BA链任务单元格支持整格打开日志。
+- `docs/pp-plus-ba.md`：补充整格可点开日志说明。
+- `progress.md`：追加本轮记录。
+- 回滚方式：撤销以上三个文件中与整格点击打开日志相关的本轮 diff。
+
+
+## 2026-07-27 - Task: 启动BA链任务后自动打开日志并接SSE
+
+### What was done
+- 点击「开始提取」成功后自动打开该账号的 BA 链提取日志弹窗；启动失败也会打开日志框展示错误。
+- 从列表点开日志时，若尚未订阅事件流则立即订阅 SSE，运行中可持续刷新。
+- 提取弹窗说明文案同步为“启动后自动打开日志”。
+
+### Testing
+- `npm run build`（frontend）：通过；产物 `static/assets/index-MJYwTtpz.js`。
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：新增 `openBaExtractLogs`，启动任务后 `setBaExtractLogTaskId`，列表入口统一走 open 并订阅。
+- `docs/pp-plus-ba.md`：补充自动打开日志与打开时接 SSE。
+- `progress.md`：追加本轮记录。
+- 回滚方式：撤销以上文件中与 `openBaExtractLogs`、启动后自动打开日志相关的本轮 diff。
+
+## 2026-07-27 - Task: 修复 BA链任务前端构建未使用变量
+
+### What was done
+- 删除账号列表两处残留的 `baTaskRunning` 未使用变量，保留实际用于禁用按钮的 `baTaskActive`。
+- 重新构建前端静态资源，确认 `start_with_go_gateway.bat` 触发的前端 build 不再被 TS6133 拦截。
+
+### Testing
+- `npm run build`（frontend）：通过，产物 `static/assets/index-CbQsjpBl.js`，仅保留 Vite chunk size 提示。
+- `rg -n "baTaskRunning|baTaskActive" frontend/src/pages/Accounts.tsx`：确认 `baTaskRunning` 已清理，`baTaskActive` 仍用于两处「提取BA链」按钮禁用和文案。
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：清理 BA链任务列表渲染里的未使用变量。
+- `progress.md`：追加本轮构建修复记录。
+- 回滚方式：恢复 `frontend/src/pages/Accounts.tsx` 中两处 `baTaskRunning` 声明，并撤销本段 `progress.md` 记录。
+
+
+## 2026-07-28 - Task: 修复 BA链提取失败后重试和终止卡住
+
+### What was done
+- 修复 BA链任务终止后一直停在“终止中/进行中”的状态机问题：终止请求现在立即收口为 `cancelled`。
+- 修复旧 worker 终止后的迟到 progress 把任务状态重新覆盖成 `running` 的问题。
+- 修复进程内旧任务线程已结束但状态仍是 running/queued 时，后续启动会返回旧任务的问题；现在会收口旧状态后允许新任务。
+- 保持再次提取使用 `force` 新 task_id、清空旧日志、前端立即打开日志框和重新订阅 SSE 的行为。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile applicationa_extract_tasks.py api\pp_plus.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests	est_ba_extract_tasks.py -q --disable-warnings --tb=short`：3 passed。
+- `npm run build`（frontend）：通过，产物 `static/assets/index-CbQsjpBl.js`，仅保留 Vite chunk size 提示。
+
+### Notes
+- `application/ba_extract_tasks.py`：终止立即写 done/cancelled，忽略 cancelled 后的迟到 progress，并收口已死 running 任务。
+- `tests/test_ba_extract_tasks.py`：新增终止即时收口、迟到 progress 忽略、force 重试新任务和新日志覆盖。
+- `docs/pp-plus-ba.md`：记录终止和重试的状态边界。
+- `progress.md`：追加本轮修复记录。
+- 回滚方式：撤销以上四个文件中与 BA链任务 cancel/force 重试状态机和本记录相关的本轮 diff。
+
+
+## 2026-07-28 - Task: 借鉴菲律宾提链的代理轮换和 promo 创建模式
+
+### What was done
+- BA 提链多行代理从随机选取改为按 attempt 顺序轮换：第 1 次取第 1 行，第 2 次取第 2 行，超过长度后循环。
+- 新增 `promo_create_mode` 参数，默认 `update_after_checkout` 保持原链路；可选 `create_with_promo`，创建 checkout 时直接带 `promo_campaign`，后续跳过 `/checkout/update` 并刷新 Stripe。
+- 后台 BA 任务 API、旧平台 action 入口和前端「提取BA链」弹窗均已接入优惠应用模式。
+- 前端说明文案补充代理按重试顺序轮换。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile applicationa_link_extract.py applicationa_extract_tasks.py api\pp_plus.py platforms\chatgpt\plugin.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests	est_ba_link_extract.py tests	est_ba_extract_tasks.py -q --disable-warnings --tb=short`：11 passed。
+- `npm run build`（frontend）：通过，产物 `static/assets/index-MkjTPfd_.js`，仅保留 Vite chunk size 提示。
+
+### Notes
+- `application/ba_link_extract.py`：代理选择改为顺序轮换；新增 `normalize_promo_create_mode` 和 create-with-promo 分支。
+- `application/ba_extract_tasks.py`：后台任务向 BA 提链函数透传 `promo_create_mode`。
+- `api/pp_plus.py`：BA 提链请求模型和旧 stream 接口接收 `promo_create_mode`。
+- `platforms/chatgpt/plugin.py`：旧 action 参数和调用链透传优惠应用模式。
+- `frontend/src/pages/Accounts.tsx`：提取弹窗新增「优惠应用模式」选择，并提交到后台任务。
+- `tests/test_ba_link_extract.py`：覆盖顺序轮换和 create-with-promo 跳过后置 update。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上文件中与 `promo_create_mode`、代理顺序轮换及本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: 判断 BA链进度卡住并增强无 redirect 诊断
+
+### What was done
+- 根据附件日志判断本次卡点不是后台任务生命周期问题，而是 confirm/approve 已完成后 Stripe poll 持续没有返回 PayPal redirect。
+- 扩展 redirect 提取范围：除 Stripe pm-redirect 外，也会从嵌套字段中识别 PayPal approve/checkout/hermes 授权链接。
+- 增加无 redirect 时的关键字段摘要，避免日志只显示大段 checkout.session 截断内容。
+- 当 poll 连续 3 次只返回同一个 checkout.session 且无 state/error/redirect 时，提前结束本次 attempt 并切换下一组代理，减少看起来“卡住”的等待。
+- 同步更新 BA 链文档，说明该场景属于链路层无跳转以及当前提前换代理策略。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\ba_link_extract.py application\ba_extract_tasks.py api\pp_plus.py platforms\chatgpt\plugin.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_ba_link_extract.py tests\test_ba_extract_tasks.py -q --disable-warnings --tb=short`：14 passed，1 warning。
+
+### Notes
+- `application/ba_link_extract.py`：增强 PayPal redirect 深度提取、redirect 诊断摘要，以及连续静态 poll 提前换代理。
+- `tests/test_ba_link_extract.py`：新增嵌套 PayPal URL 提取、诊断摘要、连续无 redirect poll 提前结束覆盖。
+- `docs/pp-plus-ba.md`：补充无 redirect 场景的日志判断和提前换代理策略。
+- `progress.md`：追加本轮诊断与修复记录。
+- 回滚方式：撤销以上四个文件中与 `_find_redirect`、`_payload_redirect_diagnostics`、`MAX_STATIC_NO_REDIRECT_POLLS`、新增测试和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: PLUS开通设置接码地区下拉增加搜索
+
+### What was done
+- 将 PLUS 开通设置里的「接码地区」从普通下拉改成与 SMSBower 设置页一致的可搜索下拉。
+- 下拉展开后顶部显示搜索输入框和放大镜图标，可按地区名称或地区代码筛选；选择后仍写回原 `sms_country` 值，保存和开启任务逻辑不变。
+
+### Testing
+- `npm run build`（frontend）：通过，产物 `static/assets/index-C-_DQZCJ.js`，仅保留 Vite chunk size 提示。
+
+### Notes
+- `frontend/src/components/pp-plus/PpPlusPanels.tsx`：新增同款可搜索地区下拉，并替换 PLUS 设置里的接码地区 select。
+- `progress.md`：追加本轮 UI 改动记录。
+- 回滚方式：撤销以上两个文件中与 `SearchableSmsCountrySelect`、`Search` 图标引入、接码地区下拉替换和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: PLUS接码无号码时轮询等待
+
+### What was done
+- 将 PLUS 开通任务获取手机号时的 `NO_NUMBERS` 从立即失败改为限时轮询。
+- 当前账号遇到暂无号码时，每 3 秒重新获取一次手机号，最多等待 3 分钟。
+- 超过 3 分钟仍无号码时结束当前账号任务，错误与日志统一记录为“暂无可用手机号”，不影响后续账号继续执行。
+- 手机号更换流程里再次租号遇到 `NO_NUMBERS` 时也复用同一轮询策略。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\pp_plus_ba.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：7 passed，1 warning。
+
+### Notes
+- `application/pp_plus_ba.py`：新增 `NO_NUMBERS` 识别、3秒/3分钟轮询获取手机号，以及超时统一错误。
+- `tests/test_pp_plus_ba.py`：覆盖无号码重试后成功、无号码超时日志记录。
+- `docs/pp-plus-ba.md`：补充接码无号码时的等待和账号结束规则。
+- `progress.md`：追加本轮行为改动记录。
+- 回滚方式：撤销以上四个文件中与 `NoAvailableSmsNumberError`、`_rent_sms_number_with_retry`、`NO_NUMBERS` 轮询、对应测试、文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: PLUS失败账号重新执行时继续参与任务
+
+### What was done
+- 修复 PLUS 开通任务失败后再次启动不会执行失败账号的问题。
+- 失败分支不再清除账号 BA 链；失败账号保留 `pp_ba_token / ba_token`，再次开启任务时仍会被扫描并继续执行。
+- 成功支付后仍清除 BA 链，避免已成功账号重复支付。
+- 同步更新文档中的失败/成功 BA 链保留规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\pp_plus_ba.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：8 passed，1 warning。
+
+### Notes
+- `application/pp_plus_ba.py`：失败账号写入 error/failed 状态时保留 BA 链，不再调用 `clear_ba_token`。
+- `tests/test_pp_plus_ba.py`：新增失败后保留 BA 链并不调用清理函数的覆盖。
+- `docs/pp-plus-ba.md`：更新失败账号重跑规则。
+- `progress.md`：追加本轮行为修复记录。
+- 回滚方式：撤销以上四个文件中与失败保留 BA 链、对应测试、文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: 收窄 PLUS 失败清除 BA 链条件
+
+### What was done
+- 将 PLUS 失败后的 BA 链清理改为明确失效判定：默认失败保留 BA 链。
+- 暂无手机号、手机号无效、验证码、接码、代理、网络、风控会话类错误不会清 BA 链，后续重新开启任务会继续重跑。
+- 只有最终支付表单/协议提交阶段出现带 BA/协议上下文的明确失效错误（如 invalid/expired/already used/form submission blocked 指向 billingAgreementId/BA token）才清 BA 链。
+- 支付 flow 返回 error 状态时不再当成功处理，会进入失败分类分支。
+- 文档同步说明清理边界。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\pp_plus_ba.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：10 passed，1 warning。
+
+### Notes
+- `application/pp_plus_ba.py`：新增 `_should_clear_ba_token_after_failure`，失败分支按分类决定是否清 BA，并处理 flow error 状态。
+- `tests/test_pp_plus_ba.py`：新增 BA 清理判定和明确协议失效时清理的覆盖。
+- `docs/pp-plus-ba.md`：更新失败保留/清除 BA 链的边界规则。
+- `progress.md`：追加本轮清理策略优化记录。
+- 回滚方式：撤销以上四个文件中与 `_should_clear_ba_token_after_failure`、flow error 状态处理、对应测试、文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: 修复 BA链任务重启后残留进行中和终止500
+
+### What was done
+- 修复服务重启后 BA链任务列表仍显示 running/queued/cancelling 的持久化残留问题。
+- 进程内没有活跃 worker 时，查询接口会把残留进行中任务自动收口为 error，并提示“服务重启后任务已结束，可重新提取”。
+- 终止接口遇到重启后的孤儿 running/cancelling 任务会收口为 cancelled，返回 200，不再报 Internal Server Error。
+- 修复持久化任务读取时访问不存在的 `account.overview` 导致 500 的问题，改用 account graph overview。
+- 文档同步说明服务重启后的孤儿任务收口规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\ba_extract_tasks.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_ba_extract_tasks.py -q --disable-warnings --tb=short`：5 passed，1 warning。
+
+### Notes
+- `application/ba_extract_tasks.py`：新增 active 状态集合、孤儿持久化任务收口、持久化 overview 读取修复。
+- `tests/test_ba_extract_tasks.py`：新增重启后查询自动收口、重启后终止返回 cancelled 的覆盖。
+- `docs/pp-plus-ba.md`：补充重启后孤儿 BA链任务处理规则。
+- `progress.md`：追加本轮生命周期修复记录。
+- 回滚方式：撤销以上四个文件中与 `ACTIVE_BA_EXTRACT_STATUSES`、`settle_orphaned`、`_task_from_persisted`、持久化 overview 读取修复、新增测试、文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: 5sim无号码错误进入3秒轮询
+
+### What was done
+- 将 `5sim purchase returned unusable response: no free phones` 纳入 PLUS 接码暂无号码识别。
+- 5sim 返回 no free phones 时复用现有每 3 秒重新获取、最多 3 分钟超时的逻辑。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\pp_plus_ba.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：11 passed，1 warning。
+
+### Notes
+- `application/pp_plus_ba.py`：扩展 `_is_no_numbers_error`，识别 `NO FREE PHONES/NO FREE PHONE`。
+- `tests/test_pp_plus_ba.py`：新增 5sim no free phones 暂无号码识别覆盖。
+- `progress.md`：追加本轮识别规则记录。
+- 回滚方式：撤销以上三个文件中与 `NO FREE PHONES`、新增测试和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: PLUS开通接码服务代码可配置
+
+### What was done
+- PLUS 开通设置新增“接码服务”配置，用户可自行填写 PayPal service 代码，不再只能使用写死的平台映射。
+- 后端保存 `sms_service_code` 并在接码取号时优先使用该配置；旧配置没有该字段时按接码平台自动补默认值。
+- 页面文案从“写死不可改”调整为可按平台自行调整，并在切换接码平台时带出平台默认 service 代码。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\pp_plus_ba.py api\pp_plus.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：13 passed, 1 warning。
+- `npm run build`（frontend）：通过；仅保留 Vite chunk size 提示。
+
+### Notes
+- `frontend/src/components/pp-plus/PpPlusPanels.tsx`：新增接码服务输入项、保存字段和平台切换默认 service 带出逻辑。
+- `application/pp_plus_ba.py`：新增 `sms_service_code` 设置项，后端取号优先使用用户配置，并兼容旧设置按平台回填默认值。
+- `api/pp_plus.py`：设置保存请求允许提交 `sms_service_code`。
+- `tests/test_pp_plus_ba.py`：补充设置持久化、旧配置默认值回填和取号 provider 使用自定义 service 的覆盖。
+- `docs/pp-plus-ba.md`：同步 PLUS 设置里接码服务代码可配置的使用说明。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上六个文件中与 `sms_service_code`、接码服务输入项、对应测试、文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: PLUS勾选账号执行与BA链清除
+
+### What was done
+- BA 链提取成功日志补充本次任务的账单地区+优惠地区组合，成功行会显示类似 `BA+JP`，列表摘要和日志弹窗都能看到。
+- PLUS 开通任务启动改为只消费本次已勾选账号队列；未勾选账号即使已有 BA 链也不会被自动扫描执行。
+- 已有 BA 链的账号操作按钮从“填写BA链”切换为“清除BA链”，点击后可清空该账号 BA 链，方便重新填写或重新提取。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\pp_plus_ba.py application\ba_extract_tasks.py api\pp_plus.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：15 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_ba_extract_tasks.py -vv --disable-warnings --tb=short`：6 passed, 1 warning。
+- `npm run build`（frontend）：通过；仅保留 Vite chunk size 提示。
+
+### Notes
+- `application/ba_extract_tasks.py`：BA 提取任务保存并输出 `region_combo`，成功日志追加地区组合。
+- `application/pp_plus_ba.py`：PLUS worker 新增勾选账号队列，只按启动参数执行；新增用户清除 BA 链方法。
+- `api/pp_plus.py`：`/pp-plus/start` 接收 `account_ids`；新增删除账号 BA 链接口。
+- `frontend/src/components/pp-plus/PpPlusPanels.tsx`：PLUS 设置弹窗显示本次勾选账号数，启动时提交所选账号。
+- `frontend/src/pages/Accounts.tsx`：BA 任务展示地区组合；已有 BA 链时按钮变为清除并调用清除接口。
+- `tests/test_pp_plus_ba.py`：覆盖未勾选不启动、只按队列取账号。
+- `tests/test_ba_extract_tasks.py`：覆盖成功提取日志包含 `BA+JP`。
+- `docs/pp-plus-ba.md`：同步勾选账号执行、BA 成功地区组合日志规则。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上九个文件中与 `region_combo`、`account_ids` 启动队列、清除 BA 链按钮/接口、对应测试、文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: BA提取日志时间与终止卡住修复
+
+### What was done
+- BA 链提取日志每一行增加本地时间前缀，格式为 `[YYYY年MM月DD日 HH时MM分SS秒]`；旧的未带时间日志在弹窗展示时也会补时间前缀。
+- BA 链任务状态更新改为内存先收口、数据库异步落盘，避免进度持久化写库拖住任务锁，导致终止接口无法及时返回。
+- 前端终止任务改为点击后立即本地标记 cancelled，并给终止请求设置 5 秒超时；旧任务迟到进度和运行中快照不再覆盖已终止状态。
+- 前端增加运行中 BA 任务 3 秒快照轮询，SSE 断开或页面卡在旧进度时也能兜底刷新任务状态。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\ba_extract_tasks.py api\pp_plus.py application\pp_plus_ba.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_ba_extract_tasks.py -q --disable-warnings --tb=short`：6 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：15 passed, 1 warning。
+- `npm run build`（frontend）：通过；仅保留 Vite chunk size 提示。
+
+### Notes
+- `application/ba_extract_tasks.py`：日志落盘前增加时间前缀；任务状态持久化改为异步，终止不再等待数据库写入。
+- `frontend/src/pages/Accounts.tsx`：日志弹窗补齐时间前缀；终止按钮立即本地收口并防迟到进度覆盖；新增运行中任务快照轮询兜底。
+- `tests/test_ba_extract_tasks.py`：增加成功日志时间前缀校验。
+- `docs/pp-plus-ba.md`：同步日志时间格式、SSE 断开兜底轮询和终止立即收口规则。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上五个文件中与 BA 日志时间前缀、异步持久化、终止立即收口、轮询兜底、对应测试/文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: PLUS接码服务下拉与即时停止修复
+
+### What was done
+- PLUS 开通设置的“接码服务”从手填改为按当前接码平台调用服务列表接口加载，可搜索选择；接口不可用时保留手填兜底。
+- HeroSMS 的 PayPal service 默认值改为接口对应的 `ts`，避免旧兜底 `pp` 写入导致取号服务不匹配。
+- PLUS 任务停止改为清空待执行账号并立即标记当前账号“任务已停止”；无号重试、验证码等待和 PayPal flow 检查点都会响应停止信号。
+- 获取手机号日志增加实际接码 provider/service 信息，便于确认本次运行是否真的是 HeroSMS，而不是旧任务/旧配置。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\pp_plus_ba.py api\pp_plus.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_pp_plus_ba.py -q --disable-warnings --tb=short`：17 passed, 1 warning。
+- `npm run build`（frontend）：通过；仅保留 Vite chunk size 提示。
+
+### Notes
+- `frontend/src/components/pp-plus/PpPlusPanels.tsx`：接码服务改为可搜索下拉，按 provider/country 调 `/sms/*/services`，HeroSMS fallback 默认 `ts`。
+- `application/pp_plus_ba.py`：HeroSMS PayPal 默认 service 改为 `ts`；stop 清队列并中断当前账号；接码重试和验证码等待支持停止信号。
+- `tests/test_pp_plus_ba.py`：补充 HeroSMS 默认 service 回填和无号重试中断测试。
+- `docs/pp-plus-ba.md`：同步接码服务下拉来源、HeroSMS `ts`、停止任务中断规则。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：撤销以上五个文件中与接码服务接口下拉、HeroSMS `ts` 默认值、PLUS 即时停止、中断测试、文档和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: Momo资格检测任务记录终止按钮收口
+
+### What was done
+- 修复任务记录页对 `cancel_requested` 的展示：取消中状态不再强制显示“终止/终止中”按钮，也不再计入进行中统计。
+- 后端任务序列化对进度已满的 `cancel_requested` 做展示收口，返回为 `cancelled`，避免服务端已经跑完但列表仍显示取消中。
+- MoMo 资格检测执行完成后补充最终任务状态写入，无账号场景也会正常结束任务。
+- 再次终止已完成进度的取消中任务时，后端会收口为 `cancelled`。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py application\momo_trial_probe.py`
+- `.\.venv\Scripts\python.exe -m pytest tests\test_task_cancellation_state.py -q --disable-warnings --tb=short`
+- `cd frontend; npm run build`
+
+### Notes
+- `frontend/src/pages/TaskHistory.tsx`：调整任务记录页进行中统计和终止按钮显示条件，避免远端 `cancel_requested` 永久显示“终止中”。
+- `application/tasks.py`：调整任务序列化、取消请求收口和 MoMo 检测最终状态写入。
+- `tests/test_task_cancellation_state.py`：新增取消中状态序列化和二次取消收口测试。
+- `docs/task-runtime-isolation.md`：补充取消中状态和终止按钮展示规则。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：还原以上文件本轮 diff；若只回滚 UI，可单独还原 `frontend/src/pages/TaskHistory.tsx`。
+
+## 2026-07-28 - Task: 收窄 MoMo 试用资格标签判定
+
+### What was done
+- 核对附件日志，确认 `decision=momo_not_enabled momo=False` 的账号被打了 `MOMO试用` 标签；这类账号只有试用落单迹象，没有 MoMo 支付方式，不应判为 MoMo 试用可用。
+- 将 MoMo 标签判定收窄为同时满足 `supported/ready` 和 `has_momo=True`，`momo_not_enabled` 只记录“有试用但 MoMo 不可用，未打标签”。
+- Stripe init 日志增加 `trial` 和 `amount_due` 字段，避免 checkout 初始 `real_trial=False` 与最终 decision 看起来矛盾。
+- 前端 MoMo 检测说明改为“同时具备试用和 MoMo 时打标签”。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py application\momo_trial_probe.py`
+- `.\.venv\Scripts\python.exe -m pytest tests\test_momo_trial_probe.py tests\test_task_cancellation_state.py -q --disable-warnings --tb=short`
+- `cd frontend; npm run build`
+
+### Notes
+- `application/tasks.py`：新增 MoMo 标签判定 helper，移除 `momo_not_enabled` 打标签分支。
+- `application/momo_trial_probe.py`：Stripe init 日志补充最终 trial/amount_due/momo 信息。
+- `frontend/src/pages/Accounts.tsx`：更新 MoMo 检测弹窗说明文案。
+- `tests/test_momo_trial_probe.py`：覆盖有试用但无 MoMo 不打标签、ready + MoMo 才打标签。
+- `docs/momo-trial-probe.md`：记录 MoMo 检测判定边界。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：撤销以上文件中与 `_is_momo_trial_result_taggable`、MoMo 日志文案、测试和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: 重登验证 validate_otp_http_403_body 标记封禁
+
+### What was done
+- 重登验证流程识别 `validate_otp_http_403_body`，将该类账号结果归类为 `account_banned`。
+- 该类错误不再删除本地账号，而是保留账号并写入 `lifecycle_status=banned`、`display_status=banned`、`validity_status=invalid`。
+- 重登任务日志对该类账号显示“账号已标记为封禁”，便于和账号删除类封禁区分。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\plugin.py application\tasks.py`
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_otp_callback.py -q --disable-warnings --tb=short -k "validate_otp_403 or failed_result_only_flags"`
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -q --disable-warnings --tb=short -k "refresh_session_task_deletes_banned_account or refresh_session_task_keeps_validate_otp_403_banned_account or refresh_session_task_keeps_account_on_normal_failure"`
+- 说明：整文件 `tests\test_chatgpt_get_rt_otp_callback.py tests\test_platform_action_task.py` 当前仍有既有失败，分别是两个 mailbox proxy 断言和一个 runtime fake model 缺少 `id` 的断言问题，本轮使用聚焦用例验证当前改动。
+
+### Notes
+- `platforms/chatgpt/plugin.py`：新增 `validate_otp_http_403_body` 识别，重登失败时返回封禁状态但不要求删除本地账号。
+- `application/tasks.py`：重登任务遇到不删除的 `account_banned` 时直接把账号图谱标记为封禁。
+- `tests/test_chatgpt_get_rt_otp_callback.py`：覆盖 validate OTP 403 被归类为封禁且不删除本地账号。
+- `tests/test_platform_action_task.py`：覆盖重登任务保留账号并写入 banned 状态。
+- `docs/account-actions.md`：记录 validate OTP 403 的本地封禁标记规则。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：撤销以上文件中与 `_is_validate_otp_http_403_error`、`mark_local_account_banned`、重登任务封禁标记、测试和本记录相关的本轮 diff。
+
+## 2026-07-28 - Task: 隐藏 GPT Plus 管理侧边栏菜单
+
+### What was done
+- 从工作台侧边栏菜单中隐藏 `GPT Plus 管理` 入口。
+- 保留 `/plus-manager` 路由和 `PlusManager` 页面组件，功能未删除，直接访问路由仍可打开。
+
+### Testing
+- `cd frontend; npm run build`
+
+### Notes
+- `frontend/src/App.tsx`：移除 `WORKBENCH_ITEMS` 中 `/plus-manager` 菜单项，保留路由注册。
+- `docs/app-navigation.md`：记录该路由保留但侧边栏不展示。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：把 `frontend/src/App.tsx` 的 `/plus-manager` 菜单项加回 `WORKBENCH_ITEMS`，并撤销本段记录。
+
+## 2026-07-28 - Task: 任务菜单改名为任务记录
+
+### What was done
+- 将侧边栏工作台里的“任务”菜单文案改为“任务记录”。
+- 仅调整中文显示文案，菜单路由和任务记录页面功能保持不变。
+
+### Testing
+- `cd frontend; npm run build`
+
+### Notes
+- `frontend/src/lib/i18n.ts`：中文 `nav.tasks` 从“任务”改为“任务记录”。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：将 `frontend/src/lib/i18n.ts` 的 `nav.tasks` 中文文案改回“任务”，并撤销本段记录。
+
+## 2026-07-28 - Task: 调整账号注册表列和操作按钮
+
+### What was done
+- 移除账号注册表里的 `Token` 列和 `完整 JSON` 列。
+- 将 `创建时间` 列移动到靠近最右侧操作列的位置。
+- 将原完整 JSON 列里的复制 session 功能移动到操作列，按钮名改为“复制SESSION”。
+- 在操作列直接显示“上传SUB2API”按钮，复用当前账号的 `upload_sub2api` 动作。
+
+### Testing
+- `cd frontend; npm run build`
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：调整现代账号表格列定义、表头、行内容和操作列按钮。
+- `docs/account-actions.md`：同步记录账号表列结构和“复制SESSION / 上传SUB2API”操作规则。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：恢复 `frontend/src/pages/Accounts.tsx` 中 Token/完整 JSON 列、创建时间原位置和操作列按钮布局，并撤销文档及本段记录。
+
+## 2026-07-28 - Task: 调整自动注册 ChatGPT 上传相关卡片显示
+
+### What was done
+- 前端隐藏“注册成功后自动获取支付链接”卡片，保留原状态和提交参数能力，默认不启用。
+- 将“是否打包上传”并入“是否启用上传到远端”卡片下方；只有勾选上传到远端后才显示。
+- 取消勾选上传到远端时同步关闭打包上传，提交参数也强制按 `remote_upload_enabled && k12_batch_upload_enabled` 计算，避免隐藏状态误生效。
+
+### Testing
+- `cd frontend; npm run build`
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：隐藏支付链接入口，重排远端上传/打包上传卡片和提交参数关系。
+- `docs/k12-space-join.md`：同步记录打包上传依赖远端上传显示，以及支付链接入口前端隐藏。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：恢复 `frontend/src/pages/Accounts.tsx` 中支付链接卡片渲染，并把“是否打包上传”恢复为独立卡片；撤销文档和本段记录。
+
+## 2026-07-28 - Task: 隐藏自动注册 BUGFREE 模式卡片
+
+### What was done
+- 前端隐藏自动注册 ChatGPT 弹窗中的 `BUGFREE模式` 卡片。
+- 保留 `bugfreeMode` 状态和 `extra.bugfree_mode` 提交字段，默认不启用，后端功能未删除。
+
+### Testing
+- `cd frontend; npm run build`
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：移除 BUGFREE 模式卡片渲染，保留默认 false 状态和参数传递。
+- `docs/chatgpt-register-flow.md`：记录 BUGFREE 模式前端入口已隐藏但后端能力保留。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：恢复 `frontend/src/pages/Accounts.tsx` 中 BUGFREE 模式 label 渲染和 `setBugfreeMode` 状态 setter，并撤销文档和本段记录。
+
+## 2026-07-28 - Task: 固定自动注册开始按钮到底部
+
+### What was done
+- 将自动注册 ChatGPT 弹窗里的“开始自动注册”按钮从滚动内容区移到底部固定操作区。
+- 任务未开始时底部固定显示开始按钮和取消按钮；任务开始后底部只保留取消/关闭按钮。
+
+### Testing
+- `cd frontend; npm run build`
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：调整 RegisterModal 底部按钮布局，让开始按钮固定在弹窗底部。
+- `progress.md`：追加本轮修改与验证记录。
+- 回滚方式：将开始按钮移回滚动内容区，并恢复底部操作区只显示取消/关闭按钮。
+
+## 2026-07-28 - Task: 移除协议注册的同步 cf_clearance 预取等待
+
+### What was done
+- 移除初始化进入邮箱验证页、OTP 校验和创建账号资料前的无头浏览器 `cf_clearance` 预取调用，验证码等待不再被一次未命中的 Camoufox 尝试阻塞。
+- 保留 callback 或 session 返回 4xx 后的浏览器 callback/session 兜底，只有协议最终取会话确实失败时才启动浏览器。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short` 通过：`60 passed, 1 warning`。
+- `git diff --check -- platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py docs\chatgpt-register-flow.md progress.md` 通过。
+
+### Notes
+- `platforms/chatgpt/register.py`：删除协议主链三处同步无头 CF 预取调用。
+- `tests/test_chatgpt_protocol_otp.py`：确认完整协议注册成功路径不调用 CF 预取 helper。
+- `docs/chatgpt-register-flow.md`：同步主链不预取、最终 callback/session 失败才浏览器兜底的行为。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：恢复 `platforms/chatgpt/register.py` 三处 `_latest_chatgpt_seed_cf_clearance_via_headless` 调用，移除本轮测试、文档和本段记录。
+
+## 2026-07-28 - Task: 修复 BA 链提取 SSE 订阅锁异常
+
+### What was done
+- 修复 BA 链任务 SSE 事件迭代器在持有任务条件锁时输出事件的问题，避免 Starlette 切换 worker 线程继续迭代后触发 `RuntimeError: cannot release un-acquired lock`。
+- 事件和快照改为在释放条件锁后输出，任务进度、终止及日志订阅不再因 SSE 连接异常中断。
+- 增加跨线程继续迭代的回归用例，覆盖终态事件输出后的生成器收口。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\ba_extract_tasks.py` 通过。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_ba_extract_tasks.py -q --disable-warnings --tb=short` 通过：`7 passed, 1 warning`。
+- `git diff --check -- application\ba_extract_tasks.py tests\test_ba_extract_tasks.py docs\pp-plus-ba.md progress.md` 通过。
+
+### Notes
+- `application/ba_extract_tasks.py`：在释放条件锁后再 `yield` SSE 事件和快照。
+- `tests/test_ba_extract_tasks.py`：新增跨 worker 线程消费事件生成器的回归验证。
+- `docs/pp-plus-ba.md`：记录 SSE 迭代器的线程调度约束。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：恢复 `stream_events()` 中原有的锁内 `yield` 逻辑，并移除本轮测试、文档和本段记录。
+
+## 2026-07-28 - Task: 注册主任务增加平均耗时汇总
+
+### What was done
+- 注册主任务完成后，在主任务日志追加每个已处理账号的平均耗时、总耗时和处理数量，单位统一为秒。
+- 平均耗时按注册执行期的总耗时除以最终成功数加失败数计算，不包含重试中的中间尝试。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -q --disable-warnings --tb=short -k "average_duration"` 通过：`1 passed, 95 deselected, 1 warning`。
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py` 通过。
+- `git diff --check` 检出 `application/tasks.py` 文件末尾已有的新增空白行；该行属于本轮之前已存在的 MoMo 任务改动，未改动该无关区域。
+
+### Notes
+- `application/tasks.py`：新增平均耗时格式化并在注册汇总后写入主任务日志。
+- `tests/test_platform_action_task.py`：增加平均耗时格式与零任务边界测试。
+- `docs/chatgpt-register-flow.md`：记录注册完成日志的平均耗时字段。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：移除 `_format_register_task_average_duration()` 及注册汇总处的平均耗时日志，并移除本轮测试、文档和本段记录。
+
+## 2026-07-28 - Task: 修复并发 BA 链提取无限卡住
+
+### What was done
+- 定位到 BA 提取中 Stripe init、PaymentMethod 和 confirm 共用的底层 HTTP helper 未传入超时；代理或上游无响应时，多个后台线程会无限等待并同时停在最后一条进度日志。
+- 为 Stripe HTTP helper 统一增加 30 秒请求超时，超时后沿用现有提取失败和下一代理重试逻辑收口任务。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_stripe_http.py tests\test_ba_link_extract.py -q --disable-warnings --tb=short` 通过：`22 passed, 1 warning`。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_payment_protocol.py -q --disable-warnings --tb=short -k "stripe"` 通过：`18 passed, 67 deselected, 1 warning`。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\stripe_http.py` 通过。
+- `git diff --check -- platforms\chatgpt\stripe_http.py tests\test_stripe_http.py tests\test_chatgpt_payment_protocol.py docs\pp-plus-ba.md progress.md` 通过。
+
+### Notes
+- `platforms/chatgpt/stripe_http.py`：为底层 Stripe GET/POST 请求加入统一 30 秒超时。
+- `tests/test_stripe_http.py`：断言 Stripe helper 向请求客户端传递超时值。
+- `tests/test_chatgpt_payment_protocol.py`：兼容 Stripe session 测试桩的超时参数。
+- `docs/pp-plus-ba.md`：记录 BA 链 Stripe 请求的超时收口规则。
+- `progress.md`：追加本轮修改、验证和回滚说明。
+- 回滚方式：移除 `STRIPE_HTTP_TIMEOUT_SECONDS` 并恢复 `_request()` 中的无 timeout 调用，同时移除本轮测试、文档和本段记录。

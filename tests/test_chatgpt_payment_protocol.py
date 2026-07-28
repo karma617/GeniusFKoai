@@ -648,11 +648,11 @@ class _StubStripeSession:
             raise AssertionError("StubSession 收到的请求超出了预设响应数量")
         return self._responses.pop(0)
 
-    def post(self, url, data=None, headers=None):
+    def post(self, url, data=None, headers=None, timeout=None):
         self.calls.append(("POST", url, dict(data or {}), dict(headers or {})))
         return self._take()
 
-    def get(self, url, params=None, headers=None):
+    def get(self, url, params=None, headers=None, timeout=None):
         self.calls.append(("GET", url, dict(params or {}), dict(headers or {})))
         return self._take()
 

@@ -180,9 +180,7 @@ export default function TaskHistory() {
 
   const succeeded = tasks.filter((t) => t.status === 'succeeded').length
   const failed = tasks.filter((t) => t.status === 'failed').length
-  const running = tasks.filter((t) =>
-    ['running', 'claimed', 'pending', 'cancel_requested'].includes(t.status)
-  ).length
+  const running = tasks.filter((t) => ['running', 'claimed', 'pending'].includes(t.status)).length
 
   const metricCards = [
     { label: t('taskHistory.metric.total'), value: tasks.length, icon: Activity, tone: 'text-[var(--accent)]' },
@@ -388,20 +386,18 @@ export default function TaskHistory() {
                           <FileText className="h-3.5 w-3.5" />
                           {t('taskHistory.viewLogs')}
                         </Button>
-                        {canTerminate || terminating || task.status === 'cancel_requested' ? (
-                        <Button
-                          variant={task.status === 'cancel_requested' ? 'outline' : 'destructive'}
-                          size="sm"
-                          onClick={() => handleTerminate(task)}
-                          disabled={!canTerminate || terminating}
-                          title={t('taskHistory.terminateTitle')}
-                          className="gap-1.5 whitespace-nowrap"
-                        >
-                          <CircleStop className={`h-3.5 w-3.5 ${terminating ? 'animate-spin' : ''}`} />
-                          {terminating || task.status === 'cancel_requested'
-                            ? t('taskHistory.terminating')
-                            : t('taskHistory.terminate')}
-                        </Button>
+                        {canTerminate || terminating ? (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => handleTerminate(task)}
+                            disabled={!canTerminate || terminating}
+                            title={t('taskHistory.terminateTitle')}
+                            className="gap-1.5 whitespace-nowrap"
+                          >
+                            <CircleStop className={`h-3.5 w-3.5 ${terminating ? 'animate-spin' : ''}`} />
+                            {terminating ? t('taskHistory.terminating') : t('taskHistory.terminate')}
+                          </Button>
                         ) : null}
                       </div>
                     </td>

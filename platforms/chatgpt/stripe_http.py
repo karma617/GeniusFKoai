@@ -32,6 +32,7 @@ STRIPE_JS_VERSION = "58d9408f11"
 STRIPE_PAYMENT_USER_AGENT = (
     f"stripe.js/{STRIPE_JS_VERSION}; stripe-js-v3/{STRIPE_JS_VERSION}; checkout"
 )
+STRIPE_HTTP_TIMEOUT_SECONDS = 30
 
 _CS_RE = re.compile(r"cs_(?:live|test)_[A-Za-z0-9]+")
 _PM_REDIRECT_RE = re.compile(r"https://pm-redirects\.stripe\.com/authorize/[^\"'\s<>]+")
@@ -123,9 +124,9 @@ def _request(
     if headers:
         request_headers.update(headers)
     if method == "POST":
-        resp = session.post(url, data=data, headers=request_headers)
+        resp = session.post(url, data=data, headers=request_headers, timeout=STRIPE_HTTP_TIMEOUT_SECONDS)
     elif method == "GET":
-        resp = session.get(url, params=params or None, headers=request_headers)
+        resp = session.get(url, params=params or None, headers=request_headers, timeout=STRIPE_HTTP_TIMEOUT_SECONDS)
     else:
         raise ValueError(f"unsupported method: {method!r}")
 

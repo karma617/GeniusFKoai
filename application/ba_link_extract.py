@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import random
 import re
 import time
 import uuid
@@ -20,6 +19,16 @@ CHECKOUT_UPDATE_PATH = "/backend-api/payments/checkout/update"
 APPROVE_PATH = "/backend-api/payments/checkout/approve"
 BA_TOKEN_RE = re.compile(r"BA-[A-Za-z0-9]{8,80}", re.I)
 PM_REDIRECT_RE = re.compile(r"https://pm-redirects\.stripe\.com/authorize/[^\"'\s<>]+")
+URL_RE = re.compile(r"https?://[^\"'\s<>\\]+")
+PAYPAL_REDIRECT_MARKERS = (
+    "pm-redirects.stripe.com/authorize",
+    "paypal.com/checkoutnow",
+    "paypal.com/agreements/approve",
+    "paypal.com/signin/authorize",
+    "paypal.com/webapps/hermes",
+)
+REDIRECT_DIAG_KEYWORDS = ("paypal", "redirect", "next_action", "return_url", "authorize", "approve", "ba_token")
+MAX_STATIC_NO_REDIRECT_POLLS = 3
 
 COUNTRY_CURRENCY = {
     "US": "USD",
@@ -305,11 +314,19 @@ def infer_region_from_proxy_text(raw: str, *, default: str = "") -> str:
 
 
 def pick_proxy_from_pool(raw: str, *, region_hint: str = "", attempt: int = 1) -> str | None:
-    """Pick one proxy randomly from multi-line pool; fallback to region pool."""
+    """Pick proxy by attempt order from multi-line pool; fallback to region pool."""
     lines = parse_proxy_pool_lines(raw)
     if lines:
-        return random.choice(lines)
+        index = max(0, int(attempt or 1) - 1) % len(lines)
+        return lines[index]
     return resolve_proxy_input(raw, region_hint=region_hint)
+
+
+def normalize_promo_create_mode(value: str) -> str:
+    mode = _text(value, "update_after_checkout").lower().replace("-", "_")
+    if mode in {"create_with_promo", "checkout_with_promo", "with_promo"}:
+        return "create_with_promo"
+    return "update_after_checkout"
 
 
 def _emit(progress_cb, event: dict) -> None:
@@ -375,18 +392,67 @@ def _payment_method_types(payload: Any) -> list[str]:
     return found
 
 
+def _iter_payload_strings(value: Any, path: str = ""):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            yield from _iter_payload_strings(item, child_path)
+    elif isinstance(value, list):
+        for idx, item in enumerate(value):
+            yield from _iter_payload_strings(item, f"{path}[{idx}]")
+    elif isinstance(value, str):
+        yield path, value
+
+
+def _clean_candidate_url(url: str) -> str:
+    return str(url or "").strip().rstrip('.,);]}')
+
+
+def _is_paypal_redirect_url(url: str) -> bool:
+    lowered = url.lower()
+    return any(marker in lowered for marker in PAYPAL_REDIRECT_MARKERS)
+
+
 def _find_redirect(payload: Any) -> str:
     if not isinstance(payload, dict):
         return ""
     try:
         url, _ = stripe_http.extract_paypal_redirect_url(payload)
         if url:
-            return str(url)
+            return _clean_candidate_url(str(url))
     except Exception:
         pass
     text = json.dumps(payload, ensure_ascii=False)
     match = PM_REDIRECT_RE.search(text)
-    return match.group(0) if match else ""
+    if match:
+        return _clean_candidate_url(match.group(0))
+    for _, value in _iter_payload_strings(payload):
+        for match in URL_RE.finditer(value):
+            candidate = _clean_candidate_url(match.group(0))
+            if _is_paypal_redirect_url(candidate):
+                return candidate
+    return ""
+
+
+def _payload_redirect_diagnostics(payload: Any, *, limit: int = 260) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    details: list[str] = []
+    payload_id = _text(payload.get("id"))
+    payload_object = _text(payload.get("object"))
+    if payload_id or payload_object:
+        details.append(f"id={payload_id or '-'} object={payload_object or '-'}")
+    for path, value in _iter_payload_strings(payload):
+        haystack = f"{path} {value}".lower()
+        if not any(keyword in haystack for keyword in REDIRECT_DIAG_KEYWORDS):
+            continue
+        compact = _compact_payload(value, limit=120)
+        item = f"{path}={compact}" if path else compact
+        if item not in details:
+            details.append(item)
+        if len(details) >= 4:
+            break
+    return _compact_payload("; ".join(details), limit=limit)
 
 
 def _follow_ba(session, redirect_url: str) -> tuple[bool, str, str]:
@@ -475,6 +541,7 @@ def extract_ba_link(
     promo_country: str = "",
     billing_currency: str = "",
     confirm_mode: str = "pm",
+    promo_create_mode: str = "update_after_checkout",
     max_attempts: int = 20,
     log_fn: Callable[[str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
@@ -495,6 +562,7 @@ def extract_ba_link(
     mode = _text(confirm_mode, "pm").lower()
     if mode not in {"pm", "direct"}:
         mode = "pm"
+    promo_mode = normalize_promo_create_mode(promo_create_mode)
     attempts = max(1, min(int(max_attempts or 20), 50))
     resolved_email = _text(email) or extract_email_from_token(token) or "buyer@example.com"
 
@@ -509,8 +577,9 @@ def extract_ba_link(
         "billing_pool_size": len(billing_pool),
         "promo_pool_size": len(promo_pool),
         "max_attempts": attempts,
+        "promo_create_mode": promo_mode,
     })
-    _log(log_fn, f"[BA提取] 账单池={len(billing_pool)} 优惠池={len(promo_pool)} checkout代理国={billing_proxy_country} 账单={bill_country}/{currency} 优惠更新={promo_country_code} 重试={attempts}")
+    _log(log_fn, f"[BA提取] 账单池={len(billing_pool)} 优惠池={len(promo_pool)} checkout代理国={billing_proxy_country} 账单={bill_country}/{currency} 优惠更新={promo_country_code} promo模式={promo_mode} 重试={attempts}")
 
     last_error = ""
     last_steps: dict[str, Any] = {}
@@ -540,6 +609,7 @@ def extract_ba_link(
                 promo_country=promo_country_code,
                 currency=currency,
                 confirm_mode=mode,
+                promo_create_mode=promo_mode,
                 attempt=attempt,
                 log_fn=log_fn,
                 cancel_check=cancel_check,
@@ -600,6 +670,7 @@ def _extract_once(
     promo_country: str,
     currency: str,
     confirm_mode: str,
+    promo_create_mode: str,
     attempt: int = 1,
     log_fn: Callable[[str], None] | None,
     cancel_check: Callable[[], bool] | None,
@@ -625,6 +696,7 @@ def _extract_once(
     steps["checkout_country"] = billing_country
     steps["checkout_currency"] = currency
     steps["promo_country"] = promo_country
+    steps["promo_create_mode"] = promo_create_mode
     steps["attempt"] = attempt
     _log(log_fn, f"[BA提取] checkout/Stripe/PayPal代理={steps['checkout_proxy']} promotion代理={steps['promo_update_proxy']}")
     _emit(progress_cb, {"type": "progress", "step": 1, "total": 7, "desc": f"使用代理 {steps['checkout_proxy']} / {steps['promo_update_proxy']}", "attempt": attempt})
@@ -637,14 +709,22 @@ def _extract_once(
 
     # 1) checkout create on checkout IP
     _raise_if_cancelled(cancel_check)
-    _emit(progress_cb, {"type": "progress", "step": 2, "total": 7, "desc": "创建原价 PayPal checkout", "attempt": attempt})
-    _log(log_fn, "[BA提取] 创建原价 PayPal checkout session（checkout IP）")
+    create_with_promo = promo_create_mode == "create_with_promo"
+    checkout_desc = "创建带优惠 PayPal checkout" if create_with_promo else "创建原价 PayPal checkout"
+    _emit(progress_cb, {"type": "progress", "step": 2, "total": 7, "desc": checkout_desc, "attempt": attempt})
+    _log(log_fn, f"[BA提取] {checkout_desc} session（checkout IP）")
     payload = {
         "plan_name": "chatgptplusplan",
         "billing_details": {"country": billing_country, "currency": currency},
         "entry_point": "all_plans_pricing_modal",
         "checkout_ui_mode": "custom",
     }
+    promo_campaign = {
+        "promo_campaign_id": "plus-1-month-free",
+        "is_coupon_from_query_param": False,
+    }
+    if create_with_promo:
+        payload["promo_campaign"] = promo_campaign
     checkout_resp = s_checkout.post(
         PAYMENT_CHECKOUT_URL,
         headers=_auth_headers(token, cookies),
@@ -692,48 +772,51 @@ def _extract_once(
             "steps": steps,
         }
 
-    # 3) zqmyyds flow: create original checkout first, then apply promotion on pool 1
-    # and re-init Stripe on the billing/payment side until amount becomes 0.
+    # 3) Promo mode:
+    # - update_after_checkout: create original checkout first, then apply promotion on pool 1.
+    # - create_with_promo: create checkout with promo_campaign, then only refresh Stripe.
     _raise_if_cancelled(cancel_check)
-    _emit(progress_cb, {"type": "progress", "step": 3, "total": 7, "desc": "正在应用优惠", "attempt": attempt})
-    _log(log_fn, f"[BA提取] 后置应用 ChatGPT promotion（优惠更新 IP={promo_country}）")
-    promo_update_resp = s_promo.post(
-        f"https://chatgpt.com{CHECKOUT_UPDATE_PATH}",
-        headers=_auth_headers(
-            token,
-            cookies,
-            {
-                "Referer": f"https://chatgpt.com/checkout/{entity}/{cs_id}",
-                "x-openai-target-path": CHECKOUT_UPDATE_PATH,
-                "x-openai-target-route": CHECKOUT_UPDATE_PATH,
+    if create_with_promo:
+        steps["chatgpt_promo_http"] = "create_with_promo"
+        _emit(progress_cb, {"type": "progress", "step": 3, "total": 7, "desc": "checkout 已带优惠，正在刷新 Stripe", "attempt": attempt})
+        _log(log_fn, "[BA提取] checkout 创建时已带 promotion，跳过后置 update")
+    else:
+        _emit(progress_cb, {"type": "progress", "step": 3, "total": 7, "desc": "正在应用优惠", "attempt": attempt})
+        _log(log_fn, f"[BA提取] 后置应用 ChatGPT promotion（优惠更新 IP={promo_country}）")
+        promo_update_resp = s_promo.post(
+            f"https://chatgpt.com{CHECKOUT_UPDATE_PATH}",
+            headers=_auth_headers(
+                token,
+                cookies,
+                {
+                    "Referer": f"https://chatgpt.com/checkout/{entity}/{cs_id}",
+                    "x-openai-target-path": CHECKOUT_UPDATE_PATH,
+                    "x-openai-target-route": CHECKOUT_UPDATE_PATH,
+                },
+            ),
+            json={
+                "checkout_session_id": cs_id,
+                "processor_entity": entity,
+                "plan_name": "chatgptplusplan",
+                "price_interval": "month",
+                "seat_quantity": 1,
+                "promo_campaign": promo_campaign,
             },
-        ),
-        json={
-            "checkout_session_id": cs_id,
-            "processor_entity": entity,
-            "plan_name": "chatgptplusplan",
-            "price_interval": "month",
-            "seat_quantity": 1,
-            "promo_campaign": {
-                "promo_campaign_id": "plus-1-month-free",
-                "is_coupon_from_query_param": False,
-            },
-        },
-        timeout=20,
-    )
-    steps["chatgpt_promo_http"] = getattr(promo_update_resp, "status_code", None)
-    body = str(getattr(promo_update_resp, "text", "") or "")
-    steps["chatgpt_promo_body"] = body[:160]
-    _log(log_fn, f"[BA提取] promotion update HTTP {steps['chatgpt_promo_http']}: {body[:120]}")
-    if getattr(promo_update_resp, "status_code", 0) != 200:
-        return {"ok": False, "error": f"应用 Plus 优惠失败：HTTP {steps['chatgpt_promo_http']} {body[:180]}", "steps": steps}
-    try:
-        promo_body = promo_update_resp.json() if hasattr(promo_update_resp, "json") else {}
-    except Exception:
-        promo_body = {}
-    if isinstance(promo_body, dict) and promo_body.get("success") is False:
-        return {"ok": False, "error": f"优惠更新失败: {body[:180]}", "steps": steps}
-    _emit(progress_cb, {"type": "progress", "step": 3, "total": 7, "desc": "优惠已应用，正在刷新 Stripe", "attempt": attempt})
+            timeout=20,
+        )
+        steps["chatgpt_promo_http"] = getattr(promo_update_resp, "status_code", None)
+        body = str(getattr(promo_update_resp, "text", "") or "")
+        steps["chatgpt_promo_body"] = body[:160]
+        _log(log_fn, f"[BA提取] promotion update HTTP {steps['chatgpt_promo_http']}: {body[:120]}")
+        if getattr(promo_update_resp, "status_code", 0) != 200:
+            return {"ok": False, "error": f"应用 Plus 优惠失败：HTTP {steps['chatgpt_promo_http']} {body[:180]}", "steps": steps}
+        try:
+            promo_body = promo_update_resp.json() if hasattr(promo_update_resp, "json") else {}
+        except Exception:
+            promo_body = {}
+        if isinstance(promo_body, dict) and promo_body.get("success") is False:
+            return {"ok": False, "error": f"优惠更新失败: {body[:180]}", "steps": steps}
+        _emit(progress_cb, {"type": "progress", "step": 3, "total": 7, "desc": "优惠已应用，正在刷新 Stripe", "attempt": attempt})
     for sync_idx in range(1, 7):
         _raise_if_cancelled(cancel_check)
         time.sleep(1)
@@ -838,15 +921,18 @@ def _extract_once(
     sa_state = _text((sa or {}).get("state")) if isinstance(sa, dict) else ""
     confirm_error = _payload_error_summary(confirm_resp)
     confirm_preview = _compact_payload(confirm_resp, limit=300)
+    confirm_diag = "" if redirect_url else _payload_redirect_diagnostics(confirm_resp, limit=220)
     steps["confirm_state"] = sa_state
     steps["confirm_error"] = confirm_error
     steps["confirm_preview"] = confirm_preview
-    _log(log_fn, f"[BA提取] confirm state={sa_state or '-'} redirect={'yes' if redirect_url else 'no'} body={confirm_preview}")
+    steps["confirm_redirect_diag"] = confirm_diag
+    confirm_tail = (" err=" + confirm_error) if confirm_error else ((" diag=" + confirm_diag) if confirm_diag else " body=" + confirm_preview)
+    _log(log_fn, f"[BA提取] confirm state={sa_state or '-'} redirect={'yes' if redirect_url else 'no'} {confirm_tail.strip()}")
     _emit(progress_cb, {
         "type": "progress",
         "step": 6,
         "total": 7,
-        "desc": f"confirm={sa_state or '-'} redirect={'有' if redirect_url else '无'}{(' err=' + confirm_error) if confirm_error else ' body=' + confirm_preview}",
+        "desc": f"confirm={sa_state or '-'} redirect={'有' if redirect_url else '无'}{confirm_tail}",
         "attempt": attempt,
     })
 
@@ -925,6 +1011,8 @@ def _extract_once(
         max_poll_attempts = 10
         deadline = time.time() + 15
         poll_attempt = 0
+        static_no_redirect_polls = 0
+        last_poll_page_id = ""
         while time.time() < deadline and poll_attempt < max_poll_attempts and not redirect_url:
             _raise_if_cancelled(cancel_check)
             time.sleep(1.5)
@@ -971,12 +1059,15 @@ def _extract_once(
             sa_payload = (poll_body or {}).get("submission_attempt") if isinstance(poll_body, dict) else {}
             poll_state = _text((sa_payload or {}).get("state")) if isinstance(sa_payload, dict) else ""
             poll_error = _payload_error_summary(poll_body)
-            _log(log_fn, f"[BA提取] poll {poll_attempt}/{max_poll_attempts} http={poll_status} state={poll_state or '-'} redirect={'yes' if redirect_url else 'no'} body={poll_preview}")
+            poll_diag = "" if redirect_url else _payload_redirect_diagnostics(poll_body, limit=220)
+            poll_tail = (" err=" + poll_error) if poll_error else ((" diag=" + poll_diag) if poll_diag else " body=" + poll_preview)
+            steps["last_poll_redirect_diag"] = poll_diag
+            _log(log_fn, f"[BA提取] poll {poll_attempt}/{max_poll_attempts} http={poll_status} state={poll_state or '-'} redirect={'yes' if redirect_url else 'no'} {poll_tail.strip()}")
             _emit(progress_cb, {
                 "type": "progress",
                 "step": 6,
                 "total": 7,
-                "desc": f"poll {poll_attempt}/{max_poll_attempts} http={poll_status} state={poll_state or '-'} redirect={'有' if redirect_url else '无'}{(' err=' + poll_error) if poll_error else ' body=' + poll_preview}",
+                "desc": f"poll {poll_attempt}/{max_poll_attempts} http={poll_status} state={poll_state or '-'} redirect={'有' if redirect_url else '无'}{poll_tail}",
                 "attempt": attempt,
             })
             if isinstance(sa_payload, dict):
@@ -985,6 +1076,27 @@ def _extract_once(
                     err = sa_payload.get("error")
                     msg = err.get("message") if isinstance(err, dict) else str(err)
                     return {"ok": False, "error": f"Stripe poll failed: {msg}", "steps": steps}
+            poll_page_id = _text(poll_body.get("id")) if isinstance(poll_body, dict) else ""
+            if not redirect_url and not poll_state and not poll_error and poll_page_id:
+                if poll_page_id == last_poll_page_id:
+                    static_no_redirect_polls += 1
+                else:
+                    last_poll_page_id = poll_page_id
+                    static_no_redirect_polls = 1
+                if static_no_redirect_polls >= MAX_STATIC_NO_REDIRECT_POLLS:
+                    steps["poll_static_no_redirect"] = static_no_redirect_polls
+                    message = f"连续 {static_no_redirect_polls} 次 poll 只返回 {poll_page_id}，无 PayPal redirect，切换下一代理"
+                    _log(log_fn, f"[BA提取] {message}")
+                    _emit(progress_cb, {
+                        "type": "progress",
+                        "step": 6,
+                        "total": 7,
+                        "desc": message,
+                        "attempt": attempt,
+                    })
+                    break
+            else:
+                static_no_redirect_polls = 0
 
     if not redirect_url:
         detail = _text(steps.get("last_poll_preview") or steps.get("approve_preview") or steps.get("confirm_preview"))

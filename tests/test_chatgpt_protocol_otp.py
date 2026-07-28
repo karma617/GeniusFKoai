@@ -808,6 +808,8 @@ def test_latest_chatgpt_register_flow_uses_login_hint_and_session(monkeypatch):
     engine.session = Session()
     engine._init_latest_chatgpt_session = lambda: True
     engine._check_sentinel = lambda *args, **kwargs: None
+    cf_seed_calls = []
+    engine._latest_chatgpt_seed_cf_clearance_via_headless = lambda *args, **kwargs: cf_seed_calls.append((args, kwargs))
     monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
 
     result = engine.run_chatgpt_register_latest()
@@ -825,6 +827,7 @@ def test_latest_chatgpt_register_flow_uses_login_hint_and_session(monkeypatch):
     )
     assert not any("/api/accounts/user/register" in item[1] for item in calls)
     assert not any(item[1] == "https://auth.openai.com/api/accounts/client_auth_session_dump" for item in calls)
+    assert cf_seed_calls == []
 
 
 def test_latest_chatgpt_session_uses_firefox135(monkeypatch):
