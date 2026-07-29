@@ -410,6 +410,10 @@ def test_protocol_mailbox_mapper_preserves_protocol_metadata():
 
             "expires_at": "2026-05-20T00:00:00Z",
 
+            "password_set_after_register": True,
+
+            "post_register_password_error": "",
+
         },
 
     )
@@ -427,4 +431,65 @@ def test_protocol_mailbox_mapper_preserves_protocol_metadata():
     assert mapped.extra["expires_at"] == "2026-05-20T00:00:00Z"
 
     assert mapped.extra["account_overview"]["registration_mode_label"] == "协议模式"
+
+    assert mapped.extra["password_set_after_register"] is True
+
+
+def test_protocol_mailbox_passes_set_password_flag_to_engine(monkeypatch):
+
+    import platforms.chatgpt.protocol_mailbox as protocol_mailbox
+
+    created = {}
+
+    class FakeEngine:
+
+        def __init__(self, **kwargs):
+
+            created["engine"] = self
+
+            self.email = ""
+
+            self.password = ""
+
+        def run_chatgpt_register_latest(self):
+
+            return ProtocolRegistrationResult(
+
+                success=True,
+
+                email=self.email,
+
+                password=self.password,
+
+                account_id="acct_123",
+
+                access_token="access-token",
+
+                session_token="session-token",
+
+                metadata={"cookies": "session=abc"},
+
+            )
+
+    monkeypatch.setattr(protocol_mailbox, "RegistrationEngine", FakeEngine)
+
+    worker = protocol_mailbox.ChatGPTProtocolMailboxWorker(
+
+        mailbox=_Mailbox(),
+
+        mailbox_account=_MailboxAccount(),
+
+        provider="cfworker_admin_api",
+
+        log_fn=lambda message: None,
+
+        set_password_after_register=False,
+
+    )
+
+    result = worker.run(email="new@example.com", password="Secret123!")
+
+    assert result.success is True
+
+    assert created["engine"].set_password_after_register is False
 

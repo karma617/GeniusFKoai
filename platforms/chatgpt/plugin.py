@@ -696,6 +696,7 @@ class ChatGPTPlatform(BasePlatform):
                 k12_workspace_ids=str((ctx.extra or {}).get("k12_workspace_ids", "") or "").strip(),
                 remote_upload_enabled=_bool_param(ctx.extra or {}, "remote_upload_enabled", False),
                 k12_batch_upload_enabled=_bool_param(ctx.extra or {}, "k12_batch_upload_enabled", True),
+                set_password_after_register=_bool_param(ctx.extra or {}, "set_password_after_register", True),
             )
 
         def _map_result(ctx, result):
@@ -748,6 +749,8 @@ class ChatGPTPlatform(BasePlatform):
                     "k12_deferred_sub2api_upload_enabled": metadata.get("k12_deferred_sub2api_upload_enabled", False),
                     "k12_remote_upload_handled": metadata.get("k12_remote_upload_handled", False),
                     "oauth_error": metadata.get("oauth_error", ""),
+                    "password_set_after_register": metadata.get("password_set_after_register", False),
+                    "post_register_password_error": metadata.get("post_register_password_error", ""),
                 },
             )
 

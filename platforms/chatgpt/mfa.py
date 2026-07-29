@@ -17,10 +17,19 @@ MFA_INFO_URL = f"{CHATGPT_APP}/backend-api/accounts/mfa_info"
 
 DEFAULT_MFA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 )
-DEFAULT_CLIENT_VERSION = "prod-01e2e28be691381cd82f4d9cc32c32f65c723ad8"
-DEFAULT_CLIENT_BUILD_NUMBER = "8690212"
+DEFAULT_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
+DEFAULT_SEC_CH_UA = '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"'
+DEFAULT_CLIENT_VERSION = "prod-e90abb69f9711bb66403800b79e0c3c5fc561770"
+DEFAULT_CLIENT_BUILD_NUMBER = "8727206"
+SECURITY_PREFLIGHT_PATHS = (
+    "/backend-api/accounts/mfa_info",
+    "/backend-api/accounts/security_settings/info",
+    "/backend-api/accounts/change_password/eligibility",
+    "/backend-api/accounts/add_password/eligibility",
+    "/backend-api/accounts/sessions",
+)
 
 
 def _text(value: Any) -> str:
@@ -82,17 +91,17 @@ def _headers(
     session_id: str = "",
 ) -> dict[str, str]:
     headers = {
-        "accept": "application/json",
-        "accept-language": "zh-CN,zh;q=0.9",
+        "accept": "*/*",
+        "accept-language": DEFAULT_ACCEPT_LANGUAGE,
         "cache-control": "no-cache",
         "oai-client-build-number": DEFAULT_CLIENT_BUILD_NUMBER,
         "oai-client-version": DEFAULT_CLIENT_VERSION,
         "oai-device-id": _text(device_id) or _extract_cookie_value(cookies, "oai-did") or str(uuid.uuid4()),
         "oai-language": "zh-CN",
         "oai-session-id": _text(session_id) or str(uuid.uuid4()),
-        "pragma": "no-cache",
+        "priority": "u=1, i",
         "referer": f"{CHATGPT_APP}/",
-        "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+        "sec-ch-ua": DEFAULT_SEC_CH_UA,
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
         "sec-fetch-dest": "empty",
@@ -110,9 +119,32 @@ def _headers(
             }
         )
     token = _text(access_token)
-    if token:
+    if token and not _text(cookies):
         headers["authorization"] = f"Bearer {token}"
     return headers
+
+
+def _security_get(
+    session: Any,
+    *,
+    path: str,
+    cookie_header: str,
+    access_token: str,
+    device_id: str,
+    session_id: str,
+):
+    return session.get(
+        f"{CHATGPT_APP}{path}",
+        headers=_headers(
+            path=path,
+            method="GET",
+            cookies=cookie_header,
+            access_token=access_token,
+            device_id=device_id,
+            session_id=session_id,
+        ),
+        timeout=30,
+    )
 
 
 def enable_totp_mfa(
@@ -136,12 +168,27 @@ def enable_totp_mfa(
     session.headers.update(
         {
             "User-Agent": DEFAULT_MFA_USER_AGENT,
-            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Language": DEFAULT_ACCEPT_LANGUAGE,
         }
     )
 
     oai_session_id = str(uuid.uuid4())
     device_id = _extract_cookie_value(cookie_header, "oai-did")
+
+    log("2FA: 预热账号安全设置接口")
+    for path in SECURITY_PREFLIGHT_PATHS:
+        response = _security_get(
+            session,
+            path=path,
+            cookie_header=cookie_header,
+            access_token=access_token,
+            device_id=device_id,
+            session_id=oai_session_id,
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        log(f"2FA: 预热 {path} 状态: {status}")
+        if status >= 400:
+            raise RuntimeError(f"2FA preflight {path} HTTP {status}: {_text(getattr(response, 'text', ''))[:200]}")
 
     log("2FA: 创建 TOTP enrollment")
     enroll_resp = session.post(
@@ -168,6 +215,16 @@ def enable_totp_mfa(
     factor_id = _text(factor.get("id"))
     if not secret or not activation_session_id:
         raise RuntimeError("2FA enrollment 响应缺少 secret/session_id")
+
+    mid_info_resp = _security_get(
+        session,
+        path="/backend-api/accounts/mfa_info",
+        cookie_header=cookie_header,
+        access_token=access_token,
+        device_id=device_id,
+        session_id=oai_session_id,
+    )
+    log(f"2FA: enrollment 后 mfa_info 状态: {int(getattr(mid_info_resp, 'status_code', 0) or 0)}")
 
     code = generate_totp_code(secret)
     log("2FA: 生成 TOTP 验证码并激活")

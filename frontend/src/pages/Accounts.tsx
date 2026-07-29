@@ -1164,6 +1164,8 @@ function RegisterModal({
   const [k12BatchUploadEnabled, setK12BatchUploadEnabled] = useState(false)
   const [bugfreeMode] = useState(false)
   const [k12Join, setK12Join] = useState(false)
+  const [set2faAfterRegister, setSet2faAfterRegister] = useState(true)
+  const [setPasswordAfterRegister, setSetPasswordAfterRegister] = useState(true)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
   const [authflowExperimental] = useState(false)
   const [recordHar, setRecordHar] = useState(false)
@@ -1468,6 +1470,8 @@ function RegisterModal({
       if (platform === 'chatgpt') {
         extra.remote_upload_enabled = remoteUploadEnabled
         extra.agent_identity_auth_json_mode = agentIdentityAuthJsonMode
+        extra.enable_2fa_after_register = set2faAfterRegister
+        extra.set_password_after_register = setPasswordAfterRegister
         extra.k12_batch_upload_enabled = remoteUploadEnabled && k12BatchUploadEnabled
         extra.bugfree_mode = bugfreeMode
       }
@@ -1714,6 +1718,43 @@ function RegisterModal({
                         {t('accounts.emailAliasLimitHint')}
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {platform === 'chatgpt' && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                      <input
+                        type="checkbox"
+                        checked={set2faAfterRegister}
+                        onChange={(e) => setSet2faAfterRegister(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                      />
+                      <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          设置2FA
+                        </div>
+                        <div className="mt-0.5">
+                          注册成功并取得 session 后自动绑定 TOTP，保存密钥后可在账号列表查看实时 6 位验证码。
+                        </div>
+                      </div>
+                    </label>
+                    <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 cursor-pointer hover:border-[var(--accent)]/60">
+                      <input
+                        type="checkbox"
+                        checked={setPasswordAfterRegister}
+                        onChange={(e) => setSetPasswordAfterRegister(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                      />
+                      <div className="flex-1 text-xs text-[var(--text-secondary)]">
+                        <div className="text-sm font-medium text-[var(--text-primary)]">
+                          设置帐号密码
+                        </div>
+                        <div className="mt-0.5">
+                          协议注册创建资料后按设置密码链路写入当前生成密码，便于后续使用邮箱密码登录。
+                        </div>
+                      </div>
+                    </label>
                   </div>
                 )}
 

@@ -169,6 +169,10 @@ def _bare_engine() -> RegistrationEngine:
     engine._last_about_you_error = ""
     engine._last_create_account_error_code = ""
     engine._last_create_account_transport_error = ""
+    engine.set_password_after_register = True
+    engine._password_registered_during_flow = False
+    engine._post_register_password_set = False
+    engine._post_register_password_error = ""
     engine.protocol_fingerprint = register_module.ProtocolFingerprint.create()
     return engine
 
@@ -1310,6 +1314,28 @@ def test_latest_chatgpt_create_account_reuses_profile_on_registration_disallowed
     assert profiles == [fixed_profile, fixed_profile, fixed_profile]
 
 
+def test_latest_chatgpt_create_account_marks_email_invalid_on_registration_disallowed(monkeypatch):
+    engine = _bare_engine()
+    marks = []
+
+    class EmailService:
+        def mark_invalid_email(self, *, reason: str = ""):
+            marks.append(reason)
+            return ["无效邮箱"]
+
+    def create_account(user_info=None):
+        engine._last_create_account_error_code = "registration_disallowed"
+        return False
+
+    engine.email_service = EmailService()
+    engine._latest_chatgpt_create_user_account = create_account
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    assert engine._latest_chatgpt_create_account_with_retry() is False
+    assert marks == ["registration_disallowed"]
+    assert any("邮箱无效打标完成: 当前邮箱 new@example.com; 无效邮箱" in message for message in engine.logs)
+
+
 def test_latest_chatgpt_init_uses_browser_signin_headers_and_params():
     engine = _bare_engine()
     captured = {}
@@ -1639,6 +1665,60 @@ def test_latest_chatgpt_create_account_uses_auth_json_browser_headers(monkeypatc
         "flow": "oauth_create_account",
     }
     assert headers["openai-sentinel-so-token"] == "session-observer"
+
+
+def test_latest_chatgpt_add_password_after_register_updates_callback():
+    engine = _bare_engine()
+    engine._create_account_continue_url = "https://chatgpt.com/api/auth/callback/openai?code=old"
+    captured = {"gets": [], "posts": []}
+
+    class PageResponse:
+        status_code = 200
+        text = "<html>new password</html>"
+        url = register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL
+
+        def json(self):
+            return {}
+
+    class AddPasswordResponse:
+        status_code = 200
+        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=new"}'
+
+        def json(self):
+            return {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=new"}
+
+    class Session:
+        cookies = _CookieJar()
+
+        def get(self, url, headers=None, timeout=None):
+            captured["gets"].append((url, headers or {}, timeout))
+            return PageResponse()
+
+        def post(self, url, headers=None, data=None, timeout=None):
+            captured["posts"].append((url, headers or {}, data, timeout))
+            return AddPasswordResponse()
+
+    engine.session = Session()
+
+    assert engine._latest_chatgpt_add_password_after_register() is True
+
+    assert captured["gets"][0][0] == register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL
+    post_url, post_headers, post_body, _timeout = captured["posts"][0]
+    assert post_url == register_module.LATEST_CHATGPT_ADD_PASSWORD_API_URL
+    assert post_headers["accept"] == "application/json"
+    assert post_headers["origin"] == "https://auth.openai.com"
+    assert json.loads(post_body) == {"password": "Secret123!"}
+    assert engine._create_account_continue_url.endswith("code=new")
+    assert engine._post_register_password_set is True
+
+
+def test_latest_chatgpt_add_password_after_register_can_be_disabled():
+    engine = _bare_engine()
+    engine.set_password_after_register = False
+
+    assert engine._latest_chatgpt_add_password_after_register() is False
+    assert engine._post_register_password_set is False
+    assert not engine.session.posts
 
 
 def test_platform_reference_create_account_includes_session_observer_token(monkeypatch):

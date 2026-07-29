@@ -99,6 +99,8 @@ LATEST_CHATGPT_CF_JSD_SCRIPT_URL = (
     "https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload"
 )
 LATEST_CHATGPT_SENTINEL_ENTRY_SDK_URL = "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
+LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL = "https://auth.openai.com/reset-password/new-password"
+LATEST_CHATGPT_ADD_PASSWORD_API_URL = "https://auth.openai.com/api/accounts/password/add"
 
 
 logger = logging.getLogger(__name__)
@@ -752,6 +754,10 @@ class RegistrationEngine:
         self._last_create_account_error_code: str = ""
         self._last_create_account_transport_error: str = ""
         self._latest_chatgpt_cf_attempted: bool = False
+        self.set_password_after_register: bool = True
+        self._password_registered_during_flow: bool = False
+        self._post_register_password_set: bool = False
+        self._post_register_password_error: str = ""
 
         self._platform_authorize_final_url: str = ""
 
@@ -1621,6 +1627,109 @@ class RegistrationEngine:
         )
         headers["upgrade-insecure-requests"] = "1"
         return headers
+
+
+    def _latest_chatgpt_add_password_headers(self) -> dict:
+        """HAR 对齐的 auth.openai.com 添加密码 JSON 请求头。"""
+        headers = self._latest_chatgpt_browser_headers(
+            accept="application/json",
+            referer=LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL,
+            origin="https://auth.openai.com",
+            content_type="application/json",
+            sec_fetch_dest="empty",
+            sec_fetch_mode="cors",
+            sec_fetch_site="same-origin",
+        )
+        headers["cache-control"] = "no-cache"
+        return headers
+
+
+    def _latest_chatgpt_add_password_after_register(self) -> bool:
+        """在 create_account 后、ChatGPT callback 前按 HAR 链路添加账号密码。"""
+        self._post_register_password_error = ""
+        if not bool(getattr(self, "set_password_after_register", True)):
+            self._log("设置帐号密码: 未勾选，跳过")
+            return False
+        if bool(getattr(self, "_password_registered_during_flow", False)):
+            self._post_register_password_set = True
+            self._log("设置帐号密码: 注册密码阶段已完成，跳过重复添加")
+            return True
+        if not self.session:
+            self._post_register_password_error = "missing_session"
+            self._log("设置帐号密码: 缺少 auth 会话，跳过", "warning")
+            return False
+        password = str(self.password or "").strip()
+        if not password:
+            password = self._generate_password()
+            self.password = password
+        try:
+            page_headers = self._latest_chatgpt_nav_headers(
+                referer="https://chatgpt.com/",
+                sec_fetch_site="cross-site",
+            )
+            page_headers["cache-control"] = "no-cache"
+            self._log(
+                "[REG-DIAG][protocol] add_password page request "
+                f"url={LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL} "
+                f"headers=({self._diag_header_summary(page_headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
+            page_resp = self.session.get(
+                LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL,
+                headers=page_headers,
+                timeout=30,
+            )
+            page_status = int(getattr(page_resp, "status_code", 0) or 0)
+            final_url = str(getattr(page_resp, "url", "") or LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL)
+            self._log(
+                f"设置帐号密码: 打开添加密码页状态: {page_status} final_url={final_url}"
+            )
+            if page_status >= 400:
+                self._post_register_password_error = (
+                    f"page_http_{page_status}: {self._short_response_excerpt(page_resp) or '(empty)'}"
+                )
+                self._log(f"设置帐号密码: 添加密码页失败: {self._post_register_password_error}", "warning")
+                return False
+
+            body = json.dumps({"password": password}, separators=(",", ":"))
+            headers = self._latest_chatgpt_add_password_headers()
+            self._log(
+                "[REG-DIAG][protocol] add_password request "
+                f"endpoint={LATEST_CHATGPT_ADD_PASSWORD_API_URL} "
+                f"body_len={len(body)} "
+                f"headers=({self._diag_header_summary(headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
+            response = self.session.post(
+                LATEST_CHATGPT_ADD_PASSWORD_API_URL,
+                headers=headers,
+                data=body,
+                timeout=30,
+            )
+            status = int(getattr(response, "status_code", 0) or 0)
+            payload = self._response_json_dict(response)
+            response_text = str(getattr(response, "text", "") or "")
+            self._log(
+                "[REG-DIAG][protocol] add_password response "
+                f"status={status} {self._diag_payload_keys(payload)} "
+                f"body_len={len(response_text)} cookies={self._diag_cookie_names_text()}"
+            )
+            if status != 200:
+                self._post_register_password_error = f"http_{status}: {response_text[:240]}"
+                self._log(f"设置帐号密码失败: {self._post_register_password_error}", "warning")
+                return False
+            continue_url = str(payload.get("continue_url") or "").strip()
+            if continue_url:
+                self._create_account_continue_url = continue_url
+                self._log(f"设置帐号密码完成，更新 callback: {continue_url}")
+            else:
+                self._log("设置帐号密码完成，但响应未返回新的 callback，继续使用原 callback", "warning")
+            self._post_register_password_set = True
+            return True
+        except Exception as exc:
+            self._post_register_password_error = str(exc)[:240]
+            self._log(f"设置帐号密码异常，继续保留当前注册结果: {exc}", "warning")
+            return False
 
 
     @staticmethod
@@ -2845,6 +2954,8 @@ class RegistrationEngine:
                 self._log(f"registration_disallowed，按最新版流程重试创建账号 ({attempt}/3)", "warning")
                 time.sleep(2)
                 continue
+            if error_code == "registration_disallowed":
+                self._mark_current_email_invalid("registration_disallowed")
             return False
         return False
 
@@ -3169,6 +3280,11 @@ class RegistrationEngine:
             "session": session_data,
             "auth_source": "chatgpt_register_latest",
             "chatgpt_session_source": session_source,
+            "password_set_after_register": bool(
+                getattr(self, "_password_registered_during_flow", False)
+                or getattr(self, "_post_register_password_set", False)
+            ),
+            "post_register_password_error": str(getattr(self, "_post_register_password_error", "") or ""),
             "openai_register_reference": r"D:\work\ai\chatgpt_register\chatgpt_register.py",
         }
         self._log("=" * 60)
@@ -3347,12 +3463,17 @@ class RegistrationEngine:
             if not self._latest_chatgpt_create_account_with_retry():
                 if str(getattr(self, "_last_create_account_error_code", "") or "") == "account_deactivated":
                     return self._latest_chatgpt_login_after_account_deactivated(result)
+                if str(getattr(self, "_last_create_account_error_code", "") or "") == "registration_disallowed":
+                    result.error_message = "registration_disallowed，当前邮箱已标记无效邮箱"
+                    return result
                 result.error_message = (
                     "EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - parent email alias quota exhausted"
                     if getattr(self, "_user_already_exists", False)
                     else "创建用户账户失败"
                 )
                 return result
+
+            self._latest_chatgpt_add_password_after_register()
 
             self._log("8. 跟随 callback 并获取 chatgpt.com session...")
             return self._latest_chatgpt_fetch_session_result(result)
@@ -4061,6 +4182,7 @@ class RegistrationEngine:
 
                         pass
 
+                    self._password_registered_during_flow = True
                     return True, password
 
 
@@ -4636,7 +4758,7 @@ class RegistrationEngine:
 
     def _mark_current_email_invalid(self, reason: str = "invalid_email_no_otp") -> list[str]:
         """邮箱连续多轮收不到验证码时打“无效邮箱”标签，令后续选池跳过。"""
-        marker = getattr(self.email_service, "mark_invalid_email", None)
+        marker = getattr(getattr(self, "email_service", None), "mark_invalid_email", None)
         if not callable(marker):
             self._log(f"当前邮箱服务不支持无效邮箱打标: {self.email}", "warning")
             return []
@@ -4936,6 +5058,9 @@ class RegistrationEngine:
                 self._last_create_account_error_code = self._openai_error_code_from_payload(
                     self._response_json_dict(response)
                 )
+                if self._last_create_account_error_code == "registration_disallowed":
+                    self._mark_current_email_invalid("registration_disallowed")
+
                 if self._is_deleted_or_deactivated_account_response(response):
                     self._log("OpenAI 判定该邮箱关联账号已删除或停用，准备删除当前邮箱", "warning")
                     self._delete_current_email_after_openai_reject("openai_account_deleted_or_deactivated")

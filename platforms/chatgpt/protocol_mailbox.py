@@ -291,6 +291,7 @@ class ChatGPTProtocolMailboxWorker:
         k12_workspace_ids: str = "",
         remote_upload_enabled: bool = False,
         k12_batch_upload_enabled: bool = True,
+        set_password_after_register: bool = True,
     ):
 
         if not mailbox or not mailbox_account:
@@ -308,6 +309,7 @@ class ChatGPTProtocolMailboxWorker:
         self.k12_workspace_ids = k12_workspace_ids
         self.remote_upload_enabled = remote_upload_enabled
         self.k12_batch_upload_enabled = k12_batch_upload_enabled
+        self.set_password_after_register = set_password_after_register
 
         email_service = _MailboxEmailService(
 
@@ -334,6 +336,7 @@ class ChatGPTProtocolMailboxWorker:
         )
         self.engine.k12_join_enabled = self.skip_post_register_oauth
         self.engine.k12_workspace_ids = self.k12_workspace_ids
+        self.engine.set_password_after_register = self.set_password_after_register
 
 
 

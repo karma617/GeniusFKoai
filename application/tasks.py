@@ -2013,12 +2013,17 @@ def _extract_chatgpt_cookies(account) -> str:
     return str(extra.get("cookies") or extra.get("cookie") or extra.get("cookie_header") or "").strip()
 
 
-def _auto_enable_chatgpt_2fa_after_register(account, logger: TaskLogger, *, proxy: str | None = None) -> None:
-    logger.log("2FA: 注册后自动设置已临时关闭，跳过")
-    return
-
+def _auto_enable_chatgpt_2fa_after_register(
+    account,
+    logger: TaskLogger,
+    *,
+    proxy: str | None = None,
+    enable: bool | None = None,
+) -> None:
     extra = dict(getattr(account, "extra", {}) or {})
-    if not _bool_config(extra.get("enable_2fa_after_register", True), True):
+    enabled = _bool_config(extra.get("enable_2fa_after_register", True), True) if enable is None else bool(enable)
+    if not enabled:
+        logger.log("2FA: 未勾选设置2FA，跳过")
         return
     cookies = _extract_chatgpt_cookies(account)
     session_token = _extract_chatgpt_session_token(account)
@@ -6535,7 +6540,12 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
             account = platform.register(email=email, password=password)
             if platform_name == "chatgpt":
-                _auto_enable_chatgpt_2fa_after_register(account, logger, proxy=resolved_proxy)
+                _auto_enable_chatgpt_2fa_after_register(
+                    account,
+                    logger,
+                    proxy=resolved_proxy,
+                    enable=_bool_config((dict(_build_payload.get("extra") or {})).get("enable_2fa_after_register"), True),
+                )
 
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(shared_mailbox, account, "registration_success", logger)
@@ -9995,7 +10005,12 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
             )
             account = platform.register()
-            _auto_enable_chatgpt_2fa_after_register(account, logger, proxy=resolved_proxy)
+            _auto_enable_chatgpt_2fa_after_register(
+                account,
+                logger,
+                proxy=resolved_proxy,
+                enable=_bool_config((dict(slot_payload.get("extra") or {})).get("enable_2fa_after_register"), True),
+            )
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
             _schedule_chatgpt_trial_post_register_check(
@@ -10172,7 +10187,12 @@ def _register_chatgpt_accounts_for_gopay(
             )
 
             account = platform.register()
-            _auto_enable_chatgpt_2fa_after_register(account, logger, proxy=resolved_proxy)
+            _auto_enable_chatgpt_2fa_after_register(
+                account,
+                logger,
+                proxy=resolved_proxy,
+                enable=_bool_config((dict(payload.get("extra") or {})).get("enable_2fa_after_register"), True),
+            )
 
             save_account(account)
 

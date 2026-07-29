@@ -48,15 +48,17 @@ def test_enable_totp_mfa_protocol_flow(monkeypatch):
 
         def get(self, url, headers=None, timeout=None):
             calls.append(("GET", url, headers or {}, {}, timeout))
-            return Response(
-                200,
-                {
-                    "mfa_enabled": True,
-                    "mfa_enabled_v2": True,
-                    "native_default_factor_id": "factor-123",
-                    "factors": {"totp": [{"id": "factor-123", "factor_type": "totp"}]},
-                },
-            )
+            if url == mfa.MFA_INFO_URL and len([item for item in calls if item[1] == mfa.MFA_ACTIVATE_URL]) > 0:
+                return Response(
+                    200,
+                    {
+                        "mfa_enabled": True,
+                        "mfa_enabled_v2": True,
+                        "native_default_factor_id": "factor-123",
+                        "factors": {"totp": [{"id": "factor-123", "factor_type": "totp"}]},
+                    },
+                )
+            return Response(200, {"eligible": True})
 
     monkeypatch.setattr(mfa, "build_protocol_session", lambda **_kwargs: Session())
     monkeypatch.setattr(mfa.time, "time", lambda: 59)
@@ -69,11 +71,13 @@ def test_enable_totp_mfa_protocol_flow(monkeypatch):
     assert result["ok"] is True
     assert result["totp_secret"] == secret
     assert result["mfa_factor_id"] == "factor-123"
-    assert [item[0] for item in calls] == ["POST", "POST", "GET"]
-    assert all(item[2].get("authorization") == "Bearer access-token-123" for item in calls)
+    assert [item[0] for item in calls] == ["GET", "GET", "GET", "GET", "GET", "POST", "GET", "POST", "GET"]
+    assert all(item[2].get("accept") == "*/*" for item in calls)
+    assert all("authorization" not in item[2] for item in calls)
+    assert all(item[2].get("oai-client-build-number") == mfa.DEFAULT_CLIENT_BUILD_NUMBER for item in calls)
 
 
-def test_auto_enable_chatgpt_2fa_after_register_is_temporarily_disabled(monkeypatch):
+def test_auto_enable_chatgpt_2fa_after_register_respects_disabled_flag(monkeypatch):
     class Account:
         extra = {
             "access_token": "access-token-123",
@@ -95,11 +99,48 @@ def test_auto_enable_chatgpt_2fa_after_register_is_temporarily_disabled(monkeypa
     account = Account()
     logger = Logger()
 
-    tasks_module._auto_enable_chatgpt_2fa_after_register(account, logger)
+    tasks_module._auto_enable_chatgpt_2fa_after_register(account, logger, enable=False)
 
     assert "totp_secret" not in account.extra
     assert "mfa_enabled" not in account.extra
-    assert any("注册后自动设置已临时关闭" in message for _level, message in logger.messages)
+    assert any("未勾选设置2FA" in message for _level, message in logger.messages)
+
+
+def test_auto_enable_chatgpt_2fa_after_register_saves_secret(monkeypatch):
+    secret = base64.b32encode(b"12345678901234567890").decode("ascii")
+
+    class Account:
+        extra = {
+            "access_token": "access-token-123",
+            "cookies": "__Secure-next-auth.session-token=st",
+            "account_overview": {},
+        }
+
+    class Logger:
+        def __init__(self):
+            self.messages = []
+
+        def log(self, message, level="info"):
+            self.messages.append((level, message))
+
+    def fake_enable(**kwargs):
+        return {
+            "ok": True,
+            "totp_secret": secret,
+            "mfa_factor_id": "factor-123",
+            "mfa_session_id": "session-123",
+        }
+
+    monkeypatch.setattr("platforms.chatgpt.mfa.enable_totp_mfa", fake_enable)
+    account = Account()
+    logger = Logger()
+
+    tasks_module._auto_enable_chatgpt_2fa_after_register(account, logger, enable=True)
+
+    assert account.extra["totp_secret"] == secret
+    assert account.extra["mfa_enabled"] is True
+    assert account.extra["account_overview"]["mfa_enabled"] is True
+    assert "2FA已绑" in account.extra["account_overview"]["chips"]
 
 
 def test_chatgpt_mfa_badge_and_tag_filter():

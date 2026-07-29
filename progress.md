@@ -7468,3 +7468,79 @@ egister.py` 通过。
 - Modified `docs/chatgpt-register-flow.md`: 同步记录 QuickJS 浏览器上下文增强；该目录当前被 `.gitignore` 忽略，但文件已在本地更新。
 - Modified `progress.md`: 追加本轮变更记录。
 - 回滚方式：还原 `platforms/chatgpt/authflow_experimental/openai_sentinel_quickjs.js`、`platforms/chatgpt/authflow_experimental/sentinel_quickjs.py`、`tests/test_sentinel_sdk_resolution.py`、`docs/chatgpt-register-flow.md` 与 `progress.md` 本轮 diff。
+
+## 2026-07-29 - Task: 协议注册恢复设置密码与自动 2FA
+### What was done
+- 注册弹窗新增 `设置2FA`、`设置帐号密码` 两个卡片，默认勾选；提交注册任务时分别下发 `enable_2fa_after_register` 和 `set_password_after_register`，未勾选时跳过对应后置动作。
+- 协议邮箱注册在 `create_account` 成功后、跟随 ChatGPT callback 前增加添加密码链路：先打开 `https://auth.openai.com/reset-password/new-password`，再提交 `https://auth.openai.com/api/accounts/password/add`；成功返回新 callback 时会更新后续 callback URL。
+- 自动 2FA 重新启用，并按 HAR 顺序补齐安全设置预热、enroll、enroll 后 mfa_info、activate、最终 mfa_info；请求头更新为当前 HAR 的 ChatGPT Web 安全设置头，已有 cookies 时不额外发送 Authorization。
+- 注册后 2FA 仍保持容错：绑定失败时账号保留并记录错误；绑定成功后继续保存 `totp_secret`、`mfa_enabled`、`mfa_factor_id` 和 `2FA已绑` 标签。
+- 文档同步记录设置密码和 2FA 的后置链路、开关语义和请求头策略。
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_mfa.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short` -> 81 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py platforms\chatgpt\register.py platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\plugin.py platforms\chatgpt\mfa.py` -> passed。
+- `npm run build`（cwd: `D:\work\ai\GeniusFKoai\frontend`）-> passed，Vite 仅输出 chunk size warning。
+- `git diff --check -- application\tasks.py frontend\src\pages\Accounts.tsx platforms\chatgpt\mfa.py platforms\chatgpt\plugin.py platforms\chatgpt\protocol_mailbox.py platforms\chatgpt\register.py tests\test_chatgpt_mfa.py tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_otp.py docs\chatgpt-register-flow.md progress.md` -> passed，仅提示 Git 将按仓库设置处理 LF/CRLF。
+### Notes
+- Modified `frontend/src/pages/Accounts.tsx`: 注册弹窗新增设置 2FA/设置帐号密码卡片并提交对应 extra 开关。
+- Modified `platforms/chatgpt/register.py`: 协议注册新增 create_account 后添加密码链路和结果元数据。
+- Modified `platforms/chatgpt/protocol_mailbox.py`: 将设置密码开关传入协议注册引擎。
+- Modified `platforms/chatgpt/plugin.py`: 协议 worker 接收设置密码开关，并保存密码设置结果元数据。
+- Modified `platforms/chatgpt/mfa.py`: 2FA 请求头、预热顺序和 cookie 优先鉴权按 HAR 对齐。
+- Modified `application/tasks.py`: 重新启用注册后自动 2FA，并支持任务 extra 开关控制。
+- Modified `tests/test_chatgpt_mfa.py`: 覆盖 2FA HAR 顺序、请求头和开关行为。
+- Modified `tests/test_chatgpt_protocol_mailbox_fallback.py`: 覆盖协议 worker 设置密码开关透传和元数据映射。
+- Modified `tests/test_chatgpt_protocol_otp.py`: 覆盖添加密码请求头、请求体、callback 更新和禁用分支。
+- Modified `docs/chatgpt-register-flow.md`: 记录设置密码与 2FA 后置流程；该目录当前被 `.gitignore` 忽略，但文件已在本地更新。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述文件本轮 diff；如只需关闭功能，可在注册弹窗取消勾选 `设置2FA` 和 `设置帐号密码`。
+
+## 2026-07-29 - Task: 补齐设置密码页导航请求头
+### What was done
+- 设置帐号密码链路打开 `reset-password/new-password` 页面时补 `cache-control: no-cache`，与 HAR 页面导航请求保持一致。
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_add_password_after_register_updates_callback -q --disable-warnings --tb=short` -> 1 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py` -> passed。
+### Notes
+- Modified `platforms/chatgpt/register.py`: 添加密码页导航请求补充 `cache-control`。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原 `platforms/chatgpt/register.py` 与 `progress.md` 本轮 diff。
+
+## 2026-07-29 - Task: 还原 QuickJS Sentinel 过度增强
+### What was done
+- 将 QuickJS Sentinel 运行时还原到上一版基础修复状态，保留真实计时器、事件、iframe、cookie/storage、Mac Firefox 135 profile 和 `t_len=1` 修复。
+- 移除后续增强里新增的 DOM 过度模拟、canvas/WebGL、observer/worker/Notification、时区 patch、ToStringTag 等上下文补丁。
+- 同步移除 QuickJS runtime profile 的 timezone/offset 参数和对应测试断言，文档删除本轮过度增强说明。
+
+### Testing
+- `node --check platforms\chatgpt\authflow_experimental\openai_sentinel_quickjs.js` -> passed。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\authflow_experimental\sentinel_quickjs.py` -> passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py tests\test_sentinel_sdk_resolution.py -q --disable-warnings --tb=short` -> 68 passed, 1 warning。
+
+### Notes
+- Modified `platforms/chatgpt/authflow_experimental/openai_sentinel_quickjs.js`: 回滚 QuickJS 第二轮 DOM/WebGL/timezone/observer 等过度模拟，保留基础浏览器上下文。
+- Modified `platforms/chatgpt/authflow_experimental/sentinel_quickjs.py`: 移除 runtime profile 里的 timezone 和 timezone_offset_min。
+- Modified `tests/test_sentinel_sdk_resolution.py`: 移除 QuickJS runtime profile 的时区断言。
+- Modified `docs/chatgpt-register-flow.md`: 删除 QuickJS 过度增强说明；该目录当前被 `.gitignore` 忽略但本地文件已同步。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述文件本轮 diff；或用 `git checkout -- platforms/chatgpt/authflow_experimental/openai_sentinel_quickjs.js platforms/chatgpt/authflow_experimental/sentinel_quickjs.py tests/test_sentinel_sdk_resolution.py progress.md`，并从 `docs/chatgpt-register-flow.md` 恢复被删除的 QuickJS 过度增强说明。
+
+## 2026-07-29 - Task: registration_disallowed 失败邮箱废弃打标
+### What was done
+- 协议注册在 `create_account` 连续 3 次返回 `registration_disallowed` 后，立即调用当前邮箱 provider 的无效邮箱打标入口，避免下次任务继续取到同一邮箱。
+- 失败返回文案改为明确提示当前邮箱已标记无效邮箱；旧注册分支命中同类 `create_account` 拒绝时也走同一打标路径。
+- 无效邮箱打标入口改为兼容缺少邮箱服务的测试/兜底场景，不再因为对象缺失产生二次异常。
+- 文档补充 `registration_disallowed` 与传输/TLS 失败的打标边界：业务拒绝打标，网络失败不误标。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_create_account_reuses_profile_on_registration_disallowed tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_create_account_marks_email_invalid_on_registration_disallowed tests\test_chatgpt_protocol_otp.py::test_get_verification_code_marks_invalid_email_after_three_timeouts -q --disable-warnings --tb=short` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -q --disable-warnings --tb=short` -> 66 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py` -> passed。
+- `git diff --check -- platforms\chatgpt\register.py tests\test_chatgpt_protocol_otp.py progress.md` -> passed，仅提示 Git 将按仓库设置处理 LF/CRLF。
+
+### Notes
+- Modified `platforms/chatgpt/register.py`: `registration_disallowed` 终态失败后给当前邮箱打无效标签，并让失败文案直接体现邮箱已废弃处理。
+- Modified `tests/test_chatgpt_protocol_otp.py`: 增加 `registration_disallowed` 失败后打标的回归测试。
+- Modified `docs/chatgpt-register-flow.md`: 记录该失败类型的邮箱打标边界；该目录当前被 `.gitignore` 忽略但本地文件已同步。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原 `platforms/chatgpt/register.py`、`tests/test_chatgpt_protocol_otp.py`、`docs/chatgpt-register-flow.md` 与 `progress.md` 本轮 diff。

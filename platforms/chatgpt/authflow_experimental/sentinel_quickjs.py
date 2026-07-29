@@ -98,8 +98,6 @@ def _runtime_profile(user_agent: str, sdk_url: str) -> dict[str, Any]:
         "viewport_height": 839,
         "color_depth": 30 if is_mac else 24,
         "pixel_depth": 30 if is_mac else 24,
-        "timezone": "Asia/Shanghai",
-        "timezone_offset_min": -480,
     }
 
 
