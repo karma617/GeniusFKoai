@@ -29,12 +29,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+from platforms.chatgpt.constants import get_latest_sentinel_frame_url, get_latest_sentinel_sdk_url
+
 logger = logging.getLogger(__name__)
 
 
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
-SENTINEL_REFERER = "https://sentinel.openai.com/backend-api/sentinel/frame.html"
-SENTINEL_SDK_URL = "https://sentinel.openai.com/sentinel/20260124ceb8/sdk.js"
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -94,7 +94,7 @@ class SentinelTokenGenerator:
             4294705152,
             random.random(),
             self.user_agent,
-            SENTINEL_SDK_URL,
+            get_latest_sentinel_sdk_url(),
             None,
             None,
             "en-US",
@@ -162,7 +162,7 @@ def fetch_sentinel_challenge(
         "Content-Type": "text/plain;charset=UTF-8",
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Referer": SENTINEL_REFERER,
+        "Referer": get_latest_sentinel_frame_url(),
         "Origin": "https://sentinel.openai.com",
         "User-Agent": user_agent or DEFAULT_UA,
         "sec-ch-ua": sec_ch_ua or DEFAULT_SEC_CH_UA,

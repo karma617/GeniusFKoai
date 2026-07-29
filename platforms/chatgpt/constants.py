@@ -4,6 +4,11 @@
 
 import os
 import random
+import re
+import threading
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Tuple
@@ -70,11 +75,71 @@ CODEX_SCOPE = "openid email profile offline_access"
 
 # Sentinel（PoW 防护）- 版本号可能随 OpenAI 更新而变化（支持通过环境变量覆盖）
 SENTINEL_BASE = os.environ.get("SENTINEL_BASE_URL", "https://sentinel.openai.com")
-SENTINEL_SDK_VERSION = os.environ.get("SENTINEL_SDK_VERSION", "20260219f9f6")
-SENTINEL_FRAME_VERSION = os.environ.get("SENTINEL_FRAME_VERSION", "20260219f9f6")
+SENTINEL_ENTRY_SDK_URL = f"{SENTINEL_BASE}/backend-api/sentinel/sdk.js"
+_SENTINEL_SDK_VERSION_OVERRIDE = os.environ.get("SENTINEL_SDK_VERSION", "").strip()
+SENTINEL_SDK_VERSION = _SENTINEL_SDK_VERSION_OVERRIDE or "20260219f9f6"
+SENTINEL_FRAME_VERSION = os.environ.get("SENTINEL_FRAME_VERSION", "").strip() or SENTINEL_SDK_VERSION
 SENTINEL_SDK_URL = f"{SENTINEL_BASE}/sentinel/{SENTINEL_SDK_VERSION}/sdk.js"
 SENTINEL_REQ_URL = f"{SENTINEL_BASE}/backend-api/sentinel/req"
 SENTINEL_FRAME_URL = f"{SENTINEL_BASE}/backend-api/sentinel/frame.html?sv={SENTINEL_FRAME_VERSION}"
+_SENTINEL_SDK_CACHE_TTL_SECONDS = 60.0
+_sentinel_sdk_cache_lock = threading.Lock()
+_sentinel_sdk_cache: dict[str, object] = {"url": "", "expires_at": 0.0}
+
+
+def extract_sentinel_sdk_url(entry_script: str, *, entry_url: str = SENTINEL_ENTRY_SDK_URL) -> str:
+    text = str(entry_script or "")
+    patterns = (
+        r"""script\.src\s*=\s*['"]([^'"]*/sentinel/[^'"]+/sdk\.js)['"]""",
+        r"""['"]([^'"]*/sentinel/[^'"]+/sdk\.js)['"]""",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return urllib.parse.urljoin(entry_url, match.group(1))
+    return ""
+
+
+def get_latest_sentinel_sdk_url(*, force: bool = False) -> str:
+    override_url = os.environ.get("SENTINEL_SDK_URL", "").strip()
+    if override_url:
+        return override_url
+    if _SENTINEL_SDK_VERSION_OVERRIDE:
+        return SENTINEL_SDK_URL
+
+    now = time.time()
+    with _sentinel_sdk_cache_lock:
+        cached_url = str(_sentinel_sdk_cache.get("url") or "")
+        if not force and cached_url and float(_sentinel_sdk_cache.get("expires_at") or 0) > now:
+            return cached_url
+
+    try:
+        request = urllib.request.Request(
+            SENTINEL_ENTRY_SDK_URL,
+            headers={
+                "accept": "*/*",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read(200000).decode("utf-8", errors="replace")
+        resolved = extract_sentinel_sdk_url(body)
+        if resolved:
+            with _sentinel_sdk_cache_lock:
+                _sentinel_sdk_cache["url"] = resolved
+                _sentinel_sdk_cache["expires_at"] = now + _SENTINEL_SDK_CACHE_TTL_SECONDS
+            return resolved
+    except Exception:
+        pass
+    return SENTINEL_SDK_URL
+
+
+def get_latest_sentinel_frame_url(*, force: bool = False) -> str:
+    sdk_url = get_latest_sentinel_sdk_url(force=force)
+    match = re.search(r"/sentinel/([^/]+)/sdk\.js$", sdk_url)
+    if match:
+        return f"{SENTINEL_BASE}/backend-api/sentinel/frame.html?sv={urllib.parse.quote(match.group(1), safe='')}"
+    return SENTINEL_FRAME_URL
 
 # OAuth consent 页面表单选择器
 OAUTH_CONSENT_FORM_SELECTOR = 'form[action*="/sign-in-with-chatgpt/"][action*="/consent"]'

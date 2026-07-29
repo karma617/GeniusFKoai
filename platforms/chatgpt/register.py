@@ -21,6 +21,7 @@ import base64
 import random
 
 import logging
+import hashlib
 
 import secrets
 
@@ -67,7 +68,8 @@ from .constants import (
 
     TaskStatus,
 
-    SENTINEL_SDK_URL,
+    get_latest_sentinel_sdk_url,
+    get_latest_sentinel_frame_url,
 
     OAUTH_REDIRECT_URI,
 
@@ -88,8 +90,9 @@ LATEST_CHATGPT_FIREFOX_USER_AGENT = (
     "Gecko/20100101 Firefox/135.0"
 )
 # Headed Camoufox HAR 2026-07-25 register capture.
-LATEST_CHATGPT_OAI_CLIENT_VERSION = "prod-2c08737cf6aa91754c5bf303734db2dba173c6ce"
-LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER = "8578659"
+# Headed Camoufox HAR 2026-07-29 register capture.
+LATEST_CHATGPT_OAI_CLIENT_VERSION = "prod-e90abb69f9711bb66403800b79e0c3c5fc561770"
+LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER = "8727206"
 LATEST_CHATGPT_SENTINEL_SCREEN = 2494
 LATEST_CHATGPT_SENTINEL_CORES = 12
 LATEST_CHATGPT_CF_JSD_SCRIPT_URL = (
@@ -548,7 +551,7 @@ class _SentinelTokenGenerator:
         elif stage == "sentinel_req":
             perf_now = random.randint(15000, 35000)
             elapsed = random.randint(20, 90)
-            script_url = SENTINEL_SDK_URL  # versioned /sentinel/<ver>/sdk.js
+            script_url = get_latest_sentinel_sdk_url()  # versioned /sentinel/<ver>/sdk.js
             client_or_null = None
         else:
             perf_now = random.randint(20000, 45000)
@@ -807,6 +810,112 @@ class RegistrationEngine:
         else:
 
             logger.info(message)
+
+    @staticmethod
+    def _diag_hash(value: Any, length: int = 10) -> str:
+        text = str(value or "")
+        if not text:
+            return "-"
+        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:length]
+
+    @classmethod
+    def _diag_shape(cls, value: Any, *, prefix: int = 0) -> str:
+        text = str(value or "")
+        if not text:
+            return "no"
+        prefix_text = f" prefix={text[:prefix]}" if prefix else ""
+        return f"yes len={len(text)} sha={cls._diag_hash(text)}{prefix_text}"
+
+    @staticmethod
+    def _diag_bool(value: Any) -> str:
+        return "yes" if bool(value) else "no"
+
+    def _diag_cookie_names_text(self) -> str:
+        names = sorted(self._latest_chatgpt_cookie_names())
+        return ",".join(names) if names else "-"
+
+    def _diag_header_summary(self, headers: dict | None) -> str:
+        headers = dict(headers or {})
+        lower = {str(k).lower(): v for k, v in headers.items()}
+        parts = [
+            f"ua={lower.get('user-agent') or '-'}",
+            f"accept_language={lower.get('accept-language') or '-'}",
+            f"sec_ch_ua={lower.get('sec-ch-ua') or '-'}",
+            f"sec_ch_platform={lower.get('sec-ch-ua-platform') or '-'}",
+            f"target_route={lower.get('x-openai-target-route') or '-'}",
+            f"target_path={lower.get('x-openai-target-path') or '-'}",
+            f"oai_client={lower.get('oai-client-version') or '-'}",
+            f"oai_build={lower.get('oai-client-build-number') or '-'}",
+            f"auth={self._diag_bool(lower.get('authorization'))}",
+            f"sentinel={self._diag_shape(lower.get('openai-sentinel-token'))}",
+            f"so={self._diag_shape(lower.get('openai-sentinel-so-token'))}",
+            f"x_access_flow={self._diag_shape(lower.get('x-access-flow-invocation-id'))}",
+        ]
+        return " ".join(parts)
+
+    def _diag_url_summary(self, url: str) -> str:
+        text = str(url or "")
+        if not text:
+            return "-"
+        try:
+            parsed = urllib.parse.urlparse(text)
+            query = urllib.parse.parse_qs(parsed.query)
+        except Exception:
+            return f"raw_len={len(text)} sha={self._diag_hash(text)}"
+        selected: list[str] = []
+        for key in (
+            "client_id",
+            "scope",
+            "state",
+            "device_id",
+            "ext-oai-did",
+            "auth_session_logging_id",
+            "screen_hint",
+            "login_hint",
+            "code",
+        ):
+            value = str((query.get(key) or [""])[0] or "")
+            if not value:
+                continue
+            if key in {"client_id", "screen_hint"}:
+                selected.append(f"{key}={value}")
+            else:
+                selected.append(f"{key}_len={len(value)} {key}_sha={self._diag_hash(value)}")
+        return f"host={parsed.netloc or '-'} path={parsed.path or '/'} {' '.join(selected)}".strip()
+
+    def _diag_payload_keys(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return "-"
+        keys = sorted(str(k) for k in payload.keys())
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        parts = [f"keys={','.join(keys) if keys else '-'}"]
+        if page:
+            parts.append(f"page_type={page.get('type') or '-'}")
+        if error:
+            parts.append(f"error_code={error.get('code') or '-'}")
+            parts.append(f"error_type={error.get('type') or '-'}")
+        continue_url = str(payload.get("continue_url") or "")
+        if continue_url:
+            parts.append(f"continue_url=({self._diag_url_summary(continue_url)})")
+        return " ".join(parts)
+
+    def _diag_sentinel_challenge_summary(self, data: Any) -> str:
+        if not isinstance(data, dict):
+            return "-"
+        pow_meta = data.get("proofofwork") if isinstance(data.get("proofofwork"), dict) else {}
+        turnstile = data.get("turnstile") if isinstance(data.get("turnstile"), dict) else {}
+        so_meta = data.get("so") if isinstance(data.get("so"), dict) else {}
+        return (
+            f"keys={','.join(sorted(str(k) for k in data.keys())) or '-'} "
+            f"token={self._diag_shape(data.get('token'))} "
+            f"pow_required={self._diag_bool(pow_meta.get('required'))} "
+            f"pow_seed={self._diag_shape(pow_meta.get('seed'))} "
+            f"pow_difficulty={pow_meta.get('difficulty') or '-'} "
+            f"turnstile_dx={self._diag_shape(turnstile.get('dx'))} "
+            f"so_required={self._diag_bool(so_meta.get('required'))} "
+            f"snapshot_dx={self._diag_shape(so_meta.get('snapshot_dx'))}"
+        )
 
 
     def _read_oai_did_cookie(self) -> str:
@@ -1342,6 +1451,17 @@ class RegistrationEngine:
             self.http_client.default_headers["Accept-Language"] = "en-US,en;q=0.5"
             self.session = self.http_client.session
             self._log("chatgpt_register 最新链路 HTTP 指纹: firefox135")
+            self._log(
+                "[REG-DIAG][protocol] session_init "
+                f"impersonate=firefox135 proxy={self._diag_bool(self.proxy_url)} "
+                f"effective_ua={self._latest_chatgpt_user_agent()} "
+                f"effective_accept_language={self._latest_chatgpt_accept_language()} "
+                f"fp_device_id={self._diag_shape(self.protocol_fingerprint.device_id)} "
+                f"fp_auth_session_logging_id={self._diag_shape(self.protocol_fingerprint.auth_session_logging_id)} "
+                f"fp_ua={self.protocol_fingerprint.user_agent} "
+                f"fp_sec_ch_ua={self.protocol_fingerprint.sec_ch_ua} "
+                f"fp_sec_ch_platform={self.protocol_fingerprint.sec_ch_ua_platform}"
+            )
             return True
         except Exception as e:
             self._log(f"初始化 chatgpt_register 最新会话失败: {e}", "error")
@@ -1473,14 +1593,12 @@ class RegistrationEngine:
 
     def _latest_chatgpt_sentinel_headers(self, *, user_agent: str = "", accept_language: str = "") -> dict:
         """Sentinel iframe/SDK 内部 req 请求头，保持与当前注册会话 UA/语言一致。"""
-        from .constants import SENTINEL_FRAME_URL
-
         return {
             "accept": "*/*",
             "accept-language": accept_language or self._latest_chatgpt_accept_language(),
             "content-type": "text/plain;charset=UTF-8",
             "origin": "https://sentinel.openai.com",
-            "referer": SENTINEL_FRAME_URL,
+            "referer": get_latest_sentinel_frame_url(),
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
@@ -1593,7 +1711,10 @@ class RegistrationEngine:
         headers["oai-session-id"] = session_id
         if target_path:
             headers["x-openai-target-path"] = target_path
-            headers["x-openai-target-route"] = target_path
+            target_route = target_path
+            if target_path.endswith("/accounts/check/v4-2023-04-27"):
+                target_route = target_path[: -len("v4-2023-04-27")] + "{version}"
+            headers["x-openai-target-route"] = target_route
         headers["x-oai-is-pending-updates"] = '{"v":3,"updates":[]}'
         return headers
 
@@ -1656,13 +1777,12 @@ class RegistrationEngine:
             return ""
         try:
             from .sentinel_vm import solve_turnstile_dx
-            from .constants import SENTINEL_SDK_URL
 
             so_value = solve_turnstile_dx(
                 snapshot_dx,
                 request_p,
                 user_agent=user_agent,
-                sdk_url=SENTINEL_SDK_URL,
+                sdk_url=get_latest_sentinel_sdk_url(),
             )
         except Exception as exc:
             self._log(f"Sentinel so VM 失败: flow={flow} {exc}", "warning")
@@ -1968,6 +2088,12 @@ class RegistrationEngine:
                 if headers.get(key):
                     fetch_headers[key] = headers[key]
 
+            self._log(
+                f"[REG-DIAG][protocol-headless] {label} request "
+                f"url=({self._diag_url_summary(url)}) referer=({self._diag_url_summary(referer)}) "
+                f"headers=({self._diag_header_summary(fetch_headers)}) "
+                f"body_len={len(body)} browser_cookies={len(page.context.cookies())}"
+            )
             result = _browser_fetch(
                 page,
                 url,
@@ -1994,6 +2120,10 @@ class RegistrationEngine:
                 except Exception:
                     data = {}
             self._log(f"{label} 无头浏览器执行状态: {status}")
+            self._log(
+                f"[REG-DIAG][protocol-headless] {label} response "
+                f"status={status} {self._diag_payload_keys(data)} body_len={len(text)}"
+            )
             return status, data if isinstance(data, dict) else {}, text
 
     def _latest_chatgpt_fetch_session_via_headless_callback(
@@ -2033,6 +2163,12 @@ class RegistrationEngine:
                     except Exception as exc:
                         self._log(f"chatgpt_register callback 浏览器注入 cookie 失败: {exc}", "warning")
 
+                self._log(
+                    "[REG-DIAG][protocol-headless] callback_fallback request "
+                    f"url=({self._diag_url_summary(callback_url)}) "
+                    f"ua={ua} accept_language={self._latest_chatgpt_accept_language()} "
+                    f"injected_cookies={len(cookie_items)}"
+                )
                 callback_resp = page.goto(callback_url, wait_until="domcontentloaded", timeout=60000)
                 callback_status = int(getattr(callback_resp, "status", 0) or 0)
                 try:
@@ -2075,6 +2211,14 @@ class RegistrationEngine:
                     "chatgpt_register callback 浏览器兜底完成: "
                     f"callback_status={callback_status}, session_status={session_status}, cookies={len(browser_cookies)}"
                 )
+                self._log(
+                    "[REG-DIAG][protocol-headless] callback_fallback response "
+                    f"callback_status={callback_status} session_status={session_status} "
+                    f"{self._diag_payload_keys(session_data)} "
+                    f"session_token={self._diag_shape(session_token)} "
+                    f"account_cookie={self._diag_shape(account_cookie)} "
+                    f"browser_cookie_names={','.join(sorted({str(c.get('name') or '') for c in browser_cookies if c.get('name')})) if browser_cookies else '-'}"
+                )
                 return callback_status, session_status, session_data, session_token, account_cookie, session_cookies_header
         except Exception as exc:
             self._log(f"chatgpt_register callback 浏览器兜底失败: {exc}", "warning")
@@ -2082,7 +2226,7 @@ class RegistrationEngine:
 
     def _latest_chatgpt_warmup_chatgpt_anon_session(self, device_id: str) -> None:
         """Replay headed-browser pre-auth warmup: accounts/check + prepare/finalize + cf_clearance."""
-        from .constants import CHATGPT_APP, SENTINEL_SDK_URL
+        from .constants import CHATGPT_APP
 
         if not self.session or not device_id:
             return
@@ -2090,14 +2234,38 @@ class RegistrationEngine:
             check_headers = self._latest_chatgpt_chatgpt_client_headers(
                 target_path="/backend-anon/accounts/check/v4-2023-04-27",
             )
-            self.session.get(
+            check_resp = self.session.get(
                 f"{CHATGPT_APP}/backend-anon/accounts/check/v4-2023-04-27",
                 params={"timezone_offset_min": "-480"},
                 headers=check_headers,
                 timeout=20,
             )
+            self._log(
+                "[REG-DIAG][protocol] warmup accounts/check "
+                f"status={getattr(check_resp, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(check_headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
         except Exception as exc:
             self._log(f"chatgpt_register 预热 accounts/check 失败: {exc}", "warning")
+
+        try:
+            me_headers = self._latest_chatgpt_chatgpt_client_headers(
+                target_path="/backend-anon/me",
+            )
+            me_resp = self.session.get(
+                f"{CHATGPT_APP}/backend-anon/me",
+                headers=me_headers,
+                timeout=20,
+            )
+            self._log(
+                "[REG-DIAG][protocol] warmup backend-anon/me "
+                f"status={getattr(me_resp, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(me_headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
+        except Exception as exc:
+            self._log(f"chatgpt_register 预热 backend-anon/me 失败: {exc}", "warning")
 
         try:
             ua = self._latest_chatgpt_user_agent()
@@ -2108,6 +2276,11 @@ class RegistrationEngine:
             )
             prepare_headers["content-type"] = "application/json"
             prepare_headers["origin"] = CHATGPT_APP
+            self._log(
+                "[REG-DIAG][protocol] warmup prepare request "
+                f"p={self._diag_shape(prepare_p, prefix=8)} "
+                f"headers=({self._diag_header_summary(prepare_headers)})"
+            )
             resp = self.session.post(
                 f"{CHATGPT_APP}/backend-anon/sentinel/chat-requirements/prepare",
                 headers=prepare_headers,
@@ -2120,6 +2293,10 @@ class RegistrationEngine:
             else:
                 self._log("chatgpt_register 预热 chat-requirements/prepare 完成")
                 prepare_data = self._response_json_dict(resp)
+                self._log(
+                    "[REG-DIAG][protocol] warmup prepare response "
+                    f"status={status} {self._diag_sentinel_challenge_summary(prepare_data)}"
+                )
                 prepare_token = str(prepare_data.get("prepare_token") or "").strip()
                 pow_meta = prepare_data.get("proofofwork") or {}
                 turnstile = prepare_data.get("turnstile") or {}
@@ -2140,7 +2317,7 @@ class RegistrationEngine:
                             dx_b64,
                             prepare_p,
                             user_agent=ua,
-                            sdk_url=SENTINEL_SDK_URL,
+                            sdk_url=get_latest_sentinel_sdk_url(),
                         )
                     except Exception as exc:
                         self._log(f"chatgpt_register 预热 finalize turnstile 失败: {exc}", "warning")
@@ -2150,6 +2327,13 @@ class RegistrationEngine:
                     )
                     finalize_headers["content-type"] = "application/json"
                     finalize_headers["origin"] = CHATGPT_APP
+                    self._log(
+                        "[REG-DIAG][protocol] warmup finalize request "
+                        f"prepare_token={self._diag_shape(finalize_body.get('prepare_token'))} "
+                        f"pow={self._diag_shape(finalize_body.get('proofofwork'), prefix=8)} "
+                        f"turnstile={self._diag_shape(finalize_body.get('turnstile'))} "
+                        f"headers=({self._diag_header_summary(finalize_headers)})"
+                    )
                     finalize_resp = self.session.post(
                         f"{CHATGPT_APP}/backend-anon/sentinel/chat-requirements/finalize",
                         headers=finalize_headers,
@@ -2181,7 +2365,7 @@ class RegistrationEngine:
         self._otp_sent_at = None
         self._latest_chatgpt_init_final_url = ""
         try:
-            self.session.get(
+            home_resp = self.session.get(
                 f"{CHATGPT_APP}/",
                 headers=self._latest_chatgpt_nav_headers(sec_fetch_site="none"),
                 timeout=20,
@@ -2190,18 +2374,26 @@ class RegistrationEngine:
             if not did:
                 did = self._seed_oai_did_cookie(self._protocol_device_id())
             self._device_id = did
+            self._log(
+                "[REG-DIAG][protocol] init home "
+                f"status={getattr(home_resp, 'status_code', 0)} "
+                f"device_id={self._diag_shape(did)} "
+                f"oai_did_cookie={self._diag_shape(self._read_oai_did_cookie())} "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
             # Headed-browser HAR always warms chatgpt.com backend-anon before signin.
             self._latest_chatgpt_warmup_chatgpt_anon_session(did)
 
+            csrf_headers = self._latest_chatgpt_browser_headers(
+                accept="application/json",
+                referer=f"{CHATGPT_APP}/",
+                sec_fetch_dest="empty",
+                sec_fetch_mode="cors",
+                sec_fetch_site="same-origin",
+            )
             csrf_resp = self.session.get(
                 f"{CHATGPT_APP}/api/auth/csrf",
-                headers=self._latest_chatgpt_browser_headers(
-                    accept="application/json",
-                    referer=f"{CHATGPT_APP}/",
-                    sec_fetch_dest="empty",
-                    sec_fetch_mode="cors",
-                    sec_fetch_site="same-origin",
-                ),
+                headers=csrf_headers,
                 timeout=20,
             )
             if getattr(csrf_resp, "status_code", 0) != 200:
@@ -2214,6 +2406,14 @@ class RegistrationEngine:
                 csrf_token = csrf_cookie.split("%7C")[0] if "%7C" in csrf_cookie else csrf_cookie.split("|")[0]
             if not csrf_token:
                 return False, "csrf_token_missing"
+            self._log(
+                "[REG-DIAG][protocol] csrf "
+                f"status={getattr(csrf_resp, 'status_code', 0)} "
+                f"csrf={self._diag_shape(csrf_token)} "
+                f"csrf_cookie={self._diag_shape(self.session.cookies.get('__Host-next-auth.csrf-token', ''))} "
+                f"headers=({self._diag_header_summary(csrf_headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
 
             query = urllib.parse.urlencode(
                 {
@@ -2224,17 +2424,18 @@ class RegistrationEngine:
                     "login_hint": self.email,
                 }
             )
+            signin_headers = self._latest_chatgpt_browser_headers(
+                accept="application/json",
+                content_type="application/x-www-form-urlencoded",
+                origin=CHATGPT_APP,
+                referer=f"{CHATGPT_APP}/",
+                sec_fetch_dest="empty",
+                sec_fetch_mode="cors",
+                sec_fetch_site="same-origin",
+            )
             signin_resp = self.session.post(
                 f"{CHATGPT_APP}/api/auth/signin/openai?{query}",
-                headers=self._latest_chatgpt_browser_headers(
-                    accept="application/json",
-                    content_type="application/x-www-form-urlencoded",
-                    origin=CHATGPT_APP,
-                    referer=f"{CHATGPT_APP}/",
-                    sec_fetch_dest="empty",
-                    sec_fetch_mode="cors",
-                    sec_fetch_site="same-origin",
-                ),
+                headers=signin_headers,
                 data=urllib.parse.urlencode(
                     {
                         "callbackUrl": f"{CHATGPT_APP}/",
@@ -2248,6 +2449,15 @@ class RegistrationEngine:
 
             signin_data = self._response_json_dict(signin_resp)
             next_url = str(signin_data.get("url") or signin_resp.headers.get("Location") or "").strip()
+            self._log(
+                "[REG-DIAG][protocol] signin/openai "
+                f"status={getattr(signin_resp, 'status_code', 0)} "
+                f"query=({self._diag_url_summary(f'{CHATGPT_APP}/api/auth/signin/openai?{query}')}) "
+                f"csrf={self._diag_shape(csrf_token)} "
+                f"next=({self._diag_url_summary(next_url)}) "
+                f"headers=({self._diag_header_summary(signin_headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
             if not next_url:
                 init_error = self._latest_chatgpt_signin_no_authorize_error(signin_resp, signin_data)
                 self._log(f"chatgpt_register signin/openai 未返回 authorize URL: {init_error}", "warning")
@@ -2270,6 +2480,13 @@ class RegistrationEngine:
                     f"chatgpt_register 初始化重定向 {redirect_index + 1}: "
                     f"status={getattr(final_resp, 'status_code', 0)} url={current_url}"
                 )
+                self._log(
+                    "[REG-DIAG][protocol] init redirect "
+                    f"idx={redirect_index + 1} status={getattr(final_resp, 'status_code', 0)} "
+                    f"url=({self._diag_url_summary(current_url)}) "
+                    f"location=({self._diag_url_summary(location)}) "
+                    f"cookies={self._diag_cookie_names_text()}"
+                )
                 if not location:
                     break
                 current_url = urllib.parse.urljoin(current_url, location)
@@ -2280,6 +2497,13 @@ class RegistrationEngine:
                 self._otp_sent_at = otp_maybe_sent_at
 
             self._log(f"chatgpt_register 初始化完成，device_id={did[:12]}...")
+            self._log(
+                "[REG-DIAG][protocol] init final "
+                f"final_url=({self._diag_url_summary(current_url)}) "
+                f"final_status={getattr(final_resp, 'status_code', 0) if final_resp is not None else 0} "
+                f"otp_sent_at_set={self._diag_bool(self._otp_sent_at)} "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
             if final_resp is not None:
                 self._log(f"chatgpt_register 初始化最终状态: {getattr(final_resp, 'status_code', 0)}")
             if current_url:
@@ -2292,7 +2516,7 @@ class RegistrationEngine:
     def _latest_chatgpt_validate_email_otp(self, code: str) -> dict:
         headers = self._latest_chatgpt_json_headers(referer="https://auth.openai.com/email-verification")
         if self._device_id:
-            otp_sentinel = self._check_sentinel(self._device_id, flow="authorize_continue")
+            otp_sentinel = self._check_sentinel(self._device_id, flow="email_otp_validate")
             if otp_sentinel:
                 headers["openai-sentinel-token"] = self._sentinel_payload_header(otp_sentinel, self._device_id)
                 if otp_sentinel.so_token:
@@ -2302,6 +2526,15 @@ class RegistrationEngine:
                     f"t_len={len(otp_sentinel.t)} so={'yes' if otp_sentinel.so_token else 'no'}"
                 )
         body = json.dumps({"code": code}, separators=(",", ":"))
+        self._log(
+            "[REG-DIAG][protocol] otp_validate request "
+            f"endpoint={OPENAI_API_ENDPOINTS['validate_otp']} "
+            f"code_len={len(str(code or '').strip())} "
+            f"referer=https://auth.openai.com/email-verification "
+            f"device_id={self._diag_shape(self._device_id)} "
+            f"headers=({self._diag_header_summary(headers)}) "
+            f"body_len={len(body)} cookies={self._diag_cookie_names_text()}"
+        )
         status = 0
         payload: dict = {}
         response_text = ""
@@ -2351,16 +2584,27 @@ class RegistrationEngine:
             f"page_type={self._otp_page_type or '(empty)'} continue_url={self._otp_continue_url or '(empty)'}"
             f"{' [headless]' if used_headless else ''}"
         )
+        self._log(
+            "[REG-DIAG][protocol] otp_validate response "
+            f"status={status} used_headless={self._diag_bool(used_headless)} "
+            f"{self._diag_payload_keys(payload)} "
+            f"body_len={len(response_text)} cookies={self._diag_cookie_names_text()}"
+        )
         if status != 200:
             error_code = self._openai_error_code_from_payload(payload)
             if error_code in {"account_deactivated", "wrong_email_otp_code", "invalid_state"}:
                 raise RuntimeError(error_code)
             if self._device_id:
-                ca_sentinel = self._check_sentinel(self._device_id, flow="authorize_continue")
+                ca_sentinel = self._check_sentinel(self._device_id, flow="email_otp_validate")
                 if ca_sentinel:
                     retry_headers = dict(headers)
                     retry_headers["openai-sentinel-token"] = self._sentinel_payload_header(ca_sentinel, self._device_id)
-                    self._log("chatgpt_register OTP validate 首次失败，补 authorize_continue Sentinel 后重试", "warning")
+                    self._log("chatgpt_register OTP validate 首次失败，补 email_otp_validate Sentinel 后重试", "warning")
+                    self._log(
+                        "[REG-DIAG][protocol] otp_validate retry request "
+                        f"headers=({self._diag_header_summary(retry_headers)})",
+                        "warning",
+                    )
                     response = self.session.post(
                         OPENAI_API_ENDPOINTS["validate_otp"],
                         headers=retry_headers,
@@ -2373,6 +2617,13 @@ class RegistrationEngine:
                     self._log(
                         f"chatgpt_register OTP validate Sentinel 重试状态: {getattr(response, 'status_code', 0)} "
                         f"page_type={self._otp_page_type or '(empty)'} continue_url={self._otp_continue_url or '(empty)'}"
+                    )
+                    self._log(
+                        "[REG-DIAG][protocol] otp_validate retry response "
+                        f"status={getattr(response, 'status_code', 0)} "
+                        f"{self._diag_payload_keys(payload)} "
+                        f"cookies={self._diag_cookie_names_text()}",
+                        "warning" if getattr(response, "status_code", 0) != 200 else "info",
                     )
                     if getattr(response, "status_code", 0) == 200:
                         error_code = self._openai_error_code_from_payload(payload)
@@ -2460,12 +2711,13 @@ class RegistrationEngine:
             return False
 
 
-    def _latest_chatgpt_create_user_account(self) -> bool:
+    def _latest_chatgpt_create_user_account(self, user_info: dict | None = None) -> bool:
         """按 chatgpt_register 最新链路创建账号资料，不插入旧状态推进请求。"""
         try:
             self._last_create_account_error_code = ""
             self._last_create_account_transport_error = ""
-            user_info = generate_random_user_info()
+            if user_info is None:
+                user_info = generate_random_user_info()
             self._log(f"生成用户信息: {user_info['name']}, 生日: {user_info['birthdate']}")
             headers = self._latest_chatgpt_json_headers(referer="https://auth.openai.com/about-you")
             if self._device_id:
@@ -2480,6 +2732,15 @@ class RegistrationEngine:
                         f"so={'yes' if ca_sentinel.so_token else 'no'}"
                     )
             body = json.dumps(user_info, separators=(",", ":"))
+            self._log(
+                "[REG-DIAG][protocol] create_account request "
+                f"endpoint={OPENAI_API_ENDPOINTS['create_account']} "
+                f"referer=https://auth.openai.com/about-you "
+                f"device_id={self._diag_shape(self._device_id)} "
+                f"body_len={len(body)} body_keys={','.join(sorted(user_info.keys()))} "
+                f"headers=({self._diag_header_summary(headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
             status = 0
             payload: dict = {}
             response_text = ""
@@ -2540,6 +2801,12 @@ class RegistrationEngine:
 
             response = _Resp(status, response_text, payload)
             self._log(f"账户创建状态: {status}{' [headless]' if used_headless else ''}")
+            self._log(
+                "[REG-DIAG][protocol] create_account response "
+                f"status={status} used_headless={self._diag_bool(used_headless)} "
+                f"{self._diag_payload_keys(payload)} "
+                f"body_len={len(response_text)} cookies={self._diag_cookie_names_text()}"
+            )
             if status != 200:
                 self._log(f"账户创建失败: {response_text}", "warning")
                 self._last_create_account_error_code = self._openai_error_code_from_payload(payload)
@@ -2562,10 +2829,11 @@ class RegistrationEngine:
 
 
     def _latest_chatgpt_create_account_with_retry(self) -> bool:
+        user_info = generate_random_user_info()
         for attempt in range(1, 4):
             self._last_create_account_error_code = ""
             self._last_create_account_transport_error = ""
-            if self._latest_chatgpt_create_user_account():
+            if self._latest_chatgpt_create_user_account(user_info=user_info):
                 return True
             transport_error = str(getattr(self, "_last_create_account_transport_error", "") or "")
             if transport_error and self._is_chatgpt_transport_retryable_error(transport_error) and attempt < 3:
@@ -2579,6 +2847,144 @@ class RegistrationEngine:
                 continue
             return False
         return False
+
+
+    @staticmethod
+    def _extract_chatgpt_session_access_token_from_html(html: str) -> str:
+        text = str(html or "")
+        match = re.search(r'"accessToken"\s*:\s*"([^"]+)"', text)
+        if match:
+            return match.group(1).strip()
+        return ""
+
+
+    def _latest_chatgpt_warmup_authenticated_session(self, access_token: str) -> bool:
+        from .constants import CHATGPT_APP
+
+        token = str(access_token or "").strip()
+        if not token or not self.session or not self._device_id:
+            return False
+
+        completed = False
+        self._log(
+            "[REG-DIAG][session][protocol] authenticated_warmup start "
+            f"access_token={self._diag_shape(token)} device_id={self._diag_shape(self._device_id)} "
+            f"cookies={self._diag_cookie_names_text()}"
+        )
+        for path in (
+            "/backend-api/me",
+            "/backend-api/accounts/check/v4-2023-04-27",
+        ):
+            try:
+                headers = self._latest_chatgpt_chatgpt_client_headers(target_path=path)
+                headers["authorization"] = f"Bearer {token}"
+                response = self.session.get(
+                    f"{CHATGPT_APP}{path}",
+                    params={"timezone_offset_min": "-480"} if path.endswith("/accounts/check/v4-2023-04-27") else None,
+                    headers=headers,
+                    timeout=20,
+                )
+                self._log(
+                    f"chatgpt_register 注册后 {path} 状态: {getattr(response, 'status_code', 0)}"
+                )
+                self._log(
+                    "[REG-DIAG][session][protocol] authenticated_warmup response "
+                    f"path={path} status={getattr(response, 'status_code', 0)} "
+                    f"headers=({self._diag_header_summary(headers)}) "
+                    f"cookies={self._diag_cookie_names_text()}"
+                )
+                completed = True
+            except Exception as exc:
+                self._log(f"chatgpt_register 注册后 {path} 失败: {exc}", "warning")
+
+        try:
+            ua = self._latest_chatgpt_user_agent()
+            generator = _SentinelTokenGenerator(self._device_id, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
+            prepare_p = generator.generate_chat_requirements_token()
+            prep_headers = self._latest_chatgpt_chatgpt_client_headers(
+                target_path="/backend-api/sentinel/chat-requirements/prepare",
+            )
+            prep_headers["authorization"] = f"Bearer {token}"
+            prep_headers["content-type"] = "application/json"
+            prep_headers["origin"] = CHATGPT_APP
+            self._log(
+                "[REG-DIAG][session][protocol] authenticated_prepare request "
+                f"p={self._diag_shape(prepare_p, prefix=8)} "
+                f"headers=({self._diag_header_summary(prep_headers)})"
+            )
+            prep_resp = self.session.post(
+                f"{CHATGPT_APP}/backend-api/sentinel/chat-requirements/prepare",
+                headers=prep_headers,
+                data=json.dumps({"p": prepare_p}, separators=(",", ":")),
+                timeout=20,
+            )
+            self._log(
+                f"chatgpt_register 注册后 chat-requirements/prepare 状态: "
+                f"{getattr(prep_resp, 'status_code', 0)}"
+            )
+            self._log(
+                "[REG-DIAG][session][protocol] authenticated_prepare response "
+                f"status={getattr(prep_resp, 'status_code', 0)} "
+                f"{self._diag_sentinel_challenge_summary(self._response_json_dict(prep_resp))}"
+            )
+            prep_data = self._response_json_dict(prep_resp)
+            if getattr(prep_resp, "status_code", 0) == 200:
+                finalize_body: dict[str, Any] = {}
+                prepare_token = str(prep_data.get("prepare_token") or "").strip()
+                pow_meta = prep_data.get("proofofwork") if isinstance(prep_data.get("proofofwork"), dict) else {}
+                turnstile = prep_data.get("turnstile") if isinstance(prep_data.get("turnstile"), dict) else {}
+                if prepare_token:
+                    finalize_body["prepare_token"] = prepare_token
+                if isinstance(pow_meta, dict) and pow_meta.get("required") and pow_meta.get("seed"):
+                    finalize_body["proofofwork"] = generator.generate_token(
+                        str(pow_meta.get("seed") or ""),
+                        str(pow_meta.get("difficulty") or "0"),
+                    )
+                dx_b64 = str((turnstile or {}).get("dx") or "").strip()
+                if dx_b64:
+                    try:
+                        from .sentinel_vm import solve_turnstile_dx
+
+                        finalize_body["turnstile"] = solve_turnstile_dx(
+                            dx_b64,
+                            prepare_p,
+                            user_agent=ua,
+                            sdk_url=get_latest_sentinel_sdk_url(),
+                        )
+                    except Exception as exc:
+                        self._log(f"chatgpt_register 注册后 finalize turnstile 失败: {exc}", "warning")
+                if prepare_token and finalize_body.get("proofofwork") and finalize_body.get("turnstile"):
+                    finalize_headers = self._latest_chatgpt_chatgpt_client_headers(
+                        target_path="/backend-api/sentinel/chat-requirements/finalize",
+                    )
+                    finalize_headers["authorization"] = f"Bearer {token}"
+                    finalize_headers["content-type"] = "application/json"
+                    finalize_headers["origin"] = CHATGPT_APP
+                    self._log(
+                        "[REG-DIAG][session][protocol] authenticated_finalize request "
+                        f"prepare_token={self._diag_shape(finalize_body.get('prepare_token'))} "
+                        f"pow={self._diag_shape(finalize_body.get('proofofwork'), prefix=8)} "
+                        f"turnstile={self._diag_shape(finalize_body.get('turnstile'))} "
+                        f"headers=({self._diag_header_summary(finalize_headers)})"
+                    )
+                    finalize_resp = self.session.post(
+                        f"{CHATGPT_APP}/backend-api/sentinel/chat-requirements/finalize",
+                        headers=finalize_headers,
+                        data=json.dumps(finalize_body, separators=(",", ":")),
+                        timeout=30,
+                    )
+                    self._log(
+                        "chatgpt_register 注册后 chat-requirements/finalize 状态: "
+                        f"{getattr(finalize_resp, 'status_code', 0)}"
+                    )
+                    self._log(
+                        "[REG-DIAG][session][protocol] authenticated_finalize response "
+                        f"status={getattr(finalize_resp, 'status_code', 0)}"
+                    )
+            completed = True
+        except Exception as exc:
+            self._log(f"chatgpt_register 注册后 chat-requirements/prepare 失败: {exc}", "warning")
+        return completed
 
 
     def _latest_chatgpt_fetch_session_result(self, result: RegistrationResult) -> RegistrationResult:
@@ -2595,14 +3001,29 @@ class RegistrationEngine:
             or str(getattr(self, "_latest_chatgpt_init_final_url", "") or "").strip()
             or "https://auth.openai.com/about-you"
         )
+        callback_headers = self._latest_chatgpt_nav_headers(referer=callback_referer, sec_fetch_site="cross-site")
+        self._log(
+            "[REG-DIAG][session][protocol] callback request "
+            f"url=({self._diag_url_summary(callback_url)}) "
+            f"referer=({self._diag_url_summary(callback_referer)}) "
+            f"headers=({self._diag_header_summary(callback_headers)}) "
+            f"cookies={self._diag_cookie_names_text()}"
+        )
         cb_resp = self.session.get(
             callback_url,
-            headers=self._latest_chatgpt_nav_headers(referer=callback_referer, sec_fetch_site="cross-site"),
+            headers=callback_headers,
             allow_redirects=True,
             timeout=45,
         )
         callback_status = int(getattr(cb_resp, "status_code", 0) or 0)
         self._log(f"chatgpt_register callback 状态: {callback_status}")
+        self._log(
+            "[REG-DIAG][session][protocol] callback response "
+            f"status={callback_status} final_url=({self._diag_url_summary(str(getattr(cb_resp, 'url', '') or ''))}) "
+            f"cookies={self._diag_cookie_names_text()} "
+            f"session_cookie={self._diag_shape(self.session.cookies.get('__Secure-next-auth.session-token', ''))} "
+            f"account_cookie={self._diag_shape(self.session.cookies.get('_account', ''))}"
+        )
         if callback_status >= 400:
             callback_body = str(getattr(cb_resp, "text", "") or "")
             callback_kind = (
@@ -2620,24 +3041,40 @@ class RegistrationEngine:
         account_cookie = str(self.session.cookies.get("_account") or "").strip()
         session_cookies_header = _cookies_to_header(self.session.cookies)
 
+        home_access_token = ""
+        authenticated_warmup_done = False
         try:
-            self.session.get(
+            home_headers = self._latest_chatgpt_nav_headers(referer=callback_url, sec_fetch_site="same-origin")
+            home_resp = self.session.get(
                 f"{CHATGPT_APP}/",
-                headers=self._latest_chatgpt_nav_headers(referer=callback_url, sec_fetch_site="same-origin"),
+                headers=home_headers,
                 timeout=15,
             )
-        except Exception:
-            pass
+            home_access_token = self._extract_chatgpt_session_access_token_from_html(
+                str(getattr(home_resp, "text", "") or "")
+            )
+            self._log(
+                "[REG-DIAG][session][protocol] home_after_callback "
+                f"status={getattr(home_resp, 'status_code', 0)} "
+                f"access_token={self._diag_shape(home_access_token)} "
+                f"headers=({self._diag_header_summary(home_headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
+            if home_access_token:
+                authenticated_warmup_done = self._latest_chatgpt_warmup_authenticated_session(home_access_token)
+        except Exception as exc:
+            self._log(f"[REG-DIAG][session][protocol] home_after_callback failed: {exc}", "warning")
 
+        session_headers = self._latest_chatgpt_browser_headers(
+            accept="application/json",
+            referer=f"{CHATGPT_APP}/",
+            sec_fetch_dest="empty",
+            sec_fetch_mode="cors",
+            sec_fetch_site="same-origin",
+        )
         session_resp = self.session.get(
             f"{CHATGPT_APP}/api/auth/session",
-            headers=self._latest_chatgpt_browser_headers(
-                accept="application/json",
-                referer=f"{CHATGPT_APP}/",
-                sec_fetch_dest="empty",
-                sec_fetch_mode="cors",
-                sec_fetch_site="same-origin",
-            ),
+            headers=session_headers,
             timeout=20,
         )
         session_status = int(getattr(session_resp, "status_code", 0) or 0)
@@ -2655,7 +3092,20 @@ class RegistrationEngine:
                 "warning",
             )
         session_data = self._response_json_dict(session_resp)
-        access_token = str(session_data.get("accessToken") or "").strip()
+        access_token = str(session_data.get("accessToken") or home_access_token or "").strip()
+        self._log(
+            "[REG-DIAG][session][protocol] session_api response "
+            f"status={session_status} "
+            f"headers=({self._diag_header_summary(session_headers)}) "
+            f"payload_keys={','.join(sorted(str(k) for k in session_data.keys())) if session_data else '-'} "
+            f"access_token={self._diag_shape(session_data.get('accessToken') or home_access_token)} "
+            f"session_token_json={self._diag_shape(session_data.get('sessionToken'))} "
+            f"session_cookie={self._diag_shape(session_token)} "
+            f"account_cookie={self._diag_shape(account_cookie)} "
+            f"cookies={self._diag_cookie_names_text()}"
+        )
+        if access_token and not authenticated_warmup_done:
+            authenticated_warmup_done = self._latest_chatgpt_warmup_authenticated_session(access_token)
         if not access_token and (callback_status >= 400 or session_status >= 400):
             browser_session = self._latest_chatgpt_fetch_session_via_headless_callback(callback_url)
             if browser_session:
@@ -2721,32 +3171,6 @@ class RegistrationEngine:
             "chatgpt_session_source": session_source,
             "openai_register_reference": r"D:\work\ai\chatgpt_register\chatgpt_register.py",
         }
-        # HAR 注册后会立刻打 backend-api chat-requirements/prepare；补一次降低“空会话”特征。
-        try:
-            access_token = str(session_data.get("accessToken") or result.access_token or "").strip()
-            if access_token and self._device_id:
-                ua = self._latest_chatgpt_user_agent()
-                generator = _SentinelTokenGenerator(self._device_id, ua)
-                prepare_p = generator.generate_chat_requirements_token()
-                prep_headers = self._latest_chatgpt_chatgpt_client_headers(
-                    target_path="/backend-api/sentinel/chat-requirements/prepare",
-                )
-                prep_headers["authorization"] = f"Bearer {access_token}"
-                prep_headers["content-type"] = "application/json"
-                prep_headers["origin"] = CHATGPT_APP
-                prep_resp = self.session.post(
-                    f"{CHATGPT_APP}/backend-api/sentinel/chat-requirements/prepare",
-                    headers=prep_headers,
-                    data=json.dumps({"p": prepare_p}, separators=(",", ":")),
-                    timeout=20,
-                )
-                self._log(
-                    f"chatgpt_register 注册后 chat-requirements/prepare 状态: "
-                    f"{getattr(prep_resp, 'status_code', 0)}"
-                )
-        except Exception as exc:
-            self._log(f"chatgpt_register 注册后 chat-requirements/prepare 失败: {exc}", "warning")
-
         self._log("=" * 60)
         self._log("注册成功! (chatgpt_register 最新邮箱 OAuth 流程)")
         self._log(f"邮箱: {result.email}")
@@ -2991,11 +3415,38 @@ class RegistrationEngine:
 
             ua = self.http_client.default_headers.get("User-Agent", "")
 
+            quickjs_payload = self._quickjs_sentinel_payload(
+                getattr(self.http_client, "session", None) or self.session,
+                did,
+                flow=flow,
+                user_agent=ua,
+                accept_language=self._latest_chatgpt_accept_language(),
+                label="主注册链路实时 SDK",
+            )
+            if quickjs_payload:
+                self._log(
+                    "[REG-DIAG][sentinel][protocol] using realtime_sdk "
+                    f"flow={flow} p={self._diag_shape(quickjs_payload.p, prefix=8)} "
+                    f"t={self._diag_shape(quickjs_payload.t)} "
+                    f"c={self._diag_shape(quickjs_payload.c)} "
+                    f"so={self._diag_shape(quickjs_payload.so_token)}"
+                )
+                return quickjs_payload
+
             generator = _SentinelTokenGenerator(did, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
 
             sent_p = generator.generate_requirements_token()
 
             sen_req_body = json.dumps({"p": sent_p, "id": did, "flow": flow}, separators=(",", ":"))
+            sen_headers = self._latest_chatgpt_sentinel_headers(user_agent=ua)
+            self._log(
+                "[REG-DIAG][sentinel][protocol] req "
+                f"flow={flow} endpoint={OPENAI_API_ENDPOINTS['sentinel']} "
+                f"p={self._diag_shape(sent_p, prefix=8)} "
+                f"id={self._diag_shape(did)} "
+                f"headers=({self._diag_header_summary(sen_headers)}) "
+                f"sdk={get_latest_sentinel_sdk_url()} frame={get_latest_sentinel_frame_url()}"
+            )
 
 
 
@@ -3003,7 +3454,7 @@ class RegistrationEngine:
 
                 OPENAI_API_ENDPOINTS["sentinel"],
 
-                headers=self._latest_chatgpt_sentinel_headers(user_agent=ua),
+                headers=sen_headers,
 
                 data=sen_req_body,
 
@@ -3014,6 +3465,11 @@ class RegistrationEngine:
             if response.status_code == 200:
 
                 data = response.json()
+                self._log(
+                    "[REG-DIAG][sentinel][protocol] challenge "
+                    f"flow={flow} status={response.status_code} "
+                    f"{self._diag_sentinel_challenge_summary(data)}"
+                )
 
                 sen_token = str(data.get("token") or "")
 
@@ -3055,9 +3511,7 @@ class RegistrationEngine:
 
                         from .sentinel_vm import solve_turnstile_dx
 
-                        from .constants import SENTINEL_SDK_URL
-
-                        t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+                        t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=get_latest_sentinel_sdk_url())
 
                         self._log(f"Sentinel VM solved: t_len={len(t_value)} flow={flow}")
 
@@ -3113,12 +3567,26 @@ class RegistrationEngine:
                     f"Sentinel token 获取成功: flow={flow} t_len={len(payload.t)} "
                     f"so_len={len(payload.so_token)}"
                 )
+                self._log(
+                    "[REG-DIAG][sentinel][protocol] solved "
+                    f"flow={flow} "
+                    f"p={self._diag_shape(payload.p, prefix=8)} "
+                    f"c={self._diag_shape(payload.c)} "
+                    f"t={self._diag_shape(payload.t)} "
+                    f"so={self._diag_shape(payload.so_token)}"
+                )
 
                 return payload
 
             else:
 
                 self._log(f"Sentinel 检查失败: flow={flow} status={response.status_code}", "warning")
+                self._log(
+                    "[REG-DIAG][sentinel][protocol] req_failed "
+                    f"flow={flow} status={getattr(response, 'status_code', 0)} "
+                    f"body={self._short_response_excerpt(response) or '(empty)'}",
+                    "warning",
+                )
 
                 quickjs_payload = self._quickjs_sentinel_payload(
                     getattr(self.http_client, "session", None) or self.session,
@@ -3252,6 +3720,12 @@ class RegistrationEngine:
             )
             token = str((token_bundle or {}).get("token") or "")
             so_token = str((token_bundle or {}).get("so_token") or "")
+            self._log(
+                f"[REG-DIAG][sentinel][protocol] quickjs bundle "
+                f"label={label} token={self._diag_shape(token)} so={self._diag_shape(so_token)} "
+                f"ua={user_agent or '-'} accept_language={accept_language or '-'} "
+                f"sdk={get_latest_sentinel_sdk_url()}"
+            )
 
         except Exception as exc:
 
@@ -4590,8 +5064,6 @@ class RegistrationEngine:
 
 
 
-                from .constants import SENTINEL_FRAME_URL
-
                 sen_resp = login_client.post(
 
                     OPENAI_API_ENDPOINTS["sentinel"],
@@ -4600,7 +5072,7 @@ class RegistrationEngine:
 
                         "origin": "https://sentinel.openai.com",
 
-                        "referer": SENTINEL_FRAME_URL,
+                        "referer": get_latest_sentinel_frame_url(),
 
                         "content-type": "text/plain;charset=UTF-8",
 
@@ -4802,13 +5274,11 @@ class RegistrationEngine:
 
                     sr2 = json.dumps({"p": sp2, "id": did, "flow": "login_password"}, separators=(",", ":"))
 
-                    from .constants import SENTINEL_FRAME_URL as SF2
-
                     sr2_resp = login_client.post(
 
                         OPENAI_API_ENDPOINTS["sentinel"],
 
-                        headers={"origin": "https://sentinel.openai.com", "referer": SF2, "content-type": "text/plain;charset=UTF-8"},
+                        headers={"origin": "https://sentinel.openai.com", "referer": get_latest_sentinel_frame_url(), "content-type": "text/plain;charset=UTF-8"},
 
                         data=sr2,
 
@@ -5230,9 +5700,7 @@ class RegistrationEngine:
 
                     from .sentinel_vm import solve_turnstile_dx
 
-                    from .constants import SENTINEL_SDK_URL
-
-                    t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=SENTINEL_SDK_URL)
+                    t_value = solve_turnstile_dx(dx_b64, initial_p, user_agent=ua, sdk_url=get_latest_sentinel_sdk_url())
 
                 except Exception as exc:
 
@@ -8036,7 +8504,7 @@ class RegistrationEngine:
 
                     CODEX_CLIENT_ID, CODEX_REDIRECT_URI, CODEX_SCOPE,
 
-                    OPENAI_AUTH, SENTINEL_FRAME_URL,
+                    OPENAI_AUTH,
 
                 )
 
@@ -8093,7 +8561,7 @@ class RegistrationEngine:
 
                         OPENAI_API_ENDPOINTS["sentinel"],
 
-                        headers={"origin": "https://sentinel.openai.com", "referer": SENTINEL_FRAME_URL, "content-type": "text/plain;charset=UTF-8"},
+                        headers={"origin": "https://sentinel.openai.com", "referer": get_latest_sentinel_frame_url(), "content-type": "text/plain;charset=UTF-8"},
 
                         data=sr2,
 

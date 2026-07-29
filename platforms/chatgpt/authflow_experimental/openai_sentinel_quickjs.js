@@ -40,11 +40,44 @@ function base64ToBytes(base64) {
   return bytes;
 }
 
-function createStorage() {
+function createEventTarget() {
+  const listeners = new Map();
+  return {
+    addEventListener(type, listener) {
+      if (typeof listener !== "function") return;
+      const key = String(type || "");
+      if (!listeners.has(key)) listeners.set(key, []);
+      listeners.get(key).push(listener);
+    },
+    removeEventListener(type, listener) {
+      const key = String(type || "");
+      const items = listeners.get(key) || [];
+      listeners.set(key, items.filter((item) => item !== listener));
+    },
+    dispatchEvent(event) {
+      const evt = event && event.type ? event : { type: String(event || "") };
+      const items = listeners.get(String(evt.type || "")) || [];
+      for (const listener of [...items]) {
+        listener.call(this, evt);
+      }
+      const handler = this[`on${evt.type}`];
+      if (typeof handler === "function") handler.call(this, evt);
+      return true;
+    },
+  };
+}
+
+function createStorage(seed) {
   const map = new Map();
+  for (const [key, value] of Object.entries(seed || {})) {
+    map.set(String(key), String(value));
+  }
   return {
     get length() {
       return map.size;
+    },
+    key(index) {
+      return Array.from(map.keys())[Number(index)] || null;
     },
     clear() {
       map.clear();
@@ -61,92 +94,422 @@ function createStorage() {
   };
 }
 
-function createElement(tagName) {
-  const tag = String(tagName || "div").toLowerCase();
+function createCookieJar(initialCookie) {
+  const values = new Map();
+  for (const part of String(initialCookie || "").split(";")) {
+    const text = part.trim();
+    if (!text) continue;
+    const idx = text.indexOf("=");
+    if (idx <= 0) continue;
+    values.set(text.slice(0, idx).trim(), text.slice(idx + 1).trim());
+  }
   return {
+    get cookie() {
+      return Array.from(values.entries()).map(([key, value]) => `${key}=${value}`).join("; ");
+    },
+    set cookie(value) {
+      const text = String(value || "").split(";", 1)[0].trim();
+      const idx = text.indexOf("=");
+      if (idx <= 0) return;
+      values.set(text.slice(0, idx).trim(), text.slice(idx + 1).trim());
+    },
+    get(name) {
+      return values.get(String(name || "")) || "";
+    },
+  };
+}
+
+function setToStringTag(target, tag) {
+  try {
+    Object.defineProperty(target, Symbol.toStringTag, { value: tag, configurable: true });
+  } catch {}
+  return target;
+}
+
+function createNamedArray(items, tag) {
+  const arr = Array.from(items || []);
+  arr.item = (index) => arr[Number(index)] || null;
+  arr.namedItem = (name) => arr.find((item) => item && item.name === String(name)) || null;
+  arr.refresh = () => {};
+  for (const item of arr) {
+    if (item && item.name) arr[item.name] = item;
+  }
+  return setToStringTag(arr, tag || "HTMLCollection");
+}
+
+function createElement(tagName, env) {
+  const tag = String(tagName || "div").toLowerCase();
+  const target = createEventTarget();
+  const element = {
+    ...target,
     nodeType: 1,
     tagName: tag.toUpperCase(),
     nodeName: tag.toUpperCase(),
     style: {},
     children: [],
+    childNodes: [],
+    attributes: {},
+    dataset: {},
+    classList: { add() {}, remove() {}, contains() { return false; }, toggle() { return false; } },
+    id: "",
+    className: "",
+    textContent: "",
+    innerHTML: "",
     src: "",
+    parentNode: null,
+    parentElement: null,
+    ownerDocument: null,
+    namespaceURI: "http://www.w3.org/1999/xhtml",
+    clientLeft: 0,
+    clientTop: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+    offsetLeft: 0,
+    offsetTop: 0,
+    offsetWidth: 0,
+    offsetHeight: 0,
     appendChild(child) {
+      if (child && typeof child === "object") {
+        child.parentNode = this;
+        child.parentElement = this;
+      }
       this.children.push(child);
+      this.childNodes.push(child);
       return child;
+    },
+    insertBefore(child) {
+      return this.appendChild(child);
     },
     removeChild(child) {
       this.children = this.children.filter((x) => x !== child);
+      this.childNodes = this.childNodes.filter((x) => x !== child);
       return child;
     },
-    setAttribute() {},
-    getAttribute() {
+    remove() {
+      if (this.parentNode && typeof this.parentNode.removeChild === "function") {
+        this.parentNode.removeChild(this);
+      }
+    },
+    setAttribute(name, value) {
+      const key = String(name);
+      const text = String(value);
+      this.attributes[key] = { name: key, value: text };
+      this[key] = text;
+      if (key === "class") this.className = text;
+      if (key === "id") this.id = text;
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this, String(name)) ? String(this[String(name)]) : null;
+    },
+    removeAttribute(name) {
+      const key = String(name);
+      delete this.attributes[key];
+      delete this[key];
+    },
+    hasAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, String(name));
+    },
+    contains(node) {
+      return node === this || this.children.includes(node);
+    },
+    matches() {
+      return false;
+    },
+    closest() {
       return null;
     },
-    addEventListener() {},
-    removeEventListener() {},
     getBoundingClientRect() {
-      return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
+      const width = Number(this.clientWidth || 0);
+      const height = Number(this.clientHeight || 0);
+      return { x: 0, y: 0, width, height, top: 0, left: 0, right: width, bottom: height };
     },
   };
+  if (tag === "iframe") {
+    const frameWindow = createEventTarget();
+    frameWindow.parent = globalThis;
+    frameWindow.top = globalThis;
+    frameWindow.self = frameWindow;
+    frameWindow.location = { href: "", origin: "", pathname: "", search: "" };
+    frameWindow.postMessage = (message) => {
+      if (env && typeof env.handleFramePostMessage === "function") {
+        env.handleFramePostMessage(frameWindow, message);
+      }
+    };
+    element.contentWindow = frameWindow;
+    element.contentDocument = { defaultView: frameWindow };
+  }
+  if (tag === "canvas") {
+    element.width = 300;
+    element.height = 150;
+    element.toDataURL = () => "data:image/png;base64,";
+    element.getContext = (kind) => {
+      const type = String(kind || "");
+      if (type.includes("webgl")) {
+        const webgl = {
+          VENDOR: 7936,
+          RENDERER: 7937,
+          VERSION: 7938,
+          SHADING_LANGUAGE_VERSION: 35724,
+          UNMASKED_VENDOR_WEBGL: 37445,
+          UNMASKED_RENDERER_WEBGL: 37446,
+        };
+        return {
+          ...webgl,
+          canvas: element,
+          getParameter(name) {
+            if (name === webgl.VENDOR) return "Mozilla";
+            if (name === webgl.RENDERER) return "Mozilla";
+            if (name === webgl.VERSION) return "WebGL 1.0";
+            if (name === webgl.SHADING_LANGUAGE_VERSION) return "WebGL GLSL ES 1.0";
+            if (name === webgl.UNMASKED_VENDOR_WEBGL) return "Mozilla";
+            if (name === webgl.UNMASKED_RENDERER_WEBGL) return "Mozilla";
+            return "";
+          },
+          getExtension() {
+            return null;
+          },
+          getSupportedExtensions() {
+            return [];
+          },
+        };
+      }
+      return {
+        canvas: element,
+        fillRect() {},
+        clearRect() {},
+        getImageData() {
+          return { data: new Uint8ClampedArray(4), width: 1, height: 1 };
+        },
+        putImageData() {},
+        createImageData() {
+          return { data: new Uint8ClampedArray(4), width: 1, height: 1 };
+        },
+        measureText(text) {
+          return { width: String(text || "").length * 7 };
+        },
+        fillText() {},
+        strokeText() {},
+        beginPath() {},
+        closePath() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+        fill() {},
+      };
+    };
+  }
+  return element;
 }
 
 function installRuntime(payload) {
+  const nativeSetTimeout = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null;
+  const nativeClearTimeout = typeof globalThis.clearTimeout === "function" ? globalThis.clearTimeout.bind(globalThis) : null;
+  const nativeSetInterval = typeof globalThis.setInterval === "function" ? globalThis.setInterval.bind(globalThis) : null;
+  const nativeClearInterval = typeof globalThis.clearInterval === "function" ? globalThis.clearInterval.bind(globalThis) : null;
+  const userAgent = String(payload.user_agent || "Mozilla/5.0");
+  const sdkUrl = String(payload.sdk_url || "https://sentinel.openai.com/sentinel/sdk.js");
+  const frameUrl = String(payload.frame_url || "https://chatgpt.com/backend-api/sentinel/frame.html");
+  const pageUrl = String(payload.page_url || "https://auth.openai.com/");
+  const pageMatch = pageUrl.match(/^(https?:)\/\/([^\/]+)(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+  const pageOrigin = pageMatch ? `${pageMatch[1]}//${pageMatch[2]}` : "https://auth.openai.com";
+  const pagePath = pageMatch && pageMatch[3] ? pageMatch[3] : "/";
+  const pageSearch = pageMatch && pageMatch[4] ? pageMatch[4] : "";
+  const isFirefox = /Firefox\//i.test(userAgent);
+  const timezone = String(payload.timezone || "Asia/Shanghai");
+  const timezoneOffsetMin = Number(payload.timezone_offset_min ?? -480);
+  const eventTarget = createEventTarget();
+  const cookieJar = createCookieJar(payload.document_cookie || `oai-did=${encodeURIComponent(payload.device_id || "")}`);
   const screen = {
-    width: Number(payload.screen_width || 1366),
-    height: Number(payload.screen_height || 768),
-    availWidth: Number(payload.screen_width || 1366),
-    availHeight: Number(payload.screen_height || 768),
-    colorDepth: 24,
-    pixelDepth: 24,
+    width: Number(payload.screen_width || 2560),
+    height: Number(payload.screen_height || 1440),
+    availWidth: Number(payload.screen_avail_width || payload.screen_width || 2560),
+    availHeight: Number(payload.screen_avail_height || payload.screen_height || 1440),
+    availLeft: Number(payload.screen_avail_left || 0),
+    availTop: Number(payload.screen_avail_top || 0),
+    colorDepth: Number(payload.color_depth || 30),
+    pixelDepth: Number(payload.pixel_depth || payload.color_depth || 30),
+    orientation: { angle: 0, type: "landscape-primary", addEventListener() {}, removeEventListener() {} },
   };
   const scripts = [];
-  const documentElement = createElement("html");
-  documentElement.clientWidth = screen.width;
-  documentElement.clientHeight = screen.height;
+  const env = {
+    handleFramePostMessage(frameWindow, message) {
+      const event = new globalThis.MessageEvent("message", {
+        data: {
+          type: "response",
+          requestId: message && message.requestId,
+          result: null,
+          error: "frame fixture unavailable",
+        },
+        source: frameWindow,
+        origin: frameWindow.location.origin || pageOrigin,
+      });
+      globalThis.dispatchEvent(event);
+    },
+  };
+  const documentElement = createElement("html", env);
+  documentElement.clientWidth = Number(payload.viewport_width || 1800);
+  documentElement.clientHeight = Number(payload.viewport_height || 839);
+  documentElement.setAttribute("data-build", String(payload.client_version || ""));
+  const body = createElement("body", env);
+  const head = createElement("head", env);
   const document = {
+    ...createEventTarget(),
     readyState: "complete",
     hidden: false,
     visibilityState: "visible",
-    referrer: "https://auth.openai.com/",
-    URL: "https://auth.openai.com/",
-    cookie: `oai-did=${encodeURIComponent(payload.device_id || "")}`,
+    referrer: String(payload.referrer || "https://auth.openai.com/"),
+    URL: pageUrl,
+    baseURI: pageUrl,
+    domain: pageMatch ? pageMatch[2] : "auth.openai.com",
+    characterSet: "UTF-8",
+    charset: "UTF-8",
+    compatMode: "CSS1Compat",
+    contentType: "text/html",
     scripts,
-    currentScript: { src: "https://sentinel.openai.com/sentinel/sdk.js", getAttribute() { return null; } },
+    currentScript: { src: sdkUrl, getAttribute(name) { return String(name || "").toLowerCase() === "src" ? sdkUrl : null; } },
     documentElement,
-    body: createElement("body"),
-    head: createElement("head"),
+    body,
+    head,
+    defaultView: globalThis,
+    get cookie() {
+      return cookieJar.cookie;
+    },
+    set cookie(value) {
+      cookieJar.cookie = value;
+    },
     createElement(tag) {
-      const el = createElement(tag);
+      const el = createElement(tag, env);
+      el.ownerDocument = this;
       if (String(tag).toLowerCase() === "script") scripts.push(el);
       return el;
     },
     createElementNS(_ns, tag) {
       return this.createElement(tag);
     },
+    createTextNode(text) {
+      return {
+        nodeType: 3,
+        nodeName: "#text",
+        textContent: String(text || ""),
+        parentNode: null,
+        parentElement: null,
+        ownerDocument: this,
+      };
+    },
+    createDocumentFragment() {
+      const fragment = createElement("fragment", env);
+      fragment.nodeType = 11;
+      fragment.nodeName = "#document-fragment";
+      fragment.ownerDocument = this;
+      return fragment;
+    },
     querySelector() {
       return null;
     },
     querySelectorAll() {
-      return [];
+      return createNamedArray([], "NodeList");
     },
     getElementById() {
       return null;
     },
-    getElementsByTagName() {
-      return [];
+    getElementsByTagName(tag) {
+      const name = String(tag || "").toLowerCase();
+      if (name === "script") return createNamedArray(scripts, "HTMLCollection");
+      if (name === "body") return createNamedArray([body], "HTMLCollection");
+      if (name === "head") return createNamedArray([head], "HTMLCollection");
+      if (name === "html") return createNamedArray([documentElement], "HTMLCollection");
+      return createNamedArray([], "HTMLCollection");
     },
-    addEventListener() {},
-    removeEventListener() {},
-    dispatchEvent() {
+    getElementsByClassName() {
+      return createNamedArray([], "HTMLCollection");
+    },
+    getElementsByName() {
+      return createNamedArray([], "NodeList");
+    },
+    elementFromPoint() {
+      return null;
+    },
+    hasFocus() {
       return true;
     },
+    title: "",
+    doctype: null,
+    forms: createNamedArray([], "HTMLCollection"),
+    images: createNamedArray([], "HTMLCollection"),
+    links: createNamedArray([], "HTMLCollection"),
+    anchors: createNamedArray([], "HTMLCollection"),
+    embeds: createNamedArray([], "HTMLCollection"),
+    plugins: createNamedArray([], "HTMLCollection"),
+    children: [documentElement],
+    childNodes: [documentElement],
+    firstElementChild: documentElement,
+    activeElement: body,
+    scrollingElement: documentElement,
+    fullscreenElement: null,
+    fullscreenEnabled: true,
+    pictureInPictureElement: null,
+    adoptedStyleSheets: [],
+    implementation: {
+      hasFeature() {
+        return true;
+      },
+      createHTMLDocument(title) {
+        return { title: String(title || ""), body: createElement("body", env), documentElement: createElement("html", env) };
+      },
+    },
+    fonts: { ready: Promise.resolve(), check() { return true; } },
+  };
+  setToStringTag(document, "HTMLDocument");
+  const scriptElement = createElement("script", env);
+  scriptElement.ownerDocument = document;
+  scriptElement.src = sdkUrl;
+  scriptElement.getAttribute = (name) => (String(name || "").toLowerCase() === "src" ? sdkUrl : null);
+  scripts.push(scriptElement);
+  head.appendChild(scriptElement);
+  body.clientWidth = documentElement.clientWidth;
+  body.clientHeight = documentElement.clientHeight;
+  const originalBodyAppendChild = body.appendChild.bind(body);
+  body.appendChild = (child) => {
+    const result = originalBodyAppendChild(child);
+    if (child && child.tagName === "IFRAME") {
+      const rawFrameUrl = String(child.src || frameUrl);
+      const frameMatch = rawFrameUrl.match(/^(https?:)\/\/([^\/]+)(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+      const frameOrigin = frameMatch ? `${frameMatch[1]}//${frameMatch[2]}` : "https://chatgpt.com";
+      child.contentWindow.location = {
+        href: rawFrameUrl,
+        origin: frameOrigin,
+        pathname: frameMatch && frameMatch[3] ? frameMatch[3] : "/backend-api/sentinel/frame.html",
+        search: frameMatch && frameMatch[4] ? frameMatch[4] : "",
+      };
+      const fireLoad = () => child.dispatchEvent(new globalThis.Event("load"));
+      if (nativeSetTimeout) nativeSetTimeout(fireLoad, 0);
+      else fireLoad();
+    }
+    return result;
   };
 
   const performance = {
     now: () => Number(payload.performance_now || 12345.67),
     timeOrigin: Number(payload.time_origin || 1710000000000),
     memory: { jsHeapSizeLimit: Number(payload.js_heap_size_limit || 4294967296) },
+    getEntries() {
+      return [];
+    },
+    getEntriesByType() {
+      return [];
+    },
+    getEntriesByName() {
+      return [];
+    },
+    mark() {},
+    measure() {},
+    clearMarks() {},
+    clearMeasures() {},
+    toJSON() {
+      return { timeOrigin: this.timeOrigin };
+    },
   };
+  setToStringTag(performance, "Performance");
 
   class TextEncoderPoly {
     encode(text) {
@@ -215,49 +578,205 @@ function installRuntime(payload) {
     }
   }
 
+  class ObserverPoly {
+    constructor(callback) {
+      this.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  }
+
+  class WorkerPoly {
+    constructor() {
+      Object.assign(this, createEventTarget());
+    }
+    postMessage() {}
+    terminate() {}
+  }
+
   globalThis.window = globalThis;
   globalThis.self = globalThis;
   globalThis.top = globalThis;
   globalThis.parent = globalThis;
   globalThis.document = document;
-  globalThis.navigator = {
-    userAgent: String(payload.user_agent || "Mozilla/5.0"),
-    language: String(payload.language || "zh-CN"),
-    languages: Array.isArray(payload.languages) ? payload.languages : ["zh-CN", "zh"],
-    hardwareConcurrency: Number(payload.hardware_concurrency || 12),
-    platform: "Win32",
-    vendor: "Google Inc.",
+  class NavigatorPoly {
+    javaEnabled() {
+      return false;
+    }
+    sendBeacon() {
+      return true;
+    }
+    vibrate() {
+      return false;
+    }
+    getBattery() {
+      return Promise.resolve({ charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1 });
+    }
+  }
+  const navigatorPayload = {
+    appCodeName: "Mozilla",
+    appName: "Netscape",
+    appVersion: userAgent.replace(/^Mozilla\//, ""),
+    userAgent,
+    language: String(payload.language || "en-US"),
+    languages: Array.isArray(payload.languages) ? payload.languages : ["en-US", "en"],
+    hardwareConcurrency: Number(payload.hardware_concurrency || 10),
+    platform: String(payload.platform || (isFirefox && /Macintosh/i.test(userAgent) ? "MacIntel" : "Win32")),
+    vendor: Object.prototype.hasOwnProperty.call(payload, "vendor") ? String(payload.vendor || "") : (isFirefox ? "" : "Google Inc."),
+    product: "Gecko",
+    productSub: "20100101",
+    oscpu: /Macintosh/i.test(userAgent) ? "Intel Mac OS X 10.15" : "Windows NT 10.0; Win64; x64",
+    cookieEnabled: true,
+    onLine: true,
     webdriver: false,
+    maxTouchPoints: 0,
+    pdfViewerEnabled: true,
+    mimeTypes: createNamedArray([], "MimeTypeArray"),
+    plugins: createNamedArray([], "PluginArray"),
+    permissions: { query: () => Promise.resolve({ state: "prompt", onchange: null }) },
+    storage: {
+      estimate: () => Promise.resolve({ quota: 2147483648, usage: 0 }),
+      persist: () => Promise.resolve(false),
+      persisted: () => Promise.resolve(false),
+    },
+    clipboard: { readText: () => Promise.resolve(""), writeText: () => Promise.resolve() },
+    mediaDevices: {
+      enumerateDevices: () => Promise.resolve([]),
+      getUserMedia: () => Promise.reject(new Error("Permission denied")),
+    },
+    geolocation: {
+      getCurrentPosition(_success, error) {
+        if (typeof error === "function") error({ code: 1, message: "User denied Geolocation" });
+      },
+      watchPosition() {
+        return 1;
+      },
+      clearWatch() {},
+    },
   };
+  if (!isFirefox) {
+    navigatorPayload.connection = { effectiveType: "4g", rtt: 50, downlink: 10, saveData: false };
+  }
+  globalThis.navigator = Object.assign(new NavigatorPoly(), navigatorPayload);
+  setToStringTag(globalThis.navigator, "Navigator");
   globalThis.location = {
-    href: "https://auth.openai.com/",
-    origin: "https://auth.openai.com",
-    pathname: "/",
-    search: "",
+    href: pageUrl,
+    origin: pageOrigin,
+    pathname: pagePath,
+    search: pageSearch,
   };
+  document.location = globalThis.location;
   globalThis.screen = screen;
+  setToStringTag(globalThis.screen, "Screen");
+  globalThis.innerWidth = Number(payload.viewport_width || 1800);
+  globalThis.innerHeight = Number(payload.viewport_height || 839);
+  globalThis.outerWidth = Number(payload.outer_width || 1800);
+  globalThis.outerHeight = Number(payload.outer_height || 1000);
+  globalThis.devicePixelRatio = Number(payload.device_pixel_ratio || 1);
+  globalThis.origin = pageOrigin;
+  globalThis.name = "";
+  globalThis.frames = globalThis;
+  globalThis.length = 0;
+  globalThis.opener = null;
+  globalThis.frameElement = null;
+  globalThis.closed = false;
+  globalThis.status = "";
+  globalThis.defaultStatus = "";
+  globalThis.screenX = Number(payload.screen_x || 0);
+  globalThis.screenY = Number(payload.screen_y || 0);
+  globalThis.screenLeft = globalThis.screenX;
+  globalThis.screenTop = globalThis.screenY;
+  globalThis.scrollX = 0;
+  globalThis.scrollY = 0;
+  globalThis.pageXOffset = 0;
+  globalThis.pageYOffset = 0;
+  globalThis.mozInnerScreenX = globalThis.screenX;
+  globalThis.mozInnerScreenY = globalThis.screenY;
+  globalThis.visualViewport = {
+    width: globalThis.innerWidth,
+    height: globalThis.innerHeight,
+    offsetLeft: 0,
+    offsetTop: 0,
+    pageLeft: 0,
+    pageTop: 0,
+    scale: 1,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.scrollTo = () => {};
+  globalThis.scrollBy = () => {};
+  globalThis.moveTo = () => {};
+  globalThis.moveBy = () => {};
+  globalThis.resizeTo = () => {};
+  globalThis.resizeBy = () => {};
+  globalThis.focus = () => {};
+  globalThis.blur = () => {};
+  globalThis.alert = () => {};
+  globalThis.confirm = () => false;
+  globalThis.prompt = () => null;
+  globalThis.queueMicrotask = globalThis.queueMicrotask || ((cb) => Promise.resolve().then(cb));
+  globalThis.locationbar = { visible: true };
+  globalThis.menubar = { visible: true };
+  globalThis.personalbar = { visible: true };
+  globalThis.scrollbars = { visible: true };
+  globalThis.statusbar = { visible: true };
+  globalThis.toolbar = { visible: true };
+  globalThis.external = {};
+  globalThis.customElements = globalThis.customElements || {
+    define() {},
+    get() {
+      return undefined;
+    },
+    whenDefined() {
+      return Promise.resolve();
+    },
+  };
   globalThis.performance = performance;
-  globalThis.localStorage = createStorage();
-  globalThis.sessionStorage = createStorage();
+  globalThis.localStorage = createStorage(payload.local_storage || {});
+  globalThis.sessionStorage = createStorage(payload.session_storage || {});
   globalThis.__sentinel_init_pending = [];
   globalThis.__sentinel_token_pending = [];
 
-  globalThis.setTimeout = (cb) => {
+  globalThis.setTimeout = nativeSetTimeout || ((cb) => {
     if (typeof cb === "function") cb();
     return 1;
-  };
-  globalThis.clearTimeout = () => {};
-  globalThis.setInterval = () => 1;
-  globalThis.clearInterval = () => {};
+  });
+  globalThis.clearTimeout = nativeClearTimeout || (() => {});
+  globalThis.setInterval = nativeSetInterval || (() => 1);
+  globalThis.clearInterval = nativeClearInterval || (() => {});
   globalThis.requestIdleCallback = (cb) => {
-    if (typeof cb === "function") cb({ didTimeout: false, timeRemaining: () => 50 });
+    const run = () => {
+      if (typeof cb === "function") cb({ didTimeout: false, timeRemaining: () => 50 });
+    };
+    if (nativeSetTimeout) return nativeSetTimeout(run, 0);
+    run();
     return 1;
   };
-  globalThis.cancelIdleCallback = () => {};
-  globalThis.addEventListener = () => {};
-  globalThis.removeEventListener = () => {};
-  globalThis.dispatchEvent = () => true;
-  globalThis.postMessage = () => {};
+  globalThis.cancelIdleCallback = nativeClearTimeout || (() => {});
+  globalThis.requestAnimationFrame = (cb) => {
+    const run = () => {
+      if (typeof cb === "function") cb(globalThis.performance.now());
+    };
+    if (nativeSetTimeout) return nativeSetTimeout(run, 16);
+    run();
+    return 1;
+  };
+  globalThis.cancelAnimationFrame = nativeClearTimeout || (() => {});
+  globalThis.addEventListener = eventTarget.addEventListener.bind(globalThis);
+  globalThis.removeEventListener = eventTarget.removeEventListener.bind(globalThis);
+  globalThis.dispatchEvent = eventTarget.dispatchEvent.bind(globalThis);
+  globalThis.postMessage = (message, targetOrigin) => {
+    const event = new globalThis.MessageEvent("message", {
+      data: message,
+      source: globalThis,
+      origin: targetOrigin || pageOrigin,
+    });
+    globalThis.dispatchEvent(event);
+  };
 
   globalThis.atob = (input) => String.fromCharCode(...base64ToBytes(input));
   globalThis.btoa = (input) => {
@@ -285,6 +804,16 @@ function installRuntime(payload) {
         this.detail = init && Object.prototype.hasOwnProperty.call(init, "detail") ? init.detail : null;
       }
     };
+  globalThis.MessageEvent =
+    globalThis.MessageEvent ||
+    class MessageEvent extends globalThis.Event {
+      constructor(type, init) {
+        super(type);
+        this.data = init && Object.prototype.hasOwnProperty.call(init, "data") ? init.data : null;
+        this.origin = init && init.origin ? String(init.origin) : "";
+        this.source = init && init.source ? init.source : null;
+      }
+    };
   globalThis.MessageChannel =
     globalThis.MessageChannel ||
     class MessageChannel {
@@ -293,6 +822,22 @@ function installRuntime(payload) {
         this.port2 = { postMessage() {}, addEventListener() {}, removeEventListener() {}, start() {}, close() {} };
       }
     };
+  globalThis.MutationObserver = globalThis.MutationObserver || ObserverPoly;
+  globalThis.ResizeObserver = globalThis.ResizeObserver || ObserverPoly;
+  globalThis.IntersectionObserver = globalThis.IntersectionObserver || ObserverPoly;
+  globalThis.Worker = globalThis.Worker || WorkerPoly;
+  globalThis.HTMLElement = globalThis.HTMLElement || function HTMLElement() {};
+  globalThis.HTMLCanvasElement = globalThis.HTMLCanvasElement || function HTMLCanvasElement() {};
+  globalThis.HTMLIFrameElement = globalThis.HTMLIFrameElement || function HTMLIFrameElement() {};
+  globalThis.HTMLScriptElement = globalThis.HTMLScriptElement || function HTMLScriptElement() {};
+  globalThis.Document = globalThis.Document || function Document() {};
+  globalThis.Window = globalThis.Window || function Window() {};
+  if (!globalThis.Notification) {
+    const NotificationPoly = function Notification() {};
+    NotificationPoly.permission = "default";
+    NotificationPoly.requestPermission = () => Promise.resolve("default");
+    globalThis.Notification = NotificationPoly;
+  }
   globalThis.matchMedia =
     globalThis.matchMedia ||
     ((query) => ({
@@ -315,7 +860,31 @@ function installRuntime(payload) {
       },
     }));
   globalThis.history = globalThis.history || { length: 1, state: null, back() {}, forward() {}, go() {}, pushState() {}, replaceState() {} };
-  globalThis.chrome = globalThis.chrome || { runtime: {}, app: {} };
+  if (globalThis.Intl && globalThis.Intl.DateTimeFormat) {
+    const NativeDateTimeFormat = globalThis.Intl.DateTimeFormat;
+    const DateTimeFormatPoly = function DateTimeFormat(locales, options) {
+      const formatter = new NativeDateTimeFormat(locales, options);
+      const nativeResolvedOptions = formatter.resolvedOptions.bind(formatter);
+      formatter.resolvedOptions = () => ({ ...nativeResolvedOptions(), timeZone: timezone });
+      return formatter;
+    };
+    DateTimeFormatPoly.prototype = NativeDateTimeFormat.prototype;
+    DateTimeFormatPoly.supportedLocalesOf = NativeDateTimeFormat.supportedLocalesOf.bind(NativeDateTimeFormat);
+    globalThis.Intl.DateTimeFormat = DateTimeFormatPoly;
+  }
+  try {
+    Date.prototype.getTimezoneOffset = () => timezoneOffsetMin;
+  } catch {}
+  if (isFirefox) {
+    globalThis.InstallTrigger = globalThis.InstallTrigger || {};
+    try {
+      delete globalThis.chrome;
+    } catch {
+      globalThis.chrome = undefined;
+    }
+  } else {
+    globalThis.chrome = globalThis.chrome || { runtime: {}, app: {} };
+  }
   globalThis.CSS = globalThis.CSS || { supports() { return true; } };
   globalThis.indexedDB =
     globalThis.indexedDB ||
@@ -337,11 +906,13 @@ function installRuntime(payload) {
     }
     return arr;
   };
+  const nativeCrypto = globalThis.crypto || {};
   globalThis.crypto = {
-    randomUUID: globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
-      ? globalThis.crypto.randomUUID.bind(globalThis.crypto)
+    randomUUID: nativeCrypto && typeof nativeCrypto.randomUUID === "function"
+      ? nativeCrypto.randomUUID.bind(nativeCrypto)
       : undefined,
     getRandomValues: randomFill,
+    subtle: nativeCrypto.subtle || {},
   };
 }
 

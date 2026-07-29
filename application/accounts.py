@@ -4,6 +4,7 @@ import ast
 import csv
 import json
 import re
+import time
 
 from core.datetime_utils import serialize_datetime
 from domain.accounts import (
@@ -41,6 +42,15 @@ def _parse_csv_row(raw: str) -> list[str]:
     return next(csv.reader([raw]))
 
 
+def _credential_value(credentials: list[dict], key: str) -> str:
+    for item in credentials or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("key") or "").strip() == key:
+            return str(item.get("value") or "").strip()
+    return ""
+
+
 class AccountsService:
     def __init__(self, repository: AccountsRepository | None = None):
         self.repository = repository or AccountsRepository()
@@ -72,6 +82,32 @@ class AccountsService:
 
     def delete_invalid_and_banned(self, command: AccountDeleteInvalidBannedCommand) -> dict:
         return self.repository.delete_invalid_and_banned(command)
+
+    def get_totp_code(self, account_id: int) -> dict | None:
+        item = self.repository.get(account_id)
+        if not item:
+            return None
+        overview = item.overview if isinstance(item.overview, dict) else {}
+        legacy_extra = overview.get("legacy_extra") if isinstance(overview.get("legacy_extra"), dict) else {}
+        secret = (
+            _credential_value(item.credentials, "totp_secret")
+            or str(overview.get("totp_secret") or "").strip()
+            or str(legacy_extra.get("totp_secret") or "").strip()
+        )
+        if not secret:
+            raise ValueError("当前账号未保存 2FA 密钥")
+
+        from platforms.chatgpt.mfa import generate_totp_code
+
+        period = 30
+        now = int(time.time())
+        return {
+            "ok": True,
+            "code": generate_totp_code(secret, at_time=now),
+            "period": period,
+            "valid_for_seconds": period - (now % period),
+            "generated_at": now,
+        }
 
     def import_accounts(self, platform: str, lines: list[str]) -> dict:
         parsed: list[AccountImportLine] = []

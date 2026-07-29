@@ -96,9 +96,13 @@ def _record_tag_values(item: AccountRecord) -> set[str]:
         values.add("bugfree")
     if bool(overview.get("chatgpt_free_plus_trial")):
         values.add("试用")
+    if bool(overview.get("mfa_enabled")):
+        values.add("2fa已绑")
     for credential in item.credentials or []:
         if _tag_text(credential.get("key")) == "plan_type" and _tag_text(credential.get("value")) == "k12":
             values.add("k12")
+        if _tag_text(credential.get("key")) == "totp_secret" and _tag_text(credential.get("value")):
+            values.add("2fa已绑")
 
     if "plus" in values or "subscribed" in values:
         values.add("plus")

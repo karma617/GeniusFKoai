@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import hashlib
 import secrets
 import time
 import uuid
@@ -26,10 +27,10 @@ from .constants import (
     OPENAI_AUTH,
     CHATGPT_APP,
     PLATFORM_LOGIN_ENTRY,
-    SENTINEL_SDK_URL,
     SENTINEL_REQ_URL,
-    SENTINEL_FRAME_URL,
     SENTINEL_BASE,
+    get_latest_sentinel_sdk_url,
+    get_latest_sentinel_frame_url,
     OAUTH_CONSENT_FORM_SELECTOR,
 )
 
@@ -2259,11 +2260,22 @@ def _start_browser_signup_via_authorize(page, email: str, device_id: str, log) -
     csrf_token = _get_browser_csrf_token(page, log=log)
     if not csrf_token:
         raise RuntimeError("获取 CSRF token 失败")
+    log(
+        "[REG-DIAG][browser] csrf "
+        f"token={_diag_shape(csrf_token)} cookies={_diag_cookie_names(page)} "
+        f"url=({_diag_url_summary(str(getattr(page, 'url', '') or ''))})"
+    )
 
     authorize_url = ""
     for attempt in range(1, 4):
         log(f"提交邮箱: {email}" + (f"（第 {attempt}/3 次）" if attempt > 1 else ""))
         authorize_url = _start_browser_signin(page, email, device_id, csrf_token)
+        log(
+            "[REG-DIAG][browser] signin/openai result "
+            f"attempt={attempt} authorize_url=({_diag_url_summary(authorize_url)}) "
+            f"device_id={_diag_shape(device_id)} csrf={_diag_shape(csrf_token)} "
+            f"cookies={_diag_cookie_names(page)}"
+        )
         if authorize_url:
             break
         if attempt < 3:
@@ -3260,6 +3272,243 @@ def _cookies_to_header(cookies_dict: dict) -> str:
     return "; ".join(parts)
 
 
+def _diag_hash(value: Any, length: int = 10) -> str:
+    text = str(value or "")
+    if not text:
+        return "-"
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:length]
+
+
+def _diag_shape(value: Any, *, prefix: int = 0) -> str:
+    text = str(value or "")
+    if not text:
+        return "no"
+    prefix_text = f" prefix={text[:prefix]}" if prefix else ""
+    return f"yes len={len(text)} sha={_diag_hash(text)}{prefix_text}"
+
+
+def _diag_bool(value: Any) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def _diag_header_summary(headers: dict | None) -> str:
+    headers = dict(headers or {})
+    lower = {str(k).lower(): v for k, v in headers.items()}
+    return " ".join(
+        [
+            f"ua={lower.get('user-agent') or '-'}",
+            f"accept_language={lower.get('accept-language') or '-'}",
+            f"sec_ch_ua={lower.get('sec-ch-ua') or '-'}",
+            f"sec_ch_platform={lower.get('sec-ch-ua-platform') or '-'}",
+            f"target_route={lower.get('x-openai-target-route') or '-'}",
+            f"target_path={lower.get('x-openai-target-path') or '-'}",
+            f"oai_client={lower.get('oai-client-version') or '-'}",
+            f"oai_build={lower.get('oai-client-build-number') or '-'}",
+            f"auth={_diag_bool(lower.get('authorization'))}",
+            f"sentinel={_diag_shape(lower.get('openai-sentinel-token'))}",
+            f"so={_diag_shape(lower.get('openai-sentinel-so-token'))}",
+            f"x_access_flow={_diag_shape(lower.get('x-access-flow-invocation-id'))}",
+        ]
+    )
+
+
+def _diag_url_summary(url: str) -> str:
+    text = str(url or "")
+    if not text:
+        return "-"
+    try:
+        parsed = urlparse(text)
+        query = parse_qs(parsed.query)
+    except Exception:
+        return f"raw_len={len(text)} sha={_diag_hash(text)}"
+    selected: list[str] = []
+    for key in (
+        "client_id",
+        "scope",
+        "state",
+        "device_id",
+        "ext-oai-did",
+        "auth_session_logging_id",
+        "screen_hint",
+        "login_hint",
+        "code",
+    ):
+        value = str((query.get(key) or [""])[0] or "")
+        if not value:
+            continue
+        if key in {"client_id", "screen_hint"}:
+            selected.append(f"{key}={value}")
+        else:
+            selected.append(f"{key}_len={len(value)} {key}_sha={_diag_hash(value)}")
+    return f"host={parsed.netloc or '-'} path={parsed.path or '/'} {' '.join(selected)}".strip()
+
+
+def _diag_payload_keys(data: Any) -> str:
+    if not isinstance(data, dict):
+        return "-"
+    page = data.get("page") if isinstance(data.get("page"), dict) else {}
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    parts = [f"keys={','.join(sorted(str(k) for k in data.keys())) or '-'}"]
+    if page:
+        parts.append(f"page_type={page.get('type') or '-'}")
+    if error:
+        parts.append(f"error_code={error.get('code') or '-'}")
+        parts.append(f"error_type={error.get('type') or '-'}")
+    continue_url = str(data.get("continue_url") or "")
+    if continue_url:
+        parts.append(f"continue_url=({_diag_url_summary(continue_url)})")
+    return " ".join(parts)
+
+
+def _diag_cookie_names(page) -> str:
+    try:
+        names = sorted({str(c.get("name") or "") for c in page.context.cookies() if c.get("name")})
+    except Exception:
+        names = []
+    return ",".join(names) if names else "-"
+
+
+def _log_browser_context_diag(page, log, *, backend_config: BrowserBackendConfig, launch_opts: dict, proxy: str | None, record_har_path: str = "") -> None:
+    log(
+        "[REG-DIAG][browser] context "
+        f"backend={backend_config.backend} window_mode={backend_config.window_mode} "
+        f"headless={_diag_bool(backend_config.is_headless)} launch_headless={_diag_bool(launch_opts.get('headless'))} "
+        f"proxy={_diag_bool(proxy)} launch_proxy={_diag_bool(launch_opts.get('proxy'))} "
+        f"geoip={_diag_bool(launch_opts.get('geoip'))} har={record_har_path or '-'}"
+    )
+    try:
+        env = page.evaluate(
+            """
+            () => ({
+              userAgent: navigator.userAgent,
+              language: navigator.language,
+              languages: Array.from(navigator.languages || []),
+              platform: navigator.platform,
+              webdriver: navigator.webdriver,
+              hardwareConcurrency: navigator.hardwareConcurrency,
+              deviceMemory: navigator.deviceMemory || null,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+              screen: `${screen.width}x${screen.height}x${screen.colorDepth}`,
+              viewport: `${innerWidth}x${innerHeight}`,
+            })
+            """
+        )
+    except Exception as exc:
+        log(f"[REG-DIAG][browser] navigator read failed: {exc}")
+        return
+    if not isinstance(env, dict):
+        env = {}
+    log(
+        "[REG-DIAG][browser] navigator "
+        f"ua={env.get('userAgent') or '-'} "
+        f"language={env.get('language') or '-'} "
+        f"languages={','.join(env.get('languages') or []) if isinstance(env.get('languages'), list) else '-'} "
+        f"platform={env.get('platform') or '-'} "
+        f"webdriver={env.get('webdriver')} "
+        f"timezone={env.get('timezone') or '-'} "
+        f"hardwareConcurrency={env.get('hardwareConcurrency') or '-'} "
+        f"deviceMemory={env.get('deviceMemory') or '-'} "
+        f"screen={env.get('screen') or '-'} viewport={env.get('viewport') or '-'}"
+    )
+
+
+def _diag_interesting_register_url(url: str) -> bool:
+    text = str(url or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "sentinel.openai.com/backend-api/sentinel/req",
+            "chatgpt.com/backend-anon/",
+            "chatgpt.com/backend-api/sentinel/chat-requirements/",
+            "chatgpt.com/api/auth/csrf",
+            "chatgpt.com/api/auth/signin/openai",
+            "chatgpt.com/api/auth/callback/openai",
+            "chatgpt.com/api/auth/session",
+            "auth.openai.com/api/accounts/authorize",
+            "auth.openai.com/email-verification",
+            "auth.openai.com/about-you",
+            "auth.openai.com/api/accounts/email-otp/validate",
+            "auth.openai.com/api/accounts/create_account",
+        )
+    )
+
+
+def _diag_request_body_summary(url: str, body: str) -> str:
+    text = str(body or "")
+    if not text:
+        return "body=no"
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        parts = [f"body_len={len(text)}", f"body_keys={','.join(sorted(str(k) for k in data.keys())) or '-'}"]
+        if "p" in data:
+            parts.append(f"p={_diag_shape(data.get('p'), prefix=8)}")
+        if "id" in data:
+            parts.append(f"id={_diag_shape(data.get('id'))}")
+        if "flow" in data:
+            parts.append(f"flow={data.get('flow') or '-'}")
+        if "code" in data:
+            parts.append(f"code_len={len(str(data.get('code') or '').strip())}")
+        return " ".join(parts)
+    return f"body_len={len(text)} body_sha={_diag_hash(text)}"
+
+
+def _install_register_diag_network_hooks(page, log) -> None:
+    try:
+        if getattr(page, "_gfo_register_diag_hooks", False):
+            return
+        setattr(page, "_gfo_register_diag_hooks", True)
+    except Exception:
+        pass
+
+    def _on_request(request):
+        try:
+            url = str(getattr(request, "url", "") or "")
+            if not _diag_interesting_register_url(url):
+                return
+            method = str(getattr(request, "method", "") or "")
+            try:
+                headers = request.headers
+            except Exception:
+                headers = {}
+            try:
+                body = request.post_data or ""
+            except Exception:
+                body = ""
+            log(
+                "[REG-DIAG][browser][request] "
+                f"method={method} url=({_diag_url_summary(url)}) "
+                f"headers=({_diag_header_summary(headers)}) "
+                f"{_diag_request_body_summary(url, body)}"
+            )
+        except Exception as exc:
+            log(f"[REG-DIAG][browser][request] hook failed: {exc}")
+
+    def _on_response(response):
+        try:
+            url = str(getattr(response, "url", "") or "")
+            if not _diag_interesting_register_url(url):
+                return
+            status = int(getattr(response, "status", 0) or 0)
+            request = getattr(response, "request", None)
+            method = str(getattr(request, "method", "") or "") if request is not None else ""
+            log(
+                "[REG-DIAG][browser][response] "
+                f"method={method} status={status} url=({_diag_url_summary(url)})"
+            )
+        except Exception as exc:
+            log(f"[REG-DIAG][browser][response] hook failed: {exc}")
+
+    try:
+        page.on("request", _on_request)
+        page.on("response", _on_response)
+        log("[REG-DIAG][browser] network hooks installed")
+    except Exception as exc:
+        log(f"[REG-DIAG][browser] network hooks install failed: {exc}")
+
+
 def _decode_jwt_payload_no_verify(token: str) -> dict:
     try:
         parts = str(token or "").split(".")
@@ -3289,6 +3538,14 @@ def _chatgpt_session_result_from_data(data: dict, page, cookies_dict: dict, log)
         return None, "session API JSON 不是对象"
 
     access_token = str(data.get("accessToken") or data.get("access_token") or "").strip()
+    log(
+        "[REG-DIAG][session][browser] session_payload "
+        f"{_diag_payload_keys(data)} "
+        f"access_token={_diag_shape(access_token)} "
+        f"refresh_token={_diag_shape(data.get('refreshToken') or data.get('refresh_token'))} "
+        f"id_token={_diag_shape(data.get('idToken') or data.get('id_token'))} "
+        f"cookie_names={','.join(sorted(cookies_dict.keys())) if cookies_dict else '-'}"
+    )
     if not access_token:
         return None, "session API 未返回 accessToken"
 
@@ -3299,6 +3556,12 @@ def _chatgpt_session_result_from_data(data: dict, page, cookies_dict: dict, log)
         log(f"ChatGPT session cookies 读取失败，使用已捕获 cookies: {exc}")
     session_token = str(latest_cookies.get("__Secure-next-auth.session-token") or "").strip()
     account_id = _extract_chatgpt_account_id(access_token)
+    log(
+        "[REG-DIAG][session][browser] session_material "
+        f"session_token={_diag_shape(session_token)} "
+        f"account_id={account_id or '-'} "
+        f"latest_cookie_names={','.join(sorted(latest_cookies.keys())) if latest_cookies else '-'}"
+    )
     result = {
         "access_token": access_token,
         "refresh_token": str(data.get("refreshToken") or data.get("refresh_token") or "").strip(),
@@ -3333,6 +3596,11 @@ def _fetch_chatgpt_session_via_same_origin(page, cookies_dict: dict, log, sessio
         return None, "", False
 
     log(f"浏览器内请求 ChatGPT session API: {session_url}")
+    log(
+        "[REG-DIAG][session][browser] same_origin_session request "
+        f"current_url=({_diag_url_summary(current_url)}) url=({_diag_url_summary(session_url)}) "
+        f"cookies={_diag_cookie_names(page)}"
+    )
     try:
         payload = page.evaluate(
             """
@@ -3361,6 +3629,11 @@ def _fetch_chatgpt_session_via_same_origin(page, cookies_dict: dict, log, sessio
     response_url = str(payload.get("url") or "")
     text = str(payload.get("text") or "")
     log(f"ChatGPT session API 浏览器内请求状态: {status} url={response_url}")
+    log(
+        "[REG-DIAG][session][browser] same_origin_session response "
+        f"status={status} url=({_diag_url_summary(response_url)}) body_len={len(text)} "
+        f"cookies={_diag_cookie_names(page)}"
+    )
     if status == 200 and text:
         return (*_chatgpt_session_result_from_text(text, page, cookies_dict, log), True)
     return None, f"session API HTTP {status}: {text}", True
@@ -3728,7 +4001,7 @@ class _SentinelTokenGenerator:
             4294705152,
             random.random(),
             self.user_agent,
-            SENTINEL_SDK_URL,
+            get_latest_sentinel_sdk_url(),
             None,
             None,
             "en-US",
@@ -3817,7 +4090,7 @@ def _build_browser_sentinel_token(page, device_id: str, flow: str, user_agent: s
         headers=_build_browser_headers(
             user_agent=user_agent,
             accept="*/*",
-            referer=SENTINEL_FRAME_URL,
+            referer=get_latest_sentinel_frame_url(),
             origin=SENTINEL_BASE,
             content_type="text/plain;charset=UTF-8",
             extra_headers={
@@ -6973,6 +7246,12 @@ def _browser_registration_flow_once(
         user_agent = _random_chrome_ua()
 
     _seed_browser_device_id(page, device_id)
+    log(
+        "[REG-DIAG][browser] flow_start "
+        f"signup_method={signup_method or '-'} email_hash={_diag_hash(email)} "
+        f"device_id={_diag_shape(device_id)} user_agent={user_agent} "
+        f"cookies={_diag_cookie_names(page)}"
+    )
     try:
         if phone_first_signup:
             log("Phone-first signup: starting with SMS phone registration")
@@ -7017,6 +7296,12 @@ def _browser_registration_flow_once(
         f"login_session={'yes' if auth_cookies.get('login_session') else 'no'}, "
         f"oai-did={'yes' if auth_cookies.get('oai-did') else 'no'}"
     )
+    log(
+        "[REG-DIAG][browser] auth_cookies "
+        f"login_session={_diag_shape(auth_cookies.get('login_session'))} "
+        f"oai_did={_diag_shape(auth_cookies.get('oai-did'))} "
+        f"cookie_names={','.join(sorted(auth_cookies.keys())) if auth_cookies else '-'}"
+    )
     log(f"注册状态起点: page={state.get('page_type') or '-'} url={(state.get('current_url') or '')}")
     register_submitted = False
     seen_states: dict[str, int] = {}
@@ -7037,6 +7322,13 @@ def _browser_registration_flow_once(
         log(
             f"注册状态推进: step={step+1} page={state.get('page_type') or '-'} "
             f"next={str(state.get('continue_url') or '')} seen={seen_states[signature]}"
+        )
+        log(
+            "[REG-DIAG][browser] state "
+            f"step={step+1} page={state.get('page_type') or '-'} "
+            f"current=({_diag_url_summary(str(state.get('current_url') or getattr(page, 'url', '') or ''))}) "
+            f"next=({_diag_url_summary(str(state.get('continue_url') or ''))}) "
+            f"cookies={_diag_cookie_names(page)}"
         )
         if str(state.get("page_type") or "") == "pending_transition":
             time.sleep(1)
@@ -7448,6 +7740,15 @@ class ChatGPTBrowserRegister:
             elif self.record_har:
                 self.log("register HAR capture skipped: current browser backend does not support record_har_path")
             set_register_page_viewport(page)
+            _install_register_diag_network_hooks(page, self.log)
+            _log_browser_context_diag(
+                page,
+                self.log,
+                backend_config=self.backend_config,
+                launch_opts=launch_opts,
+                proxy=self.proxy,
+                record_har_path=record_har_path,
+            )
             self.log("启动浏览器上下文注册状态机")
             try:
                 final_state = _browser_registration_flow(
@@ -7470,6 +7771,14 @@ class ChatGPTBrowserRegister:
 
             # 获取 session token 和 cookies
             cookies_dict = _get_cookies(page)
+            self.log(
+                "[REG-DIAG][session][browser] before_session_fetch "
+                f"final_page={final_state.get('page_type') or '-'} "
+                f"page_url=({_diag_url_summary(str(getattr(page, 'url', '') or ''))}) "
+                f"cookie_names={','.join(sorted(cookies_dict.keys())) if cookies_dict else '-'} "
+                f"session_cookie={_diag_shape(cookies_dict.get('__Secure-next-auth.session-token'))} "
+                f"account_cookie={_diag_shape(cookies_dict.get('_account'))}"
+            )
             session_info = _fetch_chatgpt_session_from_page(page, cookies_dict, self.log)
             result = {
                 "email": email,

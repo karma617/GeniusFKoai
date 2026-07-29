@@ -142,6 +142,31 @@ def test_protocol_mailbox_uses_identity_message_baseline_without_refetch():
     assert mailbox.current_ids_calls == 0
 
 
+def test_protocol_mailbox_wires_mailbox_debug_logger():
+    import platforms.chatgpt.protocol_mailbox as protocol_mailbox
+
+    class Mailbox(_Mailbox):
+        def __init__(self):
+            super().__init__()
+            self.debug_logger = None
+
+        def set_debug_logger(self, log_fn):
+            self.debug_logger = log_fn
+
+    logs = []
+    mailbox = Mailbox()
+    protocol_mailbox._MailboxEmailService(
+        mailbox=mailbox,
+        mailbox_account=_MailboxAccount(),
+        provider="gmail_api_code",
+        log_fn=logs.append,
+    )
+
+    mailbox.debug_logger("diagnostic")
+
+    assert logs == ["diagnostic"]
+
+
 def test_protocol_mailbox_raises_on_otp_timeout(monkeypatch):
 
     import platforms.chatgpt.protocol_mailbox as protocol_mailbox

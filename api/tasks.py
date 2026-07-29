@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from application.tasks_query import TasksQueryService
 
@@ -9,8 +9,14 @@ service = TasksQueryService()
 
 
 @router.get("")
-def list_tasks(platform: str = "", status: str = "", page: int = 1, page_size: int = 50):
-    return service.list_tasks(platform=platform, status=status, page=page, page_size=page_size)
+def list_tasks(
+    platform: str = "",
+    status: str = "",
+    task_type: str = Query("", alias="type"),
+    page: int = 1,
+    page_size: int = 50,
+):
+    return service.list_tasks(platform=platform, status=status, task_type=task_type, page=page, page_size=page_size)
 
 
 @router.get("/{task_id}")

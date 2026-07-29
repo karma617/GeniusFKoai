@@ -141,6 +141,64 @@ class ProxyPool:
     def __init__(self):
         self._index = 0
         self._lock = threading.Lock()
+        self._leased_keys: set[str] = set()
+
+    def lease_next(self, region: str = "", *, exclude: set[str] | None = None) -> Optional[str]:
+        """获取一条当前进程内未被其它任务占用的代理。"""
+        exclude_keys = {_proxy_url_key(item) for item in (exclude or set()) if item}
+
+        try:
+            from core.proxy_providers import get_dynamic_proxy
+            dynamic = get_dynamic_proxy()
+            dynamic_key = _proxy_url_key(dynamic)
+            if dynamic and dynamic_key and dynamic_key not in exclude_keys:
+                with self._lock:
+                    if dynamic_key not in self._leased_keys:
+                        self._leased_keys.add(dynamic_key)
+                        return dynamic
+        except Exception:
+            pass
+
+        with Session(engine) as s:
+            all_active = s.exec(
+                select(ProxyModel).where(ProxyModel.is_active == True)
+            ).all()
+            if not all_active:
+                return None
+            preferred = (
+                [p for p in all_active if (p.region or "") == region]
+                if region
+                else list(all_active)
+            )
+            pool = preferred if preferred else list(all_active)
+            pool.sort(
+                key=lambda p: p.success_count / max(p.success_count + p.fail_count, 1),
+                reverse=True,
+            )
+            with self._lock:
+                available = [
+                    p for p in pool
+                    if _proxy_url_key(p.url) not in self._leased_keys
+                    and _proxy_url_key(p.url) not in exclude_keys
+                ]
+                if not available:
+                    return None
+                idx = self._index % len(available)
+                self._index += 1
+                proxy = available[idx].url
+                self._leased_keys.add(_proxy_url_key(proxy))
+                return proxy
+
+    def release_lease(self, url: str | None) -> None:
+        key = _proxy_url_key(url)
+        if not key:
+            return
+        with self._lock:
+            self._leased_keys.discard(key)
+
+    def clear_leases(self) -> None:
+        with self._lock:
+            self._leased_keys.clear()
 
     def get_next(self, region: str = "") -> Optional[str]:
         """获取下一个可用代理。

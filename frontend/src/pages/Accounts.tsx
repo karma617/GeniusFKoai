@@ -81,7 +81,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'invalid',
   'banned',
 ]
-const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'MOMO试用', '协议模式', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
+const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'MOMO试用', '2FA已绑', '协议模式', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
 const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -267,9 +267,14 @@ function isChatgptK12Account(acc: any) {
 
 function normalizeAccountBadges(acc: any, badges: any[]) {
   const registrationModeBadge = getRegistrationModeBadge(acc)
-  const normalizedBadges = registrationModeBadge && !badges.some((badge: any) => String(badge?.label || '').trim() === registrationModeBadge.label)
+  const withRegistrationMode = registrationModeBadge && !badges.some((badge: any) => String(badge?.label || '').trim() === registrationModeBadge.label)
     ? [...badges, registrationModeBadge]
     : badges
+  const normalizedBadges = String(acc?.platform || '').trim().toLowerCase() === 'chatgpt'
+    && getChatgptTotpSecret(acc)
+    && !withRegistrationMode.some((badge: any) => String(badge?.label || '').trim() === '2FA已绑')
+    ? [...withRegistrationMode, { label: '2FA已绑', tone: 'success' }]
+    : withRegistrationMode
   if (!isChatgptK12Account(acc)) return normalizedBadges
   let hasK12Badge = false
   let replacedFree = false
@@ -341,6 +346,14 @@ function getProviderAccounts(acc: any) {
 
 function getCredentials(acc: any) {
   return Array.isArray(acc?.credentials) ? acc.credentials : []
+}
+
+function getChatgptTotpSecret(acc: any) {
+  const credential = getCredentials(acc).find((item: any) => item?.scope === 'platform' && item?.key === 'totp_secret' && item?.value)
+  if (credential?.value) return String(credential.value)
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  return String(overview?.totp_secret || legacyExtra?.totp_secret || '').trim()
 }
 
 function getCashierUrl(acc: any) {
@@ -2467,6 +2480,84 @@ function PlanRefreshLogDialog({
   )
 }
 
+function TotpCodeDialog({
+  account,
+  code,
+  remain,
+  copied,
+  onClose,
+  onCopy,
+}: {
+  account: { email?: string }
+  code: string
+  remain: number
+  copied: boolean
+  onClose: () => void
+  onCopy: () => void
+}) {
+  if (!account) return null
+  return createPortal(
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div
+        className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-2xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
+        onClick={event => event.stopPropagation()}
+        style={{ width: 'min(560px, calc(100vw - 32px))', maxHeight: 'min(620px, calc(100dvh - 48px))' }}
+      >
+        <div className="relative shrink-0 overflow-hidden border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="mb-2 inline-flex rounded-full bg-[rgba(var(--accent-rgb),0.1)] px-3 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--accent)]">
+                2FA
+              </div>
+              <h2 className="truncate text-[16px] font-bold text-[var(--text-primary)]">查看2FA验证码</h2>
+              <p className="mt-1 truncate text-[12px] font-medium text-[var(--text-secondary)]">{account.email || '-'}</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="rounded-full border border-transparent bg-[var(--bg-pane)] p-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
+          <div className="rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-card)] p-4 shadow-sm">
+            <div className="text-[11px] font-medium text-[var(--text-muted)]">当前验证码</div>
+            <div className="mt-2 flex items-end justify-between gap-3">
+              <div className="font-mono text-4xl font-bold tracking-[0.18em] text-[var(--text-primary)]">{code || '-'}</div>
+              <Badge variant={remain > 0 ? 'success' : 'warning'}>
+                {remain > 0 ? `剩余 ${remain} 秒` : '即将过期'}
+              </Badge>
+            </div>
+            {copied ? (
+              <div className="mt-3 text-sm font-medium text-emerald-600 dark:text-emerald-300">
+                已复制到剪贴板
+              </div>
+            ) : (
+              <div className="mt-3 text-sm text-[var(--text-secondary)]">
+                点击复制后可直接粘贴使用
+              </div>
+            )}
+          </div>
+          <div className="mt-4 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/50 px-4 py-3 text-sm text-[var(--text-secondary)]">
+            这个验证码会按当前时间窗口自动刷新，建议复制后尽快使用。
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-3">
+          <Button variant="outline" onClick={onCopy} disabled={!code}>
+            <Copy className="mr-1.5 h-3.5 w-3.5" />
+            复制验证码
+          </Button>
+          <Button onClick={onClose}>确定</Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 function ActionParamsModal({
   action,
   initialValues,
@@ -2587,6 +2678,7 @@ function ActionMenu({
   onResult,
   onChanged,
   onTriggerGetRt,
+  onViewTotp,
 }: {
   acc: any
   onDetail: () => void
@@ -2594,6 +2686,7 @@ function ActionMenu({
   onResult: (title: string, payload: any) => void
   onChanged: () => void
   onTriggerGetRt?: (acc: any, kind: 'get_rt' | 'get_rt_bypass') => void
+  onViewTotp?: (acc: any) => void
 }) {
   const { t, language } = useI18n()
   const [open, setOpen] = useState(false)
@@ -2609,7 +2702,8 @@ function ActionMenu({
   const triggerRef = useRef<HTMLButtonElement>(null)
   const canCopySession = String(acc?.platform || '').trim().toLowerCase() === 'chatgpt'
   const canCopyK12Session = canCopySession && !isEmptyPayload(getChatgptK12SessionPayload(acc))
-  const hasMenuItems = actions.length > 0 || canCopySession || canCopyK12Session
+  const canViewTotp = canCopySession && Boolean(getChatgptTotpSecret(acc))
+  const hasMenuItems = actions.length > 0 || canCopySession || canCopyK12Session || canViewTotp
 
   const runAction = (action: any, params: Record<string, any>) => {
     setRunning(action.id)
@@ -2656,7 +2750,7 @@ function ActionMenu({
     const rect = trigger.getBoundingClientRect()
     const viewportPadding = 12
     const menuWidth = 220
-    const copyActionCount = (canCopySession ? 1 : 0) + (canCopyK12Session ? 1 : 0)
+    const copyActionCount = (canCopySession ? 1 : 0) + (canCopyK12Session ? 1 : 0) + (canViewTotp ? 1 : 0)
     const estimatedHeight = (actions.length + copyActionCount + 1) * 40 + 64
     const desiredHeight = Math.min(
       menuRef.current?.scrollHeight || estimatedHeight,
@@ -2684,7 +2778,7 @@ function ActionMenu({
       left: Math.round(left),
       maxHeight: Math.round(maxHeight),
     })
-  }, [actions.length, canCopySession, canCopyK12Session])
+  }, [actions.length, canCopySession, canCopyK12Session, canViewTotp])
 
   useEffect(() => {
     let active = true
@@ -2879,6 +2973,17 @@ function ActionMenu({
                   >
                     {'\u590d\u5236session'}
                   </button>
+                  {canViewTotp && (
+                    <button
+                      onClick={async () => {
+                        setOpen(false)
+                        onViewTotp?.(acc)
+                      }}
+                      className="w-full px-3 py-2 text-left text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                    >
+                      查看2FA验证码
+                    </button>
+                  )}
                   {canCopyK12Session && (
                     <button
                       onClick={async () => {
@@ -3277,6 +3382,7 @@ export default function Accounts() {
   const [platformsMap, setPlatformsMap] = useState<Record<string, any>>({})
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
+  const [totpDialog, setTotpDialog] = useState<{ email: string; code: string; remain: number; copied: boolean } | null>(null)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [invalidDeleting, setInvalidDeleting] = useState(false)
   const [batchRefreshing, setBatchRefreshing] = useState(false)
@@ -3901,6 +4007,46 @@ export default function Accounts() {
   const copy = (text: string) => {
     if (navigator.clipboard) { navigator.clipboard.writeText(text) }
     else { const el = document.createElement('textarea'); el.value = text; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) }
+  }
+
+  const showTotpCodeForAccount = async (acc: any) => {
+    const accountId = Number(acc?.id)
+    if (!Number.isFinite(accountId) || accountId <= 0) return
+    setError('')
+    try {
+      const data = await apiFetch(`/accounts/${accountId}/totp-code`)
+      const code = String(data?.code || '').trim()
+      if (!code) {
+        setError('未生成2FA验证码')
+        return
+      }
+      let copied = false
+      try {
+        await writeClipboardText(code)
+        copied = true
+      } catch {
+        // Clipboard is best-effort; the dialog still shows the code.
+      }
+      const remain = Number(data?.valid_for_seconds || 0)
+      setTotpDialog({
+        email: String(acc?.email || ''),
+        code,
+        remain,
+        copied,
+      })
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    }
+  }
+
+  const copyTotpDialogCode = async () => {
+    if (!totpDialog?.code) return
+    try {
+      await writeClipboardText(totpDialog.code)
+      setTotpDialog(current => current ? { ...current, copied: true } : current)
+    } catch {
+      setError('复制2FA验证码失败')
+    }
   }
 
   const copyAccessToken = async (acc: any, token: string) => {
@@ -4603,6 +4749,16 @@ export default function Accounts() {
       />
       {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
+      {totpDialog && (
+        <TotpCodeDialog
+          account={{ email: totpDialog.email }}
+          code={totpDialog.code}
+          remain={totpDialog.remain}
+          copied={totpDialog.copied}
+          onClose={() => setTotpDialog(null)}
+          onCopy={copyTotpDialogCode}
+        />
+      )}
       {planRefreshDialog.open && (
         <PlanRefreshLogDialog
           state={planRefreshDialog}
@@ -5674,6 +5830,15 @@ export default function Accounts() {
                               )}
                               {tab === 'chatgpt' && (
                                 <button
+                                  onClick={() => showTotpCodeForAccount(acc)}
+                                  className="table-action-btn"
+                                  title={getChatgptTotpSecret(acc) ? '查看并复制当前 6 位 2FA 验证码' : '当前账号未保存 2FA 密钥'}
+                                >
+                                  查看2FA验证码
+                                </button>
+                              )}
+                              {tab === 'chatgpt' && (
+                                <button
                                   onClick={() => runInlineAccountAction(acc, 'upload_sub2api', `上传 SUB2API - ${acc.email}`)}
                                   disabled={isBusy('upload_sub2api')}
                                   className="table-action-btn"
@@ -6241,6 +6406,7 @@ export default function Accounts() {
                       onResult={(title, payload) => setActionResult({ title, payload })}
                       onChanged={() => load()}
                       onTriggerGetRt={triggerGetRtForAccount}
+                      onViewTotp={showTotpCodeForAccount}
                     />
                   </div>
                 </td>

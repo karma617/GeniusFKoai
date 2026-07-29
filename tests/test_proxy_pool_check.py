@@ -108,6 +108,26 @@ def test_proxy_pool_check_one_uses_same_registration_http_client(monkeypatch):
     assert row.region == "US"
 
 
+def test_proxy_pool_lease_next_keeps_concurrent_leases_unique():
+    with Session(engine) as session:
+        session.add(ProxyModel(url="http://one.proxy:3128", region="JP"))
+        session.add(ProxyModel(url="http://two.proxy:3128", region="JP"))
+        session.commit()
+
+    proxy_pool.clear_leases()
+    first = proxy_pool.lease_next(region="JP")
+    second = proxy_pool.lease_next(region="JP")
+    third = proxy_pool.lease_next(region="JP")
+
+    assert {first, second} == {"http://one.proxy:3128", "http://two.proxy:3128"}
+    assert third is None
+
+    proxy_pool.release_lease(first)
+    reused = proxy_pool.lease_next(region="JP")
+    assert reused == first
+    proxy_pool.clear_leases()
+
+
 def test_normalize_proxy_url_matches_registration_runtime_formats():
     assert normalize_proxy_url("us.1024proxy.io:3000:user:pass") == (
         "http://user:pass@us.1024proxy.io:3000"

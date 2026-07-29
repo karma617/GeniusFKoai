@@ -96,6 +96,14 @@ class _MailboxEmailService:
 
         self._log_fn = log_fn or print
 
+        for target in (self._mailbox, getattr(self._mailbox, "mailbox", None)):
+            setter = getattr(target, "set_debug_logger", None)
+            if callable(setter):
+                try:
+                    setter(self._log)
+                except Exception:
+                    pass
+
 
 
     def _log(self, message: str) -> None:

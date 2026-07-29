@@ -90,6 +90,8 @@ _CHATGPT_HEALTH_CHECK_GATE = threading.BoundedSemaphore(CHATGPT_HEALTH_CHECK_GLO
 _CHATGPT_HEALTH_CHECK_SPACING_LOCK = threading.Lock()
 _CHATGPT_HEALTH_CHECK_LAST_REQUEST_AT = 0.0
 BUGFREE_SKIP_RESULT = "__bugfree_skip__"
+SMSBOWER_MAIL_OTP_RETRY_RESULT = "__smsbower_mail_otp_retry__"
+SMSBOWER_MAIL_OTP_RETRY_LIMIT_PER_ACCOUNT = 5
 BUGFREE_TARGET_SECONDS = 7 * 24 * 60 * 60
 BUGFREE_TARGET_TOLERANCE_SECONDS = 24 * 60 * 60
 BUGFREE_MONTH_SKIP_SECONDS = 25 * 24 * 60 * 60
@@ -1323,7 +1325,7 @@ def get_task(task_id: str) -> Optional[dict[str, Any]]:
 
 
 
-def list_tasks(*, platform: str = "", status: str = "", page: int = 1, page_size: int = 50) -> dict[str, Any]:
+def list_tasks(*, platform: str = "", status: str = "", task_type: str = "", page: int = 1, page_size: int = 50) -> dict[str, Any]:
 
     page = max(page, 1)
 
@@ -1346,6 +1348,12 @@ def list_tasks(*, platform: str = "", status: str = "", page: int = 1, page_size
             q = q.where(TaskModel.status == status)
 
             total_q = total_q.where(TaskModel.status == status)
+
+        if task_type:
+
+            q = q.where(TaskModel.type == task_type)
+
+            total_q = total_q.where(TaskModel.type == task_type)
 
         q = q.order_by(TaskModel.created_at.desc())
 
@@ -2003,6 +2011,61 @@ def _extract_chatgpt_session_token(account) -> str:
 def _extract_chatgpt_cookies(account) -> str:
     extra = dict(getattr(account, "extra", {}) or {})
     return str(extra.get("cookies") or extra.get("cookie") or extra.get("cookie_header") or "").strip()
+
+
+def _auto_enable_chatgpt_2fa_after_register(account, logger: TaskLogger, *, proxy: str | None = None) -> None:
+    logger.log("2FA: 注册后自动设置已临时关闭，跳过")
+    return
+
+    extra = dict(getattr(account, "extra", {}) or {})
+    if not _bool_config(extra.get("enable_2fa_after_register", True), True):
+        return
+    cookies = _extract_chatgpt_cookies(account)
+    session_token = _extract_chatgpt_session_token(account)
+    access_token = _extract_chatgpt_access_token(account)
+    if not (cookies or session_token or access_token):
+        logger.log("2FA: 缺少 ChatGPT cookies/session_token/access_token，跳过自动设置", level="warning")
+        return
+    try:
+        from platforms.chatgpt.mfa import enable_totp_mfa
+
+        result = enable_totp_mfa(
+            cookies=cookies,
+            session_token=session_token,
+            access_token=access_token,
+            proxy=proxy,
+            log_fn=logger.log,
+        )
+        account_overview = dict(extra.get("account_overview") or {})
+        chips = list(account_overview.get("chips") or [])
+        if "2FA已绑" not in [str(item) for item in chips]:
+            chips.append("2FA已绑")
+        account_overview.update(
+            {
+                "mfa_enabled": True,
+                "mfa_type": "totp",
+                "mfa_factor_id": str(result.get("mfa_factor_id") or ""),
+                "chips": chips,
+            }
+        )
+        extra.update(
+            {
+                "totp_secret": str(result.get("totp_secret") or ""),
+                "mfa_factor_id": str(result.get("mfa_factor_id") or ""),
+                "mfa_session_id": str(result.get("mfa_session_id") or ""),
+                "mfa_enabled": True,
+                "mfa_type": "totp",
+                "account_overview": account_overview,
+            }
+        )
+        account.extra = extra
+        logger.log("2FA: TOTP 已设置并保存密钥")
+    except Exception as exc:
+        account_overview = dict(extra.get("account_overview") or {})
+        account_overview.update({"mfa_enabled": False, "mfa_error": str(exc)[:240]})
+        extra.update({"mfa_enabled": False, "mfa_error": str(exc)[:240], "account_overview": account_overview})
+        account.extra = extra
+        logger.log(f"2FA: 自动设置失败，账号已保留: {exc}", level="warning")
 
 
 def _inspect_chatgpt_bugfree_usage(account, *, proxy: str | None = None, timeout: int = 20) -> dict[str, Any]:
@@ -3086,6 +3149,57 @@ def _mark_outlook_mailbox_event(shared_mailbox, account, event: str, logger: Tas
             logger.log(f"邮箱 {label}后已打标签: {', '.join(applied)}")
     except Exception as exc:
         logger.log(f"邮箱自动打标签失败（忽略）: {exc}", level="warning")
+
+
+def _is_smsbower_mail_otp_timeout_error(error: str) -> bool:
+    text = str(error or "")
+    lowered = text.lower()
+    return (
+        "等待 smsbower 验证码超时" in lowered
+        or "等待 smsbower 验证链接超时" in lowered
+        or (
+            "smsbower" in lowered
+            and (
+                "code has not been received" in lowered
+                or "验证码超时" in lowered
+                or "verification code not received" in lowered
+            )
+        )
+    )
+
+
+def _is_smsbower_mailbox_account(mailbox_account) -> bool:
+    extra = dict(getattr(mailbox_account, "extra", {}) or {})
+    provider_resource = extra.get("provider_resource") if isinstance(extra.get("provider_resource"), dict) else {}
+    provider_account = extra.get("provider_account") if isinstance(extra.get("provider_account"), dict) else {}
+    markers = [
+        extra.get("mailbox_provider_key"),
+        provider_resource.get("provider_name"),
+        provider_account.get("provider_name"),
+    ]
+    return any("smsbower" in str(item or "").strip().lower() for item in markers)
+
+
+def _release_smsbower_mailbox_after_otp_timeout(platform, shared_mailbox, logger: TaskLogger, reason: str) -> bool:
+    identity = getattr(platform, "_last_identity", None)
+    mailbox_account = getattr(identity, "mailbox_account", None)
+    if mailbox_account is None or not _is_smsbower_mailbox_account(mailbox_account):
+        return False
+
+    mailbox = shared_mailbox or getattr(platform, "mailbox", None)
+    marker = getattr(mailbox, "mark_invalid_email", None)
+    if not callable(marker):
+        return False
+
+    try:
+        applied = marker(mailbox_account, reason=reason)
+        email_text = str(getattr(mailbox_account, "email", "") or "").strip()
+        suffix = f": {', '.join(applied)}" if applied else ""
+        logger.log(f"SMSBower 邮箱验证码超时，已释放当前邮箱 {email_text}{suffix}")
+        return True
+    except Exception as exc:
+        logger.log(f"SMSBower 邮箱释放失败（忽略）: {exc}", level="warning")
+        return False
 
 
 def _maybe_wrap_email_alias_mailbox(mailbox, *, platform_name: str, extra: dict[str, Any], logger: TaskLogger):
@@ -5738,7 +5852,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     register_started_at = time.monotonic()
 
-    from core.proxy_pool import proxy_pool
+    from core.proxy_pool import get_proxy_runtime_config, proxy_pool
 
 
 
@@ -5966,6 +6080,31 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             logger.finish(TASK_STATUS_FAILED, error=f"动态代理任务级准备失败: {exc}")
             return
 
+    registration_proxy_runtime_config = get_proxy_runtime_config()
+    registration_proxy_lease_enabled = (
+        concurrency > 1
+        and not str(proxy or "").strip()
+        and not prepared_registration_proxies
+        and str(registration_proxy_runtime_config.get("strategy") or "") in {
+            "pool_then_default",
+            "pool_only",
+        }
+    )
+    if registration_proxy_lease_enabled:
+        logger.log("注册并发已启用代理池任务级租约：同一时间一个代理只分配给一个注册 worker")
+    elif (
+        concurrency > 1
+        and not str(proxy or "").strip()
+        and not prepared_registration_proxies
+        and _is_local_proxy_url(registration_base_proxy)
+    ):
+        logger.log(
+            "注册并发检测到当前只会使用同一个本地/默认代理入口，"
+            f"为避免多个注册 worker 共享同一出口，并发从 {concurrency} 降为 1",
+            level="warning",
+        )
+        concurrency = 1
+
     def _registration_proxy_getter() -> str | None:
         nonlocal prepared_registration_proxy_index
         if prepared_registration_proxies:
@@ -6062,13 +6201,28 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             return "__cancel_requested__"
         proxy_slot_id: int | None = None
         proxy_slot_value = ""
+        leased_registration_proxy = ""
+        leased_registration_proxy_seen: set[str] = set()
         if prepared_registration_proxies:
             proxy_slot_id = prepared_registration_proxy_slots.get()
             proxy_slot_value = prepared_registration_proxies[proxy_slot_id]
 
         def _current_registration_proxy_getter() -> str | None:
+            nonlocal leased_registration_proxy
             if proxy_slot_id is not None:
                 return proxy_slot_value
+            if registration_proxy_lease_enabled:
+                if leased_registration_proxy:
+                    leased_registration_proxy_seen.add(leased_registration_proxy)
+                    proxy_pool.release_lease(leased_registration_proxy)
+                    leased_registration_proxy = ""
+                leased = proxy_pool.lease_next(exclude=leased_registration_proxy_seen)
+                if not leased:
+                    raise RuntimeError(
+                        "代理池可租用代理不足，已停止当前账号任务以避免并发共享同一代理"
+                    )
+                leased_registration_proxy = leased
+                return leased
             return _registration_proxy_getter()
 
         # 占用一个 SMS 槽位（如果配了 sms_pool_slots）。每个并发线程独占
@@ -6194,17 +6348,32 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
 
 
-        resolved_proxy = _resolve_chatgpt_reachable_proxy(
-            platform_name=platform_name,
-            explicit_proxy=proxy,
-            proxy_getter=_current_registration_proxy_getter,
-            logger=logger,
-            continue_on_transient_failure=(
-                str(payload.get("executor_type", "protocol") or "protocol").strip().lower()
-                in {"headless", "headed"}
-                or _shortlink_payment_enabled(payload)
-            ),
-        )
+        try:
+            resolved_proxy = _resolve_chatgpt_reachable_proxy(
+                platform_name=platform_name,
+                explicit_proxy=proxy,
+                proxy_getter=_current_registration_proxy_getter,
+                logger=logger,
+                continue_on_transient_failure=(
+                    str(payload.get("executor_type", "protocol") or "protocol").strip().lower()
+                    in {"headless", "headed"}
+                    or _shortlink_payment_enabled(payload)
+                ),
+            )
+        except Exception as exc:
+            if leased_registration_proxy:
+                proxy_pool.release_lease(leased_registration_proxy)
+                leased_registration_proxy = ""
+            if proxy_slot_id is not None:
+                prepared_registration_proxy_slots.put(proxy_slot_id)
+            if sms_slot_id is not None:
+                sms_slot_queue.put(sms_slot_id)
+            logger.clear_subtask()
+            error = str(exc)
+            logger.record_error(error)
+            logger.log(f"✗ 注册失败: {error}", level="error")
+            _save_task_log(platform_name, email or "", "failed", error=error)
+            return error
         # 短链物理复用（CtfGptPlus / PayPal）：注册和打开短链必须同一浏览器。
 
         # 把 post_register 回调 + backend_config 注入 config.extra，让注册器在
@@ -6365,6 +6534,8 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     logger.log(f"使用代理: {resolved_proxy}")
 
             account = platform.register(email=email, password=password)
+            if platform_name == "chatgpt":
+                _auto_enable_chatgpt_2fa_after_register(account, logger, proxy=resolved_proxy)
 
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(shared_mailbox, account, "registration_success", logger)
@@ -6563,6 +6734,14 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 time.sleep(3)
                 return EMAIL_ALIAS_PARENT_RETRY_RESULT
 
+            if _is_smsbower_mail_otp_timeout_error(error):
+                _release_smsbower_mailbox_after_otp_timeout(platform, shared_mailbox, logger, error)
+                logger.log(
+                    "SMSBower 邮箱验证码超时，准备重新获取新邮箱并重走注册流程",
+                    level="warning",
+                )
+                return SMSBOWER_MAIL_OTP_RETRY_RESULT
+
             logger.record_error(error)
             logger.log(f"✗ 注册失败: {error}", level="error")
 
@@ -6657,6 +6836,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 finally:
                     prepared_registration_proxy_slots.put(proxy_slot_id)
 
+            if leased_registration_proxy:
+                proxy_pool.release_lease(leased_registration_proxy)
+
             # 解除 thread-local subtask 绑定，避免 ThreadPool 复用线程时
             # 把上一个任务的标签泄露到下一个任务。
 
@@ -6684,6 +6866,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
         completed = 0
         email_alias_retry_count = 0
+        smsbower_mail_otp_retry_count = 0
         futures: dict[Any, int] = {}
 
         # ChatGPT Plus 自动支付链接场景：用户诉求"设置生成 N 个必须生成 N 个
@@ -6748,6 +6931,11 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
         if email_alias_retry_enabled and not (bugfree_mode_enabled or chatgpt_plus_must_succeed or register_sms_candidates):
             max_attempts += count * EMAIL_ALIAS_PARENT_RETRY_LIMIT_PER_ACCOUNT
+        if platform_name == "chatgpt":
+            max_attempts = max(
+                max_attempts,
+                count * (SMSBOWER_MAIL_OTP_RETRY_LIMIT_PER_ACCOUNT + 1),
+            )
 
         def _hero_phone_alive() -> bool:
             if not (herosms_enabled and hero_reuse_to_max):
@@ -6833,8 +7021,11 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 return submitted < max_attempts
             if not herosms_enabled:
 
-                if email_alias_retry_enabled:
-                    allowed_attempts = min(max_attempts, count + email_alias_retry_count)
+                if email_alias_retry_enabled or smsbower_mail_otp_retry_count:
+                    allowed_attempts = min(
+                        max_attempts,
+                        count + email_alias_retry_count + smsbower_mail_otp_retry_count,
+                    )
                     return success + len(futures) < count and submitted < allowed_attempts
                 return submitted < count
             if success + len(futures) >= max_success:
@@ -6875,6 +7066,21 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
                     if result == EMAIL_ALIAS_PARENT_RETRY_RESULT:
                         email_alias_retry_count += 1
+                        continue
+
+                    if result == SMSBOWER_MAIL_OTP_RETRY_RESULT:
+                        retry_limit = count * SMSBOWER_MAIL_OTP_RETRY_LIMIT_PER_ACCOUNT
+                        if smsbower_mail_otp_retry_count < retry_limit:
+                            smsbower_mail_otp_retry_count += 1
+                            logger.log(
+                                "SMSBower 邮箱验证码超时换邮箱重试 "
+                                f"({smsbower_mail_otp_retry_count}/{retry_limit})"
+                            )
+                            continue
+                        errors.append(
+                            "SMSBower 邮箱验证码超时，已释放当前邮箱并达到换邮箱重试上限"
+                        )
+                        completed += 1
                         continue
 
                     completed += 1
@@ -9789,6 +9995,7 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
             )
             account = platform.register()
+            _auto_enable_chatgpt_2fa_after_register(account, logger, proxy=resolved_proxy)
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
             _schedule_chatgpt_trial_post_register_check(
@@ -9965,6 +10172,7 @@ def _register_chatgpt_accounts_for_gopay(
             )
 
             account = platform.register()
+            _auto_enable_chatgpt_2fa_after_register(account, logger, proxy=resolved_proxy)
 
             save_account(account)
 

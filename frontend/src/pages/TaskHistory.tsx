@@ -35,6 +35,31 @@ function formatError(error: string | null | undefined): string {
   return error.length > 100 ? error.slice(0, 100) + '...' : error
 }
 
+const TASK_TYPE_OPTIONS = [
+  { value: 'register', zh: '批量注册', en: 'Batch Register' },
+  { value: 'account_check', zh: '批量测活', en: 'Batch Check' },
+  { value: 'account_check_all', zh: '全部测活', en: 'Check All Accounts' },
+  { value: 'account_health_check', zh: '账号健康检测', en: 'Account Health Check' },
+  { value: 'platform_action', zh: '批量操作', en: 'Batch Action' },
+  { value: 'phone_bind', zh: '绑定手机号', en: 'Bind Phone' },
+  { value: 'codex_oauth', zh: 'Codex OAuth', en: 'Codex OAuth' },
+  { value: 'momo_trial_probe', zh: 'MOMO试用检测', en: 'MoMo Trial Probe' },
+  { value: 'get_rt', zh: '批量获取RT', en: 'Batch Get RT' },
+  { value: 'get_rt_bypass', zh: '批量获取RT(绕过)', en: 'Batch Get RT (Bypass)' },
+  { value: 'refresh_session', zh: '重登验证', en: 'Refresh Session' },
+  { value: 'agents_upload_sub2api', zh: '上传SUB2API', en: 'Upload SUB2API' },
+  { value: 'gopay_pay_chatgpt', zh: '开通PLUS', en: 'Open PLUS' },
+  { value: 'gopay_register_account', zh: '注册GoPay', en: 'Register GoPay' },
+]
+
+function getTaskTypeLabel(taskType: string | null | undefined, language: string): string {
+  const value = String(taskType || '').trim()
+  if (!value) return '-'
+  const option = TASK_TYPE_OPTIONS.find((item) => item.value === value)
+  if (!option) return value
+  return language === 'en-US' ? option.en : option.zh
+}
+
 function TaskLogDialog({
   task,
   onClose,
@@ -112,6 +137,7 @@ export default function TaskHistory() {
   const { t, language } = useI18n()
   const [tasks, setTasks] = useState<any[]>([])
   const [platform, setPlatform] = useState('')
+  const [taskType, setTaskType] = useState('')
   const [status, setStatus] = useState('')
   const [platforms, setPlatforms] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -123,6 +149,7 @@ export default function TaskHistory() {
     try {
       const params = new URLSearchParams({ page: '1', page_size: '50' })
       if (platform) params.set('platform', platform)
+      if (taskType) params.set('type', taskType)
       if (status) params.set('status', status)
       const data = await apiFetch(`/tasks?${params}`)
       setTasks(data.items || [])
@@ -139,7 +166,7 @@ export default function TaskHistory() {
 
   useEffect(() => {
     load()
-  }, [platform, status])
+  }, [platform, taskType, status])
 
   const handleTerminate = async (task: any) => {
     const taskId = String(task.id || task.task_id || '')
@@ -226,6 +253,21 @@ export default function TaskHistory() {
           <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:items-center">
             <div className="relative min-w-0">
               <select
+                value={taskType}
+                onChange={(e) => setTaskType(e.target.value)}
+                className="h-8 w-full appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-auto"
+              >
+                <option value="">{t('taskHistory.allTaskTypes')}</option>
+                {TASK_TYPE_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {language === 'en-US' ? item.en : item.zh}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--text-muted)]" />
+            </div>
+            <div className="relative min-w-0">
+              <select
                 value={platform}
                 onChange={(e) => setPlatform(e.target.value)}
                 className="h-8 w-full appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-input)] pl-3 pr-7 text-xs text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] sm:w-auto"
@@ -252,9 +294,9 @@ export default function TaskHistory() {
               </select>
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--text-muted)]" />
             </div>
-            {(platform || status) && (
+            {(platform || taskType || status) && (
               <button
-                onClick={() => { setPlatform(''); setStatus('') }}
+                onClick={() => { setPlatform(''); setTaskType(''); setStatus('') }}
                 className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)]"
               >
                 {t('common.clear')}
@@ -268,6 +310,7 @@ export default function TaskHistory() {
               <tr className="border-b border-[var(--border-soft)] bg-[var(--bg-pane)]/60">
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('common.date')}</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('taskHistory.taskId')}</th>
+                <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('taskHistory.taskType')}</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('common.platform')}</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('common.status')}</th>
                 <th className="px-4 py-2.5 text-left text-xs font-medium text-[var(--text-muted)]">{t('common.progress')}</th>
@@ -279,7 +322,7 @@ export default function TaskHistory() {
             <tbody>
               {tasks.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-sm text-[var(--text-muted)]">
+                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-[var(--text-muted)]">
                     {t('taskHistory.empty')}
                   </td>
                 </tr>
@@ -321,6 +364,11 @@ export default function TaskHistory() {
                       >
                         {shortId(task.id)}
                       </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge variant="secondary" className="whitespace-nowrap">
+                        {getTaskTypeLabel(task.type, language)}
+                      </Badge>
                     </td>
                     <td className="px-4 py-3">
                       <Badge variant="secondary">{task.platform || '-'}</Badge>

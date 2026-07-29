@@ -289,6 +289,8 @@ def build_account_display_summary(
         badges.insert(0, {"label": "BUGFREE", "tone": "danger"})
     if bool(overview.get("chatgpt_free_plus_trial")) and not any(_text(badge.get("label")) == "试用" for badge in badges):
         badges.insert(0, {"label": "试用", "tone": "success"})
+    if bool(overview.get("mfa_enabled")) and not any(_text(badge.get("label")) == "2FA已绑" for badge in badges):
+        badges.append({"label": "2FA已绑", "tone": "success"})
     for resource in provider_resources or []:
         if isinstance(resource, dict) and resource.get("resource_type") == "mailbox" and (resource.get("handle") or resource.get("display_name")):
             badges.append({"label": "邮箱验证", "tone": "muted"})

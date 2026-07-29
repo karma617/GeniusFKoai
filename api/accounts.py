@@ -349,6 +349,17 @@ def get_account(account_id: int):
     return item
 
 
+@router.get("/{account_id}/totp-code")
+def get_account_totp_code(account_id: int):
+    try:
+        item = service.get_totp_code(account_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not item:
+        raise HTTPException(404, "账号不存在")
+    return item
+
+
 @router.patch("/{account_id}")
 def update_account(account_id: int, body: AccountUpdateRequest):
     item = service.update_account(account_id, AccountUpdateCommand(**body.model_dump()))

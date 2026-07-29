@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 
 from core.email_alias_mailbox import EmailAliasMailbox
@@ -167,3 +170,221 @@ def test_gmail_api_code_status_502_marks_email_invalid(monkeypatch):
         mailbox.wait_for_code(account, timeout=3)
 
     assert mailbox.get_email().email == "second@gmail.com"
+
+
+def test_gmail_api_code_extracts_code_from_json_data_html_body(monkeypatch):
+    html_body = """
+    <html><body>
+      <div>2026-07-29 12:38:09</div>
+      <p>Enter this temporary verification code to continue:</p>
+      <p>108448</p>
+    </body></html>
+    """
+    data_uri = "data:text/html;charset=utf-8;base64," + base64.b64encode(html_body.encode()).decode()
+
+    class Response:
+        status_code = 200
+        text = json.dumps({"body": data_uri, "subject": "Your temporary ChatGPT verification code"})
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("core.gmail_api_code_mailbox.requests.get", lambda *_args, **_kwargs: Response())
+
+    mailbox = GmailApiCodeMailbox(
+        pool_text="user@gmail.com----https://example.test/fetch",
+        poll_interval="1",
+    )
+    account = mailbox.get_email()
+
+    assert mailbox.wait_for_code(account, timeout=1) == "108448"
+
+
+def test_gmail_api_code_extracts_selected_code_from_html_page_data_body(monkeypatch):
+    selected_mail = """
+    <html><body>
+      <p>Enter this temporary verification code to continue:</p>
+      <p>654321</p>
+    </body></html>
+    """
+    data_uri = "data:text/html;charset=utf-8;base64," + base64.b64encode(selected_mail.encode()).decode()
+
+    class Response:
+        status_code = 200
+        text = (
+            "<html><body>"
+            "<aside>2026-07-29 12:38:09 Your temporary ChatGPT verificati...</aside>"
+            "<aside>2026-07-29 12:38:05 Your temporary ChatGPT verificati...</aside>"
+            f'<iframe src="{data_uri}"></iframe>'
+            "</body></html>"
+        )
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("core.gmail_api_code_mailbox.requests.get", lambda *_args, **_kwargs: Response())
+
+    mailbox = GmailApiCodeMailbox(
+        pool_text="user@gmail.com----https://example.test/fetch",
+        poll_interval="1",
+    )
+    account = mailbox.get_email()
+
+    assert mailbox.wait_for_code(account, timeout=1) == "654321"
+
+
+def test_gmail_api_code_decodes_mail_view_iframe_src_before_extracting_id():
+    selected_mail = """
+    <!doctype html><html><body>
+      <table class="main"><tbody><tr><td>
+        <p>Enter this temporary verification code to continue:</p>
+        <p style="font-family: Menlo">149477</p>
+      </td></tr></tbody></table>
+    </body></html>
+    """
+    data_uri = "data:text/html;charset=utf-8;base64," + base64.b64encode(selected_mail.encode()).decode()
+    html = f"""
+    <a class="item active" href="#mail-221070" data-id="221070">
+      <div class="subject">Your temporary ChatGPT verification code</div>
+      <div class="time">2026-07-29 14:25:02</div>
+    </a>
+    <article class="card mail" id="mail-view">
+      <iframe class="mail-frame" src="{data_uri}"></iframe>
+    </article>
+    """
+
+    assert GmailApiCodeMailbox._extract_code(html) == "149477"
+
+
+def test_gmail_api_code_debug_log_reports_api_body_and_decoded_code(monkeypatch):
+    selected_mail = """
+    <html><body>
+      <table class="main"><tbody><tr><td>
+        <p>Enter this temporary verification code to continue:</p>
+        <p>149477</p>
+      </td></tr></tbody></table>
+    </body></html>
+    """
+    data_uri = "data:text/html;charset=utf-8;base64," + base64.b64encode(selected_mail.encode()).decode()
+
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        text = (
+            '<a class="item active" href="#mail-221070" data-id="221070"></a>'
+            f'<article class="card mail" id="mail-view"><iframe src="{data_uri}"></iframe></article>'
+        )
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("core.gmail_api_code_mailbox.requests.get", lambda *_args, **_kwargs: Response())
+
+    logs: list[str] = []
+    mailbox = GmailApiCodeMailbox(
+        pool_text="user@gmail.com----https://example.test/message/221070/token/user@gmail.com",
+        poll_interval="1",
+    )
+    mailbox.set_debug_logger(logs.append)
+    account = mailbox.get_email()
+
+    assert mailbox.wait_for_code(account, timeout=1) == "149477"
+    joined = "\n".join(logs)
+    assert "url=https://example.test/message/221070/token/user@gmail.com" in joined
+    assert "data_uri=1" in joined
+    assert "mail_view=yes" in joined
+    assert "extracted=149477" in joined
+    assert "Enter this temporary verification code to continue: 149477" in joined
+
+
+def test_gmail_api_code_messages_page_loads_active_detail_json(monkeypatch):
+    html_body = """
+    <html><body>
+      <table class="main"><tbody><tr><td>
+        <p>Enter this temporary verification code to continue:</p>
+        <p>247818</p>
+      </td></tr></tbody></table>
+    </body></html>
+    """
+    data_uri = "data:text/html;charset=utf-8;base64," + base64.b64encode(html_body.encode()).decode()
+    list_url = "http://yangyang.website/messages/token/user@gmail.com"
+    detail_url = "http://yangyang.website/message/225422/token/user@gmail.com"
+    calls: list[str] = []
+
+    class Response:
+        def __init__(self, *, url: str, text: str, content_type: str = "text/html; charset=utf-8"):
+            self.status_code = 200
+            self.url = url
+            self.text = text
+            self.headers = {"content-type": content_type}
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, *_args, **_kwargs):
+        calls.append(url)
+        if url == list_url:
+            return Response(
+                url=url,
+                text=(
+                    '<a class="item active" href="#mail-225422" data-id="225422">'
+                    '<div class="subject">Your temporary ChatGPT verification code</div>'
+                    '<div class="time">2026-07-29 15:09:49</div></a>'
+                    "<script>var detailBase='/message/';"
+                    "var detailSuffix='/token/user@gmail.com';</script>"
+                    '<article class="card mail" id="mail-view"><div class="placeholder">请选择一封邮件</div></article>'
+                ),
+            )
+        assert url == detail_url
+        return Response(
+            url=url,
+            content_type="application/json; charset=utf-8",
+            text=json.dumps({"body": data_uri, "html": True, "subject": "Your temporary ChatGPT verification code"}),
+        )
+
+    monkeypatch.setattr("core.gmail_api_code_mailbox.requests.get", fake_get)
+
+    logs: list[str] = []
+    mailbox = GmailApiCodeMailbox(pool_text=f"user@gmail.com----{list_url}", poll_interval="1")
+    mailbox.set_debug_logger(logs.append)
+    account = mailbox.get_email()
+
+    assert mailbox.wait_for_code(account, timeout=1) == "247818"
+    assert calls == [list_url, detail_url]
+    joined = "\n".join(logs)
+    assert f"detail_url={detail_url}" in joined
+    assert "detail_http=200" in joined
+    assert "extracted=247818" in joined
+
+
+def test_gmail_api_code_prefers_main_table_code_over_message_url_id():
+    html = (
+        "http://yangyang.website/message/220593/token/user@icloud.com "
+        '<table class="main"><tbody><tr><td>'
+        "<p>Enter this temporary verification code to continue:</p>"
+        '<p style="font-family: Menlo">'
+        "<!--[if mso]><span><![endif]-->314863<!--[if mso]></span><![endif]-->"
+        "</p>"
+        '<a href="http://url3243.email.openai.com/ls/click?upn=220616">Help center</a>'
+        "</td></tr></tbody></table>"
+    )
+
+    assert GmailApiCodeMailbox._extract_code(html, code_pattern=r"(?<!\d)(\d{6})(?!\d)") == "314863"
+
+
+def test_gmail_api_code_ignores_active_item_href_mail_id():
+    html = """
+    <html><body>
+      <a class="item active" href="#mail-221070" data-id="221070">
+        <div class="subject">Your temporary ChatGPT verification code <span style="color:#dc2626">(垃圾邮件)</span></div>
+        <div class="time">2026-07-29 13:11:48</div>
+        <div class="from">noreply_at_tm_openai_com_wftw8ed36w9ve5_f0km8037@icloud.com</div>
+      </a>
+      <table class="main"><tbody><tr><td>
+        <p>Enter this temporary verification code to continue:</p>
+        <p>314863</p>
+      </td></tr></tbody></table>
+    </body></html>
+    """
+
+    assert GmailApiCodeMailbox._extract_code(html) == "314863"

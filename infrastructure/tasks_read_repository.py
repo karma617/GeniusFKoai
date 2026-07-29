@@ -48,8 +48,8 @@ class TasksReadRepository:
         data = get_task(task_id)
         return _to_task_summary(data) if data else None
 
-    def list(self, *, platform: str = "", status: str = "", page: int = 1, page_size: int = 50) -> tuple[int, list[TaskSummary]]:
-        data = list_tasks(platform=platform, status=status, page=page, page_size=page_size)
+    def list(self, *, platform: str = "", status: str = "", task_type: str = "", page: int = 1, page_size: int = 50) -> tuple[int, list[TaskSummary]]:
+        data = list_tasks(platform=platform, status=status, task_type=task_type, page=page, page_size=page_size)
         return int(data.get("total", 0) or 0), [_to_task_summary(item) for item in data.get("items", [])]
 
     def list_events(self, task_id: str, *, since: int = 0, limit: int = 200) -> list[TaskEvent]:

@@ -231,7 +231,7 @@ def test_signup_form_recovers_from_invalid_state_by_reauthorizing():
     assert any("invalid_state" in message for message in engine.logs)
 
 
-def test_check_sentinel_prefers_vm_pow_token(monkeypatch):
+def test_check_sentinel_prefers_realtime_sdk_token(monkeypatch):
     from platforms.chatgpt.authflow_experimental import sentinel_quickjs
 
     engine = _bare_engine()
@@ -260,12 +260,12 @@ def test_check_sentinel_prefers_vm_pow_token(monkeypatch):
     payload = engine._check_sentinel("device-id", flow="authorize_continue")
 
     assert payload is not None
-    assert payload.p.startswith("gAAAAA")
-    assert payload.t == ""
-    assert payload.c == "legacy-c"
+    assert payload.p == "quick-p"
+    assert payload.t == "quick-t"
+    assert payload.c == "quick-c"
     assert payload.flow == "authorize_continue"
-    assert payload.so_token == ""
-    assert calls == {"vm": 1, "quickjs": 0}
+    assert payload.so_token == '{"so":"quick-so","c":"quick-c","id":"device-id","flow":"authorize_continue"}'
+    assert calls == {"vm": 0, "quickjs": 1}
 
 
 def test_check_sentinel_falls_back_to_quickjs_when_vm_pow_missing(monkeypatch):
@@ -466,12 +466,7 @@ def test_check_sentinel_keeps_vm_t_when_so_required(monkeypatch):
     monkeypatch.setattr(
         sentinel_quickjs,
         "get_sentinel_tokens_via_quickjs",
-        lambda *_args, **_kwargs: {
-            "token": json.dumps(
-                {"p": "quick-p", "t": "1", "c": "quick-c", "id": "device-id", "flow": "oauth_create_account"}
-            ),
-            "so_token": '{"so":"quick-so"}',
-        },
+        lambda *_args, **_kwargs: None,
     )
     engine.http_client = FakeHTTPClient()
 
@@ -1009,6 +1004,87 @@ def test_latest_chatgpt_fetch_session_marks_otp_callback_as_existing_account():
     assert result.metadata["chatgpt_session_source"] == "latest_otp_external_callback"
 
 
+def test_latest_chatgpt_fetch_session_warms_backend_before_session_api():
+    engine = _bare_engine()
+    calls = []
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "outlook_email_api"})()
+
+    class Response:
+        def __init__(self, data=None, text=None):
+            self.status_code = 200
+            self._data = data if data is not None else {}
+            self.text = text if text is not None else json.dumps(self._data)
+
+        def json(self):
+            return self._data
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+
+        def get(self, url, headers=None, **kwargs):
+            calls.append(("GET", url, headers or {}))
+            if url.startswith("https://chatgpt.com/api/auth/callback/openai"):
+                self.cookies.set("__Secure-next-auth.session-token", "session-cookie")
+                return Response()
+            if url == "https://chatgpt.com/":
+                return Response(text='<script>{"accessToken":"home-access-token"}</script>')
+            if url in {
+                "https://chatgpt.com/backend-api/me",
+                "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
+            }:
+                assert headers["authorization"] == "Bearer home-access-token"
+                return Response()
+            if url == "https://chatgpt.com/api/auth/session":
+                return Response(
+                    {
+                        "accessToken": "session-access-token",
+                        "sessionToken": "session-token-json",
+                        "account": {"id": "acct_123"},
+                        "user": {"email": "new@example.com"},
+                    }
+                )
+            raise AssertionError(f"unexpected GET {url}")
+
+        def post(self, url, headers=None, data=None, **kwargs):
+            calls.append(("POST", url, headers or {}))
+            assert url == "https://chatgpt.com/backend-api/sentinel/chat-requirements/prepare"
+            assert headers["authorization"] == "Bearer home-access-token"
+            return Response()
+
+    engine.email_service = EmailService()
+    engine.session = Session()
+    engine._device_id = "device-1"
+    engine._create_account_continue_url = "https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1"
+
+    result = engine._latest_chatgpt_fetch_session_result(register_module.RegistrationResult(success=False))
+
+    assert result.success is True
+    assert [item[1] for item in calls[:6]] == [
+        "https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1",
+        "https://chatgpt.com/",
+        "https://chatgpt.com/backend-api/me",
+        "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
+        "https://chatgpt.com/backend-api/sentinel/chat-requirements/prepare",
+        "https://chatgpt.com/api/auth/session",
+    ]
+
+
+def test_latest_chatgpt_client_headers_match_register_har():
+    engine = _bare_engine()
+    engine._device_id = "device-1"
+
+    headers = engine._latest_chatgpt_chatgpt_client_headers(
+        target_path="/backend-api/accounts/check/v4-2023-04-27"
+    )
+
+    assert register_module.LATEST_CHATGPT_OAI_CLIENT_VERSION == "prod-e90abb69f9711bb66403800b79e0c3c5fc561770"
+    assert register_module.LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER == "8727206"
+    assert headers["x-openai-target-route"] == "/backend-api/accounts/check/{version}"
+
+
 def test_latest_chatgpt_fetch_session_logs_403_diagnostics():
     engine = _bare_engine()
 
@@ -1201,7 +1277,7 @@ def test_latest_chatgpt_create_account_retries_transport_error(monkeypatch):
     engine = _bare_engine()
     calls = {"create": 0}
 
-    def create_account():
+    def create_account(user_info=None):
         calls["create"] += 1
         if calls["create"] == 1:
             engine._last_create_account_transport_error = "curl: (55) BAD_DECRYPT"
@@ -1214,6 +1290,24 @@ def test_latest_chatgpt_create_account_retries_transport_error(monkeypatch):
 
     assert engine._latest_chatgpt_create_account_with_retry() is True
     assert calls["create"] == 2
+
+
+def test_latest_chatgpt_create_account_reuses_profile_on_registration_disallowed(monkeypatch):
+    engine = _bare_engine()
+    profiles = []
+    fixed_profile = {"name": "Fixed User", "birthdate": "1990-01-02"}
+
+    def create_account(user_info=None):
+        profiles.append(dict(user_info or {}))
+        engine._last_create_account_error_code = "registration_disallowed"
+        return False
+
+    engine._latest_chatgpt_create_user_account = create_account
+    monkeypatch.setattr(register_module, "generate_random_user_info", lambda: dict(fixed_profile))
+    monkeypatch.setattr(register_module.time, "sleep", lambda _seconds: None)
+
+    assert engine._latest_chatgpt_create_account_with_retry() is False
+    assert profiles == [fixed_profile, fixed_profile, fixed_profile]
 
 
 def test_latest_chatgpt_init_uses_browser_signin_headers_and_params():
@@ -1274,7 +1368,7 @@ def test_latest_chatgpt_validate_email_otp_uses_auth_json_browser_headers(monkey
     monkeypatch.setenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", "1")
     engine = _bare_engine()
     engine._device_id = "device-id"
-    engine._check_sentinel = lambda did, flow="authorize_continue": SentinelPayload(
+    engine._check_sentinel = lambda did, flow="email_otp_validate": SentinelPayload(
         p="proof",
         t="turnstile",
         c="challenge",
@@ -1312,7 +1406,7 @@ def test_latest_chatgpt_validate_email_otp_uses_auth_json_browser_headers(monkey
     assert "openai-sentinel-token" in headers
 
 
-def test_latest_chatgpt_validate_email_otp_retries_with_authorize_continue_sentinel(monkeypatch):
+def test_latest_chatgpt_validate_email_otp_retries_with_email_otp_validate_sentinel(monkeypatch):
     monkeypatch.setenv("OPENAI_PROTOCOL_DISABLE_HEADLESS_AUTH", "1")
     engine = _bare_engine()
     engine._device_id = "device-id"
@@ -1335,7 +1429,7 @@ def test_latest_chatgpt_validate_email_otp_retries_with_authorize_continue_senti
                 return FirstRejectedResponse()
             return _OtpSuccessResponse()
 
-    def fake_check_sentinel(did, flow="authorize_continue"):
+    def fake_check_sentinel(did, flow="email_otp_validate"):
         sentinel_calls["n"] += 1
         return SentinelPayload(
             p=f"proof-{sentinel_calls['n']}",
@@ -1354,13 +1448,13 @@ def test_latest_chatgpt_validate_email_otp_retries_with_authorize_continue_senti
     assert len(engine.session.posts) == 2
     first_headers = engine.session.posts[0][1]
     retry_headers = engine.session.posts[1][1]
-    # HAR 对齐：首次 OTP validate 就带 authorize_continue Sentinel / so-token。
+    # 有头链路对齐：首次 OTP validate 就带 email_otp_validate Sentinel / so-token。
     assert json.loads(first_headers["openai-sentinel-token"]) == {
         "p": "proof-1",
         "t": "turnstile-1",
         "c": "challenge-1",
         "id": "device-id",
-        "flow": "authorize_continue",
+        "flow": "email_otp_validate",
     }
     assert first_headers["openai-sentinel-so-token"] == '{"so":"otp-so"}'
     assert json.loads(retry_headers["openai-sentinel-token"]) == {
@@ -1368,9 +1462,9 @@ def test_latest_chatgpt_validate_email_otp_retries_with_authorize_continue_senti
         "t": "turnstile-2",
         "c": "challenge-2",
         "id": "device-id",
-        "flow": "authorize_continue",
+        "flow": "email_otp_validate",
     }
-    assert any("补 authorize_continue Sentinel 后重试" in message for message in engine.logs)
+    assert any("补 email_otp_validate Sentinel 后重试" in message for message in engine.logs)
 
 
 @pytest.mark.parametrize(
@@ -1404,7 +1498,7 @@ def test_latest_chatgpt_validate_email_otp_does_not_retry_terminal_otp_errors(
             self.posts.append((url, headers or {}, data, kwargs))
             return Response()
 
-    def fake_check_sentinel(did, flow="authorize_continue"):
+    def fake_check_sentinel(did, flow="email_otp_validate"):
         sentinel_calls.append((did, flow))
         return SentinelPayload(p="proof", t="turnstile", c="challenge", flow=flow)
 
@@ -1416,7 +1510,7 @@ def test_latest_chatgpt_validate_email_otp_does_not_retry_terminal_otp_errors(
         engine._latest_chatgpt_validate_email_otp("123456")
 
     assert len(engine.session.posts) == 1
-    assert sentinel_calls == [("device-id", "authorize_continue")]
+    assert sentinel_calls == [("device-id", "email_otp_validate")]
 
 
 

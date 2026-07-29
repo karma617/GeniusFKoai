@@ -14,8 +14,8 @@ class TasksQueryService:
             return None
         return self._serialize(item)
 
-    def list_tasks(self, *, platform: str = "", status: str = "", page: int = 1, page_size: int = 50) -> dict:
-        total, items = self.repository.list(platform=platform, status=status, page=page, page_size=page_size)
+    def list_tasks(self, *, platform: str = "", status: str = "", task_type: str = "", page: int = 1, page_size: int = 50) -> dict:
+        total, items = self.repository.list(platform=platform, status=status, task_type=task_type, page=page, page_size=page_size)
         return {
             "total": total,
             "page": page,

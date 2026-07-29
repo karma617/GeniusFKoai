@@ -38,11 +38,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from platforms.chatgpt.constants import get_latest_sentinel_frame_url, get_latest_sentinel_sdk_url
+
 logger = logging.getLogger(__name__)
 
 
-SENTINEL_VERSION = "20260219f9f6"
-SENTINEL_SDK_URL = f"https://sentinel.openai.com/sentinel/{SENTINEL_VERSION}/sdk.js"
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
 
 
@@ -65,16 +65,56 @@ def _accept_language_parts(accept_language: str) -> tuple[str, list[str]]:
     return values[0], values
 
 
+def _session_cookie_header(session: Any, device_id: str) -> str:
+    parts: list[str] = []
+    cookies = getattr(session, "cookies", None)
+    try:
+        items = cookies.get_dict().items() if hasattr(cookies, "get_dict") else []
+        for key, value in items:
+            if key and value is not None:
+                parts.append(f"{key}={value}")
+    except Exception:
+        pass
+    if not any(part.startswith("oai-did=") for part in parts):
+        parts.append(f"oai-did={device_id}")
+    return "; ".join(parts)
+
+
+def _runtime_profile(user_agent: str, sdk_url: str) -> dict[str, Any]:
+    ua = str(user_agent or "")
+    is_mac = "Macintosh" in ua or "Mac OS X" in ua
+    version = sdk_url.rstrip("/").split("/")[-2] if "/sentinel/" in sdk_url else "latest"
+    return {
+        "frame_url": f"https://chatgpt.com/backend-api/sentinel/frame.html?sv={version}",
+        "page_url": "https://auth.openai.com/email-verification",
+        "platform": "MacIntel" if is_mac else "Win32",
+        "vendor": "" if "Firefox/" in ua else "Google Inc.",
+        "hardware_concurrency": 10 if is_mac else 8,
+        "screen_width": 2560,
+        "screen_height": 1440,
+        "screen_avail_width": 2560,
+        "screen_avail_height": 1440,
+        "viewport_width": 1800,
+        "viewport_height": 839,
+        "color_depth": 30 if is_mac else 24,
+        "pixel_depth": 30 if is_mac else 24,
+        "timezone": "Asia/Shanghai",
+        "timezone_offset_min": -480,
+    }
+
+
 def _ensure_sdk_file(session: Any, timeout_ms: int, accept_language: str) -> Path:
     """Download OpenAI's actual sdk.js to /tmp cache (one-shot per version)."""
-    cache_dir = Path(tempfile.gettempdir()) / "openai-sentinel-demo" / SENTINEL_VERSION
+    sdk_url = get_latest_sentinel_sdk_url()
+    version = sdk_url.rstrip("/").split("/")[-2] if "/sentinel/" in sdk_url else "latest"
+    cache_dir = Path(tempfile.gettempdir()) / "openai-sentinel-demo" / version
     cache_dir.mkdir(parents=True, exist_ok=True)
     sdk_file = cache_dir / "sdk.js"
     if sdk_file.exists() and sdk_file.stat().st_size > 0:
         return sdk_file
 
     resp = session.get(
-        SENTINEL_SDK_URL,
+        sdk_url,
         headers={
             "accept": "*/*",
             "accept-language": accept_language or "en-US,en;q=0.5",
@@ -186,7 +226,7 @@ def _fetch_sentinel_challenge(
         data=json.dumps(body, separators=(",", ":")),
         headers={
             "origin": "https://sentinel.openai.com",
-            "referer": f"https://sentinel.openai.com/backend-api/sentinel/frame.html?sv={SENTINEL_VERSION}",
+            "referer": get_latest_sentinel_frame_url(),
             "content-type": "text/plain;charset=UTF-8",
             "accept": "*/*",
             "accept-encoding": "gzip, deflate, br, zstd",
@@ -229,19 +269,29 @@ def get_sentinel_tokens_via_quickjs(
     did = str(device_id or uuid.uuid4())
     try:
         sdk_file = _ensure_sdk_file(session, timeout_ms, accept_language)
+        sdk_url = get_latest_sentinel_sdk_url()
         language, languages = _accept_language_parts(accept_language)
+        profile = _runtime_profile(user_agent, sdk_url)
+        if flow == "oauth_create_account":
+            profile["page_url"] = "https://auth.openai.com/about-you"
+        runtime_payload = {
+            "device_id": did,
+            "user_agent": user_agent,
+            "accept_language": accept_language,
+            "language": language,
+            "languages": languages,
+            "sdk_url": sdk_url,
+            "document_cookie": _session_cookie_header(session, did),
+            "session_storage": {"oai-did": did},
+            "local_storage": {"oai-did": did},
+            **profile,
+        }
 
         requirements = _run_quickjs_action(
             action="requirements",
             sdk_file=sdk_file,
             quickjs_script=quickjs_script,
-            payload={
-                "device_id": did,
-                "user_agent": user_agent,
-                "accept_language": accept_language,
-                "language": language,
-                "languages": languages,
-            },
+            payload=runtime_payload,
             timeout_ms=timeout_ms,
         )
         request_p = str(requirements.get("request_p") or "").strip()
@@ -268,14 +318,10 @@ def get_sentinel_tokens_via_quickjs(
             sdk_file=sdk_file,
             quickjs_script=quickjs_script,
             payload={
-                "device_id": did,
+                **runtime_payload,
                 "flow": flow,
                 "request_p": request_p,
                 "challenge": challenge,
-                "user_agent": user_agent,
-                "accept_language": accept_language,
-                "language": language,
-                "languages": languages,
             },
             timeout_ms=timeout_ms,
         )
