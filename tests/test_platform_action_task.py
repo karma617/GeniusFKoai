@@ -4384,6 +4384,7 @@ def test_platform_runtime_persists_refresh_session_result(monkeypatch):
                     "access_token": "new-access",
                     "session_token": "new-session",
                     "cookies": "__Secure-next-auth.session-token=new-session",
+                    "login_state_cookie": "__Secure-next-auth.session-token=new-session",
                     "session": {"accessToken": "new-access", "user": {"email": "refresh-session@test.com"}},
                     "session_refreshed_at": "2026-07-09T10:00:00Z",
                     "session_refresh_status": "refreshed",
@@ -4407,6 +4408,7 @@ def test_platform_runtime_persists_refresh_session_result(monkeypatch):
     assert patched["credential_updates"]["access_token"] == "new-access"
     assert patched["credential_updates"]["session_token"] == "new-session"
     assert patched["credential_updates"]["cookies"] == "__Secure-next-auth.session-token=new-session"
+    assert patched["credential_updates"]["login_state_cookie"] == "__Secure-next-auth.session-token=new-session"
     assert patched["lifecycle_status"] == "registered"
     assert patched["summary_updates"]["session"]["accessToken"] == "new-access"
     assert patched["summary_updates"]["chatgpt_session"]["accessToken"] == "new-access"

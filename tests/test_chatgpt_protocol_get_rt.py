@@ -434,6 +434,102 @@ def test_protocol_get_rt_login_password_uses_passwordless_otp(monkeypatch):
     assert any("passwordless/send-otp" in item for item in logs)
 
 
+def test_protocol_get_rt_password_totp_skips_email_otp(monkeypatch):
+    events = []
+    auth_url = "https://auth.openai.com/oauth/authorize?state=state_1"
+    callback_url = "http://localhost:1455/auth/callback?code=code_1&state=state_1&scope=openid+email"
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = {}
+
+        def get(self, url, **_kwargs):
+            assert url == auth_url
+            return _FakeResponse(200, url="https://auth.openai.com/log-in", data={})
+
+        def post(self, url, **kwargs):
+            events.append(("post", url, kwargs.get("data")))
+            if url == "https://auth.openai.com/api/accounts/authorize/continue":
+                return _FakeResponse(
+                    200,
+                    url=url,
+                    data={"continue_url": "https://auth.openai.com/log-in/password", "page": {"type": "login_password"}},
+                )
+            if url == "https://auth.openai.com/api/accounts/passwordless/send-otp":
+                raise AssertionError("passwordless OTP should not run")
+            return _FakeResponse(500, url=url, data={"unexpected_post": url})
+
+    class FakeClient:
+        def __init__(self, proxy_url=None):
+            self.session = FakeSession()
+
+    class FakeEngine:
+        def __init__(self, **_kwargs):
+            self.email = ""
+            self.password = ""
+            self.totp_secret = ""
+
+        def _set_oai_did_for_session(self, session, device_id):
+            session.cookies["oai-did"] = device_id
+
+        def _build_sentinel_header_for_client(self, *_args, **_kwargs):
+            return "sentinel"
+
+        def _platform_json_headers(self, **_kwargs):
+            return {"referer": _kwargs.get("referer") or "", "content-type": "application/json"}
+
+        @staticmethod
+        def _is_invalid_state_response(_resp):
+            return False
+
+        def _latest_chatgpt_verify_login_password(self):
+            events.append(("password_verify", self.password, self.totp_secret))
+            return {
+                "continue_url": "https://auth.openai.com/mfa-challenge/factor-1",
+                "page": {
+                    "type": "mfa_challenge",
+                    "payload": {"factor_id": "factor-1", "factors": [{"id": "factor-1", "factor_type": "totp"}]},
+                },
+            }
+
+        def _latest_chatgpt_complete_mfa_challenge(self, payload):
+            events.append(("mfa", payload["page"]["type"], self.totp_secret))
+            return {"continue_url": callback_url, "page": {"type": "token_exchange"}}
+
+        def _wait_platform_login_code(self, _client):
+            raise AssertionError("email OTP should not be read")
+
+        def _follow_platform_redirects_for_callback(self, *_args, **_kwargs):
+            return ""
+
+    monkeypatch.setattr(protocol_get_rt, "OpenAIHTTPClient", FakeClient)
+    monkeypatch.setattr(protocol_get_rt, "RegistrationEngine", FakeEngine)
+    monkeypatch.setattr(
+        protocol_get_rt,
+        "generate_oauth_url",
+        lambda **_kwargs: SimpleNamespace(auth_url=auth_url, state="state_1", code_verifier="verifier_1"),
+    )
+    monkeypatch.setattr(
+        protocol_get_rt,
+        "submit_callback_url",
+        lambda **_kwargs: json.dumps({"access_token": "at_1", "refresh_token": "rt_1"}),
+    )
+
+    result = protocol_get_rt.run_protocol_get_rt(
+        email="user@example.com",
+        password="Secret123!",
+        proxy=None,
+        otp_callback=lambda: (_ for _ in ()).throw(AssertionError("email OTP callback should not run")),
+        log_fn=lambda _msg: None,
+        totp_secret="JBSWY3DPEHPK3PXP",
+    )
+
+    assert result["refresh_token"] == "rt_1"
+    assert ("password_verify", "Secret123!", "JBSWY3DPEHPK3PXP") in events
+    assert ("mfa", "mfa_challenge", "JBSWY3DPEHPK3PXP") in events
+    assert all(item[1] != "https://auth.openai.com/api/accounts/passwordless/send-otp" for item in events if item[0] == "post")
+
+
 def test_protocol_get_rt_uses_phone_otp_continue_url_for_callback(monkeypatch):
     captured = {"get_urls": [], "post_urls": [], "post_bodies": [], "follow_urls": [], "submit": None}
     auth_url = "https://auth.openai.com/oauth/authorize?state=state_1"

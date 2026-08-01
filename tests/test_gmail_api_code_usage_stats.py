@@ -4,7 +4,7 @@ from sqlmodel import Session
 
 import application.gmail_api_code_usage as usage_module
 from application.gmail_api_code_usage import gmail_api_code_alias_usage
-from core.db import AccountModel, ProviderResourceModel, TaskEventModel, TaskModel, engine
+from core.db import AccountModel, ProviderResourceModel, ProviderSettingModel, TaskEventModel, TaskModel, engine
 
 
 def test_gmail_api_code_alias_usage_counts_success_and_unconfirmed_allocations(monkeypatch):
@@ -100,6 +100,37 @@ def test_gmail_api_code_alias_usage_marks_invalid_parent_unusable(monkeypatch):
     assert item["conservative_remaining"] == 0
     assert data["summary"]["unusable_parent_count"] >= 1
     assert data["summary"]["parent_count"] == 1
+
+
+def test_gmail_api_code_alias_usage_reads_pool_status_markers():
+    with Session(engine) as session:
+        setting = ProviderSettingModel(
+            provider_type="mailbox",
+            provider_key="gmail_api_code",
+            display_name="Gmail API接码",
+            enabled=True,
+            is_default=True,
+        )
+        setting.set_config(
+            {
+                "gmail_api_code_pool_text": (
+                    "# registered used@gmail.com----https://example.test/used\n"
+                    "# invalid dead@gmail.com----https://example.test/dead\n"
+                    "# deleted old@gmail.com----https://example.test/old\n"
+                    "active@gmail.com----https://example.test/active"
+                )
+            }
+        )
+        session.add(setting)
+        session.commit()
+
+    data = gmail_api_code_alias_usage()
+    by_email = {item["parent_email"]: item for item in data["items"]}
+
+    assert by_email["used@gmail.com"]["email_status"] == "registered"
+    assert by_email["dead@gmail.com"]["email_status"] == "unusable"
+    assert by_email["active@gmail.com"]["email_status"] == "usable"
+    assert "old@gmail.com" not in by_email
 
 
 def test_gmail_api_code_alias_usage_ignores_non_gmail_parent_noise(monkeypatch):

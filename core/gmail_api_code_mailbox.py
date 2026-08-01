@@ -18,7 +18,7 @@ import requests
 from sqlmodel import Session, select
 
 from core.base_mailbox import BaseMailbox, MailboxAccount, _extract_verification_link
-from core.db import AccountModel, ProviderResourceModel, engine
+from core.db import AccountModel, ProviderResourceModel, ProviderSettingModel, engine
 
 
 def _normalize_email(value: Any) -> str:
@@ -31,16 +31,46 @@ class GmailApiCodeEntry:
     code_url: str
 
 
+@dataclass(frozen=True)
+class GmailApiCodePoolRow:
+    email: str
+    code_url: str
+    status: str = "active"
+
+
 class GmailApiCodeMailboxUnavailable(RuntimeError):
     """接码 API 明确返回邮箱不可用状态。"""
 
 
-def parse_gmail_api_code_entries(value: Any) -> list[GmailApiCodeEntry]:
-    entries: list[GmailApiCodeEntry] = []
+_POOL_STATUS_PREFIX_RE = re.compile(r"^#\s*(deleted|registered|invalid|unavailable|unusable)\s+", re.IGNORECASE)
+_POOL_INACTIVE_STATUSES = {"deleted", "registered", "invalid", "unavailable", "unusable"}
+_POOL_TEXT_KEY = "gmail_api_code_pool_text"
+
+
+def _normalize_pool_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"unavailable", "unusable"}:
+        return "invalid"
+    if status in {"deleted", "registered", "invalid"}:
+        return status
+    return "active"
+
+
+def parse_gmail_api_code_pool_rows(value: Any) -> list[GmailApiCodePoolRow]:
+    rows: list[GmailApiCodePoolRow] = []
     seen: set[str] = set()
     for raw_line in str(value or "").splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#") or "----" not in line:
+        if not line:
+            continue
+        status = "active"
+        if line.startswith("#"):
+            match = _POOL_STATUS_PREFIX_RE.match(line)
+            if not match:
+                continue
+            status = _normalize_pool_status(match.group(1))
+            line = line[match.end():].strip()
+        if "----" not in line:
             continue
         email_part, url_part = line.split("----", 1)
         email = _normalize_email(email_part)
@@ -50,7 +80,16 @@ def parse_gmail_api_code_entries(value: Any) -> list[GmailApiCodeEntry]:
         if email in seen:
             continue
         seen.add(email)
-        entries.append(GmailApiCodeEntry(email=email, code_url=code_url))
+        rows.append(GmailApiCodePoolRow(email=email, code_url=code_url, status=status))
+    return rows
+
+
+def parse_gmail_api_code_entries(value: Any) -> list[GmailApiCodeEntry]:
+    entries: list[GmailApiCodeEntry] = []
+    for row in parse_gmail_api_code_pool_rows(value):
+        if row.status in _POOL_INACTIVE_STATUSES:
+            continue
+        entries.append(GmailApiCodeEntry(email=row.email, code_url=row.code_url))
     return entries
 
 
@@ -58,6 +97,7 @@ class GmailApiCodeMailbox(BaseMailbox):
     """Allocate fixed Gmail addresses and fetch OTP codes from their API URLs."""
 
     _CLAIM_LOCK = threading.Lock()
+    _POOL_TEXT_LOCK = threading.Lock()
     _ACTIVE_CLAIMS: dict[str, float] = {}
     _INVALID_EMAILS: set[str] = set()
     _CLAIM_TTL_SECONDS = 60 * 60
@@ -114,10 +154,113 @@ class GmailApiCodeMailbox(BaseMailbox):
             return session.exec(select(AccountModel).where(AccountModel.email == target)).first() is not None
 
     @staticmethod
+    def _resource_email_candidates(row: ProviderResourceModel, metadata: dict[str, Any]) -> set[str]:
+        candidates = {
+            _normalize_email(row.handle),
+            _normalize_email(row.resource_identifier),
+            _normalize_email(metadata.get("email")),
+            _normalize_email(metadata.get("alias_parent_email")),
+            _normalize_email(metadata.get("email_alias_parent")),
+            _normalize_email(metadata.get("parent_email")),
+            _normalize_email(metadata.get("main_email")),
+        }
+        nested = metadata.get("email_alias")
+        if isinstance(nested, dict):
+            candidates.update(
+                {
+                    _normalize_email(nested.get("parent_email")),
+                    _normalize_email(nested.get("alias_parent_email")),
+                    _normalize_email(nested.get("email_alias_parent")),
+                }
+            )
+        return {item for item in candidates if item}
+
+    @classmethod
+    def _provider_resource_matches_email(cls, row: ProviderResourceModel, metadata: dict[str, Any], email: str) -> bool:
+        target = _normalize_email(email)
+        return bool(target and target in cls._resource_email_candidates(row, metadata))
+
+    @staticmethod
+    def _pool_marker_for_status(status: str) -> str:
+        normalized = _normalize_pool_status(status)
+        if normalized == "registered":
+            return "# registered "
+        if normalized == "invalid":
+            return "# invalid "
+        if normalized == "deleted":
+            return "# deleted "
+        return ""
+
+    @staticmethod
+    def _setting_pool_text(setting: ProviderSettingModel) -> str:
+        config = setting.get_config()
+        auth = setting.get_auth()
+        return str(auth.get(_POOL_TEXT_KEY) or config.get(_POOL_TEXT_KEY) or "")
+
+    @staticmethod
+    def _set_setting_pool_text(setting: ProviderSettingModel, pool_text: str) -> None:
+        config = setting.get_config()
+        auth = setting.get_auth()
+        if _POOL_TEXT_KEY in auth or _POOL_TEXT_KEY not in config:
+            auth[_POOL_TEXT_KEY] = pool_text
+            setting.set_auth(auth)
+        else:
+            config[_POOL_TEXT_KEY] = pool_text
+            setting.set_config(config)
+
+    @classmethod
+    def _mark_pool_text_email_status(cls, email: str, status: str) -> bool:
+        target = _normalize_email(email)
+        marker = cls._pool_marker_for_status(status)
+        if not target or not marker:
+            return False
+        with cls._POOL_TEXT_LOCK:
+            with Session(engine) as session:
+                setting = session.exec(
+                    select(ProviderSettingModel)
+                    .where(ProviderSettingModel.provider_type == "mailbox")
+                    .where(ProviderSettingModel.provider_key == "gmail_api_code")
+                ).first()
+                if not setting:
+                    return False
+                lines = cls._setting_pool_text(setting).splitlines()
+                changed = False
+                next_lines: list[str] = []
+                for raw_line in lines:
+                    row = parse_gmail_api_code_pool_rows(raw_line)
+                    if not row or row[0].email != target or row[0].status == "deleted":
+                        next_lines.append(raw_line)
+                        continue
+                    next_line = f"{marker}{row[0].email}----{row[0].code_url}"
+                    next_lines.append(next_line)
+                    changed = changed or next_line != raw_line
+                if not changed:
+                    return False
+                cls._set_setting_pool_text(setting, "\n".join(next_lines))
+                setting.updated_at = datetime.now(timezone.utc)
+                session.add(setting)
+                session.commit()
+                return True
+
+    @staticmethod
     def _unavailable_resource_exists(email: str) -> bool:
         target = _normalize_email(email)
         if not target:
             return False
+        try:
+            with Session(engine) as session:
+                setting = session.exec(
+                    select(ProviderSettingModel)
+                    .where(ProviderSettingModel.provider_type == "mailbox")
+                    .where(ProviderSettingModel.provider_key == "gmail_api_code")
+                ).first()
+                if setting:
+                    pool_text = GmailApiCodeMailbox._setting_pool_text(setting)
+                    for row in parse_gmail_api_code_pool_rows(pool_text):
+                        if row.email == target and row.status in {"registered", "invalid"}:
+                            return True
+        except Exception:
+            pass
         with Session(engine) as session:
             rows = session.exec(
                 select(ProviderResourceModel)
@@ -126,9 +269,8 @@ class GmailApiCodeMailbox(BaseMailbox):
             ).all()
             for row in rows:
                 metadata = row.get_metadata()
-                row_email = _normalize_email(row.handle or metadata.get("email"))
                 status = str(metadata.get("registration_status") or "").strip().lower()
-                if row_email == target and (
+                if GmailApiCodeMailbox._provider_resource_matches_email(row, metadata, target) and (
                     status in {"registered", "invalid"}
                     or metadata.get("registration_success")
                     or metadata.get("registration_invalid")
@@ -389,15 +531,11 @@ class GmailApiCodeMailbox(BaseMailbox):
         if main_table_code:
             return main_table_code
 
-        if code_pattern:
-            pattern = re.compile(code_pattern)
-            match = pattern.search(cleaned_text)
-            if not match:
-                return ""
-            return match.group(1) if match.groups() else match.group(0)
-
         plain = GmailApiCodeMailbox._html_to_text(cleaned_text)
         contextual_patterns = (
+            r"(?is)you can also enter this temporary code[^\d]{0,100}(\d{6})(?!\d)",
+            r"(?is)temporary chatgpt login code.*?temporary code[^\d]{0,120}(\d{6})(?!\d)",
+            r"(?is)log in to chatgpt.*?temporary code[^\d]{0,120}(\d{6})(?!\d)",
             r"(?is)verification code to continue[^\d]{0,80}(\d{6})(?!\d)",
             r"(?is)enter this temporary verification code[^\d]{0,100}(\d{6})(?!\d)",
             r"(?is)security code[^\d]{0,80}(\d{6})(?!\d)",
@@ -407,6 +545,13 @@ class GmailApiCodeMailbox(BaseMailbox):
             match = re.search(raw_pattern, plain)
             if match:
                 return match.group(1)
+
+        if code_pattern:
+            pattern = re.compile(code_pattern)
+            match = pattern.search(cleaned_text)
+            if not match:
+                return ""
+            return match.group(1) if match.groups() else match.group(0)
 
         pattern = re.compile(r"(?<!#)(?<!\d)(\d{6})(?!\d)")
         for match in pattern.finditer(plain):
@@ -528,6 +673,7 @@ class GmailApiCodeMailbox(BaseMailbox):
         if not email:
             return []
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        pool_updated = self._mark_pool_text_email_status(email, "registered")
         updated = False
         with Session(engine) as session:
             rows = session.exec(
@@ -537,8 +683,7 @@ class GmailApiCodeMailbox(BaseMailbox):
             ).all()
             for row in rows:
                 metadata = row.get_metadata()
-                row_email = _normalize_email(row.handle or metadata.get("email"))
-                if row_email != email:
+                if not self._provider_resource_matches_email(row, metadata, email):
                     continue
                 metadata.update(
                     {
@@ -554,7 +699,15 @@ class GmailApiCodeMailbox(BaseMailbox):
                 updated = True
             if updated:
                 session.commit()
-        return ["Gmail API接码邮箱已注册"] if updated or self._account_exists(email) else []
+        return ["Gmail API接码邮箱已注册"] if pool_updated or updated or self._account_exists(email) else []
+
+    def mark_alias_exhausted(self, account: MailboxAccount, reason: str = "") -> list[str]:
+        email = _normalize_email(getattr(account, "email", ""))
+        self._release_active_claim(email)
+        if not email:
+            return []
+        applied = self.mark_registration_success(account)
+        return applied or ["Gmail API接码邮箱已注册"]
 
     def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
         email = _normalize_email(getattr(account, "email", ""))
@@ -564,6 +717,7 @@ class GmailApiCodeMailbox(BaseMailbox):
             self._ACTIVE_CLAIMS.pop(email, None)
             self._INVALID_EMAILS.add(email)
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        pool_updated = self._mark_pool_text_email_status(email, "invalid")
         updated = False
         with Session(engine) as session:
             rows = session.exec(
@@ -573,8 +727,7 @@ class GmailApiCodeMailbox(BaseMailbox):
             ).all()
             for row in rows:
                 metadata = row.get_metadata()
-                row_email = _normalize_email(row.handle or metadata.get("email"))
-                if row_email != email:
+                if not self._provider_resource_matches_email(row, metadata, email):
                     continue
                 metadata.update(
                     {
@@ -591,4 +744,4 @@ class GmailApiCodeMailbox(BaseMailbox):
                 updated = True
             if updated:
                 session.commit()
-        return ["Gmail API接码邮箱已标记无效"]
+        return ["Gmail API接码邮箱已标记无效"] if pool_updated or updated or email in self._INVALID_EMAILS else []

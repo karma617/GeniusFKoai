@@ -625,7 +625,7 @@ def test_protocol_relogin_uses_gmail_alias_login_and_parent_inbox(monkeypatch):
             self.k12_join_enabled = False
             self.k12_workspace_ids = ""
 
-        def run(self):
+        def run_chatgpt_refresh_session_latest(self):
             assert self.email == "phkong8269+1133@gmail.com"
             created = self.email_service.create_email()
             assert created["email"] == "phkong8269+1133@gmail.com"
@@ -698,7 +698,7 @@ def test_run_protocol_relogin_uses_registration_engine(monkeypatch):
             self.k12_join_enabled = False
             self.k12_workspace_ids = ""
 
-        def run(self):
+        def run_chatgpt_refresh_session_latest(self):
             self.email_service.create_email()
             if self.callback_logger:
                 self.callback_logger("fake protocol engine ran")
@@ -725,6 +725,70 @@ def test_run_protocol_relogin_uses_registration_engine(monkeypatch):
     assert result["session"]["accessToken"] == "web-token"
     assert any("不启动浏览器" in item for item in logs)
     assert any("fake protocol engine ran" in item for item in logs)
+
+
+def test_protocol_relogin_password_totp_skips_mailbox(monkeypatch):
+    local = AccountRecord(
+        id=1,
+        platform="chatgpt",
+        email="proto@example.com",
+        password="pw",
+        credentials=[{"key": "totp_secret", "value": "JBSWY3DPEHPK3PXP"}],
+    )
+    service = Sub2ApiManagementService(repository=FakeRepository([local]))
+    logs = []
+    captured = {}
+    monkeypatch.setattr(
+        service,
+        "_build_relogin_mailbox_email_service",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应初始化邮箱 OTP 服务")),
+    )
+
+    from platforms.chatgpt import register as register_module
+
+    class FakeEngine:
+        def __init__(self, email_service, proxy_url=None, callback_logger=None):
+            captured["email_service"] = email_service
+            self.callback_logger = callback_logger
+            self.email = ""
+            self.password = ""
+            self.totp_secret = ""
+            self.prefer_password_totp_login = False
+            self.k12_join_enabled = False
+            self.k12_workspace_ids = ""
+
+        def run_chatgpt_refresh_session_latest(self):
+            captured["engine"] = {
+                "email": self.email,
+                "password": self.password,
+                "totp_secret": self.totp_secret,
+                "prefer_password_totp_login": self.prefer_password_totp_login,
+            }
+            return type(
+                "Result",
+                (),
+                {
+                    "success": True,
+                    "metadata": {
+                        "session": {"accessToken": "web-token", "sessionToken": "web-session"},
+                        "cookies": "__Secure-next-auth.session-token=web-session",
+                    },
+                    "session_token": "web-session",
+                    "access_token": "web-token",
+                    "account_id": "acct-1",
+                    "to_dict": lambda self: {"success": True},
+                },
+            )()
+
+    monkeypatch.setattr(register_module, "RegistrationEngine", FakeEngine)
+
+    result = service._run_protocol_relogin(local, logs)
+
+    assert result["session"]["accessToken"] == "web-token"
+    assert captured["email_service"] is None
+    assert captured["engine"]["totp_secret"] == "JBSWY3DPEHPK3PXP"
+    assert captured["engine"]["prefer_password_totp_login"] is True
+    assert any("密码和 2FA" in item for item in logs)
 
 
 def test_protocol_relogin_alias_mailbox_reads_parent_inbox(monkeypatch):
@@ -789,7 +853,7 @@ def test_protocol_relogin_alias_mailbox_reads_parent_inbox(monkeypatch):
             self.k12_join_enabled = False
             self.k12_workspace_ids = ""
 
-        def run(self):
+        def run_chatgpt_refresh_session_latest(self):
             created = self.email_service.create_email()
             assert created["email"] == "main+alias@example.com"
             assert self.email_service.get_verification_code(timeout=1) == "123456"

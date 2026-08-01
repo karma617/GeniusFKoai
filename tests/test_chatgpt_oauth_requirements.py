@@ -7,6 +7,7 @@ import pytest
 
 from core.base_platform import RegisterConfig
 from platforms.chatgpt import browser_register as browser_register_module
+from platforms.chatgpt import register as register_module
 from platforms.chatgpt.plugin import (
     ChatGPTPlatform,
     _assert_complete_oauth_callback,
@@ -322,6 +323,7 @@ def test_protocol_mailbox_mapper_preserves_registration_refresh_token_without_fo
     assert mapped.extra["registration_refresh_token"] == "registration-only-refresh"
     assert mapped.extra["registration_refresh_token_usable"] is False
     assert mapped.extra["refresh_token_source"] == ""
+    assert mapped.extra["login_state_cookie"] == "session=abc"
 
 
 def test_browser_registration_mapper_accepts_completed_registration_without_codex_tokens():
@@ -346,6 +348,52 @@ def test_browser_registration_mapper_accepts_completed_registration_without_code
     assert mapped.token == ""
     assert mapped.extra["access_token"] == ""
     assert mapped.extra["cookies"] == "{\"login_session\":\"yes\"}"
+    assert mapped.extra["login_state_cookie"] == "{\"login_session\":\"yes\"}"
+
+
+def test_browser_registration_mapper_records_unsupported_post_register_password():
+    platform = object.__new__(ChatGPTPlatform)
+
+    mapped = platform._map_chatgpt_result(
+        {
+            "email": "user@example.com",
+            "password": "Secret123!",
+            "account_id": "acct_123",
+            "access_token": "access-token",
+        },
+        set_password_requested=True,
+    )
+
+    assert mapped.extra["password_set_after_register"] is False
+    assert mapped.extra["post_register_password_error"] == "browser_post_register_password_not_supported"
+
+
+def test_browser_registration_mapper_records_browser_post_register_security():
+    platform = object.__new__(ChatGPTPlatform)
+
+    mapped = platform._map_chatgpt_result(
+        {
+            "email": "user@example.com",
+            "password": "Secret123!",
+            "account_id": "acct_123",
+            "access_token": "access-token",
+            "password_set_after_register": True,
+            "mfa_enabled": True,
+            "mfa_type": "totp",
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+            "mfa_factor_id": "factor-123",
+            "mfa_session_id": "session-123",
+        },
+        set_password_requested=True,
+    )
+
+    assert mapped.extra["password_set_after_register"] is True
+    assert mapped.extra["post_register_password_error"] == ""
+    assert mapped.extra["mfa_enabled"] is True
+    assert mapped.extra["totp_secret"] == "JBSWY3DPEHPK3PXP"
+    assert mapped.extra["mfa_factor_id"] == "factor-123"
+    assert mapped.extra["mfa_session_id"] == "session-123"
+    assert "2FA已绑" in mapped.extra["account_overview"]["chips"]
 
 
 def test_browser_registration_mapper_prefers_formal_refresh_token_for_phone_first_oauth():
@@ -410,6 +458,155 @@ def test_sms_oauth_browser_adapter_enables_phone_first_flow(monkeypatch):
     assert captured["phone_first_full_rounds"] == 17
     assert captured["otp_callback"] == "otp-callback"
     assert captured["phone_callback"] == "phone-callback"
+
+
+def test_browser_adapter_runs_security_callback_before_existing_post_register(monkeypatch):
+    captured = {}
+    calls = []
+
+    class _FakeBrowserRegister:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    def fake_security(page, result, **kwargs):
+        calls.append(("security", result.get("password"), kwargs["set_password"], kwargs["enable_2fa"]))
+        return {
+            "password_set_after_register": True,
+            "mfa_enabled": True,
+            "totp_secret": "JBSWY3DPEHPK3PXP",
+        }
+
+    def existing_callback(page, result):
+        calls.append(("existing", result.get("mfa_enabled"), result.get("totp_secret")))
+        return {"_shortlink_checkout": {"ok": True}}
+
+    monkeypatch.setattr(browser_register_module, "ChatGPTBrowserRegister", _FakeBrowserRegister)
+    monkeypatch.setattr(browser_register_module, "run_post_register_security_in_browser", fake_security)
+
+    platform = object.__new__(ChatGPTPlatform)
+    adapter = ChatGPTPlatform.build_browser_registration_adapter(platform)
+    ctx = SimpleNamespace(
+        executor_type="headed",
+        proxy=None,
+        password="CtxPwd123!",
+        log=lambda message: None,
+        identity=SimpleNamespace(identity_provider="mailbox", email="user@example.com"),
+        extra={
+            "set_password_after_register": True,
+            "enable_2fa_after_register": True,
+            "_post_register_in_browser": existing_callback,
+        },
+    )
+    artifacts = SimpleNamespace(otp_callback=lambda: "123456", phone_callback="phone-callback")
+
+    adapter.browser_worker_builder(ctx, artifacts)
+    post_callback = captured["post_register_in_browser"]
+    result = post_callback("page", {"password": "ResultPwd123!"})
+
+    assert result["password_set_after_register"] is True
+    assert result["mfa_enabled"] is True
+    assert result["_shortlink_checkout"] == {"ok": True}
+    assert calls == [
+        ("security", "ResultPwd123!", True, True),
+        ("existing", True, "JBSWY3DPEHPK3PXP"),
+    ]
+
+
+def test_browser_adapter_manual_post_register_capture_waits_for_finish_signal(tmp_path, monkeypatch):
+    captured = {}
+    finish_path = tmp_path / "finish.signal"
+    finish_path.write_text("done", encoding="utf-8")
+    called_existing = False
+
+    class _FakeBrowserRegister:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    def existing_callback(_page, _result):
+        nonlocal called_existing
+        called_existing = True
+        return {}
+
+    def collect_security_state(_page, _result, _log):
+        return {
+            "access_token": "new-access-token",
+            "session_token": "new-session-token",
+            "password_set_after_register": True,
+            "mfa_enabled": True,
+        }
+
+    monkeypatch.setattr(browser_register_module, "ChatGPTBrowserRegister", _FakeBrowserRegister)
+    monkeypatch.setattr(
+        browser_register_module,
+        "collect_post_register_security_state_from_browser",
+        collect_security_state,
+    )
+    platform = object.__new__(ChatGPTPlatform)
+    adapter = ChatGPTPlatform.build_browser_registration_adapter(platform)
+    ctx = SimpleNamespace(
+        executor_type="headed",
+        proxy=None,
+        password="CtxPwd123!",
+        log=lambda message: None,
+        identity=SimpleNamespace(identity_provider="mailbox", email="user@example.com"),
+        extra={
+            "set_password_after_register": True,
+            "enable_2fa_after_register": True,
+            "_manual_post_register_security_capture": True,
+            "_manual_post_register_capture_finish_path": str(finish_path),
+            "_post_register_in_browser": existing_callback,
+        },
+    )
+    artifacts = SimpleNamespace(otp_callback=lambda: "123456", phone_callback="phone-callback")
+
+    adapter.browser_worker_builder(ctx, artifacts)
+    post_callback = captured["post_register_in_browser"]
+    result = post_callback("page", {"record_har_path": "capture.har"})
+
+    assert result["manual_post_register_capture"] is True
+    assert result["manual_post_register_har_path"] == "capture.har"
+    assert result["access_token"] == "new-access-token"
+    assert result["session_token"] == "new-session-token"
+    assert result["password_set_after_register"] is True
+    assert result["mfa_enabled"] is True
+    assert not finish_path.exists()
+    assert called_existing is False
+    assert captured["record_har"] is True
+
+
+def test_browser_security_headers_include_access_token():
+    class Page:
+        def evaluate(self, _script):
+            return "en-US"
+
+    headers = browser_register_module._browser_security_headers(
+        Page(),
+        path="/backend-api/accounts/mfa_info",
+        method="GET",
+        device_id="device-id",
+        oai_session_id="session-id",
+        access_token="access-token-123",
+        client_version="prod-test",
+        client_build_number="1",
+    )
+
+    assert headers["authorization"] == "Bearer access-token-123"
+    assert headers["oai-client-version"] == "prod-test"
+    assert headers["oai-client-build-number"] == "1"
+    assert "priority" not in headers
+
+    heartbeat_headers = browser_register_module._browser_security_headers(
+        Page(),
+        path="/backend-api/sentinel/heartbeat",
+        method="POST",
+        device_id="device-id",
+        oai_session_id="session-id",
+        access_token="access-token-123",
+        content_type_for_post=False,
+    )
+
+    assert heartbeat_headers["origin"] == "https://chatgpt.com"
+    assert "content-type" not in heartbeat_headers
 
 
 def test_sms_oauth_protocol_mailbox_adapter_builds_protocol_worker(monkeypatch):
@@ -541,6 +738,8 @@ def test_fetch_chatgpt_session_opens_session_api_directly():
         context = SimpleNamespace(cookies=lambda: [
             {"name": "__Secure-next-auth.session-token", "value": "sess_123"},
             {"name": "oai-did", "value": "did_123"},
+            {"name": "cf_clearance", "value": "chatgpt_cf"},
+            {"name": "cf_clearance", "value": "openai_cf"},
         ])
 
         def goto(self, url, **kwargs):
@@ -560,7 +759,25 @@ def test_fetch_chatgpt_session_opens_session_api_directly():
     assert "chatgpt.com/api/auth/session" in logs[0]
     assert result["access_token"] == "at_123"
     assert result["session_token"] == "sess_123"
-    assert result["cookies"] == "login_session=yes; __Secure-next-auth.session-token=sess_123; oai-did=did_123"
+    assert result["cookies"] == (
+        "login_session=yes; __Secure-next-auth.session-token=sess_123; "
+        "oai-did=did_123; cf_clearance=chatgpt_cf; cf_clearance=openai_cf"
+    )
+    assert result["login_state_cookie"] == result["cookies"]
+
+
+def test_protocol_cookie_header_preserves_duplicate_cookie_names():
+    cookies = [
+        SimpleNamespace(name="oai-did", value="did_123"),
+        SimpleNamespace(name="cf_clearance", value="chatgpt_cf"),
+        SimpleNamespace(name="cf_clearance", value="openai_cf"),
+        SimpleNamespace(name="__Secure-next-auth.session-token", value="sess_123"),
+    ]
+
+    assert register_module._cookies_to_header(cookies) == (
+        "oai-did=did_123; cf_clearance=chatgpt_cf; "
+        "cf_clearance=openai_cf; __Secure-next-auth.session-token=sess_123"
+    )
 
 
 def test_fetch_chatgpt_session_uses_same_origin_fetch_before_navigation():

@@ -56,6 +56,19 @@ def is_phone_bound(account: AccountRecord) -> bool:
     return isinstance(binding, dict) and binding.get("status") == "bound"
 
 
+def _account_totp_secret(account: AccountRecord) -> str:
+    overview = account.overview if isinstance(account.overview, dict) else {}
+    legacy_extra = overview.get("legacy_extra") if isinstance(overview.get("legacy_extra"), dict) else {}
+    for item in list(account.credentials or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("key") or "").strip() == "totp_secret":
+            value = str(item.get("value") or "").strip()
+            if value:
+                return value
+    return str(overview.get("totp_secret") or legacy_extra.get("totp_secret") or "").strip()
+
+
 def default_phone_binder(
     account: AccountRecord,
     phone_entry: PhoneBindEntry,
@@ -80,11 +93,15 @@ def default_phone_binder(
         backend_config = parse_checkout_mode(browser_mode, bit_profile_id=bit_profile_id)
         callback = SmsApiPhoneCallback(phone_entry)
         log(f"准备为 {account.email} 绑定手机号 {phone_entry.phone}，浏览器模式 {browser_mode}")
+        totp_secret = _account_totp_secret(account)
+        if account.password and totp_secret:
+            log("手机号绑定检测到账号已保存密码和 2FA，本次 OAuth 使用密码 + TOTP 登录")
         worker = ChatGPTBrowserRegister(
             headless=backend_config.is_headless,
             phone_callback=callback,
             log_fn=log,
             backend_config=backend_config,
+            totp_secret=totp_secret,
         )
         result = worker._retry_oauth_fresh_browser(account.email, account.password)
         if not isinstance(result, dict) or not result.get("access_token"):

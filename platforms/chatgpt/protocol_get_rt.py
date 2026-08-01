@@ -87,6 +87,12 @@ def _extract_page_type(data: Any) -> str:
     return str((page if isinstance(page, dict) else {}).get("type") or "").strip()
 
 
+def _is_mfa_challenge_payload(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    return _extract_page_type(data) == "mfa_challenge" or "/mfa-challenge" in _extract_continue_url_from_payload(data)
+
+
 def _short_url(url: str, *, limit: int = 220) -> str:
     value = str(url or "").strip()
     return value if len(value) <= limit else value[:limit] + "..."
@@ -423,6 +429,21 @@ def _send_passwordless_login_otp(
     return data
 
 
+def _complete_mfa_challenge_if_needed(
+    *,
+    engine: RegistrationEngine,
+    payload: dict[str, Any],
+    log_fn: Callable[[str], None],
+) -> dict[str, Any]:
+    if not _is_mfa_challenge_payload(payload):
+        return payload
+    if not str(getattr(engine, "totp_secret", "") or "").strip():
+        raise RuntimeError("获取rt协议模式进入 2FA challenge，但本地未保存 totp_secret")
+    log_fn("  获取rt(协议): 进入 2FA challenge，使用本地 TOTP 完成验证")
+    next_payload = engine._latest_chatgpt_complete_mfa_challenge(payload)
+    return next_payload if isinstance(next_payload, dict) else {}
+
+
 def run_protocol_get_rt(
     *,
     email: str,
@@ -443,6 +464,7 @@ def run_protocol_get_rt(
     smsapi_url: str = "",
     phone_callback=None,
     phone_change_limit: int = 10,
+    totp_secret: str = "",
 ) -> dict[str, Any]:
     email_service = _GetRtMailboxEmailService(otp_callback, log_fn=log_fn, email=email)
     engine = RegistrationEngine(
@@ -456,6 +478,11 @@ def run_protocol_get_rt(
     client = OpenAIHTTPClient(proxy_url=proxy)
     session = client.session
     device_id = str(uuid.uuid4())
+    engine.http_client = client
+    engine.session = session
+    engine._device_id = device_id
+    engine.totp_secret = str(totp_secret or "").strip()
+    prefer_password_totp_login = bool(engine.password and engine.totp_secret)
     engine._set_oai_did_for_session(session, device_id)
 
     oauth_start = generate_oauth_url(
@@ -521,15 +548,23 @@ def run_protocol_get_rt(
     log_fn(f"  获取rt(协议): authorize/continue -> page={page_type or '(unknown)'}")
 
     if page_type == "login_password":
-        passwordless_data = _send_passwordless_login_otp(
-            session=session,
-            engine=engine,
-            device_id=device_id,
-            log_fn=log_fn,
-        )
-        if passwordless_data:
-            continue_data = passwordless_data
+        if prefer_password_totp_login:
+            log_fn("  获取rt(协议): 检测到已保存密码和 2FA，直接使用密码 + TOTP，不触发邮箱验证码")
+            continue_data = engine._latest_chatgpt_verify_login_password()
             page_type = _extract_page_type(continue_data)
+        else:
+            passwordless_data = _send_passwordless_login_otp(
+                session=session,
+                engine=engine,
+                device_id=device_id,
+                log_fn=log_fn,
+            )
+            if passwordless_data:
+                continue_data = passwordless_data
+                page_type = _extract_page_type(continue_data)
+
+    if prefer_password_totp_login and page_type in {"email_otp_send", "email_otp_verification"}:
+        raise RuntimeError(f"获取rt协议模式密码+2FA链路返回邮箱验证码步骤: {page_type}")
 
     if page_type == "email_otp_send":
         log_fn("  \u83b7\u53d6rt(\u534f\u8bae): email_otp_send \u9875\u9762\uff0c\u663e\u5f0f\u89e6\u53d1\u90ae\u7bb1\u9a8c\u8bc1\u7801")
@@ -577,10 +612,11 @@ def run_protocol_get_rt(
         otp_data = continue_data
 
     oauth_payload = otp_data if isinstance(otp_data, dict) else {}
+    oauth_payload = _complete_mfa_challenge_if_needed(engine=engine, payload=oauth_payload, log_fn=log_fn)
     oauth_continue_url = _extract_continue_url_from_payload(oauth_payload) or _extract_continue_url_from_payload(continue_data)
     oauth_referer = f"{OPENAI_AUTH}/email-verification" if page_type == "email_otp_verification" else f"{OPENAI_AUTH}/log-in"
 
-    next_page = str(((otp_data.get("page") or {}).get("type")) or page_type or "")
+    next_page = _extract_page_type(oauth_payload) or str(((otp_data.get("page") or {}).get("type")) or page_type or "")
     phone_callback_obj = phone_callback
     if next_page == "add_phone":
         if phone_callback_obj is None and sms_provider:

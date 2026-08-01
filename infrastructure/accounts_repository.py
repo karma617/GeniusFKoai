@@ -529,6 +529,8 @@ class AccountsRepository:
                     "sessionToken",
                     "idToken",
                     "cookies",
+                    "login_state_cookie",
+                    "cookie_header",
                     "cookie",
                     "api_key",
                     "wos_session",

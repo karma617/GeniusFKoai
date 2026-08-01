@@ -42,6 +42,8 @@ PERSISTED_ACTION_DATA_KEYS = {
     "auth_token",
     "authToken",
     "cookies",
+    "login_state_cookie",
+    "cookie_header",
 }
 
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}

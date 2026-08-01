@@ -234,6 +234,14 @@ def cancel_task(task_id: str):
     return task
 
 
+@router.post("/{task_id}/manual-post-register-capture/finish")
+def finish_manual_post_register_capture(task_id: str):
+    result = command_service.complete_manual_post_register_capture(task_id)
+    if not result:
+        raise HTTPException(404, "任务不存在")
+    return result
+
+
 @router.get("/{task_id}/logs/stream")
 async def stream_logs(task_id: str, since: int = 0):
     if not query_service.get_task(task_id):

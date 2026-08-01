@@ -90,6 +90,13 @@ def _first_non_empty(*values) -> str:
     return ""
 
 
+def _account_secret_value(account: Account, key: str) -> str:
+    extra = _safe_dict(getattr(account, "extra", None))
+    overview = _safe_dict(extra.get("account_overview"))
+    legacy_extra = _safe_dict(overview.get("legacy_extra"))
+    return _first_non_empty(extra.get(key), overview.get(key), legacy_extra.get(key))
+
+
 def _mask_proxy(proxy: str | None) -> str:
     value = str(proxy or "").strip()
     if not value or "@" not in value:
@@ -170,7 +177,8 @@ def _is_chatgpt_deleted_or_deactivated_error(message: str) -> bool:
 
 
 def _is_validate_otp_http_403_error(message: str) -> bool:
-    return "validate_otp_http_403_body" in str(message or "").lower()
+    text = str(message or "").lower()
+    return "validate_otp_http_403_body" in text or "email_otp_validate_http_403" in text
 
 
 def _is_cloudflare_managed_challenge_error(message: str) -> bool:
@@ -540,6 +548,7 @@ class ChatGPTPlatform(BasePlatform):
         require_oauth: bool = False,
         executor_type: str | None = None,
         browser_mode: str | None = "",
+        set_password_requested: bool = False,
     ) -> RegistrationResult:
         if require_oauth:
             _assert_complete_oauth_callback(result)
@@ -551,6 +560,32 @@ class ChatGPTPlatform(BasePlatform):
             or ""
         )
         refresh_token = oauth_refresh_token if require_oauth else ""
+        password_set_after_register = bool(result.get("password_set_after_register", False))
+        post_register_password_error = str(result.get("post_register_password_error", "") or "")
+        manual_post_register_capture = bool(result.get("manual_post_register_capture", False))
+        if (
+            set_password_requested
+            and not password_set_after_register
+            and not post_register_password_error
+            and not manual_post_register_capture
+        ):
+            post_register_password_error = "browser_post_register_password_not_supported"
+        account_overview = _registration_mode_metadata(executor_type, browser_mode)
+        mfa_enabled = bool(result.get("mfa_enabled", False))
+        if mfa_enabled:
+            chips = list(account_overview.get("chips") or [])
+            if "2FA已绑" not in [str(item) for item in chips]:
+                chips.append("2FA已绑")
+            account_overview.update(
+                {
+                    "mfa_enabled": True,
+                    "mfa_type": str(result.get("mfa_type") or "totp"),
+                    "mfa_factor_id": str(result.get("mfa_factor_id") or ""),
+                    "chips": chips,
+                }
+            )
+        elif result.get("mfa_error"):
+            account_overview.update({"mfa_enabled": False, "mfa_error": str(result.get("mfa_error") or "")[:240]})
         return RegistrationResult(
             email=result.get("email", ""),
             password=password or result.get("password", ""),
@@ -568,14 +603,33 @@ class ChatGPTPlatform(BasePlatform):
                 "session_token": result.get("session_token", ""),
                 "workspace_id": result.get("workspace_id", ""),
                 "cookies": result.get("cookies", ""),
+                "login_state_cookie": result.get("login_state_cookie") or result.get("cookies", ""),
                 "profile": result.get("profile", {}),
                 "expires_at": result.get("expires_at", ""),
                 "session": result.get("session", {}),
                 "oauth_error": result.get("oauth_error", ""),
-                "account_overview": _registration_mode_metadata(executor_type, browser_mode),
+                "chatgpt_user_agent": result.get("chatgpt_user_agent", ""),
+                "chatgpt_accept_language": result.get("chatgpt_accept_language", ""),
+                "chatgpt_oai_client_version": result.get("chatgpt_oai_client_version", ""),
+                "chatgpt_oai_client_build_number": result.get("chatgpt_oai_client_build_number", ""),
+                "chatgpt_oai_device_id": result.get("chatgpt_oai_device_id", ""),
+                "chatgpt_oai_session_id": result.get("chatgpt_oai_session_id", ""),
+                "password_set_after_register": password_set_after_register,
+                "post_register_password_error": post_register_password_error,
+                "mfa_enabled": mfa_enabled,
+                "mfa_type": str(result.get("mfa_type") or "") if result.get("mfa_type") else "",
+                "mfa_error": str(result.get("mfa_error") or ""),
+                "mfa_factor_id": str(result.get("mfa_factor_id") or ""),
+                "mfa_session_id": str(result.get("mfa_session_id") or ""),
+                "mfa_info": result.get("mfa_info", {}),
+                "totp_secret": str(result.get("totp_secret") or ""),
+                "account_overview": account_overview,
                 # 短链物理复用：浏览器内 PayPal checkout 结果透传给上层任务判定。
                 "_shortlink_checkout": result.get("_shortlink_checkout", None),
                 "record_har_path": result.get("record_har_path", ""),
+                "manual_post_register_capture": manual_post_register_capture,
+                "manual_post_register_har_path": result.get("manual_post_register_har_path", ""),
+                "manual_post_register_cancelled": bool(result.get("manual_post_register_cancelled", False)),
             },
         )
 
@@ -594,15 +648,98 @@ class ChatGPTPlatform(BasePlatform):
         )
 
     def build_browser_registration_adapter(self):
-        return BrowserRegistrationAdapter(
-            result_mapper=lambda ctx, result: self._map_chatgpt_result(
-                result,
-                require_oauth=getattr(ctx.identity, "identity_provider", "")
-                in {"oauth_browser", "sms_oauth"},
-                executor_type=getattr(ctx, "executor_type", None),
-                browser_mode=(getattr(ctx, "extra", {}) or {}).get("browser_mode", ""),
-            ),
-            browser_worker_builder=lambda ctx, artifacts: __import__("platforms.chatgpt.browser_register", fromlist=["ChatGPTBrowserRegister"]).ChatGPTBrowserRegister(
+        def _build_post_register_in_browser(ctx, artifacts):
+            extra = ctx.extra or {}
+            original_callback = extra.get("_post_register_in_browser")
+            set_password = _bool_param(extra, "set_password_after_register", False)
+            enable_2fa = _bool_param(extra, "enable_2fa_after_register", False)
+            manual_capture = _bool_param(extra, "_manual_post_register_security_capture", False)
+            if not (set_password or enable_2fa):
+                return original_callback
+            if manual_capture:
+                task_id = str(extra.get("_task_id") or "").strip()
+                finish_path = Path(
+                    str(extra.get("_manual_post_register_capture_finish_path") or "").strip()
+                    or f"tools/captures/manual-post-register-finish-{task_id or 'task'}.signal"
+                )
+                cancel_check = extra.get("_cancel_check")
+
+                def _manual_callback(_page, result):
+                    from platforms.chatgpt.browser_register import collect_post_register_security_state_from_browser
+
+                    har_path = str((result or {}).get("record_har_path") or "").strip()
+                    ctx.log("注册已完成，浏览器和 HAR 录制保持打开")
+                    ctx.log("请在当前有头浏览器里手动完成设置帐号密码和绑定 2FA")
+                    if har_path:
+                        ctx.log(f"当前后置抓包 HAR: {har_path}")
+                    if task_id:
+                        ctx.log(
+                            "手动操作完成后调用: "
+                            f"POST /api/tasks/{task_id}/manual-post-register-capture/finish"
+                        )
+                    ctx.log(f"完成信号文件: {finish_path}")
+                    last_notice = 0.0
+                    while True:
+                        if finish_path.exists():
+                            try:
+                                finish_path.unlink()
+                            except Exception:
+                                pass
+                            ctx.log("已收到手动后置抓包完成信号，正在停止 HAR 录制并返回注册结果")
+                            refreshed = collect_post_register_security_state_from_browser(
+                                _page,
+                                dict(result or {}),
+                                ctx.log,
+                            )
+                            refreshed.update({
+                                "manual_post_register_capture": True,
+                                "manual_post_register_har_path": har_path,
+                            })
+                            return refreshed
+                        if callable(cancel_check) and cancel_check():
+                            ctx.log("检测到任务取消请求，停止手动后置 HAR 录制等待")
+                            return {
+                                "manual_post_register_capture": True,
+                                "manual_post_register_cancelled": True,
+                                "manual_post_register_har_path": har_path,
+                            }
+                        now = time.time()
+                        if now - last_notice >= 30:
+                            last_notice = now
+                            ctx.log("手动后置抓包等待中：完成密码/2FA 操作后发送完成信号")
+                        time.sleep(1.0)
+
+                return _manual_callback
+
+            def _callback(page, result):
+                from platforms.chatgpt.browser_register import run_post_register_security_in_browser
+
+                merged = {}
+                security_extra = run_post_register_security_in_browser(
+                    page,
+                    dict(result or {}),
+                    password=str((result or {}).get("password") or getattr(ctx, "password", "") or ""),
+                    set_password=set_password,
+                    enable_2fa=enable_2fa,
+                    otp_callback=getattr(artifacts, "otp_callback", None),
+                    log_fn=ctx.log,
+                )
+                if isinstance(security_extra, dict):
+                    merged.update(security_extra)
+                if callable(original_callback):
+                    callback_extra = original_callback(page, {**dict(result or {}), **merged})
+                    if isinstance(callback_extra, dict):
+                        merged.update(callback_extra)
+                return merged
+
+            return _callback
+
+        def _build_browser_worker(ctx, artifacts):
+            browser_register = __import__(
+                "platforms.chatgpt.browser_register",
+                fromlist=["ChatGPTBrowserRegister"],
+            )
+            return browser_register.ChatGPTBrowserRegister(
                 headless=(ctx.executor_type == "headless"),
                 proxy=ctx.proxy,
                 otp_callback=artifacts.otp_callback,
@@ -610,18 +747,30 @@ class ChatGPTPlatform(BasePlatform):
                 log_fn=ctx.log,
                 # 短链复用流程：通过 RegisterConfig.extra 注入 backend_config
                 # （决定注册用 Camoufox 还是 BitBrowser）和 post_register_in_browser
-                # 回调（注册完不关浏览器，在同一 page 里打开短链抓 midtrans）。
+                # 回调（注册完不关浏览器，在同一 page 里执行后置任务）。
                 # 普通注册这两个 key 不存在，行为不变（默认 Camoufox、无回调）。
                 backend_config=(ctx.extra or {}).get("_reuse_backend_config"),
-                post_register_in_browser=(ctx.extra or {}).get("_post_register_in_browser"),
+                post_register_in_browser=_build_post_register_in_browser(ctx, artifacts),
                 phone_first_oauth=getattr(ctx.identity, "identity_provider", "") == "sms_oauth",
                 bind_email_after_phone_signup=bool(
                     (ctx.extra or {}).get("phone_signup_relogin_after_bind_email", True)
                 ),
-                record_har=_bool_param(ctx.extra, "record_har", False),
+                record_har=_bool_param(ctx.extra, "record_har", False)
+                or _bool_param(ctx.extra or {}, "_manual_post_register_security_capture", False),
                 phone_change_limit=max(_int_param(ctx.extra or {}, "phone_change_limit", 10), 1),
                 phone_first_full_rounds=_int_param(ctx.extra or {}, "phone_first_full_rounds", 0) or None,
+            )
+
+        return BrowserRegistrationAdapter(
+            result_mapper=lambda ctx, result: self._map_chatgpt_result(
+                result,
+                require_oauth=getattr(ctx.identity, "identity_provider", "")
+                in {"oauth_browser", "sms_oauth"},
+                executor_type=getattr(ctx, "executor_type", None),
+                browser_mode=(getattr(ctx, "extra", {}) or {}).get("browser_mode", ""),
+                set_password_requested=_bool_param(getattr(ctx, "extra", {}) or {}, "set_password_after_register", False),
             ),
+            browser_worker_builder=_build_browser_worker,
             browser_register_runner=lambda worker, ctx, artifacts: _run_sync_browser_register_isolated(
                 worker,
                 email=ctx.identity.email or "",
@@ -696,7 +845,7 @@ class ChatGPTPlatform(BasePlatform):
                 k12_workspace_ids=str((ctx.extra or {}).get("k12_workspace_ids", "") or "").strip(),
                 remote_upload_enabled=_bool_param(ctx.extra or {}, "remote_upload_enabled", False),
                 k12_batch_upload_enabled=_bool_param(ctx.extra or {}, "k12_batch_upload_enabled", True),
-                set_password_after_register=_bool_param(ctx.extra or {}, "set_password_after_register", True),
+                set_password_after_register=_bool_param(ctx.extra or {}, "set_password_after_register", False),
             )
 
         def _map_result(ctx, result):
@@ -738,9 +887,16 @@ class ChatGPTPlatform(BasePlatform):
                     "session_token": session_token,
                     "workspace_id": result.workspace_id,
                     "cookies": metadata.get("cookies", ""),
+                    "login_state_cookie": metadata.get("login_state_cookie") or metadata.get("cookies", ""),
                     "profile": metadata.get("profile", {}),
                     "expires_at": metadata.get("expires_at", ""),
                     "session": metadata.get("session", {}),
+                    "chatgpt_user_agent": metadata.get("chatgpt_user_agent", ""),
+                    "chatgpt_accept_language": metadata.get("chatgpt_accept_language", ""),
+                    "chatgpt_oai_client_version": metadata.get("chatgpt_oai_client_version", ""),
+                    "chatgpt_oai_client_build_number": metadata.get("chatgpt_oai_client_build_number", ""),
+                    "chatgpt_oai_device_id": metadata.get("chatgpt_oai_device_id", ""),
+                    "chatgpt_oai_session_id": metadata.get("chatgpt_oai_session_id", ""),
                     "k12_session": metadata.get("k12_session", {}),
                     "k12_workspace_id": metadata.get("k12_workspace_id", ""),
                     "k12_workspace_sessions": metadata.get("k12_workspace_sessions", []),
@@ -1805,9 +1961,15 @@ class ChatGPTPlatform(BasePlatform):
         if callable(cancel_fn) and cancel_fn():
             return {"ok": False, "error": "任务已取消", "data": {"email": account.email}}
 
-        email_service, mailbox_error = self._build_refresh_session_mailbox_email_service(account, log_fn, proxy)
-        if email_service is None:
-            return self._refresh_session_failed_result(account, f"邮箱服务不可用: {mailbox_error}")
+        totp_secret = _account_secret_value(account, "totp_secret")
+        prefer_password_totp_login = bool(str(account.password or "").strip() and totp_secret)
+        email_service = None
+        if prefer_password_totp_login:
+            log_fn("重新登录检测到账号已保存密码和 2FA，本次使用密码 + TOTP，不初始化邮箱 OTP 服务")
+        else:
+            email_service, mailbox_error = self._build_refresh_session_mailbox_email_service(account, log_fn, proxy)
+            if email_service is None:
+                return self._refresh_session_failed_result(account, f"邮箱服务不可用: {mailbox_error}")
 
         try:
             from platforms.chatgpt.register import RegistrationEngine
@@ -1820,8 +1982,11 @@ class ChatGPTPlatform(BasePlatform):
             )
             engine.email = account.email
             engine.password = account.password
+            engine.totp_secret = totp_secret
+            engine.prefer_password_totp_login = prefer_password_totp_login
             engine.k12_join_enabled = False
-            result = engine.run()
+            engine.set_password_after_register = False
+            result = engine.run_chatgpt_refresh_session_latest()
         except Exception as exc:
             message = f"重新登录异常: {exc}"
             cloudflare_challenge = _is_cloudflare_managed_challenge_error(message)
@@ -1878,6 +2043,7 @@ class ChatGPTPlatform(BasePlatform):
                 "access_token": access_token,
                 "session_token": session_token,
                 "cookies": metadata.get("cookies", ""),
+                "login_state_cookie": metadata.get("login_state_cookie") or metadata.get("cookies", ""),
                 "session": session,
                 "session_refreshed_at": now,
                 "session_refresh_status": "refreshed",
@@ -1925,9 +2091,15 @@ class ChatGPTPlatform(BasePlatform):
             from platforms.chatgpt.browser_get_rt import (
                 build_get_rt_phone_callback,
             )
-            otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
-            if not otp_callback:
-                return {"ok": False, "error": f"获取rt失败: {otp_error}"}
+            totp_secret = _account_secret_value(account, "totp_secret")
+            prefer_password_totp_login = bool(str(account.password or "").strip() and totp_secret)
+            if prefer_password_totp_login:
+                otp_callback = None
+                log_fn("  获取rt: 检测到账号已保存密码和 2FA，本次使用密码 + TOTP，不初始化邮箱 OTP 服务")
+            else:
+                otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
+                if not otp_callback:
+                    return {"ok": False, "error": f"获取rt失败: {otp_error}"}
 
             # ★ 手机号 OTP 回调（可选）
             phone_callback = None
@@ -1990,6 +2162,7 @@ class ChatGPTPlatform(BasePlatform):
                     smsapi_url=str(params.get("smsapi_url") or ""),
                     phone_callback=phone_callback,
                     phone_change_limit=phone_change_limit,
+                    totp_secret=totp_secret,
                 )
                 refresh_token = str(result.get("refresh_token") or "")
                 access_token = str(result.get("access_token") or "")
@@ -2044,6 +2217,7 @@ class ChatGPTPlatform(BasePlatform):
                 proxy=proxy,
                 log_fn=log_fn,
                 backend_config=backend_config,
+                totp_secret=totp_secret,
             )
 
             if reg.backend_config.is_bitbrowser:
@@ -2086,6 +2260,7 @@ class ChatGPTPlatform(BasePlatform):
                         phone_callback,
                         proxy, log_fn,
                         max_phone_attempts=phone_change_limit,
+                        totp_secret=totp_secret,
                     )
 
                     if not isinstance(result, dict) or not result.get("access_token"):
@@ -2231,9 +2406,14 @@ class ChatGPTPlatform(BasePlatform):
                 )
 
             backend_config = parse_checkout_mode(browser_mode, bit_profile_id=bit_profile_id)
-            otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
-            if not otp_callback:
-                return {"ok": False, "error": f"获取rt失败: {otp_error}"}
+            totp_secret = _account_secret_value(account, "totp_secret")
+            if str(account.password or "").strip() and totp_secret:
+                otp_callback = None
+                log_fn("  获取rt(绕过): 检测到账号已保存密码和 2FA，本次使用密码 + TOTP，不初始化邮箱 OTP 服务")
+            else:
+                otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
+                if not otp_callback:
+                    return {"ok": False, "error": f"获取rt失败: {otp_error}"}
 
             log_fn(
                 f"获取rt(绕过): {account.email}, browser_mode={browser_mode}, "
@@ -2245,6 +2425,7 @@ class ChatGPTPlatform(BasePlatform):
                 proxy=proxy,
                 log_fn=log_fn,
                 backend_config=backend_config,
+                totp_secret=totp_secret,
             )
 
             if reg.backend_config.is_bitbrowser:
@@ -2269,6 +2450,7 @@ class ChatGPTPlatform(BasePlatform):
                     None,
                     proxy, log_fn,
                     oauth_start=oauth_start,
+                    totp_secret=totp_secret,
                 )
 
                 # ★ Fallback: curl 补全会话 (workspace/select → callback)

@@ -43,6 +43,8 @@ def test_enable_totp_mfa_protocol_flow(monkeypatch):
                         "factor": {"id": "factor-123", "factor_type": "totp"},
                     },
                 )
+            if url.endswith("/backend-api/sentinel/heartbeat"):
+                return Response(200, {"status": "OK"})
             assert json["code"] == mfa.generate_totp_code(secret, at_time=59)
             return Response(200, {"success": True})
 
@@ -71,10 +73,18 @@ def test_enable_totp_mfa_protocol_flow(monkeypatch):
     assert result["ok"] is True
     assert result["totp_secret"] == secret
     assert result["mfa_factor_id"] == "factor-123"
-    assert [item[0] for item in calls] == ["GET", "GET", "GET", "GET", "GET", "POST", "GET", "POST", "GET"]
+    assert [item[0] for item in calls] == ["GET", "GET", "GET", "GET", "GET", "POST", "GET", "POST", "GET", "POST"]
     assert all(item[2].get("accept") == "*/*" for item in calls)
-    assert all("authorization" not in item[2] for item in calls)
+    assert all(item[2].get("authorization") == "Bearer access-token-123" for item in calls)
     assert all(item[2].get("oai-client-build-number") == mfa.DEFAULT_CLIENT_BUILD_NUMBER for item in calls)
+    assert all("cache-control" not in item[2] for item in calls)
+    assert all("priority" not in item[2] for item in calls)
+    assert calls[-1][1].endswith("/backend-api/sentinel/heartbeat")
+    assert calls[-1][2]["origin"] == mfa.CHATGPT_APP
+    assert "content-type" not in calls[-1][2]
+    assert calls[0][2]["x-oai-is-client-observation"].startswith("v1.r.p.")
+    assert calls[0][2]["x-oai-is-client-observation"] != calls[1][2]["x-oai-is-client-observation"]
+    assert len({item[2]["x-oai-is-client-observation"] for item in calls[1:5]}) == 1
 
 
 def test_auto_enable_chatgpt_2fa_after_register_respects_disabled_flag(monkeypatch):
@@ -104,6 +114,35 @@ def test_auto_enable_chatgpt_2fa_after_register_respects_disabled_flag(monkeypat
     assert "totp_secret" not in account.extra
     assert "mfa_enabled" not in account.extra
     assert any("未勾选设置2FA" in message for _level, message in logger.messages)
+
+
+def test_auto_enable_chatgpt_2fa_after_register_skips_manual_capture(monkeypatch):
+    class Account:
+        extra = {
+            "access_token": "access-token-123",
+            "cookies": "__Secure-next-auth.session-token=st",
+            "manual_post_register_capture": True,
+            "account_overview": {},
+        }
+
+    class Logger:
+        def __init__(self):
+            self.messages = []
+
+        def log(self, message, level="info"):
+            self.messages.append((level, message))
+
+    def fake_enable(**kwargs):
+        raise AssertionError("manual capture should skip auto 2FA")
+
+    monkeypatch.setattr("platforms.chatgpt.mfa.enable_totp_mfa", fake_enable)
+    account = Account()
+    logger = Logger()
+
+    tasks_module._auto_enable_chatgpt_2fa_after_register(account, logger, enable=True)
+
+    assert account.extra["manual_post_register_capture"] is True
+    assert any("手动后置抓包模式" in message for _level, message in logger.messages)
 
 
 def test_auto_enable_chatgpt_2fa_after_register_saves_secret(monkeypatch):
@@ -141,6 +180,120 @@ def test_auto_enable_chatgpt_2fa_after_register_saves_secret(monkeypatch):
     assert account.extra["mfa_enabled"] is True
     assert account.extra["account_overview"]["mfa_enabled"] is True
     assert "2FA已绑" in account.extra["account_overview"]["chips"]
+
+
+def test_auto_enable_chatgpt_2fa_after_register_waits_for_password_success(monkeypatch):
+    class Account:
+        extra = {
+            "access_token": "access-token-123",
+            "cookies": "__Secure-next-auth.session-token=st",
+            "password_set_after_register": False,
+            "account_overview": {},
+        }
+
+    class Logger:
+        def __init__(self):
+            self.messages = []
+
+        def log(self, message, level="info"):
+            self.messages.append((level, message))
+
+    def fake_enable(**kwargs):
+        raise AssertionError("2FA should wait for password setup success")
+
+    monkeypatch.setattr("platforms.chatgpt.mfa.enable_totp_mfa", fake_enable)
+    account = Account()
+    logger = Logger()
+
+    tasks_module._auto_enable_chatgpt_2fa_after_register(
+        account,
+        logger,
+        enable=True,
+        require_password_set=True,
+    )
+
+    assert account.extra["mfa_enabled"] is False
+    assert account.extra["mfa_error"] == "password_not_set"
+    assert any("设置帐号密码未成功" in message for _level, message in logger.messages)
+
+
+def test_auto_enable_chatgpt_2fa_after_register_reads_nested_session_token(monkeypatch):
+    class Account:
+        token = ""
+        extra = {
+            "cookies": "__Secure-next-auth.session-token=st",
+            "session": {"accessToken": "nested-access-token"},
+            "account_overview": {},
+        }
+
+    class Logger:
+        def log(self, message, level="info"):
+            pass
+
+    captured = {}
+
+    def fake_enable(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "totp_secret": base64.b32encode(b"12345678901234567890").decode("ascii"),
+            "mfa_factor_id": "factor-123",
+            "mfa_session_id": "session-123",
+        }
+
+    monkeypatch.setattr("platforms.chatgpt.mfa.enable_totp_mfa", fake_enable)
+
+    tasks_module._auto_enable_chatgpt_2fa_after_register(Account(), Logger(), enable=True)
+
+    assert captured["access_token"] == "nested-access-token"
+
+
+def test_auto_enable_chatgpt_2fa_after_register_passes_session_fingerprint(monkeypatch):
+    class Account:
+        token = ""
+        extra = {
+            "access_token": "access-token-123",
+            "cookies": "__Secure-next-auth.session-token=st; oai-did=device-123",
+            "password_set_after_register": True,
+            "chatgpt_user_agent": "Mozilla/5.0 Firefox/135.0",
+            "chatgpt_accept_language": "en-US,en;q=0.5",
+            "chatgpt_oai_client_version": "prod-test",
+            "chatgpt_oai_client_build_number": "123",
+            "chatgpt_oai_device_id": "device-123",
+            "chatgpt_oai_session_id": "session-123",
+            "account_overview": {},
+        }
+
+    class Logger:
+        def log(self, message, level="info"):
+            pass
+
+    captured = {}
+
+    def fake_enable(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "totp_secret": base64.b32encode(b"12345678901234567890").decode("ascii"),
+            "mfa_factor_id": "factor-123",
+            "mfa_session_id": "session-123",
+        }
+
+    monkeypatch.setattr("platforms.chatgpt.mfa.enable_totp_mfa", fake_enable)
+
+    tasks_module._auto_enable_chatgpt_2fa_after_register(
+        Account(),
+        Logger(),
+        enable=True,
+        require_password_set=True,
+    )
+
+    assert captured["user_agent"] == "Mozilla/5.0 Firefox/135.0"
+    assert captured["accept_language"] == "en-US,en;q=0.5"
+    assert captured["client_version"] == "prod-test"
+    assert captured["client_build_number"] == "123"
+    assert captured["device_id"] == "device-123"
+    assert captured["oai_session_id"] == "session-123"
 
 
 def test_chatgpt_mfa_badge_and_tag_filter():

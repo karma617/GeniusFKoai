@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import secrets
 import time
 import uuid
 from typing import Any, Callable
@@ -16,13 +17,13 @@ MFA_ACTIVATE_URL = f"{CHATGPT_APP}/backend-api/accounts/mfa/user/activate_enroll
 MFA_INFO_URL = f"{CHATGPT_APP}/backend-api/accounts/mfa_info"
 
 DEFAULT_MFA_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) "
+    "Gecko/20100101 Firefox/135.0"
 )
-DEFAULT_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
+DEFAULT_ACCEPT_LANGUAGE = "en-US,en;q=0.5"
 DEFAULT_SEC_CH_UA = '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"'
-DEFAULT_CLIENT_VERSION = "prod-e90abb69f9711bb66403800b79e0c3c5fc561770"
-DEFAULT_CLIENT_BUILD_NUMBER = "8727206"
+DEFAULT_CLIENT_VERSION = "prod-fc98dd36cc7acf295fb888b3b2c9e7c00ad14591"
+DEFAULT_CLIENT_BUILD_NUMBER = "8823441"
 SECURITY_PREFLIGHT_PATHS = (
     "/backend-api/accounts/mfa_info",
     "/backend-api/accounts/security_settings/info",
@@ -57,6 +58,18 @@ def _cookie_header(cookies: str = "", session_token: str = "") -> str:
     return ""
 
 
+def _primary_language(accept_language: str) -> str:
+    for item in str(accept_language or "").split(","):
+        lang = item.split(";", 1)[0].strip()
+        if lang:
+            return lang
+    return "en-US"
+
+
+def _client_observation() -> str:
+    return "v1.r.p." + secrets.token_urlsafe(12)[:16]
+
+
 def _response_json(response: Any) -> dict[str, Any]:
     try:
         data = response.json()
@@ -89,37 +102,47 @@ def _headers(
     access_token: str = "",
     device_id: str = "",
     session_id: str = "",
+    user_agent: str = "",
+    accept_language: str = "",
+    client_version: str = "",
+    client_build_number: str = "",
+    content_type_for_post: bool = True,
+    observation_id: str = "",
 ) -> dict[str, str]:
+    effective_user_agent = _text(user_agent) or DEFAULT_MFA_USER_AGENT
+    effective_accept_language = _text(accept_language) or DEFAULT_ACCEPT_LANGUAGE
     headers = {
         "accept": "*/*",
-        "accept-language": DEFAULT_ACCEPT_LANGUAGE,
-        "cache-control": "no-cache",
-        "oai-client-build-number": DEFAULT_CLIENT_BUILD_NUMBER,
-        "oai-client-version": DEFAULT_CLIENT_VERSION,
+        "accept-language": effective_accept_language,
+        "oai-client-build-number": _text(client_build_number) or DEFAULT_CLIENT_BUILD_NUMBER,
+        "oai-client-version": _text(client_version) or DEFAULT_CLIENT_VERSION,
         "oai-device-id": _text(device_id) or _extract_cookie_value(cookies, "oai-did") or str(uuid.uuid4()),
-        "oai-language": "zh-CN",
+        "oai-language": _primary_language(effective_accept_language),
         "oai-session-id": _text(session_id) or str(uuid.uuid4()),
-        "priority": "u=1, i",
         "referer": f"{CHATGPT_APP}/",
-        "sec-ch-ua": DEFAULT_SEC_CH_UA,
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
-        "user-agent": DEFAULT_MFA_USER_AGENT,
+        "user-agent": effective_user_agent,
+        "x-oai-is-client-observation": _text(observation_id) or _client_observation(),
         "x-openai-target-path": path,
         "x-openai-target-route": path,
     }
-    if method.upper() == "POST":
+    if "Chrome/" in effective_user_agent and "Firefox/" not in effective_user_agent:
         headers.update(
             {
-                "content-type": "application/json",
-                "origin": CHATGPT_APP,
+                "sec-ch-ua": DEFAULT_SEC_CH_UA,
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+                "priority": "u=1, i",
             }
         )
+    if method.upper() == "POST":
+        headers["origin"] = CHATGPT_APP
+        if content_type_for_post:
+            headers["content-type"] = "application/json"
     token = _text(access_token)
-    if token and not _text(cookies):
+    if token:
         headers["authorization"] = f"Bearer {token}"
     return headers
 
@@ -132,6 +155,11 @@ def _security_get(
     access_token: str,
     device_id: str,
     session_id: str,
+    user_agent: str,
+    accept_language: str,
+    client_version: str,
+    client_build_number: str,
+    observation_id: str = "",
 ):
     return session.get(
         f"{CHATGPT_APP}{path}",
@@ -142,6 +170,11 @@ def _security_get(
             access_token=access_token,
             device_id=device_id,
             session_id=session_id,
+            user_agent=user_agent,
+            accept_language=accept_language,
+            client_version=client_version,
+            client_build_number=client_build_number,
+            observation_id=observation_id,
         ),
         timeout=30,
     )
@@ -154,6 +187,13 @@ def enable_totp_mfa(
     access_token: str = "",
     proxy: str | None = None,
     log_fn: Callable[[str], None] | None = None,
+    user_agent: str = "",
+    accept_language: str = "",
+    client_version: str = "",
+    client_build_number: str = "",
+    device_id: str = "",
+    oai_session_id: str = "",
+    impersonate: str = "",
 ) -> dict[str, Any]:
     cookie_header = _cookie_header(cookies, session_token)
     if not (cookie_header or _text(access_token)):
@@ -163,20 +203,24 @@ def enable_totp_mfa(
     session = build_protocol_session(
         proxy=proxy,
         cookies_str=cookie_header,
-        impersonate="chrome136",
+        impersonate=impersonate or "firefox135",
     )
+    effective_user_agent = _text(user_agent) or DEFAULT_MFA_USER_AGENT
+    effective_accept_language = _text(accept_language) or DEFAULT_ACCEPT_LANGUAGE
     session.headers.update(
         {
-            "User-Agent": DEFAULT_MFA_USER_AGENT,
-            "Accept-Language": DEFAULT_ACCEPT_LANGUAGE,
+            "User-Agent": effective_user_agent,
+            "Accept-Language": effective_accept_language,
         }
     )
 
-    oai_session_id = str(uuid.uuid4())
-    device_id = _extract_cookie_value(cookie_header, "oai-did")
+    oai_session_id = _text(oai_session_id) or str(uuid.uuid4())
+    device_id = _text(device_id) or _extract_cookie_value(cookie_header, "oai-did")
 
     log("2FA: 预热账号安全设置接口")
-    for path in SECURITY_PREFLIGHT_PATHS:
+    first_security_observation = _client_observation()
+    settings_security_observation = _client_observation()
+    for index, path in enumerate(SECURITY_PREFLIGHT_PATHS):
         response = _security_get(
             session,
             path=path,
@@ -184,6 +228,11 @@ def enable_totp_mfa(
             access_token=access_token,
             device_id=device_id,
             session_id=oai_session_id,
+            user_agent=effective_user_agent,
+            accept_language=effective_accept_language,
+            client_version=client_version,
+            client_build_number=client_build_number,
+            observation_id=first_security_observation if index == 0 else settings_security_observation,
         )
         status = int(getattr(response, "status_code", 0) or 0)
         log(f"2FA: 预热 {path} 状态: {status}")
@@ -200,6 +249,10 @@ def enable_totp_mfa(
             access_token=access_token,
             device_id=device_id,
             session_id=oai_session_id,
+            user_agent=effective_user_agent,
+            accept_language=effective_accept_language,
+            client_version=client_version,
+            client_build_number=client_build_number,
         ),
         json={"factor_type": "totp"},
         timeout=30,
@@ -223,6 +276,10 @@ def enable_totp_mfa(
         access_token=access_token,
         device_id=device_id,
         session_id=oai_session_id,
+        user_agent=effective_user_agent,
+        accept_language=effective_accept_language,
+        client_version=client_version,
+        client_build_number=client_build_number,
     )
     log(f"2FA: enrollment 后 mfa_info 状态: {int(getattr(mid_info_resp, 'status_code', 0) or 0)}")
 
@@ -237,6 +294,10 @@ def enable_totp_mfa(
             access_token=access_token,
             device_id=device_id,
             session_id=oai_session_id,
+            user_agent=effective_user_agent,
+            accept_language=effective_accept_language,
+            client_version=client_version,
+            client_build_number=client_build_number,
         ),
         json={"code": code, "factor_type": "totp", "session_id": activation_session_id},
         timeout=30,
@@ -255,6 +316,10 @@ def enable_totp_mfa(
             access_token=access_token,
             device_id=device_id,
             session_id=oai_session_id,
+            user_agent=effective_user_agent,
+            accept_language=effective_accept_language,
+            client_version=client_version,
+            client_build_number=client_build_number,
         ),
         timeout=30,
     )
@@ -263,6 +328,28 @@ def enable_totp_mfa(
     enabled = bool(isinstance(info_data, dict) and (info_data.get("mfa_enabled") or info_data.get("mfa_enabled_v2")))
     if info_status != 200 or not enabled:
         raise RuntimeError(f"2FA 状态确认失败 HTTP {info_status}: {_text(getattr(info_resp, 'text', ''))[:200]}")
+
+    try:
+        heartbeat_resp = session.post(
+            f"{CHATGPT_APP}/backend-api/sentinel/heartbeat",
+            headers=_headers(
+                path="/backend-api/sentinel/heartbeat",
+                method="POST",
+                cookies=cookie_header,
+                access_token=access_token,
+                device_id=device_id,
+                session_id=oai_session_id,
+                user_agent=effective_user_agent,
+                accept_language=effective_accept_language,
+                client_version=client_version,
+                client_build_number=client_build_number,
+                content_type_for_post=False,
+            ),
+            timeout=30,
+        )
+        log(f"2FA: Sentinel heartbeat 状态: {int(getattr(heartbeat_resp, 'status_code', 0) or 0)}")
+    except Exception as exc:
+        log(f"2FA: Sentinel heartbeat 失败，继续返回绑定结果: {exc}")
 
     return {
         "ok": True,

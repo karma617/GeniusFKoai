@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from application.account_exports import AccountExportsService
-from application.phone_binding import PhoneBindingService, SmsApiPhoneCallback, parse_phone_bind_lines
+from application.phone_binding import PhoneBindingService, SmsApiPhoneCallback, default_phone_binder, parse_phone_bind_lines
 from core.base_platform import Account, AccountStatus
 from core.db import save_account
 from domain.accounts import AccountCreateCommand, AccountExportSelection
@@ -442,6 +442,40 @@ def test_sms_api_phone_callback_returns_phone_then_unique_codes(monkeypatch):
     assert calls == [set(), {"123456"}]
 
 
+def test_default_phone_binder_passes_saved_totp_secret(monkeypatch):
+    seen = {}
+    account = AccountCreateCommand(
+        platform="chatgpt",
+        email="bind-totp@test.com",
+        password="TestPass123!",
+        credentials={"totp_secret": "JBSWY3DPEHPK3PXP"},
+    )
+    saved = AccountsRepository().create(account)
+    entry = parse_phone_bind_lines("7857019646----https://mail-api.yuecheng.shop/api/sms/recordText?key=abc")[0]
+
+    import application.bitbrowser_profiles as bitbrowser_profiles
+    import platforms._browser_backend as browser_backend
+    import platforms.chatgpt.browser_register as browser_register
+
+    monkeypatch.setattr(bitbrowser_profiles, "acquire_profile_for_browser_mode", lambda *args, **kwargs: ("", ""))
+    monkeypatch.setattr(bitbrowser_profiles, "release_acquired_profile", lambda *args, **kwargs: None)
+    monkeypatch.setattr(browser_backend, "parse_checkout_mode", lambda *args, **kwargs: type("Backend", (), {"is_headless": True})())
+
+    class FakeBrowserRegister:
+        def __init__(self, **kwargs):
+            seen["totp_secret"] = kwargs.get("totp_secret")
+
+        def _retry_oauth_fresh_browser(self, email, password):
+            return {"access_token": "access-token", "refresh_token": "refresh-token"}
+
+    monkeypatch.setattr(browser_register, "ChatGPTBrowserRegister", FakeBrowserRegister)
+
+    result = default_phone_binder(saved, entry)
+
+    assert result["ok"] is True
+    assert seen["totp_secret"] == "JBSWY3DPEHPK3PXP"
+
+
 def test_phone_binding_marks_selected_accounts_and_reports_phone_usage():
     repository = AccountsRepository()
     first = repository.create(
@@ -750,6 +784,8 @@ def test_chatgpt_registered_account_persists_full_session_for_copy(client):
             extra={
                 "account_id": "acct-session-copy",
                 "access_token": "access-token-from-session",
+                "cookies": "cookie1=value1; cookie2=value2",
+                "login_state_cookie": "cookie1=value1; cookie2=value2",
                 "session": session_payload,
             },
         )
@@ -760,7 +796,11 @@ def test_chatgpt_registered_account_persists_full_session_for_copy(client):
     assert resp.status_code == 200
     item = resp.json()["items"][0]
     assert item["overview"]["session"] == session_payload
+    credentials = {credential["key"]: credential["value"] for credential in item["credentials"]}
+    assert credentials["cookies"] == "cookie1=value1; cookie2=value2"
+    assert credentials["login_state_cookie"] == "cookie1=value1; cookie2=value2"
     assert "session" not in dict(item["overview"].get("legacy_extra") or {})
+    assert "login_state_cookie" not in dict(item["overview"].get("legacy_extra") or {})
 
 
 def test_chatgpt_registered_account_persists_k12_session_for_copy(client):

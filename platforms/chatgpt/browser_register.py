@@ -3264,10 +3264,22 @@ def _get_cookies(page) -> dict:
     return {c["name"]: c["value"] for c in page.context.cookies()}
 
 
-def _cookies_to_header(cookies_dict: dict) -> str:
+def _cookies_to_header(cookies_dict: Any) -> str:
     parts = []
-    for name, value in (cookies_dict or {}).items():
-        if name and value not in (None, ""):
+    if isinstance(cookies_dict, dict):
+        iterable = cookies_dict.items()
+        for name, value in iterable:
+            if name and value not in (None, ""):
+                parts.append(f"{name}={value}")
+        return "; ".join(parts)
+    for cookie in cookies_dict or []:
+        if isinstance(cookie, dict):
+            name = str(cookie.get("name") or "").strip()
+            value = str(cookie.get("value") or "")
+        else:
+            name = str(getattr(cookie, "name", "") or "").strip()
+            value = str(getattr(cookie, "value", "") or "")
+        if name and value:
             parts.append(f"{name}={value}")
     return "; ".join(parts)
 
@@ -3304,6 +3316,7 @@ def _diag_header_summary(headers: dict | None) -> str:
             f"target_path={lower.get('x-openai-target-path') or '-'}",
             f"oai_client={lower.get('oai-client-version') or '-'}",
             f"oai_build={lower.get('oai-client-build-number') or '-'}",
+            f"oai_session={_diag_shape(lower.get('oai-session-id'))}",
             f"auth={_diag_bool(lower.get('authorization'))}",
             f"sentinel={_diag_shape(lower.get('openai-sentinel-token'))}",
             f"so={_diag_shape(lower.get('openai-sentinel-so-token'))}",
@@ -3474,6 +3487,19 @@ def _install_register_diag_network_hooks(page, log) -> None:
             except Exception:
                 headers = {}
             try:
+                lower_headers = {str(k).lower(): str(v) for k, v in dict(headers or {}).items()}
+                observed = {
+                    "_gfo_oai_client_version": lower_headers.get("oai-client-version", ""),
+                    "_gfo_oai_client_build_number": lower_headers.get("oai-client-build-number", ""),
+                    "_gfo_oai_session_id": lower_headers.get("oai-session-id", ""),
+                }
+                for attr, value in observed.items():
+                    value = str(value or "").strip()
+                    if value:
+                        setattr(page, attr, value)
+            except Exception:
+                pass
+            try:
                 body = request.post_data or ""
             except Exception:
                 body = ""
@@ -3550,8 +3576,10 @@ def _chatgpt_session_result_from_data(data: dict, page, cookies_dict: dict, log)
         return None, "session API 未返回 accessToken"
 
     latest_cookies = dict(cookies_dict or {})
+    latest_cookie_items: list[dict] = []
     try:
-        latest_cookies.update(_get_cookies(page))
+        latest_cookie_items = list(page.context.cookies())
+        latest_cookies.update({c["name"]: c["value"] for c in latest_cookie_items if c.get("name")})
     except Exception as exc:
         log(f"ChatGPT session cookies 读取失败，使用已捕获 cookies: {exc}")
     session_token = str(latest_cookies.get("__Secure-next-auth.session-token") or "").strip()
@@ -3562,6 +3590,17 @@ def _chatgpt_session_result_from_data(data: dict, page, cookies_dict: dict, log)
         f"account_id={account_id or '-'} "
         f"latest_cookie_names={','.join(sorted(latest_cookies.keys())) if latest_cookies else '-'}"
     )
+    if latest_cookie_items:
+        latest_cookie_names = {str(item.get("name") or "") for item in latest_cookie_items}
+        cookie_header_items = [
+            {"name": name, "value": value}
+            for name, value in (cookies_dict or {}).items()
+            if name and name not in latest_cookie_names
+        ]
+        cookie_header_items.extend(latest_cookie_items)
+    else:
+        cookie_header_items = latest_cookies
+    cookie_header = _cookies_to_header(cookie_header_items)
     result = {
         "access_token": access_token,
         "refresh_token": str(data.get("refreshToken") or data.get("refresh_token") or "").strip(),
@@ -3571,7 +3610,8 @@ def _chatgpt_session_result_from_data(data: dict, page, cookies_dict: dict, log)
         "workspace_id": str(data.get("workspaceId") or data.get("workspace_id") or "").strip(),
         "profile": data.get("user") if isinstance(data.get("user"), dict) else {},
         "expires_at": str(data.get("expires") or "").strip(),
-        "cookies": _cookies_to_header(latest_cookies),
+        "cookies": cookie_header,
+        "login_state_cookie": cookie_header,
         "session": data,
     }
     log(
@@ -3782,6 +3822,8 @@ def _infer_page_type(data: dict | None, current_url: str = "") -> str:
         return "about_you"
     if "log-in/password" in url:
         return "login_password"
+    if "mfa-challenge" in url:
+        return "mfa_challenge"
     if "sign-in-with-chatgpt" in url and "consent" in url:
         return "consent"
     if "choose-an-account" in url:
@@ -4146,6 +4188,665 @@ def _submit_browser_user_register(page, email: str, password: str, device_id: st
         body=json.dumps({"username": email, "password": password}),
         redirect="follow",
     )
+
+
+POST_REGISTER_SECURITY_CLIENT_VERSION = "prod-fc98dd36cc7acf295fb888b3b2c9e7c00ad14591"
+POST_REGISTER_SECURITY_CLIENT_BUILD_NUMBER = "8823441"
+
+
+def _browser_security_observation() -> str:
+    return "v1.r.p." + secrets.token_urlsafe(12)[:16]
+
+
+def _browser_primary_language(page) -> str:
+    try:
+        value = str(page.evaluate("() => navigator.language || ''") or "").strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return "en-US"
+
+
+def _browser_observed_attr(page, attr: str, fallback: str = "") -> str:
+    try:
+        value = str(getattr(page, attr, "") or "").strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return str(fallback or "").strip()
+
+
+def _browser_security_headers(
+    page,
+    *,
+    path: str,
+    method: str,
+    device_id: str,
+    oai_session_id: str,
+    access_token: str = "",
+    client_version: str = "",
+    client_build_number: str = "",
+    content_type_for_post: bool = True,
+) -> dict:
+    headers = {
+        "accept": "*/*",
+        "oai-client-build-number": (
+            client_build_number
+            or _browser_observed_attr(page, "_gfo_oai_client_build_number", POST_REGISTER_SECURITY_CLIENT_BUILD_NUMBER)
+        ),
+        "oai-client-version": (
+            client_version
+            or _browser_observed_attr(page, "_gfo_oai_client_version", POST_REGISTER_SECURITY_CLIENT_VERSION)
+        ),
+        "oai-device-id": device_id,
+        "oai-language": _browser_primary_language(page),
+        "oai-session-id": oai_session_id,
+        "referer": f"{CHATGPT_APP}/",
+        "x-oai-is-client-observation": _browser_security_observation(),
+        "x-openai-target-path": path,
+        "x-openai-target-route": path,
+    }
+    if str(access_token or "").strip():
+        headers["authorization"] = f"Bearer {str(access_token).strip()}"
+    if method.upper() == "POST":
+        headers["origin"] = CHATGPT_APP
+        if content_type_for_post:
+            headers["content-type"] = "application/json"
+    return headers
+
+
+def _browser_security_fetch(
+    page,
+    *,
+    path: str,
+    method: str = "GET",
+    body: dict | None = None,
+    device_id: str,
+    oai_session_id: str,
+    access_token: str = "",
+    client_version: str = "",
+    client_build_number: str = "",
+) -> dict:
+    return _browser_fetch(
+        page,
+        f"{CHATGPT_APP}{path}",
+        method=method,
+        headers=_browser_security_headers(
+            page,
+            path=path,
+            method=method,
+            device_id=device_id,
+            oai_session_id=oai_session_id,
+            access_token=access_token,
+            client_version=client_version,
+            client_build_number=client_build_number,
+            content_type_for_post=body is not None,
+        ),
+        body=json.dumps(body, separators=(",", ":")) if body is not None else None,
+        redirect="follow",
+        timeout_ms=30000,
+    )
+
+
+def _extract_first_bool_by_keys(data: Any, keys: set[str]) -> bool | None:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            normalized = str(key or "").strip().lower()
+            if normalized in keys and isinstance(value, bool):
+                return value
+            nested = _extract_first_bool_by_keys(value, keys)
+            if nested is not None:
+                return nested
+    elif isinstance(data, list):
+        for item in data:
+            nested = _extract_first_bool_by_keys(item, keys)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _extract_mfa_factor_id(info_data: dict) -> str:
+    factors = info_data.get("factors") if isinstance(info_data, dict) else {}
+    if isinstance(factors, dict):
+        for value in factors.values():
+            items = value if isinstance(value, list) else [value]
+            for item in items:
+                if isinstance(item, dict) and str(item.get("id") or "").strip():
+                    return str(item.get("id") or "").strip()
+    return str(info_data.get("native_default_factor_id") or "").strip()
+
+
+def _infer_password_set_from_browser_security(
+    *,
+    security_info: dict,
+    change_password_eligibility: dict,
+    add_password_eligibility: dict,
+) -> bool | None:
+    explicit = _extract_first_bool_by_keys(
+        security_info,
+        {"has_password", "haspassword", "password_set", "passwordset", "password_enabled", "passwordenabled"},
+    )
+    if explicit is not None:
+        return explicit
+    change_allowed = _extract_first_bool_by_keys(
+        change_password_eligibility,
+        {"eligible", "is_eligible", "iseligible", "can_change_password", "canchangepassword"},
+    )
+    add_allowed = _extract_first_bool_by_keys(
+        add_password_eligibility,
+        {"eligible", "is_eligible", "iseligible", "can_add_password", "canaddpassword"},
+    )
+    if change_allowed is True:
+        return True
+    if add_allowed is True:
+        return False
+    if add_allowed is False and change_password_eligibility:
+        return True
+    return None
+
+
+def collect_post_register_security_state_from_browser(page, session_info: dict, log_fn: Callable[[str], None] | None = None) -> dict:
+    log = log_fn or (lambda _message: None)
+    result: dict[str, Any] = {}
+    try:
+        if "chatgpt.com" not in str(getattr(page, "url", "") or "").lower():
+            _goto_with_retry(page, f"{CHATGPT_APP}/", wait_until="domcontentloaded", timeout=30000, log=log)
+        refreshed_session = _fetch_chatgpt_session_from_page(page, _get_cookies(page), log, timeout=25)
+        if isinstance(refreshed_session, dict):
+            result.update(
+                {
+                    "access_token": refreshed_session.get("access_token", session_info.get("access_token", "")),
+                    "session_token": refreshed_session.get("session_token", session_info.get("session_token", "")),
+                    "cookies": refreshed_session.get("cookies", session_info.get("cookies", "")),
+                    "session": refreshed_session.get("session", session_info.get("session", {})),
+                    "account_id": refreshed_session.get("account_id", session_info.get("account_id", "")),
+                    "workspace_id": refreshed_session.get("workspace_id", session_info.get("workspace_id", "")),
+                    "profile": refreshed_session.get("profile", session_info.get("profile", {})),
+                    "expires_at": refreshed_session.get("expires_at", session_info.get("expires_at", "")),
+                }
+            )
+    except Exception as exc:
+        log(f"手动后置抓包: 刷新 ChatGPT session 失败，继续返回原注册结果: {exc}")
+
+    try:
+        cookies_dict = _get_cookies(page)
+    except Exception as exc:
+        log(f"手动后置抓包: 读取浏览器 cookies 失败，跳过安全状态探测: {exc}")
+        return result
+    device_id = str(
+        cookies_dict.get("oai-did")
+        or result.get("chatgpt_oai_device_id")
+        or session_info.get("chatgpt_oai_device_id")
+        or ""
+    ).strip()
+    oai_session_id = str(
+        _browser_observed_attr(page, "_gfo_oai_session_id")
+        or session_info.get("chatgpt_oai_session_id")
+        or ""
+    ).strip()
+    client_version = str(
+        _browser_observed_attr(page, "_gfo_oai_client_version")
+        or session_info.get("chatgpt_oai_client_version")
+        or ""
+    ).strip()
+    client_build_number = str(
+        _browser_observed_attr(page, "_gfo_oai_client_build_number")
+        or session_info.get("chatgpt_oai_client_build_number")
+        or ""
+    ).strip()
+    access_token = str(result.get("access_token") or session_info.get("access_token") or "").strip()
+    if device_id:
+        result["chatgpt_oai_device_id"] = device_id
+    if oai_session_id:
+        result["chatgpt_oai_session_id"] = oai_session_id
+    if client_version:
+        result["chatgpt_oai_client_version"] = client_version
+    if client_build_number:
+        result["chatgpt_oai_client_build_number"] = client_build_number
+
+    if not (device_id and oai_session_id and access_token):
+        return result
+
+    security_info: dict[str, Any] = {}
+    change_eligibility: dict[str, Any] = {}
+    add_eligibility: dict[str, Any] = {}
+    for path in (
+        "/backend-api/accounts/mfa_info",
+        "/backend-api/accounts/security_settings/info",
+        "/backend-api/accounts/change_password/eligibility",
+        "/backend-api/accounts/add_password/eligibility",
+    ):
+        try:
+            resp = _browser_security_fetch(
+                page,
+                path=path,
+                device_id=device_id,
+                oai_session_id=oai_session_id,
+                access_token=access_token,
+                client_version=client_version,
+                client_build_number=client_build_number,
+            )
+            status = int(resp.get("status") or 0)
+            data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+            log(
+                "手动后置抓包: 安全状态读取 "
+                f"{path} status={status} keys={','.join(sorted(str(k) for k in data.keys())) if data else '-'}"
+            )
+            if status != 200:
+                continue
+            if path.endswith("/mfa_info"):
+                security_info = data
+            elif path.endswith("/change_password/eligibility"):
+                change_eligibility = data
+            elif path.endswith("/add_password/eligibility"):
+                add_eligibility = data
+        except Exception as exc:
+            log(f"手动后置抓包: 安全状态读取 {path} 失败: {exc}")
+
+    if security_info:
+        mfa_enabled = bool(security_info.get("mfa_enabled") or security_info.get("mfa_enabled_v2"))
+        result.update(
+            {
+                "mfa_enabled": mfa_enabled,
+                "mfa_info": security_info,
+            }
+        )
+        if mfa_enabled:
+            result.update(
+                {
+                    "mfa_type": "totp",
+                    "mfa_factor_id": _extract_mfa_factor_id(security_info),
+                    "mfa_error": "",
+                }
+            )
+
+    password_set = _infer_password_set_from_browser_security(
+        security_info=security_info,
+        change_password_eligibility=change_eligibility,
+        add_password_eligibility=add_eligibility,
+    )
+    if password_set is not None:
+        result["password_set_after_register"] = bool(password_set)
+        if password_set:
+            result["post_register_password_error"] = ""
+    elif result.get("mfa_enabled"):
+        result["password_set_after_register"] = True
+        result["post_register_password_error"] = ""
+    return result
+
+
+def _browser_add_password_after_register(page, session_info: dict, password: str, otp_callback, log) -> dict:
+    result = {
+        "password_set_after_register": False,
+        "post_register_password_error": "",
+    }
+    email = str(session_info.get("email") or "").strip()
+    password = str(password or "").strip()
+    if not email:
+        result["post_register_password_error"] = "missing_email"
+        return result
+    if not password:
+        result["post_register_password_error"] = "missing_password"
+        return result
+
+    try:
+        cookies_dict = _get_cookies(page)
+        device_id = str(cookies_dict.get("oai-did") or session_info.get("chatgpt_oai_device_id") or uuid.uuid4()).strip()
+        user_agent = str(page.evaluate("() => navigator.userAgent || ''") or "").strip() or _random_chrome_ua()
+
+        if "chatgpt.com" not in str(page.url or ""):
+            _goto_with_retry(page, f"{CHATGPT_APP}/", wait_until="domcontentloaded", timeout=30000, log=log)
+        providers_resp = _browser_fetch(
+            page,
+            f"{CHATGPT_APP}/api/auth/providers",
+            method="GET",
+            headers={"accept": "*/*", "content-type": "application/json", "referer": f"{CHATGPT_APP}/"},
+            redirect="follow",
+            timeout_ms=15000,
+        )
+        log(f"设置帐号密码(浏览器): providers 状态: {int(providers_resp.get('status') or 0)}")
+        csrf_token = _get_browser_csrf_token(page, log=log)
+        if not csrf_token:
+            result["post_register_password_error"] = "csrf_token_missing"
+            return result
+
+        from urllib.parse import urlencode
+
+        query_items = []
+        auth_provider = str((session_info.get("session") or {}).get("authProvider") or "").strip().lower()
+        if auth_provider in {"google-oauth2", "google"}:
+            query_items.append(("connection", "google-oauth2"))
+        else:
+            query_items.append(("connection", "password"))
+        query_items.extend(
+            [
+                ("login_hint", email),
+                ("reauth", "password"),
+                ("post_login_add_password", "true"),
+                ("max_age", "0"),
+                ("ext-oai-did", device_id),
+            ]
+        )
+        signin_resp = _browser_fetch(
+            page,
+            f"{CHATGPT_APP}/api/auth/signin/openai?{urlencode(query_items)}",
+            method="POST",
+            headers={
+                "accept": "*/*",
+                "content-type": "application/x-www-form-urlencoded",
+                "origin": CHATGPT_APP,
+                "referer": f"{CHATGPT_APP}/",
+                "sec-fetch-site": "same-origin",
+            },
+            body=urlencode(
+                {
+                    "callbackUrl": f"{CHATGPT_APP}/",
+                    "csrfToken": csrf_token,
+                    "json": "true",
+                }
+            ),
+            redirect="follow",
+            timeout_ms=20000,
+        )
+        signin_data = signin_resp.get("data") if isinstance(signin_resp.get("data"), dict) else {}
+        next_url = str(signin_data.get("url") or "").strip()
+        log(
+            "设置帐号密码(浏览器): reauth 初始化 "
+            f"status={int(signin_resp.get('status') or 0)} next={'yes' if next_url else 'no'}"
+        )
+        if not next_url:
+            result["post_register_password_error"] = f"reauth_no_url: {str(signin_resp.get('text') or '')[:160]}"
+            return result
+
+        _goto_with_retry(page, next_url, wait_until="domcontentloaded", timeout=45000, log=log)
+        final_url = str(page.url or "")
+        log(f"设置帐号密码(浏览器): reauth 页面: {final_url}")
+        if "/email-verification" in final_url or "/email-otp" in final_url:
+            if not callable(otp_callback):
+                result["post_register_password_error"] = "reauth_email_otp_required_without_callback"
+                return result
+            log("设置帐号密码(浏览器): reauth 需要邮箱验证码")
+            otp_resp = _submit_email_otp_with_retry(
+                page,
+                otp_callback,
+                log,
+                label="设置帐号密码 reauth email OTP",
+                recover_url=next_url,
+                device_id=device_id,
+                user_agent=user_agent,
+            )
+            if not otp_resp.get("ok"):
+                result["post_register_password_error"] = f"reauth_email_otp_failed: {str(otp_resp.get('text') or '')[:180]}"
+                return result
+            otp_data = otp_resp.get("data") if isinstance(otp_resp.get("data"), dict) else {}
+            otp_state = _extract_flow_state(otp_data, str(otp_resp.get("url") or page.url or ""))
+            candidates = [
+                str(page.url or ""),
+                str(otp_state.get("continue_url") or ""),
+                str(otp_state.get("current_url") or ""),
+                str(otp_resp.get("url") or ""),
+            ]
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                page_url = urljoin(OPENAI_AUTH, candidate)
+                if "/reset-password/new-password" in page_url:
+                    if "/reset-password/new-password" not in str(page.url or ""):
+                        _goto_with_retry(page, page_url, wait_until="domcontentloaded", timeout=45000, log=log)
+                    break
+            final_url = str(page.url or "")
+            log(f"设置帐号密码(浏览器): reauth OTP 后页面: {final_url}")
+        if "/reset-password/new-password" not in final_url:
+            result["post_register_password_error"] = f"reauth_unexpected_page: {final_url}"
+            return result
+
+        sentinel = _build_browser_sentinel_token(page, device_id, "password_reset", user_agent)
+        headers = _build_browser_headers(
+            user_agent=user_agent,
+            accept="application/json",
+            referer=f"{OPENAI_AUTH}/reset-password/new-password",
+            origin=OPENAI_AUTH,
+            content_type="application/json",
+            extra_headers={
+                "sec-fetch-site": "same-origin",
+                "x-access-flow-invocation-id": str(uuid.uuid4()),
+            },
+        )
+        if sentinel:
+            headers["openai-sentinel-token"] = sentinel
+        add_resp = _browser_fetch(
+            page,
+            f"{OPENAI_AUTH}/api/accounts/password/add",
+            method="POST",
+            headers=headers,
+            body=json.dumps({"password": password}, separators=(",", ":")),
+            redirect="follow",
+            timeout_ms=30000,
+        )
+        add_data = add_resp.get("data") if isinstance(add_resp.get("data"), dict) else {}
+        status = int(add_resp.get("status") or 0)
+        log(f"设置帐号密码(浏览器): password/add 状态: {status}")
+        if status != 200:
+            result["post_register_password_error"] = f"password_add_http_{status}: {str(add_resp.get('text') or '')[:180]}"
+            return result
+
+        continue_url = str(add_data.get("continue_url") or "").strip()
+        if continue_url:
+            callback_url = urljoin(OPENAI_AUTH, continue_url)
+            _goto_with_retry(page, callback_url, wait_until="domcontentloaded", timeout=45000, log=log)
+            log(f"设置帐号密码(浏览器): callback 完成 url={str(page.url or '')}")
+        try:
+            refreshed_session = _fetch_chatgpt_session_from_page(page, _get_cookies(page), log)
+            if isinstance(refreshed_session, dict):
+                result.update(
+                    {
+                        "access_token": refreshed_session.get("access_token", session_info.get("access_token", "")),
+                        "session_token": refreshed_session.get("session_token", session_info.get("session_token", "")),
+                        "cookies": refreshed_session.get("cookies", session_info.get("cookies", "")),
+                        "session": refreshed_session.get("session", session_info.get("session", {})),
+                    }
+                )
+        except Exception as exc:
+            log(f"设置帐号密码(浏览器): session 刷新失败，继续保留当前 session: {exc}")
+        result["password_set_after_register"] = True
+        result["post_register_password_error"] = ""
+        return result
+    except Exception as exc:
+        result["post_register_password_error"] = str(exc)[:240]
+        return result
+
+
+def _browser_enable_totp_after_register(page, session_info: dict, log) -> dict:
+    result = {
+        "mfa_enabled": False,
+        "mfa_error": "",
+    }
+    try:
+        from platforms.chatgpt.mfa import generate_totp_code
+
+        if "chatgpt.com" not in str(page.url or ""):
+            _goto_with_retry(page, f"{CHATGPT_APP}/", wait_until="domcontentloaded", timeout=30000, log=log)
+        cookies_dict = _get_cookies(page)
+        device_id = str(cookies_dict.get("oai-did") or session_info.get("chatgpt_oai_device_id") or uuid.uuid4()).strip()
+        access_token = str(
+            session_info.get("access_token")
+            or (session_info.get("session") or {}).get("accessToken")
+            or (session_info.get("session") or {}).get("access_token")
+            or ""
+        ).strip()
+        oai_session_id = str(
+            session_info.get("chatgpt_oai_session_id")
+            or _browser_observed_attr(page, "_gfo_oai_session_id")
+            or uuid.uuid4()
+        ).strip()
+        client_version = str(
+            session_info.get("chatgpt_oai_client_version")
+            or _browser_observed_attr(page, "_gfo_oai_client_version")
+            or ""
+        ).strip()
+        client_build_number = str(
+            session_info.get("chatgpt_oai_client_build_number")
+            or _browser_observed_attr(page, "_gfo_oai_client_build_number")
+            or ""
+        ).strip()
+
+        log("2FA(浏览器): 预热账号安全设置接口")
+        for path in (
+            "/backend-api/accounts/mfa_info",
+            "/backend-api/accounts/security_settings/info",
+            "/backend-api/accounts/change_password/eligibility",
+            "/backend-api/accounts/add_password/eligibility",
+            "/backend-api/accounts/sessions",
+        ):
+            resp = _browser_security_fetch(
+                page,
+                path=path,
+                device_id=device_id,
+                oai_session_id=oai_session_id,
+                access_token=access_token,
+                client_version=client_version,
+                client_build_number=client_build_number,
+            )
+            status = int(resp.get("status") or 0)
+            log(f"2FA(浏览器): 预热 {path} 状态: {status}")
+            if status >= 400:
+                result["mfa_error"] = f"preflight_{path}_http_{status}: {str(resp.get('text') or '')[:160]}"
+                return result
+
+        enroll_resp = _browser_security_fetch(
+            page,
+            path="/backend-api/accounts/mfa/enroll",
+            method="POST",
+            body={"factor_type": "totp"},
+            device_id=device_id,
+            oai_session_id=oai_session_id,
+            access_token=access_token,
+            client_version=client_version,
+            client_build_number=client_build_number,
+        )
+        enroll_status = int(enroll_resp.get("status") or 0)
+        enroll_data = enroll_resp.get("data") if isinstance(enroll_resp.get("data"), dict) else {}
+        log(f"2FA(浏览器): enroll 状态: {enroll_status}")
+        if enroll_status != 200:
+            result["mfa_error"] = f"enroll_http_{enroll_status}: {str(enroll_resp.get('text') or '')[:160]}"
+            return result
+
+        secret = str(enroll_data.get("secret") or "").strip()
+        activation_session_id = str(enroll_data.get("session_id") or "").strip()
+        factor = enroll_data.get("factor") if isinstance(enroll_data.get("factor"), dict) else {}
+        factor_id = str(factor.get("id") or "").strip()
+        if not secret or not activation_session_id:
+            result["mfa_error"] = "enroll_missing_secret_or_session"
+            return result
+
+        mid_info = _browser_security_fetch(
+            page,
+            path="/backend-api/accounts/mfa_info",
+            device_id=device_id,
+            oai_session_id=oai_session_id,
+            access_token=access_token,
+            client_version=client_version,
+            client_build_number=client_build_number,
+        )
+        log(f"2FA(浏览器): enrollment 后 mfa_info 状态: {int(mid_info.get('status') or 0)}")
+
+        code = generate_totp_code(secret)
+        activate_resp = _browser_security_fetch(
+            page,
+            path="/backend-api/accounts/mfa/user/activate_enrollment",
+            method="POST",
+            body={"code": code, "factor_type": "totp", "session_id": activation_session_id},
+            device_id=device_id,
+            oai_session_id=oai_session_id,
+            access_token=access_token,
+            client_version=client_version,
+            client_build_number=client_build_number,
+        )
+        activate_status = int(activate_resp.get("status") or 0)
+        activate_data = activate_resp.get("data") if isinstance(activate_resp.get("data"), dict) else {}
+        log(f"2FA(浏览器): activate 状态: {activate_status}")
+        if activate_status != 200 or not activate_data.get("success"):
+            result["mfa_error"] = f"activate_http_{activate_status}: {str(activate_resp.get('text') or '')[:160]}"
+            return result
+
+        info_resp = _browser_security_fetch(
+            page,
+            path="/backend-api/accounts/mfa_info",
+            device_id=device_id,
+            oai_session_id=oai_session_id,
+            access_token=access_token,
+            client_version=client_version,
+            client_build_number=client_build_number,
+        )
+        info_status = int(info_resp.get("status") or 0)
+        info_data = info_resp.get("data") if isinstance(info_resp.get("data"), dict) else {}
+        if info_status != 200 or not (info_data.get("mfa_enabled") or info_data.get("mfa_enabled_v2")):
+            result["mfa_error"] = f"confirm_http_{info_status}: {str(info_resp.get('text') or '')[:160]}"
+            return result
+
+        heartbeat = _browser_security_fetch(
+            page,
+            path="/backend-api/sentinel/heartbeat",
+            method="POST",
+            device_id=device_id,
+            oai_session_id=oai_session_id,
+            access_token=access_token,
+            client_version=client_version,
+            client_build_number=client_build_number,
+        )
+        log(f"2FA(浏览器): Sentinel heartbeat 状态: {int(heartbeat.get('status') or 0)}")
+
+        result.update(
+            {
+                "mfa_enabled": True,
+                "mfa_type": "totp",
+                "totp_secret": secret,
+                "mfa_session_id": activation_session_id,
+                "mfa_factor_id": factor_id or str(info_data.get("native_default_factor_id") or ""),
+                "mfa_info": info_data,
+                "chatgpt_oai_session_id": oai_session_id,
+                "chatgpt_oai_client_version": client_version,
+                "chatgpt_oai_client_build_number": client_build_number,
+            }
+        )
+        return result
+    except Exception as exc:
+        result["mfa_error"] = str(exc)[:240]
+        return result
+
+
+def run_post_register_security_in_browser(
+    page,
+    session_info: dict,
+    *,
+    password: str = "",
+    set_password: bool = False,
+    enable_2fa: bool = False,
+    otp_callback: Callable[[], str] | None = None,
+    log_fn: Callable[[str], None] | None = None,
+) -> dict:
+    log = log_fn or (lambda _message: None)
+    merged: dict[str, Any] = {}
+    if set_password:
+        log("注册后置安全设置(浏览器): 开始设置帐号密码")
+        password_result = _browser_add_password_after_register(page, session_info, password, otp_callback, log)
+        merged.update(password_result)
+        if not password_result.get("password_set_after_register"):
+            log(
+                "注册后置安全设置(浏览器): 设置帐号密码未成功，跳过 2FA: "
+                f"{password_result.get('post_register_password_error') or '-'}"
+            )
+            if enable_2fa:
+                merged.update({"mfa_enabled": False, "mfa_error": "password_not_set"})
+            return merged
+        session_info = {**session_info, **merged}
+
+    if enable_2fa:
+        log("注册后置安全设置(浏览器): 开始设置 2FA")
+        merged.update(_browser_enable_totp_after_register(page, session_info, log))
+    return merged
 
 
 def _send_browser_email_otp(page, *, referer: str = "") -> dict:
@@ -4868,6 +5569,7 @@ def _do_codex_oauth(
     allow_add_phone_retry: bool = True,
     max_phone_attempts: int | None = None,
     oauth_start=None,
+    totp_secret: str = "",
 ) -> dict | None:
     """在真实浏览器会话内完成 Codex OAuth，返回完整 token 包。
 
@@ -5009,6 +5711,17 @@ def _do_codex_oauth(
                 log(f"  OAuth 密码页提交状态: {password_resp.get('status', 0)}")
                 if not password_resp.get("ok"):
                     raise RuntimeError(f"OAuth 密码页提交失败: {(password_resp.get('text') or '')}")
+                continue
+
+            if state["page_type"] == "mfa_challenge":
+                secret = str(totp_secret or "").strip()
+                if not secret:
+                    return {"error": "OAuth 需要 2FA 验证码但本地未保存 totp_secret"}
+                log("  OAuth 检测到 2FA challenge，使用本地 TOTP 验证...")
+                mfa_resp = _submit_oauth_totp_challenge(page, secret, log)
+                log(f"  OAuth 2FA 提交状态: {mfa_resp.get('status', 0)}")
+                if not mfa_resp.get("ok"):
+                    raise RuntimeError(f"OAuth 2FA 校验失败: {(mfa_resp.get('text') or '')}")
                 continue
 
             if state["page_type"] == "account_selection":
@@ -6173,7 +6886,7 @@ def _submit_oauth_password_direct(page, password: str, log) -> dict:
         state = _derive_registration_state_from_page(page)
         page_type = str(state.get("page_type") or "")
         if page_type in {"email_otp_verification", "about_you", "consent", "account_selection", "workspace_selection",
-                         "organization_selection", "add_phone", "oauth_callback", "chatgpt_home", "external_url"}:
+                         "organization_selection", "add_phone", "mfa_challenge", "oauth_callback", "chatgpt_home", "external_url"}:
             return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
         if "code=" in current_url:
             return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
@@ -6182,6 +6895,42 @@ def _submit_oauth_password_direct(page, password: str, log) -> dict:
             return {"ok": False, "status": 400, "url": current_url, "data": None, "text": error_text}
         time.sleep(0.5)
     return {"ok": False, "status": 0, "url": str(page.url or ""), "data": None, "text": "OAuth 密码提交后未跳转"}
+
+
+def _submit_oauth_totp_challenge(page, totp_secret: str, log) -> dict:
+    from platforms.chatgpt.mfa import generate_totp_code
+
+    code = generate_totp_code(totp_secret)
+    input_selector = _wait_for_any_selector(page, OTP_INPUT_SELECTORS, timeout=15)
+    if not input_selector:
+        raise RuntimeError("OAuth 2FA 页未找到验证码输入框")
+    if not _fill_input_like_user(page, input_selector, code):
+        raise RuntimeError("OAuth 2FA 验证码填写失败")
+    log(f"  OAuth 2FA 输入框: {input_selector}")
+    _browser_pause(page)
+
+    submit_selector = _click_first(page, EMAIL_SUBMIT_SELECTORS, timeout=8)
+    if submit_selector:
+        log(f"  OAuth 2FA 已点击继续按钮: {submit_selector}")
+    elif _submit_form_with_fallback(page, input_selector):
+        log("  OAuth 2FA 使用表单 fallback 提交")
+    else:
+        raise RuntimeError("OAuth 2FA 页未找到 Continue 按钮")
+
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        current_url = str(page.url or "")
+        state = _derive_registration_state_from_page(page)
+        page_type = str(state.get("page_type") or "")
+        if page_type and page_type != "mfa_challenge":
+            return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
+        if "code=" in current_url:
+            return {"ok": True, "status": 200, "url": current_url, "data": None, "text": ""}
+        error_text = _extract_auth_error_text(page)
+        if error_text:
+            return {"ok": False, "status": 400, "url": current_url, "data": None, "text": error_text}
+        time.sleep(0.5)
+    return {"ok": False, "status": 0, "url": str(page.url or ""), "data": None, "text": "OAuth 2FA 提交后未跳转"}
 
 
 def _submit_password_via_page(page, password: str, log) -> dict:
@@ -7634,6 +8383,7 @@ class ChatGPTBrowserRegister:
         record_har: bool = False,
         phone_change_limit: int = 10,
         phone_first_full_rounds: int | None = None,
+        totp_secret: str = "",
     ):
         self.headless = headless
         self.proxy = proxy
@@ -7643,6 +8393,7 @@ class ChatGPTBrowserRegister:
         self.phone_first_oauth = bool(phone_first_oauth)
         self.bind_email_after_phone_signup = bool(bind_email_after_phone_signup)
         self.record_har = bool(record_har)
+        self.totp_secret = str(totp_secret or "").strip()
         self.phone_change_limit = max(int(phone_change_limit or 1), 1)
         try:
             default_rounds = PHONE_FIRST_FULL_ROUNDS
@@ -7780,6 +8531,15 @@ class ChatGPTBrowserRegister:
                 f"account_cookie={_diag_shape(cookies_dict.get('_account'))}"
             )
             session_info = _fetch_chatgpt_session_from_page(page, cookies_dict, self.log)
+            browser_context_info = {}
+            try:
+                browser_context_info = page.evaluate(
+                    "() => ({ua: navigator.userAgent, language: navigator.language, languages: navigator.languages})"
+                )
+            except Exception:
+                browser_context_info = {}
+            browser_languages = browser_context_info.get("languages") if isinstance(browser_context_info, dict) else []
+            browser_accept_language = ",".join(str(item) for item in browser_languages if item) if isinstance(browser_languages, list) else ""
             result = {
                 "email": email,
                 "password": password,
@@ -7798,6 +8558,12 @@ class ChatGPTBrowserRegister:
                 "session": session_info.get("session", {}),
                 "registration_state": final_state,
                 "record_har_path": record_har_path,
+                "chatgpt_user_agent": str(browser_context_info.get("ua") or "") if isinstance(browser_context_info, dict) else "",
+                "chatgpt_accept_language": browser_accept_language or str(browser_context_info.get("language") or "") if isinstance(browser_context_info, dict) else "",
+                "chatgpt_oai_device_id": str(cookies_dict.get("oai-did") or ""),
+                "chatgpt_oai_client_version": _browser_observed_attr(page, "_gfo_oai_client_version"),
+                "chatgpt_oai_client_build_number": _browser_observed_attr(page, "_gfo_oai_client_build_number"),
+                "chatgpt_oai_session_id": _browser_observed_attr(page, "_gfo_oai_session_id"),
             }
 
             if self.phone_first_oauth and self.bind_email_after_phone_signup:
@@ -7811,6 +8577,7 @@ class ChatGPTBrowserRegister:
                     self.phone_callback,
                     self.proxy,
                     self.log,
+                    totp_secret=self.totp_secret,
                 )
                 if not isinstance(oauth_result, dict) or not (
                     oauth_result.get("access_token") and oauth_result.get("refresh_token")
@@ -7837,16 +8604,16 @@ class ChatGPTBrowserRegister:
                         }
                     )
 
-            # 短链复用流程：注册拿到 session 后、**浏览器还开着**时，在同一个
-            # page 里继续打开短链 + 抓 midtrans_url。结果合并进返回值。
+            # 注册拿到 session 后、**浏览器还开着**时，在同一个 page 里继续执行
+            # 调用方注入的后置浏览器任务（如安全设置、短链付款等）。
             if callable(self.post_register_in_browser):
                 try:
-                    self.log("注册完成，浏览器保持打开，继续在同一浏览器里走短链付款流程…")
+                    self.log("注册完成，浏览器保持打开，继续在同一浏览器里执行后置任务…")
                     extra = self.post_register_in_browser(page, dict(result))
                     if isinstance(extra, dict):
                         result.update(extra)
                 except Exception as exc:
-                    self.log(f"浏览器内短链后续流程异常（不影响注册结果）: {exc}")
+                    self.log(f"浏览器内后置任务异常（不影响注册结果）: {exc}")
             _close_register_har_context(har_context, record_har_path, self.log)
             return result
 
@@ -7884,6 +8651,7 @@ class ChatGPTBrowserRegister:
                 result = _do_codex_oauth(
                     page, {}, email, password,
                     self.otp_callback, self.phone_callback, self.proxy, self.log,
+                    totp_secret=self.totp_secret,
                 )
                 return result
         except Exception as e:

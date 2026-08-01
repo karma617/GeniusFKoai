@@ -119,6 +119,49 @@ function createCookieJar(initialCookie) {
   };
 }
 
+function defineGlobal(name, value) {
+  try {
+    Object.defineProperty(globalThis, name, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  } catch {
+    try {
+      globalThis[name] = value;
+    } catch {}
+  }
+}
+
+function hideGlobal(name) {
+  try {
+    if (!Object.prototype.hasOwnProperty.call(globalThis, name)) return;
+    Object.defineProperty(globalThis, name, {
+      value: globalThis[name],
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {}
+}
+
+function makeNativeFunction(name, fn) {
+  const wrapped = typeof fn === "function" ? fn : function () {};
+  try {
+    Object.defineProperty(wrapped, "name", { value: String(name || ""), configurable: true });
+  } catch {}
+  try {
+    Object.defineProperty(wrapped, "toString", {
+      value: () => `function ${name}() { [native code] }`,
+      configurable: true,
+    });
+  } catch {
+    wrapped.toString = () => `function ${name}() { [native code] }`;
+  }
+  return wrapped;
+}
+
 function createNamedArray(items) {
   const arr = Array.from(items || []);
   arr.item = (index) => arr[Number(index)] || null;
@@ -179,6 +222,27 @@ function createElement(tagName, env) {
 }
 
 function installRuntime(payload) {
+  for (const name of [
+    "Buffer",
+    "SentinelSDK",
+    "__debugP",
+    "__dirname",
+    "__filename",
+    "__payload_json",
+    "__sdk_source",
+    "__vm_done",
+    "__vm_error",
+    "__vm_output_json",
+    "clearImmediate",
+    "exports",
+    "global",
+    "module",
+    "process",
+    "require",
+    "setImmediate",
+  ]) {
+    hideGlobal(name);
+  }
   const nativeSetTimeout = typeof globalThis.setTimeout === "function" ? globalThis.setTimeout.bind(globalThis) : null;
   const nativeClearTimeout = typeof globalThis.clearTimeout === "function" ? globalThis.clearTimeout.bind(globalThis) : null;
   const nativeSetInterval = typeof globalThis.setInterval === "function" ? globalThis.setInterval.bind(globalThis) : null;
@@ -224,7 +288,9 @@ function installRuntime(payload) {
   const documentElement = createElement("html", env);
   documentElement.clientWidth = Number(payload.viewport_width || 1800);
   documentElement.clientHeight = Number(payload.viewport_height || 839);
-  documentElement.setAttribute("data-build", String(payload.client_version || ""));
+  if (payload.client_version) {
+    documentElement.setAttribute("data-build", String(payload.client_version || ""));
+  }
   const body = createElement("body", env);
   const head = createElement("head", env);
   const document = {
@@ -345,8 +411,13 @@ function installRuntime(payload) {
     return result;
   };
 
+  const performanceBase = Number(payload.performance_now || 3500);
+  let performanceTick = 0;
   const performance = {
-    now: () => Number(payload.performance_now || 12345.67),
+    now: () => {
+      performanceTick += 1 + Math.random() * 25;
+      return performanceBase + performanceTick;
+    },
     timeOrigin: Number(payload.time_origin || 1710000000000),
     memory: { jsHeapSizeLimit: Number(payload.js_heap_size_limit || 4294967296) },
     getEntries() {
@@ -433,12 +504,11 @@ function installRuntime(payload) {
     }
   }
 
-
-  globalThis.window = globalThis;
-  globalThis.self = globalThis;
-  globalThis.top = globalThis;
-  globalThis.parent = globalThis;
-  globalThis.document = document;
+  defineGlobal("window", globalThis);
+  defineGlobal("self", globalThis);
+  defineGlobal("top", globalThis);
+  defineGlobal("parent", globalThis);
+  defineGlobal("document", document);
   class NavigatorPoly {
     javaEnabled() {
       return false;
@@ -478,45 +548,96 @@ function installRuntime(payload) {
       estimate: () => Promise.resolve({ quota: 2147483648, usage: 0 }),
       persist: () => Promise.resolve(false),
     },
-    clipboard: { readText: () => Promise.resolve(""), writeText: () => Promise.resolve() },
+    clipboard: { readText: () => Promise.resolve(""), writeText: () => Promise.resolve(), toString: () => "[object Clipboard]" },
   };
+  navigatorPayload.mozGetUserMedia = makeNativeFunction("mozGetUserMedia", () => {});
   if (!isFirefox) {
     navigatorPayload.connection = { effectiveType: "4g", rtt: 50, downlink: 10, saveData: false };
   }
-  globalThis.navigator = Object.assign(new NavigatorPoly(), navigatorPayload);
-  globalThis.location = {
+  const navigatorProto = NavigatorPoly.prototype;
+  for (const key of [
+    "appCodeName",
+    "appName",
+    "appVersion",
+    "clipboard",
+    "cookieEnabled",
+    "hardwareConcurrency",
+    "language",
+    "languages",
+    "maxTouchPoints",
+    "mimeTypes",
+    "mozGetUserMedia",
+    "oscpu",
+    "pdfViewerEnabled",
+    "platform",
+    "plugins",
+    "product",
+    "productSub",
+    "userAgent",
+    "vendor",
+    "webdriver",
+  ]) {
+    try {
+      Object.defineProperty(navigatorProto, key, {
+        get() {
+          return navigatorPayload[key];
+        },
+        enumerable: true,
+        configurable: true,
+      });
+    } catch {}
+  }
+  const navigatorObject = new NavigatorPoly();
+  for (const [key, value] of Object.entries(navigatorPayload)) {
+    try {
+      Object.defineProperty(navigatorObject, key, {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    } catch {
+      try {
+        navigatorObject[key] = value;
+      } catch {}
+    }
+  }
+  defineGlobal("navigator", navigatorObject);
+  defineGlobal("clientInformation", globalThis.navigator);
+  const location = {
     href: pageUrl,
     origin: pageOrigin,
     pathname: pagePath,
     search: pageSearch,
   };
-  document.location = globalThis.location;
-  globalThis.screen = screen;
-  globalThis.innerWidth = Number(payload.viewport_width || 1800);
-  globalThis.innerHeight = Number(payload.viewport_height || 839);
-  globalThis.outerWidth = Number(payload.outer_width || 1800);
-  globalThis.outerHeight = Number(payload.outer_height || 1000);
-  globalThis.devicePixelRatio = Number(payload.device_pixel_ratio || 1);
-  globalThis.origin = pageOrigin;
-  globalThis.name = "";
-  globalThis.frames = globalThis;
-  globalThis.length = 0;
-  globalThis.opener = null;
-  globalThis.frameElement = null;
-  globalThis.closed = false;
-  globalThis.status = "";
-  globalThis.defaultStatus = "";
-  globalThis.screenX = Number(payload.screen_x || 0);
-  globalThis.screenY = Number(payload.screen_y || 0);
-  globalThis.screenLeft = globalThis.screenX;
-  globalThis.screenTop = globalThis.screenY;
-  globalThis.scrollX = 0;
-  globalThis.scrollY = 0;
-  globalThis.pageXOffset = 0;
-  globalThis.pageYOffset = 0;
-  globalThis.mozInnerScreenX = globalThis.screenX;
-  globalThis.mozInnerScreenY = globalThis.screenY;
-  globalThis.visualViewport = {
+  defineGlobal("location", location);
+  document.location = location;
+  defineGlobal("screen", screen);
+  defineGlobal("innerWidth", Number(payload.viewport_width || 1800));
+  defineGlobal("innerHeight", Number(payload.viewport_height || 839));
+  defineGlobal("outerWidth", Number(payload.outer_width || 1800));
+  defineGlobal("outerHeight", Number(payload.outer_height || 900));
+  defineGlobal("devicePixelRatio", Number(payload.device_pixel_ratio || 1));
+  defineGlobal("origin", pageOrigin);
+  defineGlobal("name", "");
+  defineGlobal("frames", globalThis);
+  defineGlobal("length", 0);
+  defineGlobal("opener", null);
+  defineGlobal("frameElement", null);
+  defineGlobal("closed", false);
+  defineGlobal("status", "");
+  defineGlobal("defaultStatus", "");
+  defineGlobal("screenX", Number(payload.screen_x || 0));
+  defineGlobal("screenY", Number(payload.screen_y || 0));
+  defineGlobal("screenLeft", globalThis.screenX);
+  defineGlobal("screenTop", globalThis.screenY);
+  defineGlobal("scrollX", 0);
+  defineGlobal("scrollY", 0);
+  defineGlobal("pageXOffset", 0);
+  defineGlobal("pageYOffset", 0);
+  defineGlobal("mozInnerScreenX", globalThis.screenX);
+  defineGlobal("mozInnerScreenY", globalThis.screenY);
+  defineGlobal("visualViewport", {
     width: globalThis.innerWidth,
     height: globalThis.innerHeight,
     offsetLeft: 0,
@@ -526,27 +647,27 @@ function installRuntime(payload) {
     scale: 1,
     addEventListener() {},
     removeEventListener() {},
-  };
-  globalThis.scrollTo = () => {};
-  globalThis.scrollBy = () => {};
-  globalThis.moveTo = () => {};
-  globalThis.moveBy = () => {};
-  globalThis.resizeTo = () => {};
-  globalThis.resizeBy = () => {};
-  globalThis.focus = () => {};
-  globalThis.blur = () => {};
-  globalThis.alert = () => {};
-  globalThis.confirm = () => false;
-  globalThis.prompt = () => null;
-  globalThis.queueMicrotask = globalThis.queueMicrotask || ((cb) => Promise.resolve().then(cb));
-  globalThis.locationbar = { visible: true };
-  globalThis.menubar = { visible: true };
-  globalThis.personalbar = { visible: true };
-  globalThis.scrollbars = { visible: true };
-  globalThis.statusbar = { visible: true };
-  globalThis.toolbar = { visible: true };
-  globalThis.external = {};
-  globalThis.customElements = globalThis.customElements || {
+  });
+  defineGlobal("scrollTo", () => {});
+  defineGlobal("scrollBy", () => {});
+  defineGlobal("moveTo", () => {});
+  defineGlobal("moveBy", () => {});
+  defineGlobal("resizeTo", () => {});
+  defineGlobal("resizeBy", () => {});
+  defineGlobal("focus", () => {});
+  defineGlobal("blur", () => {});
+  defineGlobal("alert", () => {});
+  defineGlobal("confirm", () => false);
+  defineGlobal("prompt", () => null);
+  defineGlobal("queueMicrotask", globalThis.queueMicrotask || ((cb) => Promise.resolve().then(cb)));
+  defineGlobal("locationbar", { visible: true });
+  defineGlobal("menubar", { visible: true });
+  defineGlobal("personalbar", { visible: true });
+  defineGlobal("scrollbars", { visible: true });
+  defineGlobal("statusbar", { visible: true });
+  defineGlobal("toolbar", { visible: true });
+  defineGlobal("external", {});
+  defineGlobal("customElements", globalThis.customElements || {
     define() {},
     get() {
       return undefined;
@@ -554,69 +675,77 @@ function installRuntime(payload) {
     whenDefined() {
       return Promise.resolve();
     },
-  };
-  globalThis.performance = performance;
-  globalThis.localStorage = createStorage(payload.local_storage || {});
-  globalThis.sessionStorage = createStorage(payload.session_storage || {});
-  globalThis.__sentinel_init_pending = [];
-  globalThis.__sentinel_token_pending = [];
+  });
+  defineGlobal("performance", performance);
+  defineGlobal("localStorage", createStorage(payload.local_storage || {}));
+  defineGlobal("sessionStorage", createStorage(payload.session_storage || {}));
+  defineGlobal("__sentinel_init_pending", []);
+  defineGlobal("__sentinel_token_pending", []);
 
-  globalThis.setTimeout = nativeSetTimeout || ((cb) => {
+  defineGlobal("setTimeout", nativeSetTimeout || ((cb) => {
     if (typeof cb === "function") cb();
     return 1;
-  });
-  globalThis.clearTimeout = nativeClearTimeout || (() => {});
-  globalThis.setInterval = nativeSetInterval || (() => 1);
-  globalThis.clearInterval = nativeClearInterval || (() => {});
-  globalThis.requestIdleCallback = (cb) => {
+  }));
+  defineGlobal("clearTimeout", nativeClearTimeout || (() => {}));
+  defineGlobal("setInterval", nativeSetInterval || makeNativeFunction("setInterval", () => 1));
+  defineGlobal("clearInterval", nativeClearInterval || (() => {}));
+  defineGlobal("requestAnimationFrame", makeNativeFunction("requestAnimationFrame", (cb) => {
+    if (typeof cb === "function") return globalThis.setTimeout(() => cb(globalThis.performance.now()), 16);
+    return 1;
+  }));
+  defineGlobal("cancelAnimationFrame", makeNativeFunction("cancelAnimationFrame", (handle) => globalThis.clearTimeout(handle)));
+  defineGlobal("requestMediaKeySystemAccess", makeNativeFunction("requestMediaKeySystemAccess", () => Promise.reject(new Error("NotSupportedError"))));
+  defineGlobal("requestIdleCallback", (cb) => {
     const run = () => {
       if (typeof cb === "function") cb({ didTimeout: false, timeRemaining: () => 50 });
     };
     if (nativeSetTimeout) return nativeSetTimeout(run, 0);
     run();
     return 1;
-  };
-  globalThis.cancelIdleCallback = nativeClearTimeout || (() => {});
-  globalThis.addEventListener = eventTarget.addEventListener.bind(globalThis);
-  globalThis.removeEventListener = eventTarget.removeEventListener.bind(globalThis);
-  globalThis.dispatchEvent = eventTarget.dispatchEvent.bind(globalThis);
-  globalThis.postMessage = (message, targetOrigin) => {
+  });
+  defineGlobal("cancelIdleCallback", nativeClearTimeout || (() => {}));
+  defineGlobal("addEventListener", eventTarget.addEventListener.bind(globalThis));
+  defineGlobal("removeEventListener", eventTarget.removeEventListener.bind(globalThis));
+  defineGlobal("dispatchEvent", eventTarget.dispatchEvent.bind(globalThis));
+  defineGlobal("postMessage", (message, targetOrigin) => {
     const event = new globalThis.MessageEvent("message", {
       data: message,
       source: globalThis,
       origin: targetOrigin || pageOrigin,
     });
     globalThis.dispatchEvent(event);
-  };
+  });
 
-  globalThis.atob = (input) => String.fromCharCode(...base64ToBytes(input));
-  globalThis.btoa = (input) => {
+  defineGlobal("atob", (input) => String.fromCharCode(...base64ToBytes(input)));
+  defineGlobal("btoa", (input) => {
     const str = String(input || "");
     const bytes = [];
     for (let i = 0; i < str.length; i += 1) bytes.push(str.charCodeAt(i) & 255);
     return bytesToBase64(bytes);
-  };
-  globalThis.TextEncoder = globalThis.TextEncoder || TextEncoderPoly;
-  globalThis.TextDecoder = globalThis.TextDecoder || TextDecoderPoly;
-  globalThis.URL = globalThis.URL || URLPoly;
-  globalThis.URLSearchParams = globalThis.URLSearchParams || URLSearchParamsPoly;
-  globalThis.Event =
-    globalThis.Event ||
+  });
+  defineGlobal("TextEncoder", globalThis.TextEncoder || TextEncoderPoly);
+  defineGlobal("TextDecoder", globalThis.TextDecoder || TextDecoderPoly);
+  defineGlobal("URL", URLPoly);
+  defineGlobal("URLSearchParams", URLSearchParamsPoly);
+  defineGlobal(
+    "Event",
     class Event {
       constructor(type) {
         this.type = type;
       }
-    };
-  globalThis.CustomEvent =
-    globalThis.CustomEvent ||
+    },
+  );
+  defineGlobal(
+    "CustomEvent",
     class CustomEvent extends globalThis.Event {
       constructor(type, init) {
         super(type);
         this.detail = init && Object.prototype.hasOwnProperty.call(init, "detail") ? init.detail : null;
       }
-    };
-  globalThis.MessageEvent =
-    globalThis.MessageEvent ||
+    },
+  );
+  defineGlobal(
+    "MessageEvent",
     class MessageEvent extends globalThis.Event {
       constructor(type, init) {
         super(type);
@@ -624,17 +753,19 @@ function installRuntime(payload) {
         this.origin = init && init.origin ? String(init.origin) : "";
         this.source = init && init.source ? init.source : null;
       }
-    };
-  globalThis.MessageChannel =
-    globalThis.MessageChannel ||
+    },
+  );
+  defineGlobal(
+    "MessageChannel",
     class MessageChannel {
       constructor() {
         this.port1 = { postMessage() {}, addEventListener() {}, removeEventListener() {}, start() {}, close() {} };
         this.port2 = { postMessage() {}, addEventListener() {}, removeEventListener() {}, start() {}, close() {} };
       }
-    };
-  globalThis.matchMedia =
-    globalThis.matchMedia ||
+    },
+  );
+  defineGlobal(
+    "matchMedia",
     ((query) => ({
       media: String(query || ""),
       matches: false,
@@ -646,39 +777,42 @@ function installRuntime(payload) {
       dispatchEvent() {
         return false;
       },
-    }));
-  globalThis.getComputedStyle =
-    globalThis.getComputedStyle ||
+    })),
+  );
+  defineGlobal(
+    "getComputedStyle",
     (() => ({
       getPropertyValue() {
         return "";
       },
-    }));
-  globalThis.history = globalThis.history || { length: 1, state: null, back() {}, forward() {}, go() {}, pushState() {}, replaceState() {} };
+    })),
+  );
+  defineGlobal("history", { length: 1, state: null, back() {}, forward() {}, go() {}, pushState() {}, replaceState() {} });
   if (isFirefox) {
-    globalThis.InstallTrigger = globalThis.InstallTrigger || {};
+    defineGlobal("InstallTrigger", globalThis.InstallTrigger || {});
     try {
       delete globalThis.chrome;
     } catch {
-      globalThis.chrome = undefined;
+      defineGlobal("chrome", undefined);
     }
   } else {
-    globalThis.chrome = globalThis.chrome || { runtime: {}, app: {} };
+    defineGlobal("chrome", globalThis.chrome || { runtime: {}, app: {} });
   }
-  globalThis.CSS = globalThis.CSS || { supports() { return true; } };
-  globalThis.indexedDB =
-    globalThis.indexedDB ||
-    {
+  defineGlobal("CSS", globalThis.CSS || { supports() { return true; } });
+  defineGlobal(
+    "indexedDB",
+    globalThis.indexedDB || {
       open() {
         return { onerror: null, onsuccess: null, onupgradeneeded: null, result: {}, error: null };
       },
       deleteDatabase() {
         return {};
       },
-    };
-  globalThis.fetch = async () => {
+    },
+  );
+  defineGlobal("fetch", async () => {
     throw new Error("fetch should not be called");
-  };
+  });
 
   const randomFill = (arr) => {
     for (let i = 0; i < arr.length; i += 1) {
@@ -686,12 +820,12 @@ function installRuntime(payload) {
     }
     return arr;
   };
-  globalThis.crypto = {
+  defineGlobal("crypto", {
     randomUUID: globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
       ? globalThis.crypto.randomUUID.bind(globalThis.crypto)
       : undefined,
     getRandomValues: randomFill,
-  };
+  });
 }
 
 function loadPatchedSdk(sdkSource) {
@@ -700,6 +834,8 @@ function loadPatchedSdk(sdkSource) {
   sdk = sdk.replace(INSTANCE_PATCH, INSTANCE_REPLACEMENT);
   sdk = sdk.replace(EXPOSE_PATCH, EXPOSE_REPLACEMENT);
   eval(sdk);
+  hideGlobal("SentinelSDK");
+  hideGlobal("__debugP");
 }
 
 async function run(payload, sdkSource) {

@@ -24,14 +24,15 @@ def test_chatgpt_browser_registration_mail_otp_timeout_is_30_seconds():
     assert adapter.otp_spec.timeout == 30
 
 
-def test_sentinel_quickjs_runtime_profile_matches_headed_mac_firefox():
+def test_sentinel_quickjs_runtime_profile_matches_headed_windows_firefox():
     profile = _runtime_profile(
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
         "https://sentinel.openai.com/sentinel/20260219f9f6/sdk.js",
     )
 
-    assert profile["platform"] == "MacIntel"
-    assert profile["hardware_concurrency"] == 10
-    assert profile["color_depth"] == 30
+    assert profile["platform"] == "Win32"
+    assert profile["hardware_concurrency"] == 8
+    assert profile["screen_width"] + profile["screen_height"] == 2500
+    assert profile["color_depth"] == 24
     assert profile["viewport_width"] == 1800
-    assert profile["frame_url"] == "https://chatgpt.com/backend-api/sentinel/frame.html?sv=20260219f9f6"
+    assert profile["frame_url"] == "https://sentinel.openai.com/backend-api/sentinel/frame.html?sv=20260219f9f6"

@@ -86,18 +86,18 @@ from .constants import (
 CHATGPT_EMAIL_OTP_DEFAULT_TIMEOUT_SECONDS = 30
 CHATGPT_EMAIL_OTP_MIN_TIMEOUT_SECONDS = 10
 LATEST_CHATGPT_FIREFOX_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) "
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) "
     "Gecko/20100101 Firefox/135.0"
 )
-# Headed Camoufox HAR 2026-07-25 register capture.
-# Headed Camoufox HAR 2026-07-29 register capture.
-LATEST_CHATGPT_OAI_CLIENT_VERSION = "prod-e90abb69f9711bb66403800b79e0c3c5fc561770"
-LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER = "8727206"
-LATEST_CHATGPT_SENTINEL_SCREEN = 2494
-LATEST_CHATGPT_SENTINEL_CORES = 12
+# Headed Camoufox HAR 2026-07-31 register + post-register security capture.
+LATEST_CHATGPT_OAI_CLIENT_VERSION = "prod-fc98dd36cc7acf295fb888b3b2c9e7c00ad14591"
+LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER = "8823441"
+LATEST_CHATGPT_SENTINEL_SCREEN = 2500
+LATEST_CHATGPT_SENTINEL_CORES = 8
 LATEST_CHATGPT_CF_JSD_SCRIPT_URL = (
     "https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js?onload=jsdOnload"
 )
+LATEST_CHATGPT_CHAT_REQUIREMENTS_SCRIPT_URL = "https://accounts.google.com/gsi/client"
 LATEST_CHATGPT_SENTINEL_ENTRY_SDK_URL = "https://sentinel.openai.com/backend-api/sentinel/sdk.js"
 LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL = "https://auth.openai.com/reset-password/new-password"
 LATEST_CHATGPT_ADD_PASSWORD_API_URL = "https://auth.openai.com/api/accounts/password/add"
@@ -370,6 +370,21 @@ def _extract_chatgpt_account_id(access_token: str) -> str:
 def _cookies_to_header(cookies) -> str:
     """将当前会话 cookie 转为 Cookie header，便于后续按 Chat2API 方式校验 session。"""
     parts: list[str] = []
+    if not isinstance(cookies, dict):
+        try:
+            for cookie in list(cookies or []):
+                if isinstance(cookie, dict):
+                    name = str(cookie.get("name") or "").strip()
+                    value = str(cookie.get("value") or "")
+                else:
+                    name = str(getattr(cookie, "name", "") or "").strip()
+                    value = str(getattr(cookie, "value", "") or "")
+                if name and value:
+                    parts.append(f"{name}={value}")
+            if parts:
+                return "; ".join(parts)
+        except Exception:
+            parts = []
     if hasattr(cookies, "items"):
         try:
             for name, value in cookies.items():
@@ -479,6 +494,7 @@ class _SentinelTokenGenerator:
     """Dynamic sentinel token generator aligned with headed Firefox HAR."""
 
     _MINUS = "\u2212"  # U+2212 minus used by real Sentinel SDK probe strings
+    _UNSET = object()
 
     def __init__(self, device_id: str, user_agent: str, *, client_version: str = ""):
         self.device_id = device_id or str(uuid.uuid4())
@@ -509,13 +525,7 @@ class _SentinelTokenGenerator:
     def _capability_probe(self, *, stage: str) -> str:
         minus = self._MINUS
         if stage == "chat_prepare":
-            return random.choice(
-                [
-                    f"globalPrivacyControl{minus}true",
-                    f"vendorSub{minus}",
-                    f"productSub{minus}20100101",
-                ]
-            )
+            return f"requestMediaKeySystemAccess{minus}function requestMediaKeySystemAccess() {{ [native code] }}"
         if stage == "sentinel_req":
             if self._is_firefox:
                 return (
@@ -530,14 +540,14 @@ class _SentinelTokenGenerator:
 
     def _event_probe(self, *, stage: str) -> str:
         if stage == "chat_prepare":
-            return random.choice(["onmouseenter", "InstallTrigger", "onpointerenter", "onwheel"])
+            return "setInterval"
         if stage == "sentinel_req":
             return random.choice(["ondragstart", "onanimationstart", "ontransitionrun", "onlostpointercapture"])
         return random.choice(["matchMedia", "location", "onbeforetoggle", "onbeforeunload"])
 
     def _react_probe(self, *, stage: str) -> str:
         if stage == "chat_prepare":
-            return f"__reactContainer${secrets.token_hex(6)}"
+            return f"__reactResources${secrets.token_hex(6)}"
         return f"_reactListening{secrets.token_hex(6)}"
 
     def _config(self, *, stage: str = "final") -> list:
@@ -548,7 +558,7 @@ class _SentinelTokenGenerator:
         if stage == "chat_prepare":
             perf_now = random.randint(3000, 12000)
             elapsed = random.randint(1, 8)
-            script_url = LATEST_CHATGPT_CF_JSD_SCRIPT_URL
+            script_url = LATEST_CHATGPT_CHAT_REQUIREMENTS_SCRIPT_URL
             client_or_null = self.client_version
         elif stage == "sentinel_req":
             perf_now = random.randint(15000, 35000)
@@ -601,10 +611,12 @@ class _SentinelTokenGenerator:
         cfg[3] = random.randint(1, 4)
         return "gAAAAAC" + self._b64(cfg) + "~S"
 
-    def generate_chat_requirements_token(self) -> str:
-        """chatgpt.com chat-requirements/prepare p from headed HAR (jsd script + client version)."""
+    def generate_chat_requirements_token(self, *, script_url: Any = _UNSET) -> str:
+        """chatgpt.com chat-requirements/prepare p from headed HAR."""
         cfg = self._config(stage="chat_prepare")
         cfg[3] = 1
+        if script_url is not self._UNSET:
+            cfg[5] = script_url
         return "gAAAAAC" + self._b64(cfg)
 
     def generate_token(self, seed: str, difficulty: str) -> str:
@@ -727,6 +739,7 @@ class RegistrationEngine:
         self._otp_sent_at: Optional[float] = None  # OTP 发送时间戳
 
         self._is_existing_account: bool = False  # 是否为已注册账号（用于自动登录）
+        self.prefer_password_totp_login: bool = False  # 已保存密码和 2FA 时重登优先密码+TOTP
 
         self._device_id: Optional[str] = None
 
@@ -754,7 +767,11 @@ class RegistrationEngine:
         self._last_create_account_error_code: str = ""
         self._last_create_account_transport_error: str = ""
         self._latest_chatgpt_cf_attempted: bool = False
-        self.set_password_after_register: bool = True
+        self._chatgpt_client_version: str = LATEST_CHATGPT_OAI_CLIENT_VERSION
+        self._chatgpt_client_build_number: str = LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER
+        self._chatgpt_client_observation_id: str = ""
+        self.set_password_after_register: bool = False
+        self.totp_secret: str = ""
         self._password_registered_during_flow: bool = False
         self._post_register_password_set: bool = False
         self._post_register_password_error: str = ""
@@ -858,6 +875,47 @@ class RegistrationEngine:
             f"x_access_flow={self._diag_shape(lower.get('x-access-flow-invocation-id'))}",
         ]
         return " ".join(parts)
+
+
+    @classmethod
+    def _diag_sentinel_p_summary(cls, p_value: Any) -> str:
+        text = str(p_value or "")
+        if not text:
+            return "p=no"
+        raw = text[:-2] if text.endswith("~S") else text
+        suffix = "~S" if text.endswith("~S") else ""
+        prefix = ""
+        for candidate in ("gAAAAAC", "gAAAAAB", "gAAAAA"):
+            if raw.startswith(candidate):
+                prefix = candidate
+                raw = raw[len(candidate):]
+                break
+        idx = raw.find("Wz")
+        if idx >= 0:
+            raw = raw[idx:]
+        try:
+            arr = json.loads(base64.b64decode(raw + "=" * ((-len(raw)) % 4)).decode("utf-8"))
+        except Exception as exc:
+            return f"p_len={len(text)} prefix={prefix or '-'} suffix={suffix or '-'} decode=error:{exc}"
+        if not isinstance(arr, list):
+            return f"p_len={len(text)} prefix={prefix or '-'} suffix={suffix or '-'} decode=non_list"
+
+        def _safe(index: int, limit: int = 72) -> str:
+            if index >= len(arr):
+                return "-"
+            value = str(arr[index])
+            value = " ".join(value.split())
+            if len(value) > limit:
+                value = value[:limit] + "..."
+            return value
+
+        return (
+            f"p_len={len(text)} prefix={prefix or '-'} suffix={suffix or '-'} "
+            f"screen={_safe(0)} ua={_safe(4, 90)} script={_safe(5, 90)} "
+            f"client={_safe(6, 70)} lang={_safe(7)} langs={_safe(8)} "
+            f"elapsed={_safe(9)} probe={_safe(10, 90)} react={_safe(11)} "
+            f"event={_safe(12)} perf={_safe(13)} cores={_safe(16)} origin_ms={_safe(17)}"
+        )
 
     def _diag_url_summary(self, url: str) -> str:
         text = str(url or "")
@@ -1539,6 +1597,45 @@ class RegistrationEngine:
         return str(getattr(fingerprint, "accept_language", "en-US,en;q=0.9") or "en-US,en;q=0.9")
 
 
+    def _latest_chatgpt_client_version(self) -> str:
+        return str(getattr(self, "_chatgpt_client_version", "") or LATEST_CHATGPT_OAI_CLIENT_VERSION)
+
+
+    def _latest_chatgpt_client_build_number(self) -> str:
+        return str(getattr(self, "_chatgpt_client_build_number", "") or LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER)
+
+
+    def _latest_chatgpt_client_observation(self, *, refresh: bool = False) -> str:
+        current = str(getattr(self, "_chatgpt_client_observation_id", "") or "").strip()
+        if refresh or not current:
+            current = "v1.r.p." + secrets.token_urlsafe(12)[:16]
+            self._chatgpt_client_observation_id = current
+        return current
+
+
+    def _latest_chatgpt_update_client_build_from_html(self, html: str, *, source: str) -> None:
+        text = str(html or "")
+        if not text:
+            return
+        version_match = re.search(r"""data-build=["']([^"']+)["']""", text)
+        build_match = re.search(r"""data-seq=["']([^"']+)["']""", text)
+        version = str(version_match.group(1)).strip() if version_match else ""
+        build = str(build_match.group(1)).strip() if build_match else ""
+        changed = False
+        if version and version != self._latest_chatgpt_client_version():
+            self._chatgpt_client_version = version
+            changed = True
+        if build and build != self._latest_chatgpt_client_build_number():
+            self._chatgpt_client_build_number = build
+            changed = True
+        if changed:
+            self._log(
+                "[REG-DIAG][protocol] client_build updated "
+                f"source={source} version={self._latest_chatgpt_client_version()} "
+                f"build={self._latest_chatgpt_client_build_number()}"
+            )
+
+
     def _latest_chatgpt_browser_headers(
         self,
         *,
@@ -1640,12 +1737,49 @@ class RegistrationEngine:
             sec_fetch_mode="cors",
             sec_fetch_site="same-origin",
         )
-        headers["cache-control"] = "no-cache"
+        headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
         return headers
 
 
-    def _latest_chatgpt_add_password_after_register(self) -> bool:
-        """在 create_account 后、ChatGPT callback 前按 HAR 链路添加账号密码。"""
+    def _latest_chatgpt_add_password_complete_reauth_otp(self, current_url: str):
+        """设置密码 reauth 进入邮箱验证页时，完成该 OTP 分支后返回添加密码页响应。"""
+        self._email_otp_continue_url = current_url or "https://auth.openai.com/email-verification"
+        self._email_otp_page_loaded = True
+        self._otp_sent_at = time.time()
+        self._log("设置帐号密码: reauth 进入邮箱验证页，等待邮箱验证码")
+        code = self._get_verification_code(mark_invalid_on_timeout=False, resend_on_timeout=False)
+        if not code:
+            self._post_register_password_error = "reauth_email_otp_timeout"
+            self._log("设置帐号密码: reauth 邮箱验证码超时，跳过 2FA 前置密码设置", "warning")
+            return None
+        payload = self._latest_chatgpt_validate_email_otp(code)
+        candidates = [str(payload.get("continue_url") or "").strip()]
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        page_payload = page.get("payload") if isinstance(page.get("payload"), dict) else {}
+        candidates.append(str(page_payload.get("url") or "").strip())
+        for candidate in candidates:
+            if not candidate:
+                continue
+            page_url = urllib.parse.urljoin("https://auth.openai.com/", candidate)
+            if LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL not in page_url:
+                continue
+            headers = self._latest_chatgpt_nav_headers(
+                referer="https://auth.openai.com/email-verification",
+                sec_fetch_site="same-origin",
+            )
+            self._log(
+                "[REG-DIAG][protocol] add_password reauth otp page request "
+                f"url={page_url} headers=({self._diag_header_summary(headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
+            return self.session.get(page_url, headers=headers, timeout=30)
+        self._post_register_password_error = f"reauth_otp_no_password_page: {self._diag_payload_keys(payload)}"
+        self._log("设置帐号密码: reauth OTP 后未返回添加密码页，跳过", "warning")
+        return None
+
+
+    def _latest_chatgpt_add_password_after_register(self, access_token: str = "") -> bool:
+        """在 ChatGPT callback/session 建立后，按 HAR 的 reauth=password 链路添加账号密码。"""
         self._post_register_password_error = ""
         if not bool(getattr(self, "set_password_after_register", True)):
             self._log("设置帐号密码: 未勾选，跳过")
@@ -1658,32 +1792,162 @@ class RegistrationEngine:
             self._post_register_password_error = "missing_session"
             self._log("设置帐号密码: 缺少 auth 会话，跳过", "warning")
             return False
+        session_token = str(self.session.cookies.get("__Secure-next-auth.session-token") or "").strip()
+        if not session_token:
+            self._post_register_password_error = "missing_chatgpt_session"
+            self._log("设置帐号密码: ChatGPT session 尚未建立，跳过", "warning")
+            return False
         password = str(self.password or "").strip()
         if not password:
             password = self._generate_password()
             self.password = password
         try:
-            page_headers = self._latest_chatgpt_nav_headers(
-                referer="https://chatgpt.com/",
-                sec_fetch_site="cross-site",
+            from .constants import CHATGPT_APP
+
+            did = str(self._device_id or self._read_oai_did_cookie() or "").strip()
+            if not did:
+                did = self._seed_oai_did_cookie(self._protocol_device_id())
+            self._device_id = did
+            if str(access_token or "").strip():
+                self._latest_chatgpt_warmup_security_settings(
+                    str(access_token or "").strip(),
+                    label="before_add_password",
+                )
+            self._refresh_mailbox_before_ids()
+            auth_json_headers = self._latest_chatgpt_browser_headers(
+                accept="*/*",
+                referer=f"{CHATGPT_APP}/",
+                content_type="application/json",
+                sec_fetch_dest="empty",
+                sec_fetch_mode="cors",
+                sec_fetch_site="same-origin",
             )
-            page_headers["cache-control"] = "no-cache"
+            providers_resp = self.session.get(
+                f"{CHATGPT_APP}/api/auth/providers",
+                headers=auth_json_headers,
+                timeout=20,
+            )
             self._log(
-                "[REG-DIAG][protocol] add_password page request "
-                f"url={LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL} "
-                f"headers=({self._diag_header_summary(page_headers)}) "
+                "[REG-DIAG][protocol] add_password providers "
+                f"status={getattr(providers_resp, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(auth_json_headers)}) "
                 f"cookies={self._diag_cookie_names_text()}"
             )
-            page_resp = self.session.get(
-                LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL,
-                headers=page_headers,
-                timeout=30,
+            csrf_resp = self.session.get(
+                f"{CHATGPT_APP}/api/auth/csrf",
+                headers=auth_json_headers,
+                timeout=20,
             )
+            csrf_data = self._response_json_dict(csrf_resp)
+            csrf_token = str(csrf_data.get("csrfToken") or "").strip()
+            if not csrf_token:
+                csrf_cookie = str(self.session.cookies.get("__Host-next-auth.csrf-token", "") or "")
+                csrf_token = csrf_cookie.split("%7C")[0] if "%7C" in csrf_cookie else csrf_cookie.split("|")[0]
+            if not csrf_token:
+                self._post_register_password_error = "csrf_token_missing"
+                self._log("设置帐号密码: 获取 CSRF token 失败，跳过", "warning")
+                return False
+
+            query = urllib.parse.urlencode(
+                {
+                    "connection": "password",
+                    "login_hint": self.email or "",
+                    "reauth": "password",
+                    "post_login_add_password": "true",
+                    "max_age": "0",
+                    "ext-oai-did": did,
+                }
+            )
+            signin_headers = self._latest_chatgpt_browser_headers(
+                accept="*/*",
+                content_type="application/x-www-form-urlencoded",
+                origin=CHATGPT_APP,
+                referer=f"{CHATGPT_APP}/",
+                sec_fetch_dest="empty",
+                sec_fetch_mode="cors",
+                sec_fetch_site="same-origin",
+            )
+            signin_resp = self.session.post(
+                f"{CHATGPT_APP}/api/auth/signin/openai?{query}",
+                headers=signin_headers,
+                data=urllib.parse.urlencode(
+                    {
+                        "callbackUrl": f"{CHATGPT_APP}/",
+                        "csrfToken": csrf_token,
+                        "json": "true",
+                    }
+                ),
+                allow_redirects=False,
+                timeout=20,
+            )
+            signin_data = self._response_json_dict(signin_resp)
+            next_url = str(signin_data.get("url") or signin_resp.headers.get("Location") or "").strip()
+            self._log(
+                "[REG-DIAG][protocol] add_password signin/openai "
+                f"status={getattr(signin_resp, 'status_code', 0)} "
+                f"query=({self._diag_url_summary(f'{CHATGPT_APP}/api/auth/signin/openai?{query}')}) "
+                f"csrf={self._diag_shape(csrf_token)} "
+                f"next=({self._diag_url_summary(next_url)}) "
+                f"headers=({self._diag_header_summary(signin_headers)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
+            if not next_url:
+                self._post_register_password_error = self._latest_chatgpt_signin_no_authorize_error(
+                    signin_resp,
+                    signin_data,
+                )
+                self._log(f"设置帐号密码: reauth 初始化失败: {self._post_register_password_error}", "warning")
+                return False
+
+            current_url = next_url
+            page_resp = None
+            for redirect_index in range(12):
+                page_resp = self.session.get(
+                    current_url,
+                    headers=self._latest_chatgpt_nav_headers(
+                        referer=f"{CHATGPT_APP}/" if redirect_index == 0 else current_url,
+                        sec_fetch_site="cross-site" if redirect_index == 0 else "same-origin",
+                    ),
+                    allow_redirects=False,
+                    timeout=30,
+                )
+                location = str(page_resp.headers.get("Location") or page_resp.headers.get("location") or "").strip()
+                self._log(
+                    "[REG-DIAG][protocol] add_password auth redirect "
+                    f"idx={redirect_index + 1} status={getattr(page_resp, 'status_code', 0)} "
+                    f"url=({self._diag_url_summary(current_url)}) "
+                    f"location=({self._diag_url_summary(location)}) "
+                    f"cookies={self._diag_cookie_names_text()}"
+                )
+                if 300 <= int(getattr(page_resp, "status_code", 0) or 0) < 400 and location:
+                    current_url = urllib.parse.urljoin(current_url, location)
+                    continue
+                break
+
+            final_url = str(getattr(page_resp, "url", "") or current_url or "")
+            if LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL not in final_url and (
+                "/email-verification" in final_url or "/email-otp" in final_url
+            ):
+                page_resp = self._latest_chatgpt_add_password_complete_reauth_otp(final_url)
+                final_url = str(
+                    getattr(page_resp, "url", "")
+                    or str(getattr(self, "_otp_continue_url", "") or "")
+                    or final_url
+                )
+            if page_resp is None:
+                if not self._post_register_password_error:
+                    self._post_register_password_error = "reauth_no_password_page"
+                self._log("设置帐号密码: reauth 未返回添加密码页，跳过", "warning")
+                return False
             page_status = int(getattr(page_resp, "status_code", 0) or 0)
-            final_url = str(getattr(page_resp, "url", "") or LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL)
+            final_url = str(getattr(page_resp, "url", "") or final_url or current_url)
             self._log(
                 f"设置帐号密码: 打开添加密码页状态: {page_status} final_url={final_url}"
             )
+            if LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL not in final_url:
+                self._post_register_password_error = f"reauth_unexpected_page: {final_url}"
+                self._log(f"设置帐号密码: reauth 未进入添加密码页: {final_url}", "warning")
+                return False
             if page_status >= 400:
                 self._post_register_password_error = (
                     f"page_http_{page_status}: {self._short_response_excerpt(page_resp) or '(empty)'}"
@@ -1693,6 +1957,13 @@ class RegistrationEngine:
 
             body = json.dumps({"password": password}, separators=(",", ":"))
             headers = self._latest_chatgpt_add_password_headers()
+            password_sentinel = self._check_sentinel(did, flow="password_reset")
+            if password_sentinel:
+                headers["openai-sentinel-token"] = self._sentinel_payload_header(password_sentinel, did)
+                self._log(
+                    f"设置帐号密码 Sentinel 已获取: flow={password_sentinel.flow} "
+                    f"t_len={len(password_sentinel.t)}"
+                )
             self._log(
                 "[REG-DIAG][protocol] add_password request "
                 f"endpoint={LATEST_CHATGPT_ADD_PASSWORD_API_URL} "
@@ -1720,8 +1991,40 @@ class RegistrationEngine:
                 return False
             continue_url = str(payload.get("continue_url") or "").strip()
             if continue_url:
-                self._create_account_continue_url = continue_url
-                self._log(f"设置帐号密码完成，更新 callback: {continue_url}")
+                callback_url = urllib.parse.urljoin("https://auth.openai.com/", continue_url)
+                callback_headers = self._latest_chatgpt_nav_headers(
+                    referer=LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL,
+                    sec_fetch_site="cross-site",
+                )
+                self._log(
+                    "[REG-DIAG][protocol] add_password callback request "
+                    f"url=({self._diag_url_summary(callback_url)}) "
+                    f"headers=({self._diag_header_summary(callback_headers)}) "
+                    f"cookies={self._diag_cookie_names_text()}"
+                )
+                callback_resp = self.session.get(
+                    callback_url,
+                    headers=callback_headers,
+                    allow_redirects=True,
+                    timeout=45,
+                )
+                callback_status = int(getattr(callback_resp, "status_code", 0) or 0)
+                self._log(
+                    "[REG-DIAG][protocol] add_password callback response "
+                    f"status={callback_status} "
+                    f"final_url=({self._diag_url_summary(str(getattr(callback_resp, 'url', '') or ''))}) "
+                    f"cookies={self._diag_cookie_names_text()}"
+                )
+                if callback_status >= 400:
+                    self._post_register_password_error = (
+                        f"callback_http_{callback_status}: "
+                        f"{self._short_response_excerpt(callback_resp) or '(empty)'}"
+                    )
+                    self._log(f"设置帐号密码 callback 失败: {self._post_register_password_error}", "warning")
+                    return False
+                self._chatgpt_client_observation_id = ""
+                self._chatgpt_oai_session_id = str(uuid.uuid4())
+                self._log("设置帐号密码完成，并已刷新 ChatGPT session")
             else:
                 self._log("设置帐号密码完成，但响应未返回新的 callback，继续使用原 callback", "warning")
             self._post_register_password_set = True
@@ -1792,6 +2095,7 @@ class RegistrationEngine:
         self._latest_chatgpt_init_final_url = ""
         self._last_about_you_error = ""
         self._last_create_account_transport_error = ""
+        self._chatgpt_client_observation_id = ""
 
 
     def _latest_chatgpt_chatgpt_client_headers(
@@ -1800,7 +2104,7 @@ class RegistrationEngine:
         referer: str = "https://chatgpt.com/",
         target_path: str = "",
     ) -> dict:
-        """chatgpt.com backend-anon headers seen in headed-browser HAR."""
+        """chatgpt.com backend headers seen in headed-browser HAR."""
         headers = self._latest_chatgpt_browser_headers(
             accept="*/*",
             referer=referer,
@@ -1811,8 +2115,8 @@ class RegistrationEngine:
         if self._device_id:
             headers["oai-device-id"] = self._device_id
         headers["oai-language"] = "en-US"
-        headers["oai-client-version"] = LATEST_CHATGPT_OAI_CLIENT_VERSION
-        headers["oai-client-build-number"] = LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER
+        headers["oai-client-version"] = self._latest_chatgpt_client_version()
+        headers["oai-client-build-number"] = self._latest_chatgpt_client_build_number()
         session_id = str(getattr(self, "_chatgpt_oai_session_id", "") or "").strip()
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -1823,8 +2127,11 @@ class RegistrationEngine:
             target_route = target_path
             if target_path.endswith("/accounts/check/v4-2023-04-27"):
                 target_route = target_path[: -len("v4-2023-04-27")] + "{version}"
+            elif "/checkout_pricing_config/configs/" in target_path:
+                target_route = re.sub(r"/configs/[^/?#]+$", "/configs/{country_code}", target_path)
             headers["x-openai-target-route"] = target_route
-        headers["x-oai-is-pending-updates"] = '{"v":3,"updates":[]}'
+        if target_path.startswith("/backend-api/"):
+            headers["x-oai-is-client-observation"] = self._latest_chatgpt_client_observation()
         return headers
 
 
@@ -2378,7 +2685,7 @@ class RegistrationEngine:
 
         try:
             ua = self._latest_chatgpt_user_agent()
-            generator = _SentinelTokenGenerator(device_id, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
+            generator = _SentinelTokenGenerator(device_id, ua, client_version=self._latest_chatgpt_client_version())
             prepare_p = generator.generate_chat_requirements_token()
             prepare_headers = self._latest_chatgpt_chatgpt_client_headers(
                 target_path="/backend-anon/sentinel/chat-requirements/prepare",
@@ -2388,6 +2695,7 @@ class RegistrationEngine:
             self._log(
                 "[REG-DIAG][protocol] warmup prepare request "
                 f"p={self._diag_shape(prepare_p, prefix=8)} "
+                f"{self._diag_sentinel_p_summary(prepare_p)} "
                 f"headers=({self._diag_header_summary(prepare_headers)})"
             )
             resp = self.session.post(
@@ -2460,6 +2768,93 @@ class RegistrationEngine:
         except Exception as exc:
             self._log(f"chatgpt_register 预热 chat-requirements/prepare 失败: {exc}", "warning")
 
+        try:
+            for mode in ("basic", "plugins", "custom_agents"):
+                path = "/backend-anon/system_hints"
+                headers = self._latest_chatgpt_chatgpt_client_headers(target_path=path)
+                response = self.session.get(
+                    f"{CHATGPT_APP}{path}",
+                    params={"mode": mode},
+                    headers=headers,
+                    timeout=15,
+                )
+                self._log(
+                    "[REG-DIAG][protocol] warmup system_hints "
+                    f"mode={mode} status={getattr(response, 'status_code', 0)} "
+                    f"headers=({self._diag_header_summary(headers)})"
+                )
+
+            models_path = "/backend-anon/models"
+            models_headers = self._latest_chatgpt_chatgpt_client_headers(target_path=models_path)
+            models_resp = self.session.get(
+                f"{CHATGPT_APP}{models_path}",
+                params={
+                    "iim": "false",
+                    "is_gizmo": "false",
+                    "supports_model_picker_upgrade_presets": "true",
+                },
+                headers=models_headers,
+                timeout=15,
+            )
+            self._log(
+                "[REG-DIAG][protocol] warmup models "
+                f"status={getattr(models_resp, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(models_headers)})"
+            )
+
+            init_path = "/backend-anon/conversation/init"
+            init_headers = self._latest_chatgpt_chatgpt_client_headers(target_path=init_path)
+            init_headers["content-type"] = "application/json"
+            init_headers["origin"] = CHATGPT_APP
+            init_resp = self.session.post(
+                f"{CHATGPT_APP}{init_path}",
+                headers=init_headers,
+                data=json.dumps(
+                    {
+                        "requested_default_model": None,
+                        "conversation_id": None,
+                        "timezone_offset_min": -480,
+                        "conversation_origin": None,
+                    },
+                    separators=(",", ":"),
+                ),
+                timeout=15,
+            )
+            self._log(
+                "[REG-DIAG][protocol] warmup conversation/init "
+                f"status={getattr(init_resp, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(init_headers)})"
+            )
+
+            pricing_path = "/backend-anon/checkout_pricing_config/configs/JP"
+            pricing_headers = self._latest_chatgpt_chatgpt_client_headers(target_path=pricing_path)
+            pricing_resp = self.session.get(
+                f"{CHATGPT_APP}{pricing_path}",
+                headers=pricing_headers,
+                timeout=15,
+            )
+            self._log(
+                "[REG-DIAG][protocol] warmup checkout_pricing_config "
+                f"status={getattr(pricing_resp, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(pricing_headers)})"
+            )
+
+            voices_path = "/backend-anon/settings/voices"
+            voices_headers = self._latest_chatgpt_chatgpt_client_headers(target_path=voices_path)
+            voices_resp = self.session.get(
+                f"{CHATGPT_APP}{voices_path}",
+                params={"voice_mode": "advanced"},
+                headers=voices_headers,
+                timeout=15,
+            )
+            self._log(
+                "[REG-DIAG][protocol] warmup settings/voices "
+                f"status={getattr(voices_resp, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(voices_headers)})"
+            )
+        except Exception as exc:
+            self._log(f"chatgpt_register 预热补充 backend-anon 失败: {exc}", "warning")
+
 
     def _latest_chatgpt_init_email_oauth(self) -> tuple[bool, str]:
         """按 chatgpt_register 最新流程初始化邮箱注册，并记录 OpenAI 返回的下一步页面。"""
@@ -2479,6 +2874,10 @@ class RegistrationEngine:
                 headers=self._latest_chatgpt_nav_headers(sec_fetch_site="none"),
                 timeout=20,
             )
+            self._latest_chatgpt_update_client_build_from_html(
+                str(getattr(home_resp, "text", "") or ""),
+                source="init_home",
+            )
             did = self._read_oai_did_cookie()
             if not did:
                 did = self._seed_oai_did_cookie(self._protocol_device_id())
@@ -2490,8 +2889,6 @@ class RegistrationEngine:
                 f"oai_did_cookie={self._diag_shape(self._read_oai_did_cookie())} "
                 f"cookies={self._diag_cookie_names_text()}"
             )
-            # Headed-browser HAR always warms chatgpt.com backend-anon before signin.
-            self._latest_chatgpt_warmup_chatgpt_anon_session(did)
 
             csrf_headers = self._latest_chatgpt_browser_headers(
                 accept="application/json",
@@ -2523,6 +2920,9 @@ class RegistrationEngine:
                 f"headers=({self._diag_header_summary(csrf_headers)}) "
                 f"cookies={self._diag_cookie_names_text()}"
             )
+
+            # Headed-browser HAR warms chatgpt.com backend-anon after CSRF and before signin.
+            self._latest_chatgpt_warmup_chatgpt_anon_session(did)
 
             query = urllib.parse.urlencode(
                 {
@@ -2781,6 +3181,447 @@ class RegistrationEngine:
         return code
 
 
+    def _latest_chatgpt_send_login_email_otp(self, *, referer: str) -> dict:
+        """按最新 auth.openai.com XHR 请求显式触发登录邮箱 OTP。"""
+        headers = self._latest_chatgpt_json_headers(referer=referer)
+        response = self.session.get(
+            OPENAI_API_ENDPOINTS["send_otp"],
+            headers=headers,
+            allow_redirects=False,
+            timeout=30,
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        payload = self._response_json_dict(response)
+        response_text = str(getattr(response, "text", "") or "")
+        self._log(
+            "[REG-DIAG][refresh-session][protocol] email_otp/send "
+            f"status={status} referer={referer} "
+            f"headers=({self._diag_header_summary(headers)}) "
+            f"{self._diag_payload_keys(payload)} "
+            f"body_len={len(response_text)} cookies={self._diag_cookie_names_text()}"
+        )
+        if status not in (200, 302):
+            raise RuntimeError(f"email_otp_send_http_{status}: {response_text[:240]}")
+        self._otp_sent_at = time.time()
+        self._email_otp_continue_url = str(payload.get("continue_url") or "https://auth.openai.com/email-verification")
+        self._email_otp_page_loaded = True
+        self._otp_page_type = str(((payload.get("page") or {}).get("type")) or "email_otp_verification")
+        return payload
+
+
+    def _latest_chatgpt_send_passwordless_login_otp(self) -> dict:
+        """登录密码页优先走 passwordless OTP，保持与有头浏览器“使用邮箱验证码登录”一致。"""
+        from .constants import OPENAI_AUTH
+
+        referer = f"{OPENAI_AUTH}/log-in/password"
+        headers = self._latest_chatgpt_json_headers(referer=referer)
+        response = self.session.post(
+            f"{OPENAI_AUTH}/api/accounts/passwordless/send-otp",
+            headers=headers,
+            data="",
+            allow_redirects=False,
+            timeout=30,
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        payload = self._response_json_dict(response)
+        response_text = str(getattr(response, "text", "") or "")
+        self._log(
+            "[REG-DIAG][refresh-session][protocol] passwordless/send-otp "
+            f"status={status} headers=({self._diag_header_summary(headers)}) "
+            f"{self._diag_payload_keys(payload)} "
+            f"body_len={len(response_text)} cookies={self._diag_cookie_names_text()}"
+        )
+        if status != 200:
+            raise RuntimeError(f"passwordless_send_otp_http_{status}: {response_text[:240]}")
+        self._otp_sent_at = time.time()
+        self._email_otp_continue_url = str(payload.get("continue_url") or "https://auth.openai.com/email-verification")
+        self._email_otp_page_loaded = True
+        self._otp_page_type = str(((payload.get("page") or {}).get("type")) or "email_otp_verification")
+        return payload
+
+
+    def _latest_chatgpt_verify_login_password(self) -> dict:
+        """passwordless 不可用时，按最新 Sentinel token 提交已保存的登录密码。"""
+        from .constants import OPENAI_AUTH
+
+        if not self.password:
+            raise RuntimeError("login_password_missing")
+        referer = f"{OPENAI_AUTH}/log-in/password"
+        headers = self._latest_chatgpt_json_headers(referer=referer)
+        did = str(self._device_id or self._read_oai_did_cookie() or "").strip()
+        if did:
+            password_sentinel = self._check_sentinel(did, flow="password_verify")
+            if password_sentinel:
+                headers["openai-sentinel-token"] = self._sentinel_payload_header(password_sentinel, did)
+                if password_sentinel.so_token:
+                    headers["openai-sentinel-so-token"] = password_sentinel.so_token
+                self._log(
+                    f"重新登录密码 Sentinel 已获取: flow={password_sentinel.flow} "
+                    f"t_len={len(password_sentinel.t)} so={'yes' if password_sentinel.so_token else 'no'}"
+                )
+        body = json.dumps({"password": self.password}, separators=(",", ":"))
+        response = self.session.post(
+            f"{OPENAI_AUTH}/api/accounts/password/verify",
+            headers=headers,
+            data=body,
+            allow_redirects=False,
+            timeout=30,
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        payload = self._response_json_dict(response)
+        response_text = str(getattr(response, "text", "") or "")
+        self._log(
+            "[REG-DIAG][refresh-session][protocol] password/verify "
+            f"status={status} headers=({self._diag_header_summary(headers)}) "
+            f"{self._diag_payload_keys(payload)} "
+            f"body_len={len(response_text)} cookies={self._diag_cookie_names_text()}"
+        )
+        if status != 200:
+            raise RuntimeError(f"password_verify_http_{status}: {response_text[:240]}")
+        page_type = str(((payload.get("page") or {}).get("type")) or "")
+        continue_url = str(payload.get("continue_url") or "").strip()
+        if page_type in {"email_otp_send", "email_otp_verification"} or "email-verification" in continue_url:
+            self._email_otp_continue_url = continue_url or "https://auth.openai.com/email-verification"
+            self._email_otp_page_loaded = True
+            self._otp_page_type = page_type or "email_otp_verification"
+        return payload
+
+
+    def _latest_chatgpt_prepare_refresh_session_login_step(self) -> dict:
+        """把最新 NextAuth 登录初始化后的页面推进到 callback 或 email OTP 可提交状态。"""
+        final_url = str(getattr(self, "_latest_chatgpt_init_final_url", "") or "").strip()
+        final_payload = {"continue_url": final_url, "page": {"type": ""}}
+        if self._chatgpt_callback_url_from_payload(final_payload):
+            return final_payload
+        if "/email-verification" in final_url or "/email-otp" in final_url:
+            self._email_otp_continue_url = final_url
+            self._email_otp_page_loaded = True
+            if not self._otp_sent_at:
+                self._otp_sent_at = time.time()
+            return {"continue_url": final_url, "page": {"type": "email_otp_verification"}}
+        if "/log-in/password" in final_url:
+            if (
+                bool(getattr(self, "prefer_password_totp_login", False))
+                and self.password
+                and str(getattr(self, "totp_secret", "") or "").strip()
+            ):
+                self._log("重新登录检测到已保存密码和 2FA，直接使用密码 + TOTP 登录，不触发邮箱验证码")
+                return self._latest_chatgpt_verify_login_password()
+            try:
+                payload = self._latest_chatgpt_send_passwordless_login_otp()
+                self._log("重新登录密码页已切换为邮箱验证码登录")
+                return payload
+            except Exception as exc:
+                self._log(f"重新登录 passwordless OTP 不可用，改用密码校验: {exc}", "warning")
+                payload = self._latest_chatgpt_verify_login_password()
+                page_type = str(((payload.get("page") or {}).get("type")) or "")
+                if page_type == "email_otp_send":
+                    return self._latest_chatgpt_send_login_email_otp(referer="https://auth.openai.com/email-verification")
+                if page_type == "email_otp_verification" and not self._otp_sent_at:
+                    self._otp_sent_at = time.time()
+                return payload
+        return final_payload
+
+
+    def _latest_chatgpt_refresh_session_validate_otp_with_retry(self) -> dict:
+        """重新登录专用 OTP 等待与校验，复用最新 email_otp_validate Sentinel 计算。"""
+        self._log("重新登录: 等待邮箱验证码...")
+        code = self._get_verification_code(mark_invalid_on_timeout=False, resend_on_timeout=False)
+        if not code:
+            raise RuntimeError(self._email_otp_failure_message("重新登录验证码获取失败"))
+
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                if attempt > 1:
+                    self._log(f"重新登录: 重新提交邮箱验证码 ({attempt}/3)...")
+                return self._latest_chatgpt_validate_email_otp(code)
+            except RuntimeError as exc:
+                last_error = str(exc)
+                if last_error in {"invalid_state", "wrong_email_otp_code"} and attempt < 3:
+                    self._log(f"重新登录 OTP 返回 {last_error}，刷新登录会话并读取新验证码", "warning")
+                    self._refresh_mailbox_before_ids()
+                    self._reset_latest_chatgpt_session_for_retry()
+                    init_ok, init_error = self._latest_chatgpt_init_email_oauth()
+                    if not init_ok:
+                        raise RuntimeError(f"refresh_session_retry_init_failed: {init_error}")
+                    login_payload = self._latest_chatgpt_prepare_refresh_session_login_step()
+                    if self._chatgpt_callback_url_from_payload(login_payload):
+                        return login_payload
+                    code = self._get_verification_code(mark_invalid_on_timeout=False, resend_on_timeout=False)
+                    if not code:
+                        raise RuntimeError("refresh_session_retry_no_otp")
+                    continue
+                raise
+        raise RuntimeError(last_error or "refresh_session_email_otp_validate_failed")
+
+
+    @staticmethod
+    def _latest_chatgpt_payload_page_type(payload: dict) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        return str(page.get("type") or "").strip()
+
+
+    @staticmethod
+    def _latest_chatgpt_payload_continue_url(payload: dict) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("continue_url") or "").strip()
+
+
+    def _latest_chatgpt_extract_mfa_challenge(self, payload: dict) -> tuple[str, str, str, int]:
+        """从 auth 返回的 mfa_challenge payload 中提取当前因子。"""
+        page = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+        page_payload = page.get("payload") if isinstance(page.get("payload"), dict) else {}
+        continue_url = self._latest_chatgpt_payload_continue_url(payload)
+        factor_id = str(page_payload.get("factor_id") or page_payload.get("id") or "").strip()
+        factor_type = str(page_payload.get("factor_type") or page_payload.get("type") or "").strip()
+
+        factors: list[dict] = []
+        for key in ("factors", "mfa_factors", "available_factors"):
+            raw = page_payload.get(key)
+            if isinstance(raw, list):
+                factors.extend([item for item in raw if isinstance(item, dict)])
+
+        if not factor_id and continue_url:
+            try:
+                parsed = urllib.parse.urlsplit(continue_url)
+                parts = [part for part in parsed.path.split("/") if part]
+                if len(parts) >= 2 and parts[-2] == "mfa-challenge":
+                    factor_id = parts[-1]
+            except Exception:
+                factor_id = ""
+
+        for item in factors:
+            item_id = str(item.get("id") or "").strip()
+            if factor_id and item_id != factor_id:
+                continue
+            item_type = str(item.get("factor_type") or item.get("type") or "").strip()
+            if item_type:
+                factor_type = factor_type or item_type
+            if item_id:
+                factor_id = factor_id or item_id
+            if factor_id and factor_type:
+                break
+
+        if not factor_id:
+            totp_factors = [
+                item
+                for item in factors
+                if str(item.get("factor_type") or item.get("type") or "").strip() == "totp"
+                and str(item.get("id") or "").strip()
+            ]
+            if len(totp_factors) == 1:
+                factor_id = str(totp_factors[0].get("id") or "").strip()
+                factor_type = "totp"
+
+        return factor_id, (factor_type or "totp").lower(), continue_url, len(factors)
+
+
+    def _latest_chatgpt_complete_mfa_challenge(self, payload: dict) -> dict:
+        """已绑定 2FA 的账号在重登 OTP 后继续提交 TOTP，并返回下一步 payload。"""
+        from .constants import OPENAI_AUTH
+        from .mfa import generate_totp_code
+
+        page_type = self._latest_chatgpt_payload_page_type(payload)
+        continue_url = self._latest_chatgpt_payload_continue_url(payload)
+        if page_type != "mfa_challenge" and "/mfa-challenge" not in continue_url:
+            return payload
+
+        secret = str(getattr(self, "totp_secret", "") or "").strip()
+        if not secret:
+            raise RuntimeError("重新登录需要 2FA 验证码但本地未保存 totp_secret")
+
+        factor_id, factor_type, challenge_url, factor_count = self._latest_chatgpt_extract_mfa_challenge(payload)
+        if not factor_id:
+            raise RuntimeError("重新登录 2FA challenge 缺少 factor_id")
+        if factor_type != "totp":
+            raise RuntimeError(f"重新登录 2FA 当前因子不是 TOTP: {factor_type}")
+
+        challenge_url = urllib.parse.urljoin(OPENAI_AUTH, challenge_url or f"{OPENAI_AUTH}/mfa-challenge/{factor_id}")
+        self._log(
+            "[REG-DIAG][refresh-session][protocol] mfa_challenge "
+            f"page_type={page_type or '(empty)'} factor_id={self._diag_shape(factor_id)} "
+            f"factor_type={factor_type} factors={factor_count} url=({self._diag_url_summary(challenge_url)})"
+        )
+        try:
+            page_resp = self.session.get(
+                challenge_url,
+                headers=self._latest_chatgpt_nav_headers(referer="https://auth.openai.com/email-verification"),
+                timeout=30,
+            )
+            page_status = int(getattr(page_resp, "status_code", 0) or 0)
+            page_text = str(getattr(page_resp, "text", "") or "")
+            self._latest_chatgpt_update_client_build_from_html(page_text, source="mfa_challenge")
+            self._log(
+                "[REG-DIAG][refresh-session][protocol] mfa_challenge page "
+                f"status={page_status} final_url=({self._diag_url_summary(getattr(page_resp, 'url', '') or challenge_url)}) "
+                f"cookies={self._diag_cookie_names_text()}"
+            )
+        except Exception as exc:
+            self._log(f"重新登录 2FA challenge 页面预热失败，继续提交 TOTP: {exc}", "warning")
+
+        code = generate_totp_code(secret)
+        headers = self._latest_chatgpt_json_headers(referer=challenge_url)
+        body = json.dumps({"id": factor_id, "type": "totp", "code": code}, separators=(",", ":"))
+        self._log(
+            "[REG-DIAG][refresh-session][protocol] mfa_verify request "
+            f"endpoint={OPENAI_AUTH}/api/accounts/mfa/verify "
+            f"code_len={len(code)} factor_id={self._diag_shape(factor_id)} "
+            f"headers=({self._diag_header_summary(headers)}) "
+            f"body_len={len(body)} cookies={self._diag_cookie_names_text()}"
+        )
+        response = self.session.post(
+            f"{OPENAI_AUTH}/api/accounts/mfa/verify",
+            headers=headers,
+            data=body,
+            timeout=30,
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        next_payload = self._response_json_dict(response)
+        response_text = str(getattr(response, "text", "") or "")
+        next_page_type = self._latest_chatgpt_payload_page_type(next_payload)
+        next_continue_url = self._latest_chatgpt_payload_continue_url(next_payload)
+        self._otp_page_type = next_page_type
+        self._otp_continue_url = next_continue_url
+        self._log(
+            f"重新登录 2FA TOTP 提交状态: {status} "
+            f"page_type={next_page_type or '(empty)'} continue_url={next_continue_url or '(empty)'}"
+        )
+        self._log(
+            "[REG-DIAG][refresh-session][protocol] mfa_verify response "
+            f"status={status} {self._diag_payload_keys(next_payload)} "
+            f"body_len={len(response_text)} cookies={self._diag_cookie_names_text()}"
+        )
+        if status != 200:
+            error_code = self._openai_error_code_from_payload(next_payload)
+            raise RuntimeError(error_code or f"mfa_verify_http_{status}: {response_text[:240]}")
+        error_code = self._openai_error_code_from_payload(next_payload)
+        if error_code:
+            raise RuntimeError(error_code)
+        return next_payload
+
+
+    def run_chatgpt_refresh_session_latest(
+        self,
+        result: Optional[RegistrationResult] = None,
+        *,
+        session_source: str = "latest_refresh_session_login",
+    ) -> RegistrationResult:
+        """按最新 chatgpt.com NextAuth + Sentinel 链路重新登录并获取 session/at。"""
+        result = result or RegistrationResult(success=False, logs=self.logs)
+        previous_set_password_after_register = bool(getattr(self, "set_password_after_register", False))
+        self.set_password_after_register = False
+        try:
+            self._log("=" * 60)
+            self._log("开始重新登录流程（chatgpt_register 最新协议链路）")
+            self._log("=" * 60)
+            if not self.email:
+                result.error_message = "重新登录缺少邮箱"
+                return result
+            result.email = self.email
+            result.password = self.password or ""
+
+            if not self.email_info and self.email_service is not None:
+                try:
+                    email_info = self.email_service.create_email()
+                    if isinstance(email_info, dict):
+                        self.email_info = email_info
+                except Exception as exc:
+                    self._log(f"重新登录邮箱资源预处理失败，继续使用当前邮箱: {exc}", "warning")
+
+            if not self._init_latest_chatgpt_session():
+                result.error_message = "重新登录初始化会话失败"
+                return result
+
+            self._is_existing_account = True
+            self._latest_chatgpt_session_source = session_source
+            self._refresh_mailbox_before_ids()
+            self._log("重新登录: 使用最新 chatgpt.com login_hint 初始化 OAuth 登录...")
+
+            init_error = ""
+            for init_attempt in range(1, 4):
+                if init_attempt > 1:
+                    self._log(f"重新登录初始化失败，重试 ({init_attempt}/3)...", "warning")
+                    self._refresh_mailbox_before_ids()
+                    self._reset_latest_chatgpt_session_for_retry()
+                init_ok, init_error = self._latest_chatgpt_init_email_oauth()
+                if init_ok:
+                    break
+                if not self._is_latest_chatgpt_init_retryable_error(init_error) or init_attempt >= 3:
+                    result.error_message = f"重新登录初始化失败: {init_error}"
+                    return result
+                self._log(f"重新登录初始化失败: {init_error}", "warning")
+                time.sleep(2)
+
+            login_payload = self._latest_chatgpt_prepare_refresh_session_login_step()
+            callback_url = self._chatgpt_callback_url_from_payload(login_payload)
+            if callback_url:
+                self._create_account_continue_url = callback_url
+                self._log("重新登录初始化已返回 ChatGPT callback，直接获取 session/at")
+                return self._latest_chatgpt_fetch_session_result(result)
+
+            if (
+                self._latest_chatgpt_payload_page_type(login_payload) == "mfa_challenge"
+                or "/mfa-challenge" in self._latest_chatgpt_payload_continue_url(login_payload)
+            ):
+                self._log("重新登录密码校验后进入 2FA challenge，自动提交本地 TOTP")
+                login_payload = self._latest_chatgpt_complete_mfa_challenge(login_payload)
+                callback_url = self._chatgpt_callback_url_from_payload(login_payload)
+                if not callback_url:
+                    result.error_message = "重新登录 2FA 通过但未返回 ChatGPT callback URL"
+                    return result
+                self._create_account_continue_url = callback_url
+                self._log("重新登录密码 + 2FA 校验通过，开始获取 ChatGPT session/at")
+                return self._latest_chatgpt_fetch_session_result(result)
+
+            page_type = str(((login_payload.get("page") or {}).get("type")) or "")
+            continue_url = str(login_payload.get("continue_url") or "").strip()
+            if bool(getattr(self, "prefer_password_totp_login", False)):
+                result.error_message = (
+                    "重新登录密码+2FA链路未进入 2FA 或 callback 步骤: "
+                    f"page={page_type or '(empty)'} url={continue_url or getattr(self, '_latest_chatgpt_init_final_url', '')}"
+                )
+                return result
+            if not (
+                page_type in {"email_otp_send", "email_otp_verification"}
+                or "/email-verification" in continue_url
+                or "/email-otp" in continue_url
+            ):
+                result.error_message = (
+                    "重新登录未进入邮箱验证码或 callback 步骤: "
+                    f"page={page_type or '(empty)'} url={continue_url or getattr(self, '_latest_chatgpt_init_final_url', '')}"
+                )
+                return result
+
+            validate_payload = self._latest_chatgpt_refresh_session_validate_otp_with_retry()
+            callback_url = self._chatgpt_callback_url_from_payload(validate_payload)
+            if (
+                not callback_url
+                and (
+                    self._latest_chatgpt_payload_page_type(validate_payload) == "mfa_challenge"
+                    or "/mfa-challenge" in self._latest_chatgpt_payload_continue_url(validate_payload)
+                )
+            ):
+                self._log("重新登录 OTP 后进入 2FA challenge，自动提交本地 TOTP")
+                validate_payload = self._latest_chatgpt_complete_mfa_challenge(validate_payload)
+                callback_url = self._chatgpt_callback_url_from_payload(validate_payload)
+            if not callback_url:
+                result.error_message = "重新登录 OTP 通过但未返回 ChatGPT callback URL"
+                return result
+            self._create_account_continue_url = callback_url
+            self._log("重新登录 OTP 校验通过，开始获取 ChatGPT session/at")
+            return self._latest_chatgpt_fetch_session_result(result)
+        except Exception as exc:
+            self._log(f"重新登录最新协议流程异常: {exc}", "error")
+            result.error_message = str(exc)
+            return result
+        finally:
+            self.set_password_after_register = previous_set_password_after_register
+
+
     def _latest_chatgpt_open_about_you(self, url: str) -> bool:
         self._last_about_you_error = ""
         if not url:
@@ -3010,8 +3851,8 @@ class RegistrationEngine:
 
         try:
             ua = self._latest_chatgpt_user_agent()
-            generator = _SentinelTokenGenerator(self._device_id, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
-            prepare_p = generator.generate_chat_requirements_token()
+            generator = _SentinelTokenGenerator(self._device_id, ua, client_version=self._latest_chatgpt_client_version())
+            prepare_p = generator.generate_chat_requirements_token(script_url=None)
             prep_headers = self._latest_chatgpt_chatgpt_client_headers(
                 target_path="/backend-api/sentinel/chat-requirements/prepare",
             )
@@ -3021,6 +3862,7 @@ class RegistrationEngine:
             self._log(
                 "[REG-DIAG][session][protocol] authenticated_prepare request "
                 f"p={self._diag_shape(prepare_p, prefix=8)} "
+                f"{self._diag_sentinel_p_summary(prepare_p)} "
                 f"headers=({self._diag_header_summary(prep_headers)})"
             )
             prep_resp = self.session.post(
@@ -3095,6 +3937,94 @@ class RegistrationEngine:
             completed = True
         except Exception as exc:
             self._log(f"chatgpt_register 注册后 chat-requirements/prepare 失败: {exc}", "warning")
+
+        try:
+            for path, params in (
+                ("/backend-api/settings/voices", {"voice_mode": "advanced"}),
+                ("/backend-api/checkout_pricing_config/configs/JP", None),
+            ):
+                headers = self._latest_chatgpt_chatgpt_client_headers(target_path=path)
+                headers["authorization"] = f"Bearer {token}"
+                response = self.session.get(
+                    f"{CHATGPT_APP}{path}",
+                    params=params,
+                    headers=headers,
+                    timeout=15,
+                )
+                self._log(
+                    "[REG-DIAG][session][protocol] authenticated_extra_get "
+                    f"path={path} status={getattr(response, 'status_code', 0)} "
+                    f"headers=({self._diag_header_summary(headers)})"
+                )
+
+            init_path = "/backend-api/conversation/init"
+            init_headers = self._latest_chatgpt_chatgpt_client_headers(target_path=init_path)
+            init_headers["authorization"] = f"Bearer {token}"
+            init_headers["content-type"] = "application/json"
+            init_headers["origin"] = CHATGPT_APP
+            init_response = self.session.post(
+                f"{CHATGPT_APP}{init_path}",
+                headers=init_headers,
+                data=json.dumps(
+                    {
+                        "requested_default_model": None,
+                        "conversation_id": None,
+                        "timezone_offset_min": -480,
+                        "conversation_origin": None,
+                    },
+                    separators=(",", ":"),
+                ),
+                timeout=15,
+            )
+            self._log(
+                "[REG-DIAG][session][protocol] authenticated_conversation/init "
+                f"status={getattr(init_response, 'status_code', 0)} "
+                f"headers=({self._diag_header_summary(init_headers)})"
+            )
+        except Exception as exc:
+            self._log(f"chatgpt_register 注册后补充 backend-api 预热失败: {exc}", "warning")
+        return completed
+
+
+    def _latest_chatgpt_warmup_security_settings(self, access_token: str, *, label: str) -> bool:
+        from .constants import CHATGPT_APP
+
+        token = str(access_token or "").strip()
+        if not token or not self.session or not self._device_id:
+            return False
+
+        completed = False
+        for index, path in enumerate((
+            "/backend-api/accounts/mfa_info",
+            "/backend-api/accounts/security_settings/info",
+            "/backend-api/accounts/change_password/eligibility",
+            "/backend-api/accounts/add_password/eligibility",
+            "/backend-api/accounts/sessions",
+        )):
+            try:
+                if index in (0, 1):
+                    self._latest_chatgpt_client_observation(refresh=True)
+                headers = self._latest_chatgpt_chatgpt_client_headers(target_path=path)
+                headers["authorization"] = f"Bearer {token}"
+                response = self.session.get(
+                    f"{CHATGPT_APP}{path}",
+                    headers=headers,
+                    timeout=20,
+                )
+                status = int(getattr(response, "status_code", 0) or 0)
+                self._log(
+                    "[REG-DIAG][security][protocol] warmup "
+                    f"label={label} path={path} status={status} "
+                    f"headers=({self._diag_header_summary(headers)}) "
+                    f"cookies={self._diag_cookie_names_text()}"
+                )
+                if status < 400:
+                    completed = True
+            except Exception as exc:
+                self._log(
+                    f"[REG-DIAG][security][protocol] warmup failed label={label} path={path}: {exc}",
+                    "warning",
+                )
         return completed
 
 
@@ -3161,8 +4091,10 @@ class RegistrationEngine:
                 headers=home_headers,
                 timeout=15,
             )
+            home_html = str(getattr(home_resp, "text", "") or "")
+            self._latest_chatgpt_update_client_build_from_html(home_html, source="home_after_callback")
             home_access_token = self._extract_chatgpt_session_access_token_from_html(
-                str(getattr(home_resp, "text", "") or "")
+                home_html
             )
             self._log(
                 "[REG-DIAG][session][protocol] home_after_callback "
@@ -3251,6 +4183,41 @@ class RegistrationEngine:
             result.error_message = "chatgpt.com session 未返回 account_id"
             return result
 
+        if self._latest_chatgpt_add_password_after_register(access_token):
+            session_cookies_header = _cookies_to_header(self.session.cookies)
+            session_token = str(self.session.cookies.get("__Secure-next-auth.session-token") or session_token or "").strip()
+            account_cookie = str(self.session.cookies.get("_account") or account_cookie or "").strip()
+            try:
+                refreshed_session_resp = self.session.get(
+                    f"{CHATGPT_APP}/api/auth/session",
+                    headers=session_headers,
+                    timeout=20,
+                )
+                refreshed_session_data = self._response_json_dict(refreshed_session_resp)
+                refreshed_access_token = str(refreshed_session_data.get("accessToken") or "").strip()
+                self._log(
+                    "[REG-DIAG][session][protocol] session_api after add_password "
+                    f"status={getattr(refreshed_session_resp, 'status_code', 0)} "
+                    f"payload_keys={','.join(sorted(str(k) for k in refreshed_session_data.keys())) if refreshed_session_data else '-'} "
+                    f"access_token={self._diag_shape(refreshed_access_token)} "
+                    f"cookies={self._diag_cookie_names_text()}"
+                )
+                if refreshed_access_token:
+                    session_data = refreshed_session_data
+                    access_token = refreshed_access_token
+                    session_token = str(refreshed_session_data.get("sessionToken") or session_token or "").strip()
+                    self._latest_chatgpt_warmup_authenticated_session(refreshed_access_token)
+                    account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
+                    user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else user_data
+                    account_id = (
+                        str(account_data.get("id") or "").strip()
+                        or _extract_chatgpt_account_id(access_token)
+                        or account_cookie
+                        or account_id
+                    )
+            except Exception as exc:
+                self._log(f"设置帐号密码后刷新 session 失败: {exc}", "warning")
+
         result.success = True
         result.email = self.email or ""
         result.password = self.password or ""
@@ -3275,11 +4242,18 @@ class RegistrationEngine:
             "registered_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "is_existing_account": self._is_existing_account,
             "cookies": session_cookies_header,
+            "login_state_cookie": session_cookies_header,
             "profile": user_data,
             "expires_at": str(session_data.get("expires") or ""),
             "session": session_data,
             "auth_source": "chatgpt_register_latest",
             "chatgpt_session_source": session_source,
+            "chatgpt_user_agent": self._latest_chatgpt_user_agent(),
+            "chatgpt_accept_language": self._latest_chatgpt_accept_language(),
+            "chatgpt_oai_client_version": self._latest_chatgpt_client_version(),
+            "chatgpt_oai_client_build_number": self._latest_chatgpt_client_build_number(),
+            "chatgpt_oai_device_id": self._device_id or "",
+            "chatgpt_oai_session_id": str(getattr(self, "_chatgpt_oai_session_id", "") or ""),
             "password_set_after_register": bool(
                 getattr(self, "_password_registered_during_flow", False)
                 or getattr(self, "_post_register_password_set", False)
@@ -3298,58 +4272,19 @@ class RegistrationEngine:
     def _latest_chatgpt_login_after_account_deactivated(self, result: RegistrationResult) -> RegistrationResult:
         """account_deactivated 时改走已注册账号登录，成功后保存 ChatGPT session。"""
         self._log("检测到 account_deactivated，改走已注册账号登录流程获取 session", "warning")
-        try:
-            self._reset_latest_chatgpt_session_for_retry()
-            client = self.http_client
-            if not client or not self.session:
-                result.error_message = "account_deactivated 登录初始化失败"
-                return result
-
-            device_id = str(self._device_id or self._read_oai_did_cookie() or self._protocol_device_id()).strip()
-            if not device_id:
-                result.error_message = "account_deactivated 登录缺少 device_id"
-                return result
-            self._device_id = device_id
-            self._set_oai_did_for_session(self.session, device_id)
-            self._is_existing_account = True
-            self._latest_chatgpt_session_source = "latest_account_deactivated_login"
-            self._refresh_mailbox_before_ids()
-            self._platform_reference_prepare_existing_login_otp(client, device_id)
-            code = self._wait_platform_reference_register_code(client)
-            if not code:
-                result.error_message = self._email_otp_failure_message("account_deactivated 登录验证码获取失败")
-                return result
-
-            response = self._validate_platform_login_otp(client, device_id, code)
-            status = int(getattr(response, "status_code", 0) or 0)
-            self._log(f"account_deactivated 登录 OTP 校验状态: {status}")
-            if status != 200:
-                excerpt = self._short_response_excerpt(response)
-                if status in (401, 403):
-                    self._mark_current_email_invalid("account_deactivated_login_rejected")
-                    result.error_message = f"account_deactivated 登录失败 HTTP {status}，已标记无效邮箱"
-                else:
-                    result.error_message = f"account_deactivated 登录失败 HTTP {status}: {excerpt or '(empty)'}"
-                return result
-
-            payload = self._response_json_dict(response)
-            self._otp_page_type = str(((payload.get("page") or {}).get("type")) or "")
-            callback_url = self._chatgpt_callback_url_from_payload(payload)
-            if not callback_url:
-                result.error_message = "account_deactivated 登录未返回 ChatGPT callback URL"
-                return result
-            self._create_account_continue_url = callback_url
-            self._log("account_deactivated 登录验证码通过，开始保存 ChatGPT session")
-            return self._latest_chatgpt_fetch_session_result(result)
-        except Exception as exc:
-            error = str(exc)
-            if self._is_login_auth_rejected_error(error):
-                self._mark_current_email_invalid("account_deactivated_login_rejected")
-                result.error_message = f"account_deactivated 登录失败，已标记无效邮箱: {error}"
-            else:
-                result.error_message = f"account_deactivated 登录流程失败: {error}"
-            self._log(result.error_message, "warning")
-            return result
+        actual = self.run_chatgpt_refresh_session_latest(
+            result,
+            session_source="latest_account_deactivated_login",
+        )
+        error_text = str(actual.error_message or "")
+        if not actual.success and (
+            self._is_login_auth_rejected_error(error_text)
+            or "account_deactivated" in error_text.lower()
+        ):
+            self._mark_current_email_invalid("account_deactivated_login_rejected")
+            actual.error_message = f"account_deactivated 登录失败，已标记无效邮箱: {actual.error_message}"
+            self._log(actual.error_message, "warning")
+        return actual
 
 
     def run_chatgpt_register_latest(self) -> RegistrationResult:
@@ -3473,8 +4408,6 @@ class RegistrationEngine:
                 )
                 return result
 
-            self._latest_chatgpt_add_password_after_register()
-
             self._log("8. 跟随 callback 并获取 chatgpt.com session...")
             return self._latest_chatgpt_fetch_session_result(result)
         except Exception as exc:
@@ -3554,7 +4487,7 @@ class RegistrationEngine:
                 )
                 return quickjs_payload
 
-            generator = _SentinelTokenGenerator(did, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
+            generator = _SentinelTokenGenerator(did, ua, client_version=self._latest_chatgpt_client_version())
 
             sent_p = generator.generate_requirements_token()
 
@@ -3564,6 +4497,7 @@ class RegistrationEngine:
                 "[REG-DIAG][sentinel][protocol] req "
                 f"flow={flow} endpoint={OPENAI_API_ENDPOINTS['sentinel']} "
                 f"p={self._diag_shape(sent_p, prefix=8)} "
+                f"{self._diag_sentinel_p_summary(sent_p)} "
                 f"id={self._diag_shape(did)} "
                 f"headers=({self._diag_header_summary(sen_headers)}) "
                 f"sdk={get_latest_sentinel_sdk_url()} frame={get_latest_sentinel_frame_url()}"
@@ -3692,6 +4626,7 @@ class RegistrationEngine:
                     "[REG-DIAG][sentinel][protocol] solved "
                     f"flow={flow} "
                     f"p={self._diag_shape(payload.p, prefix=8)} "
+                    f"{self._diag_sentinel_p_summary(payload.p)} "
                     f"c={self._diag_shape(payload.c)} "
                     f"t={self._diag_shape(payload.t)} "
                     f"so={self._diag_shape(payload.so_token)}"
@@ -3864,7 +4799,8 @@ class RegistrationEngine:
 
         self._log(
             f"{label} QuickJS Sentinel 已生成: "
-            f"flow={payload.flow} t_len={len(payload.t)} so_len={len(payload.so_token)}"
+            f"flow={payload.flow} t_len={len(payload.t)} so_len={len(payload.so_token)} "
+            f"{self._diag_sentinel_p_summary(payload.p)}"
         )
 
         return payload
@@ -4814,7 +5750,7 @@ class RegistrationEngine:
 
     def _refresh_mailbox_before_ids(self) -> None:
         """刷新已见邮件集合，避免重发 OTP 后再次读到旧验证码。"""
-        refresh = getattr(self.email_service, "refresh_before_ids", None)
+        refresh = getattr(getattr(self, "email_service", None), "refresh_before_ids", None)
         if callable(refresh):
             try:
                 seen = refresh()
@@ -5181,7 +6117,7 @@ class RegistrationEngine:
 
                 ua = login_client.default_headers.get("User-Agent", "")
 
-                generator = _SentinelTokenGenerator(did, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
+                generator = _SentinelTokenGenerator(did, ua, client_version=self._latest_chatgpt_client_version())
 
                 sent_p = generator.generate_requirements_token()
 
@@ -5781,7 +6717,7 @@ class RegistrationEngine:
 
         try:
 
-            generator = _SentinelTokenGenerator(device_id, ua, client_version=LATEST_CHATGPT_OAI_CLIENT_VERSION)
+            generator = _SentinelTokenGenerator(device_id, ua, client_version=self._latest_chatgpt_client_version())
 
             sent_p = generator.generate_requirements_token()
 
@@ -9021,6 +9957,7 @@ class RegistrationEngine:
                 # Chat2API 的 free 账号逻辑以 ChatGPT Web session 为准；
                 # 保存 cookie/session，便于后续用 /api/auth/session 复验。
                 "cookies": session_cookies_header,
+                "login_state_cookie": session_cookies_header,
                 "profile": session_profile,
                 "expires_at": session_expires,
                 "session": session_data,

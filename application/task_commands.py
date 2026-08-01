@@ -19,6 +19,7 @@ from application.tasks import (
     create_agents_upload_sub2api_task,
     create_gopay_pay_chatgpt_task,
     create_gopay_register_account_task,
+    complete_manual_post_register_capture,
     get_task,
     list_task_events,
     request_cancel,
@@ -84,6 +85,12 @@ class TaskCommandsService:
         if task:
             task_runtime.wake_up()
         return task
+
+    def complete_manual_post_register_capture(self, task_id: str) -> dict | None:
+        result = complete_manual_post_register_capture(task_id)
+        if result:
+            task_runtime.wake_up()
+        return result
 
     async def stream_task_events(self, task_id: str, *, since: int = 0) -> AsyncIterator[str]:
         cursor = since

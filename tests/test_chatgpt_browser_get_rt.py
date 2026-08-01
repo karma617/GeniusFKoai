@@ -462,3 +462,65 @@ def test_codex_oauth_continues_after_phone_success_post_resume_exception(monkeyp
 
     assert result["refresh_token"] == "refresh-token"
     assert any("手机验证已成功" in item and "继续状态机重试" in item for item in events)
+
+
+def test_codex_oauth_submits_totp_for_mfa_challenge(monkeypatch):
+    events = []
+    calls = {"mfa": 0}
+
+    class FakePage:
+        url = "https://auth.openai.com/start"
+
+        def evaluate(self, _script):
+            return "Mozilla/5.0"
+
+    page = FakePage()
+    oauth_start = SimpleNamespace(
+        auth_url="https://auth.openai.com/oauth/authorize?state=state_1",
+        state="state_1",
+        code_verifier="verifier_1",
+        redirect_uri="http://localhost:1455/auth/callback",
+        client_id="client_1",
+    )
+    states = [
+        {"page_type": "mfa_challenge", "continue_url": "https://auth.openai.com/mfa-challenge/factor-1"},
+        {"page_type": "oauth_callback", "continue_url": ""},
+    ]
+
+    def fake_state(_page):
+        if states:
+            return states.pop(0)
+        return {"page_type": "oauth_callback", "continue_url": ""}
+
+    def fake_mfa(page_obj, secret, _log):
+        calls["mfa"] += 1
+        assert secret == "JBSWY3DPEHPK3PXP"
+        page_obj.url = "http://localhost:1455/auth/callback?code=ok&state=state_1"
+        return {"ok": True, "status": 200, "url": page_obj.url, "text": ""}
+
+    monkeypatch.setattr(browser_register, "_goto_with_retry", lambda page_obj, url, **_kwargs: setattr(page_obj, "url", url))
+    monkeypatch.setattr(browser_register, "_derive_oauth_state_from_page", fake_state)
+    monkeypatch.setattr(browser_register, "_submit_oauth_totp_challenge", fake_mfa)
+    monkeypatch.setattr(
+        browser_register,
+        "_submit_callback_result_or_error",
+        lambda *_args, **_kwargs: {"access_token": "access-token", "refresh_token": "refresh-token"},
+    )
+    monkeypatch.setattr(browser_register, "_get_page_oauth_url", lambda _page: "")
+
+    result = browser_register._do_codex_oauth(
+        page,
+        {},
+        "user@example.com",
+        "password",
+        otp_callback=None,
+        phone_callback=None,
+        proxy=None,
+        log=events.append,
+        oauth_start=oauth_start,
+        totp_secret="JBSWY3DPEHPK3PXP",
+    )
+
+    assert result["refresh_token"] == "refresh-token"
+    assert calls["mfa"] == 1
+    assert any("2FA challenge" in item for item in events)

@@ -9,7 +9,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 from core.db import AccountModel, ProviderResourceModel, TaskEventModel, TaskModel, engine
-from core.gmail_api_code_mailbox import GmailApiCodeMailbox, parse_gmail_api_code_entries
+from core.gmail_api_code_mailbox import GmailApiCodeMailbox, parse_gmail_api_code_pool_rows
 from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
 
@@ -64,8 +64,27 @@ def _metadata_text(metadata: dict[str, Any], *keys: str) -> str:
 def _configured_parent_emails() -> tuple[set[str], bool]:
     settings = ProviderSettingsRepository().resolve_runtime_settings("mailbox", "gmail_api_code", {})
     pool_text = str(settings.get("gmail_api_code_pool_text") or "")
-    parents = {_resolve_gmail_parent(item.email) for item in parse_gmail_api_code_entries(pool_text)}
+    parents = {
+        _resolve_gmail_parent(item.email)
+        for item in parse_gmail_api_code_pool_rows(pool_text)
+        if item.status != "deleted"
+    }
     return {item for item in parents if item}, bool(pool_text.strip())
+
+
+def _configured_parent_statuses() -> dict[str, tuple[str, str]]:
+    settings = ProviderSettingsRepository().resolve_runtime_settings("mailbox", "gmail_api_code", {})
+    pool_text = str(settings.get("gmail_api_code_pool_text") or "")
+    statuses: dict[str, tuple[str, str]] = {}
+    for row in parse_gmail_api_code_pool_rows(pool_text):
+        parent = _resolve_gmail_parent(row.email)
+        if not parent or row.status in {"active", "deleted"}:
+            continue
+        if row.status == "invalid":
+            statuses[parent] = ("unusable", "pool_invalid")
+        elif row.status == "registered":
+            statuses[parent] = ("registered", "pool_registered")
+    return statuses
 
 
 def _empty_parent(parent: str, configured: bool) -> dict[str, Any]:
@@ -117,10 +136,15 @@ def _mark_email_status(item: dict[str, Any], status: str, reason: str = "") -> N
 
 def gmail_api_code_alias_usage() -> dict[str, Any]:
     configured_parents, config_pool_recorded = _configured_parent_emails()
+    configured_statuses = _configured_parent_statuses()
     parents: dict[str, dict[str, Any]] = {
         parent: _empty_parent(parent, True)
         for parent in configured_parents
     }
+    for parent, (status, reason) in configured_statuses.items():
+        if parent not in parents:
+            continue
+        _mark_email_status(parents[parent], status, reason)
     for parent in _runtime_invalid_emails():
         parent = _resolve_gmail_parent(parent)
         if not parent or parent not in configured_parents:
@@ -151,7 +175,7 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
             _add_seen(item, resource.created_at)
             _add_seen(item, resource.updated_at)
             registration_status = str(metadata.get("registration_status") or "").strip().lower()
-            if resource_email == parent and (
+            if (
                 registration_status == "invalid"
                 or metadata.get("registration_invalid")
             ):
@@ -160,7 +184,7 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                     "unusable",
                     str(metadata.get("registration_invalid_reason") or registration_status or "invalid"),
                 )
-            elif resource_email == parent and (
+            elif (
                 registration_status == "registered"
                 or metadata.get("registration_success")
             ):

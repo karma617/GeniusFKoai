@@ -4,14 +4,40 @@ import base64
 import json
 
 import pytest
+from sqlmodel import Session
 
+from core.db import AccountModel, ProviderResourceModel, ProviderSettingModel, engine
 from core.email_alias_mailbox import EmailAliasMailbox
-from core.gmail_api_code_mailbox import GmailApiCodeMailbox, parse_gmail_api_code_entries
+from core.gmail_api_code_mailbox import (
+    GmailApiCodeMailbox,
+    parse_gmail_api_code_entries,
+    parse_gmail_api_code_pool_rows,
+)
 
 
 def setup_function():
     GmailApiCodeMailbox._ACTIVE_CLAIMS.clear()
     GmailApiCodeMailbox._INVALID_EMAILS.clear()
+
+
+def _save_gmail_api_code_pool(pool_text: str, *, storage: str = "config") -> None:
+    with Session(engine) as session:
+        setting = ProviderSettingModel(
+            provider_type="mailbox",
+            provider_key="gmail_api_code",
+            display_name="Gmail API接码",
+            enabled=True,
+            is_default=True,
+        )
+        if storage == "auth":
+            setting.set_config({})
+            setting.set_auth({"gmail_api_code_pool_text": pool_text})
+        else:
+            setting.set_config({"gmail_api_code_pool_text": pool_text})
+            setting.set_auth({})
+        setting.set_metadata({})
+        session.add(setting)
+        session.commit()
 
 
 def test_parse_gmail_api_code_entries_splits_email_and_url():
@@ -32,6 +58,25 @@ def test_parse_gmail_api_code_entries_skips_deleted_rows():
     )
 
     assert [entry.email for entry in entries] == ["second@gmail.com"]
+
+
+def test_parse_gmail_api_code_pool_rows_keeps_status_markers_for_display():
+    rows = parse_gmail_api_code_pool_rows(
+        "# registered used@gmail.com----https://example.test/used\n"
+        "# invalid dead@gmail.com----https://example.test/dead\n"
+        "# deleted old@gmail.com----https://example.test/old\n"
+        "active@gmail.com----https://example.test/active"
+    )
+
+    assert [(row.email, row.status) for row in rows] == [
+        ("used@gmail.com", "registered"),
+        ("dead@gmail.com", "invalid"),
+        ("old@gmail.com", "deleted"),
+        ("active@gmail.com", "active"),
+    ]
+    assert [entry.email for entry in parse_gmail_api_code_entries(
+        "\n".join(f"{'# ' + row.status + ' ' if row.status != 'active' else ''}{row.email}----{row.code_url}" for row in rows)
+    )] == ["active@gmail.com"]
 
 
 def test_gmail_api_code_get_email_claims_fixed_gmail():
@@ -88,6 +133,121 @@ def test_gmail_api_code_invalid_only_parent_is_not_temporary_pool_empty():
     assert mailbox.mark_invalid_email(account, reason="invalid_email_no_otp") == ["Gmail API接码邮箱已标记无效"]
     with pytest.raises(RuntimeError, match="已无可用邮箱"):
         mailbox.get_email()
+
+
+def test_gmail_api_code_mark_success_updates_pool_text_registered():
+    _save_gmail_api_code_pool(
+        "first@gmail.com----https://example.test/first\n"
+        "second@gmail.com----https://example.test/second"
+    )
+    mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
+    account = mailbox.get_email()
+
+    assert mailbox.mark_registration_success(account) == ["Gmail API接码邮箱已注册"]
+
+    with Session(engine) as session:
+        setting = session.get(ProviderSettingModel, 1)
+        pool_text = setting.get_config()["gmail_api_code_pool_text"]
+    assert "# registered first@gmail.com----https://example.test/first" in pool_text
+    assert [entry.email for entry in parse_gmail_api_code_entries(pool_text)] == ["second@gmail.com"]
+
+
+def test_gmail_api_code_mark_invalid_updates_pool_text_unusable():
+    _save_gmail_api_code_pool(
+        "first@gmail.com----https://example.test/first\n"
+        "second@gmail.com----https://example.test/second"
+    )
+    mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
+    account = mailbox.get_email()
+
+    assert mailbox.mark_invalid_email(account, reason="gmail_api_code_502") == ["Gmail API接码邮箱已标记无效"]
+
+    with Session(engine) as session:
+        setting = session.get(ProviderSettingModel, 1)
+        pool_text = setting.get_config()["gmail_api_code_pool_text"]
+    assert "# invalid first@gmail.com----https://example.test/first" in pool_text
+    assert [entry.email for entry in parse_gmail_api_code_entries(pool_text)] == ["second@gmail.com"]
+
+
+def test_gmail_api_code_mark_invalid_updates_auth_pool_text_unusable():
+    _save_gmail_api_code_pool(
+        "first@gmail.com----https://example.test/first\n"
+        "second@gmail.com----https://example.test/second",
+        storage="auth",
+    )
+    mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
+    account = mailbox.get_email()
+
+    assert mailbox.mark_invalid_email(account, reason="invalid_email_no_otp") == ["Gmail API接码邮箱已标记无效"]
+
+    with Session(engine) as session:
+        setting = session.get(ProviderSettingModel, 1)
+        config = setting.get_config()
+        pool_text = setting.get_auth()["gmail_api_code_pool_text"]
+    assert "gmail_api_code_pool_text" not in config
+    assert "# invalid first@gmail.com----https://example.test/first" in pool_text
+    assert [entry.email for entry in parse_gmail_api_code_entries(pool_text)] == ["second@gmail.com"]
+
+
+def test_gmail_api_code_mark_success_updates_auth_pool_text_registered():
+    _save_gmail_api_code_pool(
+        "first@gmail.com----https://example.test/first\n"
+        "second@gmail.com----https://example.test/second",
+        storage="auth",
+    )
+    mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
+    account = mailbox.get_email()
+
+    assert mailbox.mark_registration_success(account) == ["Gmail API接码邮箱已注册"]
+
+    with Session(engine) as session:
+        setting = session.get(ProviderSettingModel, 1)
+        config = setting.get_config()
+        pool_text = setting.get_auth()["gmail_api_code_pool_text"]
+    assert "gmail_api_code_pool_text" not in config
+    assert "# registered first@gmail.com----https://example.test/first" in pool_text
+    assert [entry.email for entry in parse_gmail_api_code_entries(pool_text)] == ["second@gmail.com"]
+
+
+def test_gmail_api_code_parent_status_matches_alias_provider_resource():
+    with Session(engine) as session:
+        account = AccountModel(
+            platform="chatgpt",
+            email="first+alias@gmail.com",
+            password="Secret123!",
+            user_id="first+alias@gmail.com",
+        )
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        resource = ProviderResourceModel(
+            account_id=account.id or 0,
+            provider_type="mailbox",
+            provider_name="gmail_api_code",
+            resource_type="mailbox",
+            resource_identifier="first@gmail.com",
+            handle="first+alias@gmail.com",
+            display_name="first+alias@gmail.com",
+        )
+        resource.set_metadata(
+            {
+                "email": "first@gmail.com",
+                "alias_email": "first+alias@gmail.com",
+                "alias_parent_email": "first@gmail.com",
+                "registration_status": "invalid",
+            }
+        )
+        session.add(resource)
+        session.commit()
+
+    mailbox = GmailApiCodeMailbox(
+        pool_text=(
+            "first@gmail.com----https://example.test/first\n"
+            "second@gmail.com----https://example.test/second"
+        )
+    )
+
+    assert mailbox.get_email().email == "second@gmail.com"
 
 
 def test_gmail_api_code_wait_for_code_skips_before_id(monkeypatch):
@@ -388,3 +548,27 @@ def test_gmail_api_code_ignores_active_item_href_mail_id():
     """
 
     assert GmailApiCodeMailbox._extract_code(html) == "314863"
+
+
+def test_gmail_api_code_prefers_login_temporary_code_over_tracking_id_with_pattern():
+    selected_mail = """
+    <!doctype html><html><body>
+      <div>Your temporary ChatGPT login code</div>
+      <p>Log in to ChatGPT with the button below.</p>
+      <a href="https://url3243.email.openai.com/ls/click?upn=202123">Log in to ChatGPT</a>
+      <p>You can also enter this temporary code: 466072</p>
+      <p>Didn't request a verification code? You can ignore this email.</p>
+    </body></html>
+    """
+    data_uri = "data:text/html;charset=utf-8;base64," + base64.b64encode(selected_mail.encode()).decode()
+    html = f"""
+    <a class="item active" href="#mail-825390" data-id="825390">
+      <div class="subject">Your temporary ChatGPT login code</div>
+      <div class="time">2026-08-01 18:27:46</div>
+    </a>
+    <article class="card mail" id="mail-view">
+      <iframe class="mail-frame" src="{data_uri}"></iframe>
+    </article>
+    """
+
+    assert GmailApiCodeMailbox._extract_code(html, code_pattern=r"(?<!#)(?<!\d)(\d{6})(?!\d)") == "466072"

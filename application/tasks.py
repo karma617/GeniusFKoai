@@ -136,6 +136,46 @@ TERMINAL_TASK_STATUSES = {
 
 }
 
+MANUAL_POST_REGISTER_CAPTURE_DIR = Path("tools/captures")
+
+
+def _manual_post_register_capture_signal_path(task_id: str) -> Path:
+    safe_task_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(task_id or "").strip()) or "task"
+    return MANUAL_POST_REGISTER_CAPTURE_DIR / f"manual-post-register-finish-{safe_task_id}.signal"
+
+
+def _clear_manual_post_register_capture_signal(task_id: str) -> None:
+    try:
+        path = _manual_post_register_capture_signal_path(task_id)
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def complete_manual_post_register_capture(task_id: str) -> Optional[dict[str, Any]]:
+    task = get_task(task_id)
+    if not task:
+        return None
+    path = _manual_post_register_capture_signal_path(task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "task_id": str(task_id),
+                "finished_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    append_task_event(
+        task_id,
+        f"已收到手动后置抓包完成信号，准备停止 HAR 录制: {path}",
+        event_type="state",
+    )
+    return {"ok": True, "task_id": str(task_id), "finish_signal_path": str(path)}
+
 ACTIVE_TASK_STATUSES = {
 
     TASK_STATUS_CLAIMED,
@@ -1988,9 +2028,12 @@ def _extract_chatgpt_account_id_for_usage(account) -> str:
 
 def _extract_chatgpt_access_token(account) -> str:
     extra = dict(getattr(account, "extra", {}) or {})
+    session = extra.get("session") if isinstance(extra.get("session"), dict) else {}
     return str(
         extra.get("access_token")
         or extra.get("accessToken")
+        or session.get("accessToken")
+        or session.get("access_token")
         or getattr(account, "token", "")
         or ""
     ).strip()
@@ -2019,11 +2062,25 @@ def _auto_enable_chatgpt_2fa_after_register(
     *,
     proxy: str | None = None,
     enable: bool | None = None,
+    require_password_set: bool = False,
 ) -> None:
     extra = dict(getattr(account, "extra", {}) or {})
-    enabled = _bool_config(extra.get("enable_2fa_after_register", True), True) if enable is None else bool(enable)
+    enabled = _bool_config(extra.get("enable_2fa_after_register", False), False) if enable is None else bool(enable)
     if not enabled:
         logger.log("2FA: 未勾选设置2FA，跳过")
+        return
+    if _bool_config(extra.get("mfa_enabled"), False) or str(extra.get("totp_secret") or "").strip():
+        logger.log("2FA: 已在注册后置浏览器任务中设置完成，跳过重复设置")
+        return
+    if _bool_config(extra.get("manual_post_register_capture"), False):
+        logger.log("2FA: 手动后置抓包模式已完成，跳过自动设置2FA")
+        return
+    if require_password_set and not _bool_config(extra.get("password_set_after_register"), False):
+        account_overview = dict(extra.get("account_overview") or {})
+        account_overview.update({"mfa_enabled": False, "mfa_error": "password_not_set"})
+        extra.update({"mfa_enabled": False, "mfa_error": "password_not_set", "account_overview": account_overview})
+        account.extra = extra
+        logger.log("2FA: 设置帐号密码未成功，跳过自动设置2FA", level="warning")
         return
     cookies = _extract_chatgpt_cookies(account)
     session_token = _extract_chatgpt_session_token(account)
@@ -2040,6 +2097,12 @@ def _auto_enable_chatgpt_2fa_after_register(
             access_token=access_token,
             proxy=proxy,
             log_fn=logger.log,
+            user_agent=str(extra.get("chatgpt_user_agent") or ""),
+            accept_language=str(extra.get("chatgpt_accept_language") or ""),
+            client_version=str(extra.get("chatgpt_oai_client_version") or ""),
+            client_build_number=str(extra.get("chatgpt_oai_client_build_number") or ""),
+            device_id=str(extra.get("chatgpt_oai_device_id") or ""),
+            oai_session_id=str(extra.get("chatgpt_oai_session_id") or ""),
         )
         account_overview = dict(extra.get("account_overview") or {})
         chips = list(account_overview.get("chips") or [])
@@ -3254,6 +3317,13 @@ def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger
     captcha_solver = str(payload.get("captcha_solver", "auto") or "auto")
 
     extra = dict(payload.get("extra") or {})
+    if platform_name == "chatgpt":
+        extra.setdefault("_task_id", logger.task_id)
+        extra.setdefault(
+            "_manual_post_register_capture_finish_path",
+            str(_manual_post_register_capture_signal_path(logger.task_id)),
+        )
+        extra.setdefault("_cancel_check", logger.is_cancel_requested)
 
     config = RegisterConfig(
 
@@ -5875,6 +5945,29 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     extra = dict(payload.get("extra") or {})
 
+    manual_post_register_capture = (
+        platform_name == "chatgpt"
+        and str(payload.get("executor_type", "") or "").strip().lower() == "headed"
+        and (
+            _bool_config(extra.get("set_password_after_register"), False)
+            or _bool_config(extra.get("enable_2fa_after_register"), False)
+        )
+    )
+    if manual_post_register_capture:
+        _clear_manual_post_register_capture_signal(logger.task_id)
+        extra["record_har"] = True
+        extra["_manual_post_register_security_capture"] = True
+        extra["_task_id"] = logger.task_id
+        extra["_manual_post_register_capture_finish_path"] = str(
+            _manual_post_register_capture_signal_path(logger.task_id)
+        )
+        payload = dict(payload)
+        payload["extra"] = extra
+        if concurrency > 1:
+            logger.log("手动后置安全抓包模式需要逐个操作，注册并发已调整为 1", level="warning")
+            concurrency = 1
+        logger.log("有头浏览器后置安全抓包模式已启用：注册成功后会保持浏览器和 HAR 录制")
+
 
 
     if platform_name == "chatgpt" and _bool_config(
@@ -6544,7 +6637,8 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     account,
                     logger,
                     proxy=resolved_proxy,
-                    enable=_bool_config((dict(_build_payload.get("extra") or {})).get("enable_2fa_after_register"), True),
+                    enable=_bool_config((dict(_build_payload.get("extra") or {})).get("enable_2fa_after_register"), False),
+                    require_password_set=_bool_config((dict(_build_payload.get("extra") or {})).get("set_password_after_register"), False),
                 )
 
             saved_model = save_account(account)
@@ -10009,7 +10103,8 @@ def _register_chatgpt_shortlink_grab_for_gopay(
                 account,
                 logger,
                 proxy=resolved_proxy,
-                enable=_bool_config((dict(slot_payload.get("extra") or {})).get("enable_2fa_after_register"), True),
+                enable=_bool_config((dict(slot_payload.get("extra") or {})).get("enable_2fa_after_register"), False),
+                require_password_set=_bool_config((dict(slot_payload.get("extra") or {})).get("set_password_after_register"), False),
             )
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
@@ -10191,7 +10286,8 @@ def _register_chatgpt_accounts_for_gopay(
                 account,
                 logger,
                 proxy=resolved_proxy,
-                enable=_bool_config((dict(payload.get("extra") or {})).get("enable_2fa_after_register"), True),
+                enable=_bool_config((dict(payload.get("extra") or {})).get("enable_2fa_after_register"), False),
+                require_password_set=_bool_config((dict(payload.get("extra") or {})).get("set_password_after_register"), False),
             )
 
             save_account(account)

@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getTaskStatusText, TASK_STATUS_VARIANTS, isTerminalTaskStatus } from '@/lib/tasks'
-import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search, ListChecks } from 'lucide-react'
+import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search, ListChecks, Eye, EyeOff } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', agent_identity_uploaded: 'success', trial: 'success', subscribed: 'success',
@@ -36,6 +36,17 @@ const BROWSER_MODE_OPTIONS = [
 
 type GetRtSmsBalanceAction = 'auto_switch' | 'wait_release' | 'terminate'
 type RegisterCountMode = 'child' | 'parent'
+type TotpDialogState = {
+  accountId: number
+  email: string
+  code: string
+  remain: number
+  copied: boolean
+  period: number
+  generatedAt: number
+  serverOffsetMs: number
+  windowIndex: number
+}
 
 type GmailApiCodeAliasUsage = {
   alias_limit?: number
@@ -365,6 +376,82 @@ function getPrimaryToken(acc: any) {
   if (acc?.primary_token) return acc.primary_token
   const credential = getCredentials(acc).find((item: any) => item?.scope === 'platform' && item?.credential_type === 'token' && item?.value)
   return credential?.value || ''
+}
+
+function getCredentialValue(acc: any, keys: string[]) {
+  const wanted = new Set(keys.map(key => key.toLowerCase()))
+  const credential = getCredentials(acc).find((item: any) =>
+    item?.scope === 'platform' && wanted.has(String(item?.key || '').trim().toLowerCase()) && item?.value,
+  )
+  return credential?.value ? String(credential.value).trim() : ''
+}
+
+function normalizeCookieHeaderForCopy(value: any) {
+  const text = String(value || '').trim().replace(/^cookie\s*:\s*/i, '')
+  if (!text) return ''
+  if (text.startsWith('{') && text.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return Object.entries(parsed)
+          .map(([name, value]) => `${String(name).trim()}=${String(value ?? '')}`)
+          .filter(part => part && !part.endsWith('='))
+          .join(';')
+      }
+    } catch {
+      // Fall back to raw cookie text below.
+    }
+  }
+  return text.split(';').map(part => part.trim()).filter(Boolean).join(';')
+}
+
+function cookieHeaderScore(value: string) {
+  const text = normalizeCookieHeaderForCopy(value)
+  if (!text) return 0
+  return text.split(';').filter(Boolean).length * 100000 + text.length
+}
+
+function getChatgptAccessToken(acc: any) {
+  const credentialToken = getCredentialValue(acc, ['access_token', 'accessToken'])
+  if (credentialToken) return credentialToken
+  const session = getChatgptSessionPayload(acc)
+  if (session && typeof session === 'object') {
+    return String(session.accessToken || session.access_token || '').trim()
+  }
+  return String(acc?.primary_token || '').trim()
+}
+
+function getChatgptLoginStateCookie(acc: any) {
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const session = getChatgptSessionPayload(acc)
+  const wanted = new Set(['cookies', 'login_state_cookie', 'cookie_header', 'cookie', 'session_cookie'])
+  const candidates = [
+    ...getCredentials(acc)
+      .filter((item: any) => item?.scope === 'platform' && wanted.has(String(item?.key || '').trim().toLowerCase()) && item?.value)
+      .map((item: any) => String(item.value || '').trim()),
+    String(overview?.cookies || '').trim(),
+    String(overview?.login_state_cookie || '').trim(),
+    String(overview?.cookie_header || '').trim(),
+    String(overview?.cookie || '').trim(),
+    String(legacyExtra?.cookies || '').trim(),
+    String(legacyExtra?.login_state_cookie || '').trim(),
+    String(legacyExtra?.cookie_header || '').trim(),
+    String(legacyExtra?.cookie || '').trim(),
+  ].filter(Boolean)
+  const cookie = candidates.sort((left, right) => cookieHeaderScore(right) - cookieHeaderScore(left))[0] || ''
+  if (cookie) return normalizeCookieHeaderForCopy(cookie)
+  const sessionToken = (
+    getCredentialValue(acc, ['session_token', 'sessionToken'])
+    || (session && typeof session === 'object' ? String(session.sessionToken || session.session_token || '').trim() : '')
+  )
+  return sessionToken ? `__Secure-next-auth.session-token=${sessionToken}` : ''
+}
+
+function buildChatgptAtCookieCopyText(acc: any) {
+  const accessToken = getChatgptAccessToken(acc)
+  const cookie = getChatgptLoginStateCookie(acc)
+  return accessToken && cookie ? `${accessToken} | ${cookie} \n` : ''
 }
 
 function getAccountPlanLabel(acc: any) {
@@ -1050,6 +1137,10 @@ async function writeClipboardText(text: string) {
   el.select()
   document.execCommand('copy')
   document.body.removeChild(el)
+}
+
+function ensureTrailingNewline(text: string) {
+  return text.endsWith('\n') ? text : `${text}\n`
 }
 
 function escapeCsvField(value: unknown) {
@@ -1751,7 +1842,7 @@ function RegisterModal({
                           设置帐号密码
                         </div>
                         <div className="mt-0.5">
-                          协议注册创建资料后按设置密码链路写入当前生成密码，便于后续使用邮箱密码登录。
+                          注册创建资料并取得 session 后写入当前生成密码；设置 2FA 时会先设置密码再绑定。
                         </div>
                       </div>
                     </label>
@@ -3422,8 +3513,10 @@ export default function Accounts() {
   const [baExtractStopping, setBaExtractStopping] = useState(false)
   const [platformsMap, setPlatformsMap] = useState<Record<string, any>>({})
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [visiblePasswordIds, setVisiblePasswordIds] = useState<Set<number>>(new Set())
   const [actionResult, setActionResult] = useState<{ title: string; payload: any } | null>(null)
-  const [totpDialog, setTotpDialog] = useState<{ email: string; code: string; remain: number; copied: boolean } | null>(null)
+  const [totpDialog, setTotpDialog] = useState<TotpDialogState | null>(null)
+  const totpRefreshInFlightRef = useRef(false)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [invalidDeleting, setInvalidDeleting] = useState(false)
   const [batchRefreshing, setBatchRefreshing] = useState(false)
@@ -4050,6 +4143,15 @@ export default function Accounts() {
     else { const el = document.createElement('textarea'); el.value = text; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el) }
   }
 
+  const togglePasswordVisible = useCallback((accountId: number) => {
+    setVisiblePasswordIds(prev => {
+      const next = new Set(prev)
+      if (next.has(accountId)) next.delete(accountId)
+      else next.add(accountId)
+      return next
+    })
+  }, [])
+
   const showTotpCodeForAccount = async (acc: any) => {
     const accountId = Number(acc?.id)
     if (!Number.isFinite(accountId) || accountId <= 0) return
@@ -4068,17 +4170,81 @@ export default function Accounts() {
       } catch {
         // Clipboard is best-effort; the dialog still shows the code.
       }
-      const remain = Number(data?.valid_for_seconds || 0)
+      const period = Math.max(1, Number(data?.period || 30))
+      const generatedAt = Math.max(0, Number(data?.generated_at || Math.floor(Date.now() / 1000)))
+      const serverOffsetMs = generatedAt * 1000 - Date.now()
+      const serverNow = Math.floor((Date.now() + serverOffsetMs) / 1000)
+      const remain = Math.max(1, Number(data?.valid_for_seconds || (period - (serverNow % period))))
       setTotpDialog({
+        accountId,
         email: String(acc?.email || ''),
         code,
         remain,
         copied,
+        period,
+        generatedAt,
+        serverOffsetMs,
+        windowIndex: Math.floor(serverNow / period),
       })
     } catch (exc: any) {
       setError(exc?.message || t('login.requestFailed'))
     }
   }
+
+  useEffect(() => {
+    if (!totpDialog) return
+    const accountId = totpDialog.accountId
+    const period = Math.max(1, Number(totpDialog.period || 30))
+    const serverOffsetMs = Number(totpDialog.serverOffsetMs || 0)
+    const refreshCode = async () => {
+      if (totpRefreshInFlightRef.current) return
+      totpRefreshInFlightRef.current = true
+      try {
+        const data = await apiFetch(`/accounts/${accountId}/totp-code`)
+        const nextCode = String(data?.code || '').trim()
+        if (!nextCode) return
+        const nextPeriod = Math.max(1, Number(data?.period || period || 30))
+        const generatedAt = Math.max(0, Number(data?.generated_at || Math.floor(Date.now() / 1000)))
+        const nextOffsetMs = generatedAt * 1000 - Date.now()
+        const serverNow = Math.floor((Date.now() + nextOffsetMs) / 1000)
+        setTotpDialog(current => {
+          if (!current || current.accountId !== accountId) return current
+          return {
+            ...current,
+            code: nextCode,
+            copied: nextCode === current.code ? current.copied : false,
+            period: nextPeriod,
+            generatedAt,
+            serverOffsetMs: nextOffsetMs,
+            remain: Math.max(1, Number(data?.valid_for_seconds || (nextPeriod - (serverNow % nextPeriod)))),
+            windowIndex: Math.floor(serverNow / nextPeriod),
+          }
+        })
+      } catch (exc: any) {
+        setError(exc?.message || '刷新2FA验证码失败')
+      } finally {
+        totpRefreshInFlightRef.current = false
+      }
+    }
+
+    const tick = () => {
+      const serverNow = Math.floor((Date.now() + serverOffsetMs) / 1000)
+      const nextRemain = Math.max(1, period - (serverNow % period))
+      const nextWindowIndex = Math.floor(serverNow / period)
+      setTotpDialog(current => {
+        if (!current || current.accountId !== accountId) return current
+        if (current.remain === nextRemain && current.windowIndex === nextWindowIndex) return current
+        return { ...current, remain: nextRemain, windowIndex: nextWindowIndex }
+      })
+      if (nextWindowIndex > totpDialog.windowIndex) {
+        refreshCode()
+      }
+    }
+
+    tick()
+    const timer = window.setInterval(tick, 1000)
+    return () => window.clearInterval(timer)
+  }, [totpDialog?.accountId, totpDialog?.period, totpDialog?.serverOffsetMs, totpDialog?.windowIndex])
 
   const copyTotpDialogCode = async () => {
     if (!totpDialog?.code) return
@@ -4098,7 +4264,7 @@ export default function Accounts() {
     setCopyingAccessTokenId(accountId)
     setError('')
     try {
-      copy(token)
+      copy(ensureTrailingNewline(token))
       overview.access_token_copy_count = nextCount
       const updated = await apiFetch(`/accounts/${accountId}`, {
         method: 'PATCH',
@@ -4108,6 +4274,35 @@ export default function Accounts() {
       setDetail((current: any | null) => Number(current?.id) === accountId ? updated : current)
     } catch (exc: any) {
       setError(`AT 已复制，但复制次数保存失败: ${exc?.message || exc}`)
+    } finally {
+      setCopyingAccessTokenId(null)
+    }
+  }
+
+  const copyChatgptAtCookie = async (acc: any, text: string) => {
+    const accountId = Number(acc.id)
+    if (!text || copyingAccessTokenId === accountId) return
+    const overview = { ...getAccountOverview(acc) }
+    const nextCount = getAccessTokenCopyCount(acc) + 1
+    setCopyingAccessTokenId(accountId)
+    setError('')
+    try {
+      await writeClipboardText(ensureTrailingNewline(text))
+    } catch {
+      setError('复制AT|cookie失败')
+      setCopyingAccessTokenId(null)
+      return
+    }
+    try {
+      overview.access_token_copy_count = nextCount
+      const updated = await apiFetch(`/accounts/${accountId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ overview }),
+      })
+      setAccounts(items => items.map(item => Number(item.id) === accountId ? updated : item))
+      setDetail((current: any | null) => Number(current?.id) === accountId ? updated : current)
+    } catch (exc: any) {
+      setError(`AT|cookie 已复制，但复制次数保存失败: ${exc?.message || exc}`)
     } finally {
       setCopyingAccessTokenId(null)
     }
@@ -5725,6 +5920,8 @@ export default function Accounts() {
                     (() => {
                       const primaryToken = getPrimaryToken(acc)
                       const accessTokenCopyCount = getAccessTokenCopyCount(acc)
+                      const atCookieText = buildChatgptAtCookieCopyText(acc)
+                      const hasAtCookie = Boolean(atCookieText)
                       const planLabel = getAccountPlanLabel(acc)
                       const sessionText = getChatgptSessionText(acc)
                       const hasSessionJson = Boolean(sessionText)
@@ -5744,6 +5941,8 @@ export default function Accounts() {
                       const baTask = resolveBaExtractTask(acc)
                       const baTaskActive = isBaExtractTaskActive(baTask)
                       const ppBaToken = getAccountBaToken(acc)
+                      const accountPassword = String(acc?.password || '').trim()
+                      const passwordVisible = visiblePasswordIds.has(Number(acc.id))
 
                       return (
                         <tr
@@ -5778,6 +5977,34 @@ export default function Accounts() {
                                 <Copy className="h-3.5 w-3.5" />
                               </button>
                             </div>
+                            {accountPassword && (
+                              <div className="mt-1.5 flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-[var(--text-muted)]">
+                                <span className="shrink-0 text-[10px] font-semibold tracking-wide">密码</span>
+                                <span
+                                  className={cn(
+                                    'min-w-0 flex-1 truncate transition-all duration-150',
+                                    passwordVisible
+                                      ? 'select-text text-[var(--text-secondary)] blur-0'
+                                      : 'select-none text-[var(--text-muted)] blur-[4px]',
+                                  )}
+                                  title={passwordVisible ? accountPassword : '点击图标显示密码'}
+                                >
+                                  {accountPassword}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={e => {
+                                    e.stopPropagation()
+                                    togglePasswordVisible(Number(acc.id))
+                                  }}
+                                  className="shrink-0 rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--accent)]"
+                                  title={passwordVisible ? '隐藏密码' : '显示密码'}
+                                  aria-label={passwordVisible ? '隐藏密码' : '显示密码'}
+                                >
+                                  {passwordVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                                </button>
+                              </div>
+                            )}
                           </td>
                           <td className="px-3 py-3 align-middle">
                             <span className={cn('inline-flex min-w-[44px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold', getAccountPlanPillClassName(acc, planLabel))}>
@@ -5889,12 +6116,22 @@ export default function Accounts() {
                               )}
                               <button
                                 onClick={() => copyAccessToken(acc, primaryToken)}
-                                disabled={!primaryToken || copyingAccessTokenId === acc.id}
+                                disabled={!primaryToken || copyingAccessTokenId === Number(acc.id)}
                                 className="table-action-btn border-emerald-500/25 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500/45 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
                                 title={primaryToken ? `复制 access_token，已复制 ${accessTokenCopyCount} 次` : '当前账号没有 AT'}
                               >
-                                {copyingAccessTokenId === acc.id ? '保存中' : `复制 AT${accessTokenCopyCount > 0 ? ` · ${accessTokenCopyCount}` : ''}`}
+                                {copyingAccessTokenId === Number(acc.id) ? '保存中' : `复制 AT${accessTokenCopyCount > 0 ? ` · ${accessTokenCopyCount}` : ''}`}
                               </button>
+                              {tab === 'chatgpt' && (
+                                <button
+                                  onClick={() => copyChatgptAtCookie(acc, atCookieText)}
+                                  disabled={!hasAtCookie || copyingAccessTokenId === Number(acc.id)}
+                                  className="table-action-btn border-sky-500/25 bg-sky-500/10 text-sky-700 hover:border-sky-500/45 hover:bg-sky-500/15 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
+                                  title={hasAtCookie ? '复制格式：Access Token | cookie' : '当前账号缺少 AT 或 cookie'}
+                                >
+                                  {copyingAccessTokenId === Number(acc.id) ? '保存中' : '复制AT|cookie'}
+                                </button>
+                              )}
                               {tab === 'chatgpt' && (
                                 <button
                                   onClick={() => refreshPlanForAccount(acc)}
@@ -6298,6 +6535,8 @@ export default function Accounts() {
                 const baTask = resolveBaExtractTask(acc)
                 const baTaskActive = isBaExtractTaskActive(baTask)
                 const ppBaToken = getAccountBaToken(acc)
+                const accountPassword = String(acc?.password || '').trim()
+                const passwordVisible = visiblePasswordIds.has(Number(acc.id))
                 return (
               <tr key={acc.id} className="group border-b border-[var(--border)]/30 hover:bg-[var(--text-primary)]/[0.02] transition-colors"
 >
@@ -6314,6 +6553,32 @@ export default function Accounts() {
                     <span className="truncate tracking-tight cursor-copy" title={acc.email} onClick={e => { e.stopPropagation(); copy(acc.email) }}>{acc.email}</span>
                     <button onClick={e => { e.stopPropagation(); copy(acc.email) }} title="复制邮箱" className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
                   </div>
+                  {accountPassword && (
+                    <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-[var(--text-muted)]">
+                      <span className="shrink-0 text-[10px] font-semibold tracking-wide">密码</span>
+                      <span
+                        className={cn(
+                          'min-w-0 flex-1 truncate transition-all duration-150',
+                          passwordVisible ? 'select-text text-[var(--text-secondary)] blur-0' : 'select-none blur-[4px]',
+                        )}
+                        title={passwordVisible ? accountPassword : '点击图标显示密码'}
+                      >
+                        {accountPassword}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation()
+                          togglePasswordVisible(Number(acc.id))
+                        }}
+                        className="shrink-0 rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                        title={passwordVisible ? '隐藏密码' : '显示密码'}
+                        aria-label={passwordVisible ? '隐藏密码' : '显示密码'}
+                      >
+                        {passwordVisible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                  )}
                   {verificationMailbox && (verificationMailbox.email || verificationMailbox.account_id || verificationMailbox.provider) && (
                     <div
                       className="mt-1 truncate text-xs text-[var(--text-muted)] flex items-center gap-1"
@@ -6339,10 +6604,34 @@ export default function Accounts() {
                   )}
                 </td>
                 <td className="px-3 py-2.5 font-mono text-[13px] text-[var(--text-muted)] align-top">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="truncate blur-[3px] transition-all cursor-default hover:blur-none select-none hover:select-auto hover:text-[var(--text-primary)]" title={acc.password}>{acc.password}</span>
-                    <button onClick={e => { e.stopPropagation(); copy(acc.password) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity"><Copy className="h-3 w-3" /></button>
-                  </div>
+                  {accountPassword ? (
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span
+                        className={cn(
+                          'truncate transition-all duration-150',
+                          passwordVisible ? 'select-text text-[var(--text-secondary)] blur-0' : 'select-none blur-[4px]',
+                        )}
+                        title={passwordVisible ? accountPassword : '点击图标显示密码'}
+                      >
+                        {accountPassword}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation()
+                          togglePasswordVisible(Number(acc.id))
+                        }}
+                        className="text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+                        title={passwordVisible ? '隐藏密码' : '显示密码'}
+                        aria-label={passwordVisible ? '隐藏密码' : '显示密码'}
+                      >
+                        {passwordVisible ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); copy(accountPassword) }} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] opacity-0 group-hover:opacity-100 transition-opacity" title="复制密码"><Copy className="h-3 w-3" /></button>
+                    </div>
+                  ) : (
+                    <span className="text-[var(--text-muted)]">-</span>
+                  )}
                 </td>
                 <td className="px-3 py-2.5 align-top">
                   <div className="min-w-0 flex flex-col items-start gap-1.5">

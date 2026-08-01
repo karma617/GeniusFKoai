@@ -147,6 +147,20 @@ def _account_workspace_id(item: dict[str, Any]) -> str:
     return ""
 
 
+def _local_account_totp_secret(account) -> str:
+    overview = getattr(account, "overview", None)
+    overview = overview if isinstance(overview, dict) else {}
+    legacy_extra = overview.get("legacy_extra") if isinstance(overview.get("legacy_extra"), dict) else {}
+    for item in list(getattr(account, "credentials", None) or []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("key") or "").strip() == "totp_secret":
+            value = str(item.get("value") or "").strip()
+            if value:
+                return value
+    return str(overview.get("totp_secret") or legacy_extra.get("totp_secret") or "").strip()
+
+
 def _gmail_family_key(value: Any) -> str:
     email = _normalize_string(value).lower()
     if "@" not in email:
@@ -1565,13 +1579,19 @@ class Sub2ApiManagementService:
             if callable(log_fn):
                 log_fn(text)
 
-        log("初始化批量注册同款 mailbox 服务，用于协议登录验证码读取")
-        email_service, mailbox_error = self._build_relogin_mailbox_email_service(local_account, log)
-        if email_service is None:
-            log(f"邮箱服务不可用: {mailbox_error}")
-            return {"error": f"mailbox_otp_unavailable: {mailbox_error}"}
+        totp_secret = _local_account_totp_secret(local_account)
+        prefer_password_totp_login = bool(str(getattr(local_account, "password", "") or "").strip() and totp_secret)
+        email_service = None
+        if prefer_password_totp_login:
+            log("检测到本地账号已保存密码和 2FA，本次协议登录使用密码 + TOTP，不初始化邮箱 OTP 服务")
+        else:
+            log("初始化批量注册同款 mailbox 服务，用于协议登录验证码读取")
+            email_service, mailbox_error = self._build_relogin_mailbox_email_service(local_account, log)
+            if email_service is None:
+                log(f"邮箱服务不可用: {mailbox_error}")
+                return {"error": f"mailbox_otp_unavailable: {mailbox_error}"}
 
-        log("使用批量注册同款 Platform 协议链路重新登录，不启动浏览器")
+        log("使用批量注册同款最新 ChatGPT 协议链路重新登录，不启动浏览器")
         log("创建 RegistrationEngine，并固定使用当前本地邮箱与密码")
         engine = RegistrationEngine(
             email_service=email_service,
@@ -1580,13 +1600,16 @@ class Sub2ApiManagementService:
         )
         engine.email = local_account.email
         engine.password = local_account.password
+        engine.totp_secret = totp_secret
+        engine.prefer_password_totp_login = prefer_password_totp_login
         engine.k12_join_enabled = True
         engine.k12_workspace_ids = _normalize_string(
             (local_account.overview or {}).get("k12_workspace_id")
             or (local_account.overview or {}).get("workspace_id")
         )
         log("开始执行协议登录流程")
-        result = engine.run()
+        engine.set_password_after_register = False
+        result = engine.run_chatgpt_refresh_session_latest()
         if not result or not result.success:
             return {"error": getattr(result, "error_message", "") or "protocol relogin failed"}
         metadata = getattr(result, "metadata", None) or {}

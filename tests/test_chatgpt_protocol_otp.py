@@ -169,6 +169,8 @@ def _bare_engine() -> RegistrationEngine:
     engine._last_about_you_error = ""
     engine._last_create_account_error_code = ""
     engine._last_create_account_transport_error = ""
+    engine._chatgpt_client_version = register_module.LATEST_CHATGPT_OAI_CLIENT_VERSION
+    engine._chatgpt_client_build_number = register_module.LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER
     engine.set_password_after_register = True
     engine._password_registered_during_flow = False
     engine._post_register_password_set = False
@@ -1066,27 +1068,118 @@ def test_latest_chatgpt_fetch_session_warms_backend_before_session_api():
     result = engine._latest_chatgpt_fetch_session_result(register_module.RegistrationResult(success=False))
 
     assert result.success is True
-    assert [item[1] for item in calls[:6]] == [
+    assert [item[1] for item in calls[:5]] == [
         "https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1",
         "https://chatgpt.com/",
         "https://chatgpt.com/backend-api/me",
         "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
         "https://chatgpt.com/backend-api/sentinel/chat-requirements/prepare",
-        "https://chatgpt.com/api/auth/session",
     ]
+    assert any(item[1] == "https://chatgpt.com/api/auth/session" for item in calls)
+
+
+def test_latest_chatgpt_fetch_session_rewarms_after_password_session_refresh():
+    engine = _bare_engine()
+    calls = []
+    warmup_tokens = []
+    add_password_tokens = []
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "icloud_hme"})()
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, data=None, text="{}"):
+            self._data = data if data is not None else {}
+            self.text = text
+
+        def json(self):
+            return self._data
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+            self.session_reads = 0
+
+        def get(self, url, headers=None, **kwargs):
+            calls.append(("GET", url, headers or {}))
+            if url.startswith("https://chatgpt.com/api/auth/callback/openai"):
+                self.cookies.set("__Secure-next-auth.session-token", "session-cookie")
+                return Response()
+            if url == "https://chatgpt.com/":
+                return Response(text="<html></html>")
+            if url == "https://chatgpt.com/api/auth/session":
+                self.session_reads += 1
+                token = "old-access-token" if self.session_reads == 1 else "new-access-token"
+                return Response(
+                    {
+                        "accessToken": token,
+                        "sessionToken": f"session-{self.session_reads}",
+                        "account": {"id": "acct_123"},
+                        "user": {"email": "new@example.com"},
+                    }
+                )
+            raise AssertionError(f"unexpected GET {url}")
+
+    def warmup(token):
+        warmup_tokens.append(token)
+        return True
+
+    def add_password(token):
+        add_password_tokens.append(token)
+        return True
+
+    engine.email_service = EmailService()
+    engine.session = Session()
+    engine._device_id = "device-1"
+    engine._create_account_continue_url = "https://chatgpt.com/api/auth/callback/openai?code=code_1&state=state_1"
+    engine._latest_chatgpt_warmup_authenticated_session = warmup
+    engine._latest_chatgpt_add_password_after_register = add_password
+
+    result = engine._latest_chatgpt_fetch_session_result(register_module.RegistrationResult(success=False))
+
+    assert result.success is True
+    assert result.access_token == "new-access-token"
+    assert add_password_tokens == ["old-access-token"]
+    assert warmup_tokens == ["old-access-token", "new-access-token"]
 
 
 def test_latest_chatgpt_client_headers_match_register_har():
     engine = _bare_engine()
     engine._device_id = "device-1"
+    engine._chatgpt_client_version = "prod-live"
+    engine._chatgpt_client_build_number = "1234567"
 
     headers = engine._latest_chatgpt_chatgpt_client_headers(
-        target_path="/backend-api/accounts/check/v4-2023-04-27"
+        target_path="/backend-api/checkout_pricing_config/configs/JP"
     )
 
-    assert register_module.LATEST_CHATGPT_OAI_CLIENT_VERSION == "prod-e90abb69f9711bb66403800b79e0c3c5fc561770"
-    assert register_module.LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER == "8727206"
-    assert headers["x-openai-target-route"] == "/backend-api/accounts/check/{version}"
+    assert headers["oai-client-version"] == "prod-live"
+    assert headers["oai-client-build-number"] == "1234567"
+    assert headers["x-openai-target-route"] == "/backend-api/checkout_pricing_config/configs/{country_code}"
+    assert headers["x-oai-is-client-observation"].startswith("v1.r.p.")
+    assert "x-oai-is-pending-updates" not in headers
+    assert register_module.LATEST_CHATGPT_OAI_CLIENT_VERSION == "prod-fc98dd36cc7acf295fb888b3b2c9e7c00ad14591"
+    assert register_module.LATEST_CHATGPT_OAI_CLIENT_BUILD_NUMBER == "8823441"
+
+    anon_headers = engine._latest_chatgpt_chatgpt_client_headers(
+        target_path="/backend-anon/system_hints"
+    )
+    assert "x-oai-is-client-observation" not in anon_headers
+
+
+def test_latest_chatgpt_updates_client_build_from_home_html():
+    engine = _bare_engine()
+
+    engine._latest_chatgpt_update_client_build_from_html(
+        '<html data-build="prod-a627bec559b0464672778123237b874e9424b466-p" data-seq="8762302"></html>',
+        source="test",
+    )
+
+    assert engine._latest_chatgpt_client_version() == "prod-a627bec559b0464672778123237b874e9424b466-p"
+    assert engine._latest_chatgpt_client_build_number() == "8762302"
 
 
 def test_latest_chatgpt_fetch_session_logs_403_diagnostics():
@@ -1667,15 +1760,37 @@ def test_latest_chatgpt_create_account_uses_auth_json_browser_headers(monkeypatc
     assert headers["openai-sentinel-so-token"] == "session-observer"
 
 
-def test_latest_chatgpt_add_password_after_register_updates_callback():
+def test_latest_chatgpt_add_password_after_register_uses_reauth_and_sentinel():
     engine = _bare_engine()
-    engine._create_account_continue_url = "https://chatgpt.com/api/auth/callback/openai?code=old"
+    engine._device_id = "device-id"
     captured = {"gets": [], "posts": []}
+
+    class CsrfResponse:
+        status_code = 200
+        text = '{"csrfToken":"csrf-token"}'
+
+        def json(self):
+            return {"csrfToken": "csrf-token"}
+
+    class SigninResponse:
+        status_code = 200
+        text = '{"url":"https://auth.openai.com/api/accounts/authorize?state=reauth"}'
+        headers = {}
+
+        def json(self):
+            return {"url": "https://auth.openai.com/api/accounts/authorize?state=reauth"}
+
+    class ReauthRedirectResponse:
+        status_code = 302
+        text = ""
+        headers = {"Location": register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL}
+        url = "https://auth.openai.com/api/accounts/authorize?state=reauth"
 
     class PageResponse:
         status_code = 200
         text = "<html>new password</html>"
         url = register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL
+        headers = {}
 
         def json(self):
             return {}
@@ -1687,28 +1802,297 @@ def test_latest_chatgpt_add_password_after_register_updates_callback():
         def json(self):
             return {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=new"}
 
-    class Session:
-        cookies = _CookieJar()
+    class CallbackResponse:
+        status_code = 200
+        text = "<html>chatgpt</html>"
+        url = "https://chatgpt.com/"
+        headers = {}
 
-        def get(self, url, headers=None, timeout=None):
-            captured["gets"].append((url, headers or {}, timeout))
+        def json(self):
+            return {}
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+            self.cookies.set("__Secure-next-auth.session-token", "st", domain=".chatgpt.com")
+            self.cookies.set("oai-did", "device-id", domain=".chatgpt.com")
+
+        def get(self, url, headers=None, timeout=None, **kwargs):
+            captured["gets"].append((url, headers or {}, timeout, kwargs))
+            if url.endswith("/api/auth/csrf"):
+                return CsrfResponse()
+            if "api/accounts/authorize" in url:
+                return ReauthRedirectResponse()
+            if "api/auth/callback/openai" in url:
+                return CallbackResponse()
             return PageResponse()
 
-        def post(self, url, headers=None, data=None, timeout=None):
-            captured["posts"].append((url, headers or {}, data, timeout))
+        def post(self, url, headers=None, data=None, timeout=None, **kwargs):
+            captured["posts"].append((url, headers or {}, data, timeout, kwargs))
+            if "/api/auth/signin/openai" in url:
+                return SigninResponse()
             return AddPasswordResponse()
 
     engine.session = Session()
+    engine._check_sentinel = lambda did, flow="authorize_continue": SentinelPayload(
+        p="proof",
+        t="turnstile",
+        c="challenge",
+        flow=flow,
+        so_token="session-observer",
+    )
 
     assert engine._latest_chatgpt_add_password_after_register() is True
 
-    assert captured["gets"][0][0] == register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL
-    post_url, post_headers, post_body, _timeout = captured["posts"][0]
+    signin_url, signin_headers, signin_body, _signin_timeout, _signin_kwargs = captured["posts"][0]
+    assert signin_url.startswith("https://chatgpt.com/api/auth/signin/openai?")
+    assert "connection=password" in signin_url
+    assert "reauth=password" in signin_url
+    assert "post_login_add_password=true" in signin_url
+    assert signin_headers["accept"] == "*/*"
+    assert "csrfToken=csrf-token" in signin_body
+    assert captured["gets"][0][0] == "https://chatgpt.com/api/auth/providers"
+    assert captured["gets"][0][1]["accept"] == "*/*"
+    assert captured["gets"][0][1]["content-type"] == "application/json"
+    assert captured["gets"][1][0] == "https://chatgpt.com/api/auth/csrf"
+    assert captured["gets"][2][0] == "https://auth.openai.com/api/accounts/authorize?state=reauth"
+    post_url, post_headers, post_body, _timeout, _post_kwargs = captured["posts"][1]
     assert post_url == register_module.LATEST_CHATGPT_ADD_PASSWORD_API_URL
     assert post_headers["accept"] == "application/json"
     assert post_headers["origin"] == "https://auth.openai.com"
+    assert post_headers["x-access-flow-invocation-id"]
+    assert json.loads(post_headers["openai-sentinel-token"]) == {
+        "p": "proof",
+        "t": "turnstile",
+        "c": "challenge",
+        "id": "device-id",
+        "flow": "password_reset",
+    }
     assert json.loads(post_body) == {"password": "Secret123!"}
-    assert engine._create_account_continue_url.endswith("code=new")
+    assert captured["gets"][-1][0].endswith("code=new")
+    assert engine._post_register_password_set is True
+
+
+def test_latest_chatgpt_add_password_after_register_prewarms_security_har_paths():
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    captured = {"gets": [], "posts": []}
+
+    class Response:
+        status_code = 200
+        text = "{}"
+        headers = {}
+        url = register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL
+
+        def __init__(self, data=None, url=""):
+            self._data = data if data is not None else {}
+            if url:
+                self.url = url
+
+        def json(self):
+            return self._data
+
+    class RedirectResponse(Response):
+        status_code = 302
+        headers = {"Location": register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL}
+        url = "https://auth.openai.com/api/accounts/authorize?state=reauth"
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+            self.cookies.set("__Secure-next-auth.session-token", "st", domain=".chatgpt.com")
+            self.cookies.set("oai-did", "device-id", domain=".chatgpt.com")
+
+        def get(self, url, headers=None, timeout=None, **kwargs):
+            captured["gets"].append((url, headers or {}, timeout, kwargs))
+            if "/backend-api/accounts/" in url:
+                return Response()
+            if url.endswith("/api/auth/csrf"):
+                return Response({"csrfToken": "csrf-token"})
+            if "api/accounts/authorize" in url:
+                return RedirectResponse()
+            if "api/auth/callback/openai" in url:
+                return Response(url="https://chatgpt.com/")
+            return Response()
+
+        def post(self, url, headers=None, data=None, timeout=None, **kwargs):
+            captured["posts"].append((url, headers or {}, data, timeout, kwargs))
+            if "/api/auth/signin/openai" in url:
+                return Response({"url": "https://auth.openai.com/api/accounts/authorize?state=reauth"})
+            return Response({"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=new"})
+
+    engine.session = Session()
+    engine._check_sentinel = lambda did, flow="authorize_continue": SentinelPayload(
+        p="proof",
+        t="turnstile",
+        c="challenge",
+        flow=flow,
+    )
+
+    assert engine._latest_chatgpt_add_password_after_register("access-token-123") is True
+
+    security_calls = [(url, headers) for url, headers, *_ in captured["gets"] if "/backend-api/accounts/" in url]
+    assert [url.replace("https://chatgpt.com", "") for url, _headers in security_calls] == [
+        "/backend-api/accounts/mfa_info",
+        "/backend-api/accounts/security_settings/info",
+        "/backend-api/accounts/change_password/eligibility",
+        "/backend-api/accounts/add_password/eligibility",
+        "/backend-api/accounts/sessions",
+    ]
+    assert all(headers["authorization"] == "Bearer access-token-123" for _url, headers in security_calls)
+    assert all(headers["x-oai-is-client-observation"].startswith("v1.r.p.") for _url, headers in security_calls)
+    assert security_calls[0][1]["x-oai-is-client-observation"] != security_calls[1][1]["x-oai-is-client-observation"]
+    assert len({headers["x-oai-is-client-observation"] for _url, headers in security_calls[1:]}) == 1
+    assert all("x-oai-is-pending-updates" not in headers for _url, headers in security_calls)
+    assert all("content-type" not in headers for _url, headers in security_calls)
+    assert all("cache-control" not in headers for _url, headers in security_calls)
+
+
+def test_latest_chatgpt_add_password_after_register_does_not_force_reset_page():
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    captured = {"gets": [], "posts": []}
+
+    class CsrfResponse:
+        status_code = 200
+        text = '{"csrfToken":"csrf-token"}'
+
+        def json(self):
+            return {"csrfToken": "csrf-token"}
+
+    class SigninResponse:
+        status_code = 200
+        text = '{"url":"https://auth.openai.com/api/accounts/authorize?state=reauth"}'
+        headers = {}
+
+        def json(self):
+            return {"url": "https://auth.openai.com/api/accounts/authorize?state=reauth"}
+
+    class EmailVerificationResponse:
+        status_code = 200
+        text = "<html>email verification</html>"
+        headers = {}
+        url = "https://auth.openai.com/email-verification"
+
+        def json(self):
+            return {}
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+            self.cookies.set("__Secure-next-auth.session-token", "st", domain=".chatgpt.com")
+            self.cookies.set("oai-did", "device-id", domain=".chatgpt.com")
+
+        def get(self, url, headers=None, timeout=None, **kwargs):
+            captured["gets"].append((url, headers or {}, timeout, kwargs))
+            if url.endswith("/api/auth/csrf"):
+                return CsrfResponse()
+            return EmailVerificationResponse()
+
+        def post(self, url, headers=None, data=None, timeout=None, **kwargs):
+            captured["posts"].append((url, headers or {}, data, timeout, kwargs))
+            return SigninResponse()
+
+    engine.session = Session()
+    engine._get_verification_code = lambda **_kwargs: None
+
+    assert engine._latest_chatgpt_add_password_after_register() is False
+    assert engine._post_register_password_error == "reauth_email_otp_timeout"
+    assert all(register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL not in item[0] for item in captured["gets"])
+
+
+def test_latest_chatgpt_add_password_after_register_uses_reauth_otp_continue_url():
+    engine = _bare_engine()
+    engine._device_id = "device-id"
+    captured = {"gets": [], "posts": []}
+
+    class CsrfResponse:
+        status_code = 200
+        text = '{"csrfToken":"csrf-token"}'
+
+        def json(self):
+            return {"csrfToken": "csrf-token"}
+
+    class SigninResponse:
+        status_code = 200
+        text = '{"url":"https://auth.openai.com/api/accounts/authorize?state=reauth"}'
+        headers = {}
+
+        def json(self):
+            return {"url": "https://auth.openai.com/api/accounts/authorize?state=reauth"}
+
+    class EmailVerificationResponse:
+        status_code = 200
+        text = "<html>email verification</html>"
+        headers = {}
+        url = "https://auth.openai.com/email-verification"
+
+        def json(self):
+            return {}
+
+    class PageResponse:
+        status_code = 200
+        text = "<html>new password</html>"
+        url = register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL
+        headers = {}
+
+        def json(self):
+            return {}
+
+    class AddPasswordResponse:
+        status_code = 200
+        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=new"}'
+
+        def json(self):
+            return {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=new"}
+
+    class CallbackResponse:
+        status_code = 200
+        text = "<html>chatgpt</html>"
+        url = "https://chatgpt.com/"
+        headers = {}
+
+        def json(self):
+            return {}
+
+    class Session:
+        def __init__(self):
+            self.cookies = _CookieJar()
+            self.cookies.set("__Secure-next-auth.session-token", "st", domain=".chatgpt.com")
+            self.cookies.set("oai-did", "device-id", domain=".chatgpt.com")
+
+        def get(self, url, headers=None, timeout=None, **kwargs):
+            captured["gets"].append((url, headers or {}, timeout, kwargs))
+            if url.endswith("/api/auth/csrf"):
+                return CsrfResponse()
+            if "reset-password/new-password" in url:
+                return PageResponse()
+            if "api/auth/callback/openai" in url:
+                return CallbackResponse()
+            return EmailVerificationResponse()
+
+        def post(self, url, headers=None, data=None, timeout=None, **kwargs):
+            captured["posts"].append((url, headers or {}, data, timeout, kwargs))
+            if "/api/auth/signin/openai" in url:
+                return SigninResponse()
+            return AddPasswordResponse()
+
+    engine.session = Session()
+    engine._get_verification_code = lambda **_kwargs: "123456"
+    engine._latest_chatgpt_validate_email_otp = lambda code: {
+        "continue_url": register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL
+    }
+    engine._check_sentinel = lambda did, flow="authorize_continue": SentinelPayload(
+        p="proof",
+        t="turnstile",
+        c="challenge",
+        flow=flow,
+        so_token="session-observer",
+    )
+
+    assert engine._latest_chatgpt_add_password_after_register() is True
+    assert any(item[0] == register_module.LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL for item in captured["gets"])
+    assert captured["posts"][-1][0] == register_module.LATEST_CHATGPT_ADD_PASSWORD_API_URL
     assert engine._post_register_password_set is True
 
 
@@ -2388,32 +2772,9 @@ def test_platform_login_validate_preserves_deactivated_response_without_retry():
 def test_latest_account_deactivated_switches_to_login_and_saves_session(monkeypatch):
     engine = _bare_engine()
     result = register_module.RegistrationResult(success=False, logs=engine.logs)
-    calls = []
-
-    class Client:
-        session = object()
-
-    class LoginOkResponse:
-        status_code = 200
-        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz"}'
-
-        def json(self):
-            return {
-                "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz",
-                "page": {"type": "done"},
-            }
-
-    engine.http_client = Client()
-    engine.session = engine.http_client.session
-    engine._reset_latest_chatgpt_session_for_retry = lambda: None
-    engine._read_oai_did_cookie = lambda: "device-id"
-    engine._set_oai_did_for_session = lambda session, device_id: calls.append(("did", device_id))
-    engine._refresh_mailbox_before_ids = lambda: calls.append(("refresh", "")) or set()
-    engine._platform_reference_prepare_existing_login_otp = lambda client, device_id: calls.append(("prepare", device_id))
-    engine._wait_platform_reference_register_code = lambda client: "123456"
-    engine._validate_platform_login_otp = lambda client, device_id, code: LoginOkResponse()
 
     def finish_session(target):
+        assert target is result
         target.success = True
         target.email = engine.email
         target.access_token = "access-token"
@@ -2426,7 +2787,7 @@ def test_latest_account_deactivated_switches_to_login_and_saves_session(monkeypa
         }
         return target
 
-    engine._latest_chatgpt_fetch_session_result = finish_session
+    engine.run_chatgpt_refresh_session_latest = lambda target, session_source="": finish_session(target)
 
     actual = engine._latest_chatgpt_login_after_account_deactivated(result)
 
@@ -2434,8 +2795,6 @@ def test_latest_account_deactivated_switches_to_login_and_saves_session(monkeypa
     assert actual.source == "login"
     assert actual.metadata["session"]["accessToken"] == "access-token"
     assert actual.metadata["cookies"]
-    assert engine._is_existing_account is True
-    assert ("prepare", "device-id") in calls
 
 
 def test_latest_account_deactivated_login_403_marks_invalid_email():
@@ -2443,31 +2802,17 @@ def test_latest_account_deactivated_login_403_marks_invalid_email():
     result = register_module.RegistrationResult(success=False, logs=engine.logs)
     marks = []
 
-    class Client:
-        session = object()
-
-    class LoginRejectedResponse:
-        status_code = 403
-        text = '{"error":{"code":"account_deactivated"}}'
-
-        def json(self):
-            return {"error": {"code": "account_deactivated"}}
-
     class EmailService:
         def mark_invalid_email(self, *, reason: str = ""):
             marks.append(reason)
             return ["无效邮箱"]
 
     engine.email_service = EmailService()
-    engine.http_client = Client()
-    engine.session = engine.http_client.session
-    engine._reset_latest_chatgpt_session_for_retry = lambda: None
-    engine._read_oai_did_cookie = lambda: "device-id"
-    engine._set_oai_did_for_session = lambda session, device_id: None
-    engine._refresh_mailbox_before_ids = lambda: set()
-    engine._platform_reference_prepare_existing_login_otp = lambda client, device_id: None
-    engine._wait_platform_reference_register_code = lambda client: "123456"
-    engine._validate_platform_login_otp = lambda client, device_id, code: LoginRejectedResponse()
+    engine.run_chatgpt_refresh_session_latest = lambda target, session_source="": register_module.RegistrationResult(
+        success=False,
+        error_message="email_otp_validate_http_403",
+        logs=target.logs,
+    )
 
     actual = engine._latest_chatgpt_login_after_account_deactivated(result)
 
@@ -2505,6 +2850,254 @@ def test_latest_register_routes_account_deactivated_otp_to_login():
     assert result.success is True
     assert result.source == "login"
     assert result.metadata["session"]["accessToken"] == "access-token"
+
+
+def test_latest_refresh_session_uses_latest_init_validate_and_fetch():
+    engine = _bare_engine()
+    engine.email = "refresh@example.com"
+    engine.password = "Secret123!"
+    engine.email_info = None
+    events = []
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "mailbox"})()
+
+        def create_email(self):
+            events.append("mailbox")
+            return {"email": "refresh@example.com", "service_id": "mail-1"}
+
+    def get_code(*, mark_invalid_on_timeout=True, resend_on_timeout=True):
+        events.append(("get_code", mark_invalid_on_timeout, resend_on_timeout))
+        return "123456"
+
+    def validate_email_otp(code):
+        events.append(("latest_validate", code))
+        return {"continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz"}
+
+    def finish_session(target):
+        events.append("fetch_session")
+        target.success = True
+        target.email = engine.email
+        target.source = "login"
+        target.access_token = "access-token"
+        target.session_token = "session-token"
+        target.metadata = {
+            "session": {"accessToken": "access-token", "sessionToken": "session-token"},
+            "cookies": "__Secure-next-auth.session-token=session-token",
+            "chatgpt_session_source": "latest_refresh_session_login",
+        }
+        return target
+
+    engine.email_service = EmailService()
+    engine._init_latest_chatgpt_session = lambda: events.append("init_session") or True
+    engine._refresh_mailbox_before_ids = lambda: events.append("refresh_before_ids") or set()
+    engine._latest_chatgpt_init_email_oauth = (
+        lambda: events.append("latest_init_oauth")
+        or setattr(engine, "_latest_chatgpt_init_final_url", "https://auth.openai.com/email-verification")
+        or (True, "")
+    )
+    engine._get_verification_code = get_code
+    engine._latest_chatgpt_validate_email_otp = validate_email_otp
+    engine._latest_chatgpt_fetch_session_result = finish_session
+    engine._platform_reference_prepare_existing_login_otp = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("old login prepare should not run")
+    )
+    engine._validate_platform_login_otp = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("old OTP validate should not run")
+    )
+
+    result = engine.run_chatgpt_refresh_session_latest()
+
+    assert result.success is True
+    assert result.source == "login"
+    assert result.access_token == "access-token"
+    assert engine._is_existing_account is True
+    assert engine.set_password_after_register is True
+    assert events == [
+        "mailbox",
+        "init_session",
+        "refresh_before_ids",
+        "latest_init_oauth",
+        ("get_code", False, False),
+        ("latest_validate", "123456"),
+        "fetch_session",
+    ]
+
+
+def test_latest_refresh_session_login_password_uses_passwordless_otp():
+    engine = _bare_engine()
+    engine.email = "refresh-password@example.com"
+    engine.password = "Secret123!"
+    engine.email_info = None
+    events = []
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "mailbox"})()
+
+        def create_email(self):
+            return {"email": "refresh-password@example.com", "service_id": "mail-1"}
+
+    engine.email_service = EmailService()
+    engine._init_latest_chatgpt_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: set()
+    engine._latest_chatgpt_init_email_oauth = (
+        lambda: setattr(engine, "_latest_chatgpt_init_final_url", "https://auth.openai.com/log-in/password")
+        or (True, "")
+    )
+    engine._latest_chatgpt_send_passwordless_login_otp = lambda: events.append("passwordless") or {
+        "continue_url": "https://auth.openai.com/email-verification",
+        "page": {"type": "email_otp_verification"},
+    }
+    engine._latest_chatgpt_verify_login_password = lambda: (_ for _ in ()).throw(
+        AssertionError("password verify fallback should not run")
+    )
+    engine._get_verification_code = lambda **_kwargs: "654321"
+    engine._latest_chatgpt_validate_email_otp = lambda code: events.append(("validate", code)) or {
+        "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz"
+    }
+
+    def finish_session(target):
+        target.success = True
+        target.source = "login"
+        target.metadata = {"session": {"accessToken": "access-token"}}
+        return target
+
+    engine._latest_chatgpt_fetch_session_result = finish_session
+
+    result = engine.run_chatgpt_refresh_session_latest()
+
+    assert result.success is True
+    assert events == ["passwordless", ("validate", "654321")]
+
+
+def test_latest_refresh_session_password_totp_skips_email_otp():
+    engine = _bare_engine()
+    engine.email = "refresh-password-totp@example.com"
+    engine.password = "Secret123!"
+    engine.totp_secret = "JBSWY3DPEHPK3PXP"
+    engine.prefer_password_totp_login = True
+    engine.email_service = None
+    events = []
+
+    engine._init_latest_chatgpt_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: events.append("refresh_before_ids") or set()
+    engine._latest_chatgpt_init_email_oauth = (
+        lambda: setattr(engine, "_latest_chatgpt_init_final_url", "https://auth.openai.com/log-in/password")
+        or (True, "")
+    )
+    engine._latest_chatgpt_send_passwordless_login_otp = lambda: (_ for _ in ()).throw(
+        AssertionError("passwordless OTP should not run")
+    )
+    engine._get_verification_code = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("email OTP should not be read")
+    )
+    engine._latest_chatgpt_verify_login_password = lambda: events.append("password_verify") or {
+        "continue_url": "https://auth.openai.com/mfa-challenge/factor-1",
+        "page": {
+            "type": "mfa_challenge",
+            "payload": {"factor_id": "factor-1", "factors": [{"id": "factor-1", "factor_type": "totp"}]},
+        },
+    }
+    engine._latest_chatgpt_complete_mfa_challenge = lambda payload: events.append(("mfa", payload["page"]["type"])) or {
+        "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz"
+    }
+
+    def finish_session(target):
+        events.append("fetch_session")
+        target.success = True
+        target.source = "login"
+        target.metadata = {"session": {"accessToken": "access-token"}}
+        return target
+
+    engine._latest_chatgpt_fetch_session_result = finish_session
+
+    result = engine.run_chatgpt_refresh_session_latest()
+
+    assert result.success is True
+    assert events == ["refresh_before_ids", "password_verify", ("mfa", "mfa_challenge"), "fetch_session"]
+
+
+def test_latest_refresh_session_completes_totp_mfa_challenge(monkeypatch):
+    engine = _bare_engine()
+    engine.email = "refresh-mfa@example.com"
+    engine.password = "Secret123!"
+    engine.email_info = None
+    secret = "JBSWY3DPEHPK3PXP"
+    engine.totp_secret = secret
+    events = []
+    monkeypatch.setattr("platforms.chatgpt.mfa.generate_totp_code", lambda value: "112233")
+
+    class EmailService:
+        service_type = type("ST", (), {"value": "mailbox"})()
+
+        def create_email(self):
+            return {"email": "refresh-mfa@example.com", "service_id": "mail-1"}
+
+    class MfaPageResponse:
+        status_code = 200
+        text = "<html data-build=\"prod-test\" data-seq=\"123\"></html>"
+        url = "https://auth.openai.com/mfa-challenge/factor-1"
+
+        def json(self):
+            return {}
+
+    class MfaVerifyResponse:
+        status_code = 200
+        text = '{"continue_url":"https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz"}'
+
+        def json(self):
+            return {
+                "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=abc&state=xyz",
+                "page": {"type": "token_exchange"},
+            }
+
+    class MfaSession:
+        cookies = {}
+
+        def get(self, url, headers=None, timeout=None, **kwargs):
+            events.append(("mfa_page", url))
+            return MfaPageResponse()
+
+        def post(self, url, headers=None, data=None, **kwargs):
+            body = json.loads(data)
+            events.append(("mfa_verify", url, body["id"], body["type"], len(body["code"])))
+            assert body["code"] == "112233"
+            return MfaVerifyResponse()
+
+    def finish_session(target):
+        events.append("fetch_session")
+        target.success = True
+        target.source = "login"
+        target.access_token = "access-token"
+        target.metadata = {"session": {"accessToken": "access-token"}}
+        return target
+
+    engine.email_service = EmailService()
+    engine.session = MfaSession()
+    engine._init_latest_chatgpt_session = lambda: True
+    engine._refresh_mailbox_before_ids = lambda: set()
+    engine._latest_chatgpt_init_email_oauth = (
+        lambda: setattr(engine, "_latest_chatgpt_init_final_url", "https://auth.openai.com/email-verification")
+        or (True, "")
+    )
+    engine._get_verification_code = lambda **_kwargs: "123456"
+    engine._latest_chatgpt_validate_email_otp = lambda code: {
+        "continue_url": "https://auth.openai.com/mfa-challenge/factor-1",
+        "page": {
+            "type": "mfa_challenge",
+            "payload": {
+                "factor_id": "factor-1",
+                "factors": [{"id": "factor-1", "factor_type": "totp"}],
+            },
+        },
+    }
+    engine._latest_chatgpt_fetch_session_result = finish_session
+
+    result = engine.run_chatgpt_refresh_session_latest()
+
+    assert result.success is True
+    assert ("mfa_verify", "https://auth.openai.com/api/accounts/mfa/verify", "factor-1", "totp", 6) in events
+    assert events[-1] == "fetch_session"
 
 
 def test_create_user_account_deletes_mailbox_when_openai_marks_email_deactivated():
@@ -2559,7 +3152,7 @@ def test_sentinel_token_shapes_match_headed_har():
     import json
     from platforms.chatgpt.constants import SENTINEL_SDK_URL
     from platforms.chatgpt.register import (
-        LATEST_CHATGPT_CF_JSD_SCRIPT_URL,
+        LATEST_CHATGPT_CHAT_REQUIREMENTS_SCRIPT_URL,
         LATEST_CHATGPT_FIREFOX_USER_AGENT,
         LATEST_CHATGPT_OAI_CLIENT_VERSION,
         LATEST_CHATGPT_SENTINEL_ENTRY_SDK_URL,
@@ -2592,6 +3185,8 @@ def test_sentinel_token_shapes_match_headed_har():
     assert pref == "gAAAAAC"
     assert suf == "~S"
     assert arr[5] == SENTINEL_SDK_URL
+    assert arr[0] == 2500
+    assert arr[16] == 8
     assert "mozGetUserMedia" in str(arr[10])
 
     pref, suf, arr = _decode(gen.generate_token("seed", "0"))
@@ -2603,6 +3198,11 @@ def test_sentinel_token_shapes_match_headed_har():
     pref, suf, arr = _decode(gen.generate_chat_requirements_token())
     assert pref == "gAAAAAC"
     assert suf == ""
-    assert arr[5] == LATEST_CHATGPT_CF_JSD_SCRIPT_URL
+    assert arr[5] == LATEST_CHATGPT_CHAT_REQUIREMENTS_SCRIPT_URL
     assert arr[6] == LATEST_CHATGPT_OAI_CLIENT_VERSION
-    assert "Macintosh" in LATEST_CHATGPT_FIREFOX_USER_AGENT
+    assert "Windows NT 10.0" in LATEST_CHATGPT_FIREFOX_USER_AGENT
+
+    pref, suf, arr = _decode(gen.generate_chat_requirements_token(script_url=None))
+    assert pref == "gAAAAAC"
+    assert suf == ""
+    assert arr[5] is None

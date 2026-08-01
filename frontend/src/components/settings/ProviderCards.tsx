@@ -27,6 +27,7 @@ type GmailMother = {
 type GmailApiCodeRow = {
   email: string
   codeUrl: string
+  status: 'active' | 'deleted' | 'registered' | 'invalid'
   deleted: boolean
 }
 
@@ -70,6 +71,12 @@ type ICloudHMEAlias = {
 
 const GMAIL_API_CODE_ALIAS_LIMIT = 6
 const GMAIL_API_CODE_DELETED_PREFIX = '# deleted '
+const GMAIL_API_CODE_STATUS_RANK: Record<GmailApiCodeRow['status'], number> = {
+  active: 0,
+  registered: 1,
+  invalid: 2,
+  deleted: 3,
+}
 
 function newGmailMother(): GmailMother {
   return {
@@ -123,16 +130,26 @@ function parseGmailApiCodeRows(value: string): GmailApiCodeRow[] {
   for (const rawLine of String(value || '').split(/\r?\n/)) {
     let line = rawLine.trim()
     if (!line) continue
-    const deleted = /^#\s*deleted\s+/i.test(line)
-    if (deleted) line = line.replace(/^#\s*deleted\s+/i, '').trim()
-    if (!deleted && line.startsWith('#')) continue
+    let status: GmailApiCodeRow['status'] = 'active'
+    const marker = line.match(/^#\s*(deleted|registered|invalid|unavailable|unusable)\s+/i)
+    if (marker) {
+      const rawStatus = marker[1].toLowerCase()
+      status = rawStatus === 'deleted'
+        ? 'deleted'
+        : rawStatus === 'registered'
+          ? 'registered'
+          : 'invalid'
+      line = line.slice(marker[0].length).trim()
+    } else if (line.startsWith('#')) {
+      continue
+    }
     if (!line.includes('----')) continue
     const [emailPart, ...urlParts] = line.split('----')
     const email = emailPart.trim().toLowerCase()
     const codeUrl = urlParts.join('----').trim()
     if (!email || !email.includes('@') || !/^https?:\/\//i.test(codeUrl) || seen.has(email)) continue
     seen.add(email)
-    rows.push({ email, codeUrl, deleted })
+    rows.push({ email, codeUrl, status, deleted: status === 'deleted' })
   }
   return rows
 }
@@ -315,13 +332,17 @@ function EditModal({
     : []
   const gmailApiCodeRowsSorted = provider.value === 'gmail_api_code'
     ? [...gmailApiCodeRows].sort((left, right) => {
-      if (left.deleted !== right.deleted) return left.deleted ? 1 : -1
+      if (left.status !== right.status) return GMAIL_API_CODE_STATUS_RANK[left.status] - GMAIL_API_CODE_STATUS_RANK[right.status]
       const leftRate = gmailApiCodeFailureRate(gmailApiCodeUsage[left.email])
       const rightRate = gmailApiCodeFailureRate(gmailApiCodeUsage[right.email])
       if (leftRate !== rightRate) return leftRate - rightRate
       return left.email.localeCompare(right.email)
     })
     : []
+  const gmailApiCodeUsableRowCount = gmailApiCodeRows.filter(row => {
+    const usage = gmailApiCodeUsage[row.email]
+    return row.status === 'active' && usage?.email_status !== 'unusable' && usage?.email_status !== 'registered'
+  }).length
 
   const copyText = async (text: string) => {
     const value = String(text || '')
@@ -1163,7 +1184,7 @@ function EditModal({
                   </p>
                 </div>
                 <span className="rounded-full border border-[var(--border-soft)] bg-[var(--bg-card)] px-2.5 py-1 text-xs text-[var(--text-muted)]">
-                  {gmailApiCodeRows.filter(row => !row.deleted).length}/{gmailApiCodeRows.length} 个可用
+                  {gmailApiCodeUsableRowCount}/{gmailApiCodeRows.length} 个可用
                 </span>
               </div>
               {gmailApiCodeRows.length === 0 ? (
@@ -1189,25 +1210,26 @@ function EditModal({
                         const success = Number(usage?.successful_alias_count || 0)
                         const failed = Number(usage?.allocated_only_count || 0)
                         const failureRate = gmailApiCodeFailureRate(usage)
-                        const remaining = row.deleted ? 0 : Math.max(0, GMAIL_API_CODE_ALIAS_LIMIT - success)
-                        const statusLabel = row.deleted
+                        const poolInactive = row.status !== 'active' || usage?.email_status === 'unusable' || usage?.email_status === 'registered'
+                        const remaining = poolInactive ? 0 : Math.max(0, GMAIL_API_CODE_ALIAS_LIMIT - success)
+                        const statusLabel = row.status === 'deleted'
                           ? '已删除'
-                          : usage?.email_status === 'unusable'
+                          : row.status === 'registered' || usage?.email_status === 'registered'
+                            ? '已注册'
+                            : row.status === 'invalid' || usage?.email_status === 'unusable'
                             ? '不可用'
-                            : usage?.email_status === 'registered'
-                              ? '已注册'
-                              : remaining <= 0
-                                ? '已满'
-                                : '可用'
-                        const statusVariant = row.deleted
+                            : remaining <= 0
+                              ? '已满'
+                              : '可用'
+                        const statusVariant = row.status === 'deleted'
                           ? 'secondary'
-                          : usage?.email_status === 'unusable' || remaining <= 0
-                            ? 'danger'
-                            : usage?.email_status === 'registered'
+                          : row.status === 'registered' || usage?.email_status === 'registered'
                               ? 'warning'
-                              : 'success'
+                              : row.status === 'invalid' || usage?.email_status === 'unusable' || remaining <= 0
+                                ? 'danger'
+                                : 'success'
                         return (
-                          <tr key={`${row.deleted ? 'deleted' : 'active'}-${row.email}`} className={row.deleted ? 'opacity-60' : ''}>
+                          <tr key={`${row.status}-${row.email}`} className={poolInactive ? 'opacity-60' : ''}>
                             <td className="px-3 py-2 font-medium text-[var(--text-primary)]">{row.email}</td>
                             <td className="px-3 py-2 text-[var(--text-secondary)]">
                               {remaining}/{GMAIL_API_CODE_ALIAS_LIMIT}
@@ -1220,7 +1242,7 @@ function EditModal({
                             <td className="px-3 py-2">
                               <div className="space-y-1">
                                 <Badge variant={statusVariant as any}>{statusLabel}</Badge>
-                                {!row.deleted && usage?.email_status_reason && usage.email_status !== 'usable' && (
+                                {row.status === 'active' && usage?.email_status_reason && usage.email_status !== 'usable' && (
                                   <div className="max-w-32 break-words text-[11px] text-[var(--text-muted)]">{usage.email_status_reason}</div>
                                 )}
                               </div>
@@ -1232,7 +1254,7 @@ function EditModal({
                                 variant="ghost"
                                 size="sm"
                                 onClick={() => handleDeleteGmailApiCodeRow(row.email)}
-                                disabled={row.deleted}
+                                disabled={row.status !== 'active'}
                               >
                                 <Trash2 className="mr-1 h-3.5 w-3.5" /> 删除
                               </Button>

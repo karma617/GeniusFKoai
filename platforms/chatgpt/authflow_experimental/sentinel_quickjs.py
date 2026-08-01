@@ -32,13 +32,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from platforms.chatgpt.constants import get_latest_sentinel_frame_url, get_latest_sentinel_sdk_url
+from platforms.chatgpt.constants import (
+    SENTINEL_ENTRY_SDK_URL,
+    get_latest_sentinel_frame_url,
+    get_latest_sentinel_sdk_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,21 +89,25 @@ def _session_cookie_header(session: Any, device_id: str) -> str:
 def _runtime_profile(user_agent: str, sdk_url: str) -> dict[str, Any]:
     ua = str(user_agent or "")
     is_mac = "Macintosh" in ua or "Mac OS X" in ua
-    version = sdk_url.rstrip("/").split("/")[-2] if "/sentinel/" in sdk_url else "latest"
+    now_ms = int(time.time() * 1000)
     return {
-        "frame_url": f"https://chatgpt.com/backend-api/sentinel/frame.html?sv={version}",
+        "frame_url": get_latest_sentinel_frame_url(),
         "page_url": "https://auth.openai.com/email-verification",
         "platform": "MacIntel" if is_mac else "Win32",
         "vendor": "" if "Firefox/" in ua else "Google Inc.",
         "hardware_concurrency": 10 if is_mac else 8,
-        "screen_width": 2560,
-        "screen_height": 1440,
-        "screen_avail_width": 2560,
-        "screen_avail_height": 1440,
+        "screen_width": 1600,
+        "screen_height": 900,
+        "screen_avail_width": 1600,
+        "screen_avail_height": 900,
         "viewport_width": 1800,
         "viewport_height": 839,
-        "color_depth": 30 if is_mac else 24,
-        "pixel_depth": 30 if is_mac else 24,
+        "outer_width": 1800,
+        "outer_height": 900,
+        "color_depth": 24,
+        "pixel_depth": 24,
+        "performance_now": random.randint(3000, 25000),
+        "time_origin": now_ms - random.randint(8000, 40000),
     }
 
 
@@ -251,6 +261,7 @@ def get_sentinel_tokens_via_quickjs(
     flow: str = "authorize_continue",
     user_agent: str = "",
     accept_language: str = "en-US,en;q=0.5",
+    client_version: str = "",
     timeout_ms: int = 45000,
     log: Optional[Callable[[str], None]] = None,
 ) -> Optional[dict[str, str]]:
@@ -278,6 +289,7 @@ def get_sentinel_tokens_via_quickjs(
             "accept_language": accept_language,
             "language": language,
             "languages": languages,
+            "client_version": client_version,
             "sdk_url": sdk_url,
             "document_cookie": _session_cookie_header(session, did),
             "session_storage": {"oai-did": did},
@@ -311,16 +323,20 @@ def get_sentinel_tokens_via_quickjs(
             log("Sentinel QuickJS 失败: challenge token 为空")
             return None
 
+        solve_payload = {
+            **runtime_payload,
+            "flow": flow,
+            "request_p": request_p,
+            "challenge": challenge,
+        }
+        if flow in {"email_otp_validate", "password_reset"}:
+            solve_payload["sdk_url"] = SENTINEL_ENTRY_SDK_URL
+
         solved = _run_quickjs_action(
             action="solve",
             sdk_file=sdk_file,
             quickjs_script=quickjs_script,
-            payload={
-                **runtime_payload,
-                "flow": flow,
-                "request_p": request_p,
-                "challenge": challenge,
-            },
+            payload=solve_payload,
             timeout_ms=timeout_ms,
         )
         final_p = str(solved.get("final_p") or solved.get("p") or "").strip()
