@@ -437,6 +437,7 @@ def test_get_rt_phone_callback_respects_short_sms_timeout():
     callback._channel = channel
     callback._aid = "aid-1"
     callback._phase = "need_code"
+    assert callback._code_timeout == 60
     callback.set_code_timeout(60)
 
     assert callback() == "123456"

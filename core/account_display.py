@@ -198,8 +198,18 @@ def _build_generic_usage_metrics(overview: dict[str, Any]) -> tuple[list[dict[st
 
 def _registration_mode_label(overview: dict[str, Any]) -> str:
     legacy_extra = _safe_dict(overview.get("legacy_extra"))
+    variant = _text(
+        overview.get("registration_protocol_variant")
+        or legacy_extra.get("registration_protocol_variant")
+    ).lower()
+    if variant in {"android", "android_app", "android_protocol"}:
+        return "安卓协议"
+    if variant in {"web", "web_protocol"}:
+        return "WEB协议"
     label = _text(overview.get("registration_mode_label") or legacy_extra.get("registration_mode_label"))
     if label:
+        if label == "协议模式":
+            return "WEB协议"
         return label
     mode = _text(overview.get("registration_mode") or legacy_extra.get("registration_mode")).lower()
     if mode == "headless_browser":
@@ -207,15 +217,53 @@ def _registration_mode_label(overview: dict[str, Any]) -> str:
     if mode == "headed_browser":
         return "有头浏览器"
     if mode == "protocol":
-        return "协议模式"
+        return "WEB协议"
     executor = _text(overview.get("registration_executor_type") or legacy_extra.get("registration_executor_type")).lower()
     if executor == "headless":
         return "无头浏览器"
     if executor == "headed":
         return "有头浏览器"
     if executor == "protocol":
-        return "协议模式"
+        return "WEB协议"
     return ""
+
+
+COUNTRY_LABELS_ZH = {
+    "JP": "日本",
+    "US": "美国",
+    "SG": "新加坡",
+    "HK": "香港",
+    "TW": "台湾",
+    "KR": "韩国",
+    "TH": "泰国",
+    "VN": "越南",
+    "PH": "菲律宾",
+    "ID": "印度尼西亚",
+    "MY": "马来西亚",
+    "GB": "英国",
+    "CA": "加拿大",
+    "AU": "澳大利亚",
+    "TR": "土耳其",
+    "BR": "巴西",
+    "MX": "墨西哥",
+    "IN": "印度",
+}
+
+
+def _registration_ip_region_label(overview: dict[str, Any]) -> str:
+    legacy_extra = _safe_dict(overview.get("legacy_extra"))
+    label = _text(overview.get("registration_ip_country_label") or legacy_extra.get("registration_ip_country_label"))
+    if label:
+        return label
+    code = _text(
+        overview.get("registration_ip_country_code")
+        or legacy_extra.get("registration_ip_country_code")
+        or overview.get("registration_ip_region")
+        or legacy_extra.get("registration_ip_region")
+    ).upper()
+    if len(code) == 2:
+        return COUNTRY_LABELS_ZH.get(code, code)
+    return code
 
 
 def _codex_usage_error_message(value: Any) -> str:
@@ -282,6 +330,9 @@ def build_account_display_summary(
         for chip in _safe_list(overview.get("chips"))
         if _text(chip)
     ]
+    registration_ip_region_label = _registration_ip_region_label(overview)
+    if registration_ip_region_label and not any(_text(badge.get("label")) == registration_ip_region_label for badge in badges):
+        badges.append({"label": registration_ip_region_label, "tone": "success"})
     registration_mode_label = _registration_mode_label(overview)
     if registration_mode_label and not any(_text(badge.get("label")) == registration_mode_label for badge in badges):
         badges.append({"label": registration_mode_label, "tone": "muted"})

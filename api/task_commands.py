@@ -203,6 +203,18 @@ def create_refresh_session_task(body: RefreshSessionTaskRequest):
     return command_service.create_refresh_session_task(body.model_dump())
 
 
+class BatchSecuritySetupTaskRequest(BaseModel):
+    platform: str = "chatgpt"
+    ids: list[int] = Field(default_factory=list)
+    concurrency: int = 1
+    proxy: Optional[str] = None
+
+
+@router.post("/batch-security-setup")
+def create_batch_security_setup_task(body: BatchSecuritySetupTaskRequest):
+    return command_service.create_batch_security_setup_task(body.model_dump())
+
+
 class AgentsUploadSub2ApiTaskRequest(BaseModel):
     platform: str = "chatgpt"
     ids: list[int] = Field(default_factory=list)

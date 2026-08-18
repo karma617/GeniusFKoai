@@ -248,8 +248,15 @@ class _MailboxEmailService:
         """Force-mark the parent email as exhausted (alias quota reached)."""
         marker = getattr(self._mailbox, "mark_parent_exhausted", None)
         if not callable(marker):
+            marker = getattr(self._mailbox, "mark_alias_exhausted", None)
+        if not callable(marker):
+            marker = getattr(self._mailbox, "mark_registration_success", None)
+        if not callable(marker):
             return []
-        return list(marker(self._mailbox_account) or [])
+        try:
+            return list(marker(self._mailbox_account, reason=reason) or [])
+        except TypeError:
+            return list(marker(self._mailbox_account) or [])
 
 
 

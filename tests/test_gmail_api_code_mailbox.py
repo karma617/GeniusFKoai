@@ -25,7 +25,7 @@ def _save_gmail_api_code_pool(pool_text: str, *, storage: str = "config") -> Non
         setting = ProviderSettingModel(
             provider_type="mailbox",
             provider_key="gmail_api_code",
-            display_name="Gmail API接码",
+            display_name="API接码邮箱",
             enabled=True,
             is_default=True,
         )
@@ -44,10 +44,11 @@ def test_parse_gmail_api_code_entries_splits_email_and_url():
     entries = parse_gmail_api_code_entries(
         "phkong8269@gmail.com----https://gapi.mailsapi.com/api/code/fetch?token=abc&uid=def\n"
         "bad row\n"
-        "other@gmail.com----http://example.test/fetch"
+        "other@gmail.com----http://example.test/fetch\n"
+        "user@icloud.com----http://example.test/icloud"
     )
 
-    assert [entry.email for entry in entries] == ["phkong8269@gmail.com", "other@gmail.com"]
+    assert [entry.email for entry in entries] == ["phkong8269@gmail.com", "other@gmail.com", "user@icloud.com"]
     assert entries[0].code_url == "https://gapi.mailsapi.com/api/code/fetch?token=abc&uid=def"
 
 
@@ -62,6 +63,7 @@ def test_parse_gmail_api_code_entries_skips_deleted_rows():
 
 def test_parse_gmail_api_code_pool_rows_keeps_status_markers_for_display():
     rows = parse_gmail_api_code_pool_rows(
+        "# registered_exhausted exhausted@icloud.com----https://example.test/exhausted\n"
         "# registered used@gmail.com----https://example.test/used\n"
         "# invalid dead@gmail.com----https://example.test/dead\n"
         "# deleted old@gmail.com----https://example.test/old\n"
@@ -69,6 +71,7 @@ def test_parse_gmail_api_code_pool_rows_keeps_status_markers_for_display():
     )
 
     assert [(row.email, row.status) for row in rows] == [
+        ("exhausted@icloud.com", "registered_exhausted"),
         ("used@gmail.com", "registered"),
         ("dead@gmail.com", "invalid"),
         ("old@gmail.com", "deleted"),
@@ -77,6 +80,15 @@ def test_parse_gmail_api_code_pool_rows_keeps_status_markers_for_display():
     assert [entry.email for entry in parse_gmail_api_code_entries(
         "\n".join(f"{'# ' + row.status + ' ' if row.status != 'active' else ''}{row.email}----{row.code_url}" for row in rows)
     )] == ["active@gmail.com"]
+
+
+def test_gmail_api_code_entries_skip_registered_exhausted_rows():
+    entries = parse_gmail_api_code_entries(
+        "# registered_exhausted used@icloud.com----https://example.test/used\n"
+        "available@icloud.com----https://example.test/available"
+    )
+
+    assert [entry.email for entry in entries] == ["available@icloud.com"]
 
 
 def test_gmail_api_code_get_email_claims_fixed_gmail():
@@ -95,17 +107,92 @@ def test_gmail_api_code_get_email_claims_fixed_gmail():
     assert first.extra["provider_resource"]["metadata"]["code_url"].startswith("https://example.test/")
 
 
-def test_gmail_api_code_alias_success_releases_parent_for_next_alias():
+def test_gmail_api_code_release_account_releases_claim_without_changing_status():
+    mailbox = GmailApiCodeMailbox(
+        pool_text="first@gmail.com----https://example.test/first"
+    )
+
+    account = mailbox.get_email()
+    assert "first@gmail.com" in GmailApiCodeMailbox._ACTIVE_CLAIMS
+
+    assert mailbox.release_account(account) is True
+    assert "first@gmail.com" not in GmailApiCodeMailbox._ACTIVE_CLAIMS
+    assert mailbox.get_email().email == "first@gmail.com"
+
+
+def test_gmail_api_code_alias_wrapper_uses_gmail_without_child_alias():
     mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
     wrapper = EmailAliasMailbox(mailbox, alias_limit=5, platform="chatgpt")
 
     first = wrapper.get_email()
-    wrapper.mark_registration_success(first)
+
+    assert first.email == "first@gmail.com"
+    assert "email_alias" not in first.extra
+
+
+def test_gmail_api_code_alias_wrapper_allows_one_icloud_child_alias():
+    _save_gmail_api_code_pool("first@icloud.com----https://example.test/first")
+    mailbox = GmailApiCodeMailbox(pool_text="first@icloud.com----https://example.test/first")
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=5, platform="chatgpt")
+
+    first = wrapper.get_email()
+    tags = wrapper.mark_registration_success(first)
     second = wrapper.get_email()
 
-    assert first.email != second.email
-    assert first.extra["email_alias"]["parent_email"] == "first@gmail.com"
-    assert second.extra["email_alias"]["parent_email"] == "first@gmail.com"
+    assert first.email == "first@icloud.com"
+    assert tags == []
+    assert second.email.startswith("first+")
+    assert second.email.endswith("@icloud.com")
+    assert second.extra["email_alias"]["parent_email"] == "first@icloud.com"
+    assert second.extra["email_alias"]["limit"] == 1
+    assert wrapper.mark_registration_success(second) == ["API接码邮箱已注册"]
+    with pytest.raises(RuntimeError, match="Email alias quota exhausted"):
+        wrapper.get_email()
+
+
+def test_gmail_api_code_alias_wrapper_uses_child_for_registered_icloud_parent():
+    _save_gmail_api_code_pool("first@icloud.com----https://example.test/first")
+    mailbox = GmailApiCodeMailbox(pool_text="first@icloud.com----https://example.test/first")
+    parent = mailbox.get_email()
+    assert mailbox.mark_registration_success(parent) == ["API接码邮箱已注册"]
+
+    next_mailbox = GmailApiCodeMailbox(
+        pool_text="# registered first@icloud.com----https://example.test/first"
+    )
+    wrapper = EmailAliasMailbox(next_mailbox, alias_limit=5, platform="chatgpt")
+
+    child = wrapper.get_email()
+
+    assert child.email.startswith("first+")
+    assert child.email.endswith("@icloud.com")
+    assert child.extra["email_alias"]["parent_email"] == "first@icloud.com"
+    wrapper.release_account(child)
+
+
+def test_gmail_api_code_alias_exhausted_parent_is_persisted_and_skipped():
+    _save_gmail_api_code_pool(
+        "first@icloud.com----https://example.test/first\n"
+        "second@icloud.com----https://example.test/second"
+    )
+    mailbox = GmailApiCodeMailbox(
+        pool_text=(
+            "first@icloud.com----https://example.test/first\n"
+            "second@icloud.com----https://example.test/second"
+        )
+    )
+    account = mailbox.get_email()
+
+    assert mailbox.mark_alias_exhausted(account, reason="registration_disallowed") == ["API接码邮箱已注册"]
+
+    with Session(engine) as session:
+        setting = session.get(ProviderSettingModel, 1)
+        pool_text = setting.get_config()["gmail_api_code_pool_text"]
+    assert "# registered_exhausted first@icloud.com----https://example.test/first" in pool_text
+
+    next_mailbox = GmailApiCodeMailbox(pool_text=pool_text)
+    wrapper = EmailAliasMailbox(next_mailbox, alias_limit=5, platform="chatgpt")
+    next_account = wrapper.get_email()
+    assert next_account.email == "second@icloud.com"
 
 
 def test_gmail_api_code_invalid_parent_is_skipped_for_next_email():
@@ -121,16 +208,16 @@ def test_gmail_api_code_invalid_parent_is_skipped_for_next_email():
     tags = wrapper.mark_invalid_email(first, reason="invalid_email_no_otp")
     second = wrapper.get_email()
 
-    assert tags == ["主号邮箱 first@gmail.com 已标记无效: Gmail API接码邮箱已标记无效"]
-    assert first.extra["email_alias"]["parent_email"] == "first@gmail.com"
-    assert second.extra["email_alias"]["parent_email"] == "second@gmail.com"
+    assert tags == ["API接码邮箱已标记无效"]
+    assert "email_alias" not in first.extra
+    assert second.email == "second@gmail.com"
 
 
 def test_gmail_api_code_invalid_only_parent_is_not_temporary_pool_empty():
     mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
     account = mailbox.get_email()
 
-    assert mailbox.mark_invalid_email(account, reason="invalid_email_no_otp") == ["Gmail API接码邮箱已标记无效"]
+    assert mailbox.mark_invalid_email(account, reason="invalid_email_no_otp") == ["API接码邮箱已标记无效"]
     with pytest.raises(RuntimeError, match="已无可用邮箱"):
         mailbox.get_email()
 
@@ -143,7 +230,7 @@ def test_gmail_api_code_mark_success_updates_pool_text_registered():
     mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
     account = mailbox.get_email()
 
-    assert mailbox.mark_registration_success(account) == ["Gmail API接码邮箱已注册"]
+    assert mailbox.mark_registration_success(account) == ["API接码邮箱已注册"]
 
     with Session(engine) as session:
         setting = session.get(ProviderSettingModel, 1)
@@ -160,7 +247,7 @@ def test_gmail_api_code_mark_invalid_updates_pool_text_unusable():
     mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
     account = mailbox.get_email()
 
-    assert mailbox.mark_invalid_email(account, reason="gmail_api_code_502") == ["Gmail API接码邮箱已标记无效"]
+    assert mailbox.mark_invalid_email(account, reason="gmail_api_code_502") == ["API接码邮箱已标记无效"]
 
     with Session(engine) as session:
         setting = session.get(ProviderSettingModel, 1)
@@ -178,7 +265,7 @@ def test_gmail_api_code_mark_invalid_updates_auth_pool_text_unusable():
     mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
     account = mailbox.get_email()
 
-    assert mailbox.mark_invalid_email(account, reason="invalid_email_no_otp") == ["Gmail API接码邮箱已标记无效"]
+    assert mailbox.mark_invalid_email(account, reason="invalid_email_no_otp") == ["API接码邮箱已标记无效"]
 
     with Session(engine) as session:
         setting = session.get(ProviderSettingModel, 1)
@@ -198,7 +285,7 @@ def test_gmail_api_code_mark_success_updates_auth_pool_text_registered():
     mailbox = GmailApiCodeMailbox(pool_text="first@gmail.com----https://example.test/first")
     account = mailbox.get_email()
 
-    assert mailbox.mark_registration_success(account) == ["Gmail API接码邮箱已注册"]
+    assert mailbox.mark_registration_success(account) == ["API接码邮箱已注册"]
 
     with Session(engine) as session:
         setting = session.get(ProviderSettingModel, 1)
@@ -276,6 +363,70 @@ def test_gmail_api_code_wait_for_code_skips_before_id(monkeypatch):
 
     assert before_ids == {"code:111111"}
     assert mailbox.wait_for_code(account, timeout=3, before_ids=before_ids) == "222222"
+
+
+def test_gmail_api_code_wait_for_code_allows_same_code_on_new_message_id(monkeypatch):
+    calls = {"count": 0}
+
+    class Response:
+        def __init__(self, *, url: str, text: str, content_type: str = "text/html; charset=utf-8"):
+            self.status_code = 200
+            self.url = url
+            self.text = text
+            self.headers = {"content-type": content_type}
+
+        def raise_for_status(self):
+            return None
+
+    def _list_page(message_id: str) -> Response:
+        return Response(
+            url=f"https://example.test/messages/{message_id}/user@gmail.com",
+            text=(
+                f'<a class="item active" href="#mail-{message_id}" data-id="{message_id}">'
+                '<div class="subject">Your temporary ChatGPT verification code</div>'
+                '<div class="time">2026-08-03 10:53:16</div>'
+                "</a>"
+                '<script>var detailBase="/message/"; var detailSuffix="/user@gmail.com";</script>'
+                '<article class="card mail" id="mail-view">'
+                '<div class="placeholder">请选择一封邮件</div>'
+                "</article>"
+            ),
+        )
+
+    def _detail_response(url: str, message_id: str) -> Response:
+        selected_mail = """
+        <html><body>
+          <p>Enter this temporary verification code to continue:</p>
+          <p>899728</p>
+        </body></html>
+        """
+        data_uri = "data:text/html;charset=utf-8;base64," + base64.b64encode(selected_mail.encode()).decode()
+        return Response(
+            url=url,
+            text=json.dumps({"body": data_uri, "subject": "Your temporary ChatGPT verification code", "message_id": message_id}),
+        )
+
+    def fake_get(url, *_args, **_kwargs):
+        calls["count"] += 1
+        if url.endswith("/fetch"):
+            return _list_page("1434454" if calls["count"] == 1 else "1435003")
+        if "/message/1434454/" in url:
+            return _detail_response(url, "1434454")
+        if "/message/1435003/" in url:
+            return _detail_response(url, "1435003")
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("core.gmail_api_code_mailbox.requests.get", fake_get)
+
+    mailbox = GmailApiCodeMailbox(
+        pool_text="user@gmail.com----https://example.test/fetch",
+        poll_interval="1",
+    )
+    account = mailbox.get_email()
+    before_ids = mailbox.get_current_ids(account)
+
+    assert any(item.startswith("mail:1434454|code:899728") for item in before_ids)
+    assert mailbox.wait_for_code(account, timeout=1, before_ids=before_ids) == "899728"
 
 
 def test_gmail_api_code_status_602_keeps_polling(monkeypatch):

@@ -1,0 +1,192 @@
+TABLES: ["accounts", "provider_definitions", "provider_settings", "platform_capability_overrides", "task_logs", "tasks", "task_events", "proxies", "sms_pool_blacklist", "configs", "account_overviews", "account_credentials", "provider_accounts", "provider_resources", "sub2api_account_tags", "sub2api_account_tag_links"]
+
+== TABLE accounts ==
+   ('id', 'INTEGER')
+   ('platform', 'VARCHAR')
+   ('email', 'VARCHAR')
+   ('password', 'VARCHAR')
+   ('user_id', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 170
+
+== TABLE provider_definitions ==
+   ('id', 'INTEGER')
+   ('provider_type', 'VARCHAR')
+   ('provider_key', 'VARCHAR')
+   ('label', 'VARCHAR')
+   ('description', 'VARCHAR')
+   ('driver_type', 'VARCHAR')
+   ('default_auth_mode', 'VARCHAR')
+   ('enabled', 'BOOLEAN')
+   ('is_builtin', 'BOOLEAN')
+   ('category', 'VARCHAR')
+   ('auth_modes_json', 'VARCHAR')
+   ('fields_json', 'VARCHAR')
+   ('metadata_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 33
+
+== TABLE provider_settings ==
+   ('id', 'INTEGER')
+   ('provider_type', 'VARCHAR')
+   ('provider_key', 'VARCHAR')
+   ('display_name', 'VARCHAR')
+   ('auth_mode', 'VARCHAR')
+   ('enabled', 'BOOLEAN')
+   ('is_default', 'BOOLEAN')
+   ('config_json', 'VARCHAR')
+   ('auth_json', 'VARCHAR')
+   ('metadata_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 11
+
+== TABLE platform_capability_overrides ==
+   ('id', 'INTEGER')
+   ('platform_name', 'VARCHAR')
+   ('capabilities_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 12
+
+== TABLE task_logs ==
+   ('id', 'INTEGER')
+   ('platform', 'VARCHAR')
+   ('email', 'VARCHAR')
+   ('status', 'VARCHAR')
+   ('error', 'VARCHAR')
+   ('detail_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+    rowcount: 7353
+
+== TABLE tasks ==
+   ('id', 'VARCHAR')
+   ('type', 'VARCHAR')
+   ('platform', 'VARCHAR')
+   ('status', 'VARCHAR')
+   ('payload_json', 'VARCHAR')
+   ('result_json', 'VARCHAR')
+   ('progress_current', 'INTEGER')
+   ('progress_total', 'INTEGER')
+   ('success_count', 'INTEGER')
+   ('error_count', 'INTEGER')
+   ('error', 'VARCHAR')
+   ('started_at', 'DATETIME')
+   ('finished_at', 'DATETIME')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 1236
+
+== TABLE task_events ==
+   ('id', 'INTEGER')
+   ('task_id', 'VARCHAR')
+   ('type', 'VARCHAR')
+   ('level', 'VARCHAR')
+   ('message', 'VARCHAR')
+   ('detail_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+    rowcount: 548679
+
+== TABLE proxies ==
+   ('id', 'INTEGER')
+   ('url', 'VARCHAR')
+   ('region', 'VARCHAR')
+   ('success_count', 'INTEGER')
+   ('fail_count', 'INTEGER')
+   ('is_active', 'BOOLEAN')
+   ('last_checked', 'DATETIME')
+    rowcount: 3
+
+== TABLE sms_pool_blacklist ==
+   ('id', 'INTEGER')
+   ('phone_e164', 'VARCHAR')
+   ('relay_url', 'VARCHAR')
+   ('relay_host', 'VARCHAR')
+   ('reason', 'VARCHAR')
+   ('error_code', 'VARCHAR')
+   ('task_id', 'VARCHAR')
+   ('fail_count', 'INTEGER')
+   ('last_error_message', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('last_attempted_at', 'DATETIME')
+    rowcount: 0
+
+== TABLE configs ==
+   ('key', 'VARCHAR')
+   ('value', 'VARCHAR')
+    rowcount: 12
+
+== TABLE account_overviews ==
+   ('account_id', 'INTEGER')
+   ('lifecycle_status', 'VARCHAR')
+   ('validity_status', 'VARCHAR')
+   ('plan_state', 'VARCHAR')
+   ('plan_name', 'VARCHAR')
+   ('display_status', 'VARCHAR')
+   ('remote_email', 'VARCHAR')
+   ('checked_at', 'DATETIME')
+   ('summary_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 170
+
+== TABLE account_credentials ==
+   ('id', 'INTEGER')
+   ('account_id', 'INTEGER')
+   ('scope', 'VARCHAR')
+   ('provider_name', 'VARCHAR')
+   ('credential_type', 'VARCHAR')
+   ('key', 'VARCHAR')
+   ('value', 'VARCHAR')
+   ('is_primary', 'BOOLEAN')
+   ('source', 'VARCHAR')
+   ('metadata_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 909
+
+== TABLE provider_accounts ==
+   ('id', 'INTEGER')
+   ('account_id', 'INTEGER')
+   ('provider_type', 'VARCHAR')
+   ('provider_name', 'VARCHAR')
+   ('login_identifier', 'VARCHAR')
+   ('display_name', 'VARCHAR')
+   ('credentials_json', 'VARCHAR')
+   ('metadata_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 302
+
+== TABLE provider_resources ==
+   ('id', 'INTEGER')
+   ('account_id', 'INTEGER')
+   ('provider_type', 'VARCHAR')
+   ('provider_name', 'VARCHAR')
+   ('resource_type', 'VARCHAR')
+   ('resource_identifier', 'VARCHAR')
+   ('handle', 'VARCHAR')
+   ('display_name', 'VARCHAR')
+   ('metadata_json', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 294
+
+== TABLE sub2api_account_tags ==
+   ('id', 'INTEGER')
+   ('origin', 'VARCHAR')
+   ('name', 'VARCHAR')
+   ('color', 'VARCHAR')
+   ('created_at', 'DATETIME')
+   ('updated_at', 'DATETIME')
+    rowcount: 1
+
+== TABLE sub2api_account_tag_links ==
+   ('id', 'INTEGER')
+   ('origin', 'VARCHAR')
+   ('account_id', 'VARCHAR')
+   ('tag_id', 'INTEGER')
+   ('created_at', 'DATETIME')
+    rowcount: 2289

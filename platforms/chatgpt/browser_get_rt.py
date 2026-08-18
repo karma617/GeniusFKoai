@@ -617,7 +617,7 @@ class GetRtPhoneCallback:
         self._completed = False
         self._resend_callback = None
         self._last_error = ""
-        self._code_timeout = 180
+        self._code_timeout = 60
         self._released = False
 
     # ── public lifecycle (mirrors PhoneCallbackController) ─────
@@ -1264,7 +1264,7 @@ class GetRtReusablePhoneCallback:
         self._completed = False
         self._resend_callback = None
         self._last_error = ""
-        self._code_timeout = 180
+        self._code_timeout = 60
 
     @property
     def phase(self):

@@ -76,6 +76,15 @@ def get_email_alias_usage(parent_email: str, *, platform: str = "") -> EmailAlia
         return EmailAliasUsage(parent, platform_key, 0, 0, 0)
 
     with Session(engine) as session:
+        account_statement = select(AccountModel.id).where(AccountModel.email == parent)
+        if platform_key:
+            account_statement = account_statement.where(AccountModel.platform == platform_key)
+        main_account_ids.update(
+            int(account_id)
+            for account_id in session.exec(account_statement).all()
+            if account_id is not None
+        )
+
         resource_rows = session.exec(
             select(ProviderResourceModel).where(ProviderResourceModel.provider_type == "mailbox")
         ).all()
@@ -267,9 +276,15 @@ class EmailAliasMailbox(BaseMailbox):
         self.platform = str(platform or "").strip()
         self._log_fn = log_fn
         self._parents_by_alias: dict[str, MailboxAccount] = {}
+        self._local_parent_success_counts: dict[str, int] = {}
         self._local_alias_success_counts: dict[str, int] = {}
         self._exhausted_parent_emails: set[str] = set()
         self._state_lock = threading.Lock()
+        try:
+            setattr(self.mailbox, "_email_alias_wrapper_enabled", True)
+            setattr(self.mailbox, "_email_alias_exhausted_parents", self._exhausted_parent_emails)
+        except Exception:
+            pass
 
     def _log(self, message: str) -> None:
         if not callable(self._log_fn):
@@ -325,6 +340,34 @@ class EmailAliasMailbox(BaseMailbox):
                 return None
         return None
 
+    def _alias_limit_for_parent(self, parent_email: str) -> int:
+        limit = self.alias_limit
+        resolver = getattr(self.mailbox, "email_alias_limit_for_parent", None)
+        if callable(resolver):
+            try:
+                limit = min(limit, max(int(resolver(parent_email) or 0), 0))
+            except Exception:
+                limit = 0
+        return limit
+
+    def _is_alias_account(self, account: MailboxAccount) -> bool:
+        extra = dict(getattr(account, "extra", {}) or {})
+        nested = extra.get("email_alias")
+        if isinstance(nested, dict) and nested.get("enabled"):
+            return True
+        resource = dict(extra.get("provider_resource") or {})
+        metadata = dict(resource.get("metadata") or {})
+        return bool(metadata.get("is_email_alias") or metadata.get("email_alias_enabled"))
+
+    def _uses_parent_account_for_parent(self, parent_email: str) -> bool:
+        resolver = getattr(self.mailbox, "email_alias_uses_parent_account_for_parent", None)
+        if callable(resolver):
+            try:
+                return bool(resolver(parent_email))
+            except Exception:
+                return False
+        return False
+
     def _parent_for(self, account: MailboxAccount) -> MailboxAccount:
         alias = normalize_email_address(getattr(account, "email", ""))
         parent = self._parents_by_alias.get(alias)
@@ -358,11 +401,19 @@ class EmailAliasMailbox(BaseMailbox):
             return MailboxAccount(email=parent_email, account_id=parent_account_id or parent_email, extra=parent_extra)
         return account
 
-    def _build_alias_account(self, parent: MailboxAccount, alias_email: str, usage: EmailAliasUsage) -> MailboxAccount:
+    def _build_alias_account(
+        self,
+        parent: MailboxAccount,
+        alias_email: str,
+        usage: EmailAliasUsage,
+        *,
+        alias_limit: int | None = None,
+    ) -> MailboxAccount:
         parent_email = normalize_email_address(parent.email)
         parent_account_id = str(parent.account_id or parent_email)
         parent_extra = dict(parent.extra or {})
         alias_extra = dict(parent_extra)
+        effective_alias_limit = alias_limit or self.alias_limit
 
         provider_account = dict(parent_extra.get("provider_account") or {})
         if provider_account:
@@ -371,7 +422,7 @@ class EmailAliasMailbox(BaseMailbox):
                 alias_email=alias_email,
                 parent_email=parent_email,
                 parent_account_id=parent_account_id,
-                alias_limit=self.alias_limit,
+                alias_limit=effective_alias_limit,
             )
             alias_extra["provider_account"]["login_identifier"] = alias_email
 
@@ -382,7 +433,7 @@ class EmailAliasMailbox(BaseMailbox):
                 alias_email=alias_email,
                 parent_email=parent_email,
                 parent_account_id=parent_account_id,
-                alias_limit=self.alias_limit,
+                alias_limit=effective_alias_limit,
             )
             alias_extra["provider_resource"]["handle"] = alias_email
             alias_extra["provider_resource"]["resource_identifier"] = parent_account_id
@@ -392,7 +443,7 @@ class EmailAliasMailbox(BaseMailbox):
             "alias_email": alias_email,
             "parent_email": parent_email,
             "parent_account_id": parent_account_id,
-            "limit": self.alias_limit,
+            "limit": effective_alias_limit,
             "alias_success_count_at_claim": usage.alias_success_count,
             "total_success_count_at_claim": usage.total_success_count,
         }
@@ -420,10 +471,28 @@ class EmailAliasMailbox(BaseMailbox):
                 self._log(f"Email alias parent already exhausted in current task; skipping: {parent_email}")
                 continue
             usage = get_email_alias_usage(parent_email, platform=self.platform)
+            local_parent_success_count = self._local_parent_success_counts.get(parent_email, 0)
             local_alias_success_count = self._local_alias_success_counts.get(parent_email, 0)
+            parent_alias_limit = self._alias_limit_for_parent(parent_email)
+            if parent_alias_limit <= 0:
+                self._log(f"Email alias disabled for parent mailbox: {parent_email}")
+                return parent
             last_usage = usage
+            if self._uses_parent_account_for_parent(parent_email):
+                parent_used = usage.main_success_count + local_parent_success_count > 0
+                if not parent_used:
+                    registered_checker = getattr(self.mailbox, "email_alias_parent_registered", None)
+                    if callable(registered_checker):
+                        try:
+                            parent_used = bool(registered_checker(parent_email))
+                        except Exception:
+                            parent_used = False
+                if not parent_used:
+                    self._log(f"Email alias using parent mailbox before child alias: {parent_email}")
+                    return parent
+                self._log(f"Email alias parent already used; allocating child alias: {parent_email}")
             if (
-                usage.alias_success_count + local_alias_success_count >= self.alias_limit
+                usage.alias_success_count + local_alias_success_count >= parent_alias_limit
             ):
                 should_mark = False
                 with self._state_lock:
@@ -436,12 +505,12 @@ class EmailAliasMailbox(BaseMailbox):
                 continue
 
             alias_email = _random_alias(parent_email, platform=self.platform)
-            alias_account = self._build_alias_account(parent, alias_email, usage)
+            alias_account = self._build_alias_account(parent, alias_email, usage, alias_limit=parent_alias_limit)
             self._parents_by_alias[normalize_email_address(alias_email)] = parent
             self._log(
                 "Email alias allocated: "
                 f"{alias_email} parent={parent_email} "
-                f"aliases={usage.alias_success_count}/{self.alias_limit} "
+                f"aliases={usage.alias_success_count}/{parent_alias_limit} "
                 f"total={usage.total_success_count}"
             )
             return alias_account
@@ -496,8 +565,21 @@ class EmailAliasMailbox(BaseMailbox):
         _release_reserved_alias(getattr(account, "email", ""))
         return False
 
+    def release_account(self, account: MailboxAccount) -> bool:
+        """释放父邮箱和 alias 的临时占用，不修改注册状态。"""
+        parent = self._parent_for(account)
+        _release_reserved_alias(getattr(account, "email", ""))
+        self._release_parent(parent)
+        return True
+
     def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
         parent = self._parent_for(account)
+        if not self._is_alias_account(account):
+            marker = getattr(self.mailbox, "mark_invalid_email", None)
+            if callable(marker):
+                return list(marker(parent, reason=reason) or [])
+            self._release_parent(parent)
+            return []
         alias_email = getattr(account, "email", "")
         _release_reserved_alias(alias_email)
         marker = getattr(self.mailbox, "mark_invalid_email", None)
@@ -517,6 +599,22 @@ class EmailAliasMailbox(BaseMailbox):
 
     def mark_registration_success(self, account: MailboxAccount) -> list[str]:
         parent = self._parent_for(account)
+        if not self._is_alias_account(account):
+            parent_email = normalize_email_address(parent.email)
+            parent_alias_limit = self._alias_limit_for_parent(parent_email)
+            if parent_alias_limit > 0 and self._uses_parent_account_for_parent(parent_email):
+                self._local_parent_success_counts[parent_email] = self._local_parent_success_counts.get(parent_email, 0) + 1
+                self._log(
+                    "Email alias parent registration success; keep parent available for child alias: "
+                    f"{parent_email} child_limit={parent_alias_limit}"
+                )
+                self._release_parent(parent)
+                return []
+            marker = getattr(self.mailbox, "mark_registration_success", None)
+            if callable(marker):
+                return list(marker(parent) or [])
+            self._release_parent(parent)
+            return []
         parent_email = normalize_email_address(parent.email)
         alias_email = normalize_email_address(getattr(account, "email", ""))
         if parent_email and alias_email and not _existing_account_email(alias_email, platform=self.platform):
@@ -525,50 +623,47 @@ class EmailAliasMailbox(BaseMailbox):
         local_alias_success_count = self._local_alias_success_counts.get(parent_email, 0)
         effective_alias_count = usage.alias_success_count + local_alias_success_count
         effective_total_count = usage.total_success_count + local_alias_success_count
+        parent_alias_limit = self._alias_limit_for_parent(parent_email)
         _release_reserved_alias(getattr(account, "email", ""))
         self._log(
             "Email alias registration success: "
             f"{getattr(account, 'email', '')} parent={parent.email} "
-            f"aliases={effective_alias_count}/{self.alias_limit} "
+            f"aliases={effective_alias_count}/{parent_alias_limit or self.alias_limit} "
             f"total={effective_total_count}"
         )
         marker = getattr(self.mailbox, "mark_registration_success", None)
-        if callable(marker) and effective_alias_count >= self.alias_limit:
+        if callable(marker) and parent_alias_limit > 0 and effective_alias_count >= parent_alias_limit:
             return list(marker(parent) or [])
         self._release_parent(parent)
         return []
 
-    def mark_parent_exhausted(self, account: MailboxAccount) -> list[str]:
+    def mark_parent_exhausted(self, account: MailboxAccount, reason: str = "") -> list[str]:
         """Force-mark the parent email as registered/exhausted.
 
-        Called when OpenAI returns user_already_exists - the parent's alias
+        Called when OpenAI rejects the registration - the parent's alias
         quota is burned on OpenAI's side (which may be ahead of our local DB
         count). This bypasses the usage-count gate in mark_registration_success
         and directly tags the parent mailbox so _select_account skips it on
         the next get_email() call.
         """
         parent = self._parent_for(account)
+        parent_email = normalize_email_address(parent.email)
+        if parent_email:
+            self._exhausted_parent_emails.add(parent_email)
         _release_reserved_alias(getattr(account, "email", ""))
+        marker_reason = reason or "user_already_exists"
         self._log(
-            "Email alias parent exhausted (user_already_exists): "
+            f"Email alias parent exhausted ({marker_reason}): "
             f"alias={getattr(account, 'email', '')} parent={parent.email}"
         )
         alias_exhausted_marker = getattr(self.mailbox, "mark_alias_exhausted", None)
         if callable(alias_exhausted_marker):
             try:
-                applied = list(alias_exhausted_marker(parent, reason="user_already_exists") or [])
+                applied = list(alias_exhausted_marker(parent, reason=marker_reason) or [])
                 if applied:
                     return applied
             except Exception as exc:
                 self._log(f"Email alias parent exhausted mark failed: {parent.email} error={exc}")
-        invalid_marker = getattr(self.mailbox, "mark_invalid_email", None)
-        if callable(invalid_marker):
-            try:
-                applied = list(invalid_marker(parent, reason="user_already_exists") or [])
-                if applied:
-                    return applied
-            except Exception as exc:
-                self._log(f"Email alias parent invalid mark failed: {parent.email} error={exc}")
         marker = getattr(self.mailbox, "mark_registration_success", None)
         if callable(marker):
             try:

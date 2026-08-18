@@ -1,4 +1,4 @@
-"""Gmail API code mailbox provider backed by per-email fetch URLs."""
+"""API code mailbox provider backed by per-email fetch URLs."""
 
 from __future__ import annotations
 
@@ -42,8 +42,11 @@ class GmailApiCodeMailboxUnavailable(RuntimeError):
     """接码 API 明确返回邮箱不可用状态。"""
 
 
-_POOL_STATUS_PREFIX_RE = re.compile(r"^#\s*(deleted|registered|invalid|unavailable|unusable)\s+", re.IGNORECASE)
-_POOL_INACTIVE_STATUSES = {"deleted", "registered", "invalid", "unavailable", "unusable"}
+_POOL_STATUS_PREFIX_RE = re.compile(
+    r"^#\s*(deleted|registered_exhausted|registered|invalid|unavailable|unusable)\s+",
+    re.IGNORECASE,
+)
+_POOL_INACTIVE_STATUSES = {"deleted", "registered_exhausted", "registered", "invalid", "unavailable", "unusable"}
 _POOL_TEXT_KEY = "gmail_api_code_pool_text"
 
 
@@ -51,7 +54,7 @@ def _normalize_pool_status(value: Any) -> str:
     status = str(value or "").strip().lower()
     if status in {"unavailable", "unusable"}:
         return "invalid"
-    if status in {"deleted", "registered", "invalid"}:
+    if status in {"deleted", "registered_exhausted", "registered", "invalid"}:
         return status
     return "active"
 
@@ -94,7 +97,7 @@ def parse_gmail_api_code_entries(value: Any) -> list[GmailApiCodeEntry]:
 
 
 class GmailApiCodeMailbox(BaseMailbox):
-    """Allocate fixed Gmail addresses and fetch OTP codes from their API URLs."""
+    """Allocate fixed API-backed addresses and fetch OTP codes from their API URLs."""
 
     _CLAIM_LOCK = threading.Lock()
     _POOL_TEXT_LOCK = threading.Lock()
@@ -103,14 +106,22 @@ class GmailApiCodeMailbox(BaseMailbox):
     _CLAIM_TTL_SECONDS = 60 * 60
 
     def __init__(self, *, pool_text: str = "", poll_interval: str = "", proxy: str | None = None):
-        self.entries = parse_gmail_api_code_entries(pool_text)
+        pool_rows = parse_gmail_api_code_pool_rows(pool_text)
+        self._registered_pool_emails = {
+            row.email for row in pool_rows if row.status in {"registered", "registered_exhausted"}
+        }
+        self.entries = [
+            GmailApiCodeEntry(email=row.email, code_url=row.code_url)
+            for row in pool_rows
+            if row.status not in {"deleted", "invalid", "registered_exhausted"}
+        ]
         self.poll_interval = max(1, self._safe_int(poll_interval, 3))
         self.proxy = {"http": proxy, "https": proxy} if proxy else None
         self._debug_log_fn: Callable[[str], None] | None = None
         self._last_fetch_debug: dict[str, Any] = {}
         self._last_debug_signature = ""
         if not self.entries:
-            raise RuntimeError("Gmail API接码未配置有效邮箱，格式：邮箱----接码链接")
+            raise RuntimeError("API接码邮箱未配置有效邮箱，格式：邮箱----接码链接")
 
     def set_debug_logger(self, log_fn: Callable[[str], None] | None) -> None:
         self._debug_log_fn = log_fn if callable(log_fn) else None
@@ -129,6 +140,16 @@ class GmailApiCodeMailbox(BaseMailbox):
             return int(value)
         except Exception:
             return default
+
+    @staticmethod
+    def email_alias_limit_for_parent(email: str) -> int:
+        domain = _normalize_email(email).rsplit("@", 1)[-1]
+        return 1 if domain in {"icloud.com", "me.com", "mac.com"} else 0
+
+    @staticmethod
+    def email_alias_uses_parent_account_for_parent(email: str) -> bool:
+        domain = _normalize_email(email).rsplit("@", 1)[-1]
+        return domain in {"icloud.com", "me.com", "mac.com"}
 
     @classmethod
     def _prune_active_claims_locked(cls) -> None:
@@ -185,6 +206,8 @@ class GmailApiCodeMailbox(BaseMailbox):
         normalized = _normalize_pool_status(status)
         if normalized == "registered":
             return "# registered "
+        if normalized == "registered_exhausted":
+            return "# registered_exhausted "
         if normalized == "invalid":
             return "# invalid "
         if normalized == "deleted":
@@ -231,6 +254,9 @@ class GmailApiCodeMailbox(BaseMailbox):
                     if not row or row[0].email != target or row[0].status == "deleted":
                         next_lines.append(raw_line)
                         continue
+                    if row[0].status == "registered_exhausted" and status != "registered_exhausted":
+                        next_lines.append(raw_line)
+                        continue
                     next_line = f"{marker}{row[0].email}----{row[0].code_url}"
                     next_lines.append(next_line)
                     changed = changed or next_line != raw_line
@@ -243,7 +269,7 @@ class GmailApiCodeMailbox(BaseMailbox):
                 return True
 
     @staticmethod
-    def _unavailable_resource_exists(email: str) -> bool:
+    def _resource_status_exists(email: str, statuses: set[str]) -> bool:
         target = _normalize_email(email)
         if not target:
             return False
@@ -257,7 +283,7 @@ class GmailApiCodeMailbox(BaseMailbox):
                 if setting:
                     pool_text = GmailApiCodeMailbox._setting_pool_text(setting)
                     for row in parse_gmail_api_code_pool_rows(pool_text):
-                        if row.email == target and row.status in {"registered", "invalid"}:
+                        if row.email == target and row.status in statuses:
                             return True
         except Exception:
             pass
@@ -270,13 +296,29 @@ class GmailApiCodeMailbox(BaseMailbox):
             for row in rows:
                 metadata = row.get_metadata()
                 status = str(metadata.get("registration_status") or "").strip().lower()
-                if GmailApiCodeMailbox._provider_resource_matches_email(row, metadata, target) and (
-                    status in {"registered", "invalid"}
-                    or metadata.get("registration_success")
-                    or metadata.get("registration_invalid")
+                if not GmailApiCodeMailbox._provider_resource_matches_email(row, metadata, target):
+                    continue
+                if "registered_exhausted" in statuses and (
+                    status == "registered_exhausted" or metadata.get("registration_alias_exhausted")
                 ):
                     return True
+                if "registered" in statuses and (status == "registered" or metadata.get("registration_success")):
+                    return True
+                if "invalid" in statuses and (status == "invalid" or metadata.get("registration_invalid")):
+                    return True
         return False
+
+    @classmethod
+    def _registered_resource_exists(cls, email: str) -> bool:
+        return cls._resource_status_exists(email, {"registered"})
+
+    @classmethod
+    def _invalid_resource_exists(cls, email: str) -> bool:
+        return cls._resource_status_exists(email, {"invalid"})
+
+    @classmethod
+    def _unavailable_resource_exists(cls, email: str) -> bool:
+        return cls._registered_resource_exists(email) or cls._invalid_resource_exists(email)
 
     def _entry_for_account(self, account: MailboxAccount) -> GmailApiCodeEntry:
         target = _normalize_email(account.email)
@@ -287,22 +329,40 @@ class GmailApiCodeMailbox(BaseMailbox):
         code_url = str(metadata.get("code_url") or "").strip()
         if target and code_url:
             return GmailApiCodeEntry(email=target, code_url=code_url)
-        raise RuntimeError(f"Gmail API接码未找到邮箱配置: {account.email}")
+        raise RuntimeError(f"API接码邮箱未找到邮箱配置: {account.email}")
 
     def peek_email(self) -> str:
         return self.entries[0].email
+
+    def email_alias_parent_registered(self, email: str) -> bool:
+        target = _normalize_email(email)
+        return target in self._registered_pool_emails or self._registered_resource_exists(target)
 
     def get_email(self) -> MailboxAccount:
         with self._CLAIM_LOCK:
             self._prune_active_claims_locked()
             unavailable_count = 0
             for entry in self.entries:
-                if entry.email in self._INVALID_EMAILS or self._unavailable_resource_exists(entry.email):
+                alias_wrapper_enabled = bool(getattr(self, "_email_alias_wrapper_enabled", False))
+                alias_uses_parent_account = self.email_alias_uses_parent_account_for_parent(entry.email)
+                if self._resource_status_exists(entry.email, {"registered_exhausted"}):
+                    unavailable_count += 1
+                    continue
+                if entry.email in self._INVALID_EMAILS or self._invalid_resource_exists(entry.email):
+                    unavailable_count += 1
+                    continue
+                if self._unavailable_resource_exists(entry.email) and not (
+                    alias_wrapper_enabled and alias_uses_parent_account
+                ):
+                    unavailable_count += 1
+                    continue
+                exhausted_parents = getattr(self, "_email_alias_exhausted_parents", set())
+                if entry.email in exhausted_parents:
                     unavailable_count += 1
                     continue
                 if entry.email in self._ACTIVE_CLAIMS:
                     continue
-                if self._account_exists(entry.email):
+                if self._account_exists(entry.email) and not (alias_wrapper_enabled and alias_uses_parent_account):
                     continue
                 self._ACTIVE_CLAIMS[entry.email] = time.time()
                 return MailboxAccount(
@@ -326,8 +386,8 @@ class GmailApiCodeMailbox(BaseMailbox):
                     },
                 )
         if unavailable_count >= len(self.entries):
-            raise RuntimeError("Gmail API接码邮箱池已无可用邮箱：所有邮箱都已注册或标记无效")
-        raise RuntimeError("Gmail API接码邮箱池暂未找到可用邮箱")
+            raise RuntimeError("API接码邮箱池已无可用邮箱：所有邮箱都已注册或标记无效")
+        raise RuntimeError("API接码邮箱池暂未找到可用邮箱")
 
     @staticmethod
     def _flatten_json(value: Any) -> str:
@@ -412,6 +472,25 @@ class GmailApiCodeMailbox(BaseMailbox):
             return ""
         return urllib.parse.urljoin(base_url, f"{detail_base}{message_id}{detail_suffix}")
 
+    @classmethod
+    def _message_identity_key(cls, text: str, base_url: str = "") -> str:
+        value = str(text or "")
+        base = str(base_url or "")
+        for source in (value, base):
+            if not source:
+                continue
+            for pattern in (
+                r"""(?:/message/|#mail-|data-id=["'])(\d{3,})""",
+                r"""href\s*=\s*["']#mail-(\d+)["']""",
+                r"""data-id\s*=\s*["'](\d+)["']""",
+                r"""/messages?/(\d+)/""",
+                r"""id\s*=\s*["']mail-(\d+)["']""",
+            ):
+                match = re.search(pattern, source, flags=re.IGNORECASE)
+                if match:
+                    return match.group(1)
+        return ""
+
     @staticmethod
     def _html_to_text(value: str) -> str:
         text = str(value or "")
@@ -467,6 +546,7 @@ class GmailApiCodeMailbox(BaseMailbox):
     def _fetch_text(self, entry: GmailApiCodeEntry) -> str:
         response = requests.get(entry.code_url, proxies=self.proxy, timeout=15)
         text = response.text or ""
+        message_key = self._message_identity_key(text, getattr(response, "url", "") or entry.code_url)
         data = None
         try:
             data = json.loads(text)
@@ -494,7 +574,7 @@ class GmailApiCodeMailbox(BaseMailbox):
         if status == 602:
             return ""
         if status == 502:
-            raise GmailApiCodeMailboxUnavailable("Gmail API接码邮箱不可用或已下架 (api_status=502)")
+            raise GmailApiCodeMailboxUnavailable("API接码邮箱不可用或已下架 (api_status=502)")
         response.raise_for_status()
         detail_url = "" if data is not None else self._message_detail_url(text, getattr(response, "url", "") or entry.code_url)
         if detail_url:
@@ -507,6 +587,8 @@ class GmailApiCodeMailbox(BaseMailbox):
                 detail_data = None
             detail_response.raise_for_status()
             expanded = self._expand_html_body(self._flatten_json(detail_data) if detail_data is not None else detail_text)
+            if not message_key:
+                message_key = self._message_identity_key(detail_text, detail_url)
             self._last_fetch_debug.update(
                 {
                     "detail_url": detail_url,
@@ -519,12 +601,28 @@ class GmailApiCodeMailbox(BaseMailbox):
                     "json_type": type(detail_data).__name__ if detail_data is not None else "",
                     "detail_raw_preview": self._preview(detail_text),
                     "decoded_preview": self._preview(self._html_to_text(expanded)),
+                    "message_key": message_key,
                 }
             )
+        else:
+            self._last_fetch_debug["message_key"] = message_key
         return expanded
 
+    def _current_id(self, text: str, code_pattern: str | None = None) -> str:
+        expanded_text = self._expand_html_body(str(text or ""))
+        message_key = str((self._last_fetch_debug or {}).get("message_key") or "").strip()
+        code = self._extract_code_from_text(expanded_text, code_pattern=code_pattern)
+        if message_key and code:
+            return f"mail:{message_key}|code:{code}"
+        if message_key:
+            return f"mail:{message_key}"
+        if code:
+            return f"code:{code}"
+        digest = hashlib.sha1(expanded_text.encode("utf-8", "ignore")).hexdigest()
+        return f"body:{digest}"
+
     @staticmethod
-    def _extract_code(text: str, code_pattern: str | None = None) -> str:
+    def _extract_code_from_text(text: str, code_pattern: str | None = None) -> str:
         expanded_text = GmailApiCodeMailbox._expand_html_body(str(text or ""))
         cleaned_text = GmailApiCodeMailbox._strip_mail_list_noise(expanded_text)
         main_table_code = GmailApiCodeMailbox._extract_code_from_main_table(expanded_text)
@@ -566,13 +664,9 @@ class GmailApiCodeMailbox(BaseMailbox):
             return match.group(1)
         return ""
 
-    @classmethod
-    def _current_id(cls, text: str, code_pattern: str | None = None) -> str:
-        code = cls._extract_code(text, code_pattern=code_pattern)
-        if code:
-            return f"code:{code}"
-        digest = hashlib.sha1(str(text or "").encode("utf-8", "ignore")).hexdigest()
-        return f"body:{digest}"
+    @staticmethod
+    def _extract_code(text: str, code_pattern: str | None = None) -> str:
+        return GmailApiCodeMailbox._extract_code_from_text(text, code_pattern=code_pattern)
 
     def get_current_ids(self, account: MailboxAccount) -> set:
         try:
@@ -611,7 +705,7 @@ class GmailApiCodeMailbox(BaseMailbox):
                 last_error = str(exc)
             time.sleep(self.poll_interval)
         suffix = f": {last_error}" if last_error else ""
-        raise TimeoutError(f"等待 Gmail API接码验证码超时 ({timeout}s){suffix}")
+        raise TimeoutError(f"等待 API接码邮箱验证码超时 ({timeout}s){suffix}")
 
     def _emit_fetch_debug(self, *, code: str, current_id: str, seen: bool) -> None:
         info = dict(self._last_fetch_debug or {})
@@ -623,15 +717,15 @@ class GmailApiCodeMailbox(BaseMailbox):
                 str(info.get("api_status") or ""),
                 str(info.get("raw_len") or ""),
                 str(info.get("expanded_len") or ""),
-                str(current_id or ""),
-                "seen" if seen else "new",
-            ]
+            str(current_id or ""),
+            "seen" if seen else "new",
+        ]
         )
         if signature == self._last_debug_signature:
             return
         self._last_debug_signature = signature
         self._debug_log(
-            "[GmailAPI] fetch "
+            "[API邮箱] fetch "
             f"url={info.get('url') or ''} "
             f"detail_url={info.get('detail_url') or ''} "
             f"http={info.get('http_status') or ''} "
@@ -643,14 +737,15 @@ class GmailApiCodeMailbox(BaseMailbox):
             f"data_uri={info.get('data_uri_count') or 0} "
             f"mail_view={'yes' if info.get('has_mail_view') else 'no'} "
             f"main_table={'yes' if info.get('has_main_table') else 'no'} "
+            f"message_key={info.get('message_key') or '-'} "
             f"extracted={code or '-'} "
             f"current_id={current_id or '-'} "
             f"seen={'yes' if seen else 'no'}"
         )
-        self._debug_log(f"[GmailAPI] raw_preview={info.get('raw_preview') or ''}")
+        self._debug_log(f"[API邮箱] raw_preview={info.get('raw_preview') or ''}")
         if info.get("detail_raw_preview"):
-            self._debug_log(f"[GmailAPI] detail_raw_preview={info.get('detail_raw_preview') or ''}")
-        self._debug_log(f"[GmailAPI] decoded_preview={info.get('decoded_preview') or ''}")
+            self._debug_log(f"[API邮箱] detail_raw_preview={info.get('detail_raw_preview') or ''}")
+        self._debug_log(f"[API邮箱] decoded_preview={info.get('decoded_preview') or ''}")
 
     def wait_for_link(self, account: MailboxAccount, keyword: str = "", timeout: int = 120, before_ids: set = None) -> str:
         entry = self._entry_for_account(account)
@@ -665,7 +760,7 @@ class GmailApiCodeMailbox(BaseMailbox):
                     return link
                 seen.add(current_id)
             time.sleep(self.poll_interval)
-        raise TimeoutError(f"等待 Gmail API接码验证链接超时 ({timeout}s)")
+        raise TimeoutError(f"等待 API接码邮箱验证链接超时 ({timeout}s)")
 
     def mark_registration_success(self, account: MailboxAccount) -> list[str]:
         email = _normalize_email(getattr(account, "email", ""))
@@ -699,15 +794,42 @@ class GmailApiCodeMailbox(BaseMailbox):
                 updated = True
             if updated:
                 session.commit()
-        return ["Gmail API接码邮箱已注册"] if pool_updated or updated or self._account_exists(email) else []
+        return ["API接码邮箱已注册"] if pool_updated or updated or self._account_exists(email) else []
 
     def mark_alias_exhausted(self, account: MailboxAccount, reason: str = "") -> list[str]:
         email = _normalize_email(getattr(account, "email", ""))
         self._release_active_claim(email)
         if not email:
             return []
-        applied = self.mark_registration_success(account)
-        return applied or ["Gmail API接码邮箱已注册"]
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        pool_updated = self._mark_pool_text_email_status(email, "registered_exhausted")
+        updated = False
+        with Session(engine) as session:
+            rows = session.exec(
+                select(ProviderResourceModel)
+                .where(ProviderResourceModel.provider_type == "mailbox")
+                .where(ProviderResourceModel.provider_name == "gmail_api_code")
+            ).all()
+            for row in rows:
+                metadata = row.get_metadata()
+                if not self._provider_resource_matches_email(row, metadata, email):
+                    continue
+                metadata.update(
+                    {
+                        "email": email,
+                        "registration_status": "registered_exhausted",
+                        "registration_alias_exhausted": True,
+                        "registration_alias_exhausted_reason": reason or "registration_disallowed",
+                        "registration_alias_exhausted_at": now,
+                    }
+                )
+                row.set_metadata(metadata)
+                row.updated_at = datetime.now(timezone.utc)
+                session.add(row)
+                updated = True
+            if updated:
+                session.commit()
+        return ["API接码邮箱已注册"] if pool_updated or updated or self._account_exists(email) else []
 
     def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
         email = _normalize_email(getattr(account, "email", ""))
@@ -744,4 +866,4 @@ class GmailApiCodeMailbox(BaseMailbox):
                 updated = True
             if updated:
                 session.commit()
-        return ["Gmail API接码邮箱已标记无效"] if pool_updated or updated or email in self._INVALID_EMAILS else []
+        return ["API接码邮箱已标记无效"] if pool_updated or updated or email in self._INVALID_EMAILS else []

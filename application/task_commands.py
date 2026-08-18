@@ -16,6 +16,7 @@ from application.tasks import (
     create_get_rt_task,
     create_get_rt_bypass_task,
     create_refresh_session_task,
+    create_batch_security_setup_task,
     create_agents_upload_sub2api_task,
     create_gopay_pay_chatgpt_task,
     create_gopay_register_account_task,
@@ -62,6 +63,11 @@ class TaskCommandsService:
 
     def create_refresh_session_task(self, payload: dict) -> dict:
         task = create_refresh_session_task(payload)
+        task_runtime.wake_up()
+        return task
+
+    def create_batch_security_setup_task(self, payload: dict) -> dict:
+        task = create_batch_security_setup_task(payload)
         task_runtime.wake_up()
         return task
 

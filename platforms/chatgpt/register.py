@@ -367,40 +367,103 @@ def _extract_chatgpt_account_id(access_token: str) -> str:
     return str(payload.get("sub") or "").strip()
 
 
-def _cookies_to_header(cookies) -> str:
-    """将当前会话 cookie 转为 Cookie header，便于后续按 Chat2API 方式校验 session。"""
-    parts: list[str] = []
-    if not isinstance(cookies, dict):
+def _iter_cookie_records(cookies):
+    if not cookies:
+        return
+    if isinstance(cookies, dict):
+        for name, value in cookies.items():
+            yield {
+                "name": str(name or "").strip(),
+                "value": str(value or ""),
+                "domain": "",
+                "path": "/",
+            }
+        return
+
+    jar = getattr(cookies, "jar", None)
+    yielded = False
+    if jar is not None:
         try:
-            for cookie in list(cookies or []):
-                if isinstance(cookie, dict):
-                    name = str(cookie.get("name") or "").strip()
-                    value = str(cookie.get("value") or "")
-                else:
-                    name = str(getattr(cookie, "name", "") or "").strip()
-                    value = str(getattr(cookie, "value", "") or "")
-                if name and value:
-                    parts.append(f"{name}={value}")
-            if parts:
-                return "; ".join(parts)
+            for cookie in jar:
+                name = str(getattr(cookie, "name", "") or "").strip()
+                value = str(getattr(cookie, "value", "") or "")
+                if name and value != "":
+                    yielded = True
+                    yield {
+                        "name": name,
+                        "value": value,
+                        "domain": str(getattr(cookie, "domain", "") or ""),
+                        "path": str(getattr(cookie, "path", "") or "/"),
+                    }
         except Exception:
-            parts = []
+            yielded = False
+        if yielded:
+            return
+
+    yielded = False
+    try:
+        for cookie in list(cookies or []):
+            if isinstance(cookie, dict):
+                name = str(cookie.get("name") or "").strip()
+                value = str(cookie.get("value") or "")
+                domain = str(cookie.get("domain") or "")
+                path = str(cookie.get("path") or "/")
+            else:
+                name = str(getattr(cookie, "name", "") or "").strip()
+                value = str(getattr(cookie, "value", "") or "")
+                domain = str(getattr(cookie, "domain", "") or "")
+                path = str(getattr(cookie, "path", "") or "/")
+            if name and value != "":
+                yielded = True
+                yield {"name": name, "value": value, "domain": domain, "path": path}
+    except Exception:
+        yielded = False
+    if yielded:
+        return
+
     if hasattr(cookies, "items"):
         try:
             for name, value in cookies.items():
-                if name and value not in (None, ""):
-                    parts.append(f"{name}={value}")
-            return "; ".join(parts)
+                name = str(name or "").strip()
+                value = str(value or "")
+                if name and value != "":
+                    yielded = True
+                    yield {"name": name, "value": value, "domain": "", "path": "/"}
         except Exception:
-            parts = []
-    try:
-        for cookie in cookies or []:
-            name = str(getattr(cookie, "name", "") or "").strip()
-            value = str(getattr(cookie, "value", "") or "")
-            if name and value:
-                parts.append(f"{name}={value}")
-    except Exception:
+            yielded = False
+        if yielded:
+            return
+
+    if hasattr(cookies, "get_dict"):
+        try:
+            for name, value in cookies.get_dict().items():
+                name = str(name or "").strip()
+                value = str(value or "")
+                if name and value != "":
+                    yield {"name": name, "value": value, "domain": "", "path": "/"}
+        except Exception:
+            return
+
+
+def _cookie_value(cookies, name: str) -> str:
+    target = str(name or "").strip()
+    if not target:
         return ""
+    value = ""
+    for cookie in _iter_cookie_records(cookies) or []:
+        if str(cookie.get("name") or "") == target:
+            value = str(cookie.get("value") or "")
+    return value
+
+
+def _cookies_to_header(cookies) -> str:
+    """将当前会话 cookie 转为 Cookie header，便于后续按 Chat2API 方式校验 session。"""
+    parts: list[str] = []
+    for cookie in _iter_cookie_records(cookies) or []:
+        name = str(cookie.get("name") or "").strip()
+        value = str(cookie.get("value") or "")
+        if name and value != "":
+            parts.append(f"{name}={value}")
     return "; ".join(parts)
 
 
@@ -996,17 +1059,7 @@ class RegistrationEngine:
 
         except Exception:
 
-            try:
-
-                for cookie in self.session.cookies:
-
-                    if getattr(cookie, "name", "") == "oai-did":
-
-                        return str(getattr(cookie, "value", "") or "")
-
-            except Exception:
-
-                return ""
+            return _cookie_value(self.session.cookies, "oai-did")
 
         return ""
 
@@ -1134,13 +1187,7 @@ class RegistrationEngine:
 
             pass
 
-        try:
-
-            return any(getattr(cookie, "name", "") == name for cookie in self.session.cookies)
-
-        except Exception:
-
-            return False
+        return bool(_cookie_value(self.session.cookies, name))
 
 
 
@@ -1792,7 +1839,7 @@ class RegistrationEngine:
             self._post_register_password_error = "missing_session"
             self._log("设置帐号密码: 缺少 auth 会话，跳过", "warning")
             return False
-        session_token = str(self.session.cookies.get("__Secure-next-auth.session-token") or "").strip()
+        session_token = _cookie_value(self.session.cookies, "__Secure-next-auth.session-token").strip()
         if not session_token:
             self._post_register_password_error = "missing_chatgpt_session"
             self._log("设置帐号密码: ChatGPT session 尚未建立，跳过", "warning")
@@ -2158,18 +2205,10 @@ class RegistrationEngine:
         names: set[str] = set()
         if not self.session:
             return names
-        try:
-            if hasattr(self.session.cookies, "items"):
-                names.update(str(k) for k in self.session.cookies.keys())
-        except Exception:
-            pass
-        try:
-            for cookie in self.session.cookies:
-                name = str(getattr(cookie, "name", "") or "").strip()
-                if name:
-                    names.add(name)
-        except Exception:
-            pass
+        for cookie in _iter_cookie_records(self.session.cookies) or []:
+            name = str(cookie.get("name") or "").strip()
+            if name:
+                names.add(name)
         return names
 
     def _latest_chatgpt_has_cf_clearance(self) -> bool:
@@ -2242,32 +2281,25 @@ class RegistrationEngine:
             }
             items.append(item)
 
-        try:
-            for cookie in self.session.cookies:
-                name = str(getattr(cookie, "name", "") or "")
-                value = str(getattr(cookie, "value", "") or "")
-                domain = str(getattr(cookie, "domain", "") or "")
-                path = str(getattr(cookie, "path", "") or "/")
-                _add(name, value, domain=domain, path=path)
-        except Exception:
-            pass
-        try:
-            if hasattr(self.session.cookies, "items"):
-                for name, value in self.session.cookies.items():
-                    _add(str(name), str(value), domain=".auth.openai.com", path="/")
-                    _add(str(name), str(value), domain="auth.openai.com", path="/")
-                    if str(name).startswith("__Host-") or str(name).startswith("__Secure-") or str(name) in {
-                        "oai-did",
-                        "__cflb",
-                        "__cf_bm",
-                        "_cfuvid",
-                        "cf_clearance",
-                        "oai-sc",
-                    }:
-                        _add(str(name), str(value), domain=".chatgpt.com", path="/")
-                        _add(str(name), str(value), domain="chatgpt.com", path="/")
-        except Exception:
-            pass
+        for cookie in _iter_cookie_records(self.session.cookies) or []:
+            name = str(cookie.get("name") or "")
+            value = str(cookie.get("value") or "")
+            domain = str(cookie.get("domain") or "")
+            path = str(cookie.get("path") or "/")
+            _add(name, value, domain=domain, path=path)
+            if not domain:
+                _add(name, value, domain=".auth.openai.com", path="/")
+                _add(name, value, domain="auth.openai.com", path="/")
+            if name.startswith("__Host-") or name.startswith("__Secure-") or name in {
+                "oai-did",
+                "__cflb",
+                "__cf_bm",
+                "_cfuvid",
+                "cf_clearance",
+                "oai-sc",
+            }:
+                _add(name, value, domain=".chatgpt.com", path="/")
+                _add(name, value, domain="chatgpt.com", path="/")
         if self._device_id:
             _add("oai-did", str(self._device_id), domain=".auth.openai.com", path="/")
             _add("oai-did", str(self._device_id), domain="auth.openai.com", path="/")
@@ -3579,21 +3611,22 @@ class RegistrationEngine:
 
             page_type = str(((login_payload.get("page") or {}).get("type")) or "")
             continue_url = str(login_payload.get("continue_url") or "").strip()
-            if bool(getattr(self, "prefer_password_totp_login", False)):
-                result.error_message = (
-                    "重新登录密码+2FA链路未进入 2FA 或 callback 步骤: "
-                    f"page={page_type or '(empty)'} url={continue_url or getattr(self, '_latest_chatgpt_init_final_url', '')}"
-                )
-                return result
-            if not (
+            is_email_otp_step = (
                 page_type in {"email_otp_send", "email_otp_verification"}
                 or "/email-verification" in continue_url
                 or "/email-otp" in continue_url
-            ):
-                result.error_message = (
-                    "重新登录未进入邮箱验证码或 callback 步骤: "
-                    f"page={page_type or '(empty)'} url={continue_url or getattr(self, '_latest_chatgpt_init_final_url', '')}"
-                )
+            )
+            if not is_email_otp_step:
+                if bool(getattr(self, "prefer_password_totp_login", False)):
+                    result.error_message = (
+                        "重新登录密码+2FA链路未进入 2FA、邮箱验证码或 callback 步骤: "
+                        f"page={page_type or '(empty)'} url={continue_url or getattr(self, '_latest_chatgpt_init_final_url', '')}"
+                    )
+                else:
+                    result.error_message = (
+                        "重新登录未进入邮箱验证码或 callback 步骤: "
+                        f"page={page_type or '(empty)'} url={continue_url or getattr(self, '_latest_chatgpt_init_final_url', '')}"
+                    )
                 return result
 
             validate_payload = self._latest_chatgpt_refresh_session_validate_otp_with_retry()
@@ -3791,12 +3824,9 @@ class RegistrationEngine:
                 time.sleep(2)
                 continue
             error_code = str(getattr(self, "_last_create_account_error_code", "") or "")
-            if error_code == "registration_disallowed" and attempt < 3:
-                self._log(f"registration_disallowed，按最新版流程重试创建账号 ({attempt}/3)", "warning")
-                time.sleep(2)
-                continue
             if error_code == "registration_disallowed":
-                self._mark_current_email_invalid("registration_disallowed")
+                self._log("registration_disallowed，OpenAI 已明确拒绝当前邮箱，停止重试并标记父邮箱子号耗尽", "warning")
+                self._mark_parent_email_exhausted("registration_disallowed")
             return False
         return False
 
@@ -4062,8 +4092,8 @@ class RegistrationEngine:
             "[REG-DIAG][session][protocol] callback response "
             f"status={callback_status} final_url=({self._diag_url_summary(str(getattr(cb_resp, 'url', '') or ''))}) "
             f"cookies={self._diag_cookie_names_text()} "
-            f"session_cookie={self._diag_shape(self.session.cookies.get('__Secure-next-auth.session-token', ''))} "
-            f"account_cookie={self._diag_shape(self.session.cookies.get('_account', ''))}"
+            f"session_cookie={self._diag_shape(_cookie_value(self.session.cookies, '__Secure-next-auth.session-token'))} "
+            f"account_cookie={self._diag_shape(_cookie_value(self.session.cookies, '_account'))}"
         )
         if callback_status >= 400:
             callback_body = str(getattr(cb_resp, "text", "") or "")
@@ -4078,9 +4108,9 @@ class RegistrationEngine:
                 "warning",
             )
 
-        session_token = str(self.session.cookies.get("__Secure-next-auth.session-token") or "").strip()
-        account_cookie = str(self.session.cookies.get("_account") or "").strip()
-        session_cookies_header = _cookies_to_header(self.session.cookies)
+        session_token = _cookie_value(self.session.cookies, "__Secure-next-auth.session-token").strip()
+        account_cookie = _cookie_value(self.session.cookies, "_account").strip()
+        session_cookies_header = ""
 
         home_access_token = ""
         authenticated_warmup_done = False
@@ -4136,6 +4166,14 @@ class RegistrationEngine:
             )
         session_data = self._response_json_dict(session_resp)
         access_token = str(session_data.get("accessToken") or home_access_token or "").strip()
+        session_cookies_header = _cookies_to_header(self.session.cookies)
+        session_token = str(
+            session_data.get("sessionToken")
+            or _cookie_value(self.session.cookies, "__Secure-next-auth.session-token")
+            or session_token
+            or ""
+        ).strip()
+        account_cookie = (_cookie_value(self.session.cookies, "_account") or account_cookie or "").strip()
         self._log(
             "[REG-DIAG][session][protocol] session_api response "
             f"status={session_status} "
@@ -4145,7 +4183,8 @@ class RegistrationEngine:
             f"session_token_json={self._diag_shape(session_data.get('sessionToken'))} "
             f"session_cookie={self._diag_shape(session_token)} "
             f"account_cookie={self._diag_shape(account_cookie)} "
-            f"cookies={self._diag_cookie_names_text()}"
+            f"cookies={self._diag_cookie_names_text()} "
+            f"cookie_header_count={len([part for part in session_cookies_header.split(';') if part.strip()])}"
         )
         if access_token and not authenticated_warmup_done:
             authenticated_warmup_done = self._latest_chatgpt_warmup_authenticated_session(access_token)
@@ -4165,7 +4204,14 @@ class RegistrationEngine:
                     session_token = browser_session_token
                 if browser_account_cookie:
                     account_cookie = browser_account_cookie
-        session_token = str(session_data.get("sessionToken") or session_token or "").strip()
+        session_cookies_header = _cookies_to_header(self.session.cookies)
+        session_token = str(
+            session_data.get("sessionToken")
+            or _cookie_value(self.session.cookies, "__Secure-next-auth.session-token")
+            or session_token
+            or ""
+        ).strip()
+        account_cookie = (_cookie_value(self.session.cookies, "_account") or account_cookie or "").strip()
         account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
         user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else {}
         account_id = (
@@ -4185,8 +4231,8 @@ class RegistrationEngine:
 
         if self._latest_chatgpt_add_password_after_register(access_token):
             session_cookies_header = _cookies_to_header(self.session.cookies)
-            session_token = str(self.session.cookies.get("__Secure-next-auth.session-token") or session_token or "").strip()
-            account_cookie = str(self.session.cookies.get("_account") or account_cookie or "").strip()
+            session_token = str(_cookie_value(self.session.cookies, "__Secure-next-auth.session-token") or session_token or "").strip()
+            account_cookie = str(_cookie_value(self.session.cookies, "_account") or account_cookie or "").strip()
             try:
                 refreshed_session_resp = self.session.get(
                     f"{CHATGPT_APP}/api/auth/session",
@@ -4205,7 +4251,14 @@ class RegistrationEngine:
                 if refreshed_access_token:
                     session_data = refreshed_session_data
                     access_token = refreshed_access_token
-                    session_token = str(refreshed_session_data.get("sessionToken") or session_token or "").strip()
+                    session_cookies_header = _cookies_to_header(self.session.cookies)
+                    session_token = str(
+                        refreshed_session_data.get("sessionToken")
+                        or _cookie_value(self.session.cookies, "__Secure-next-auth.session-token")
+                        or session_token
+                        or ""
+                    ).strip()
+                    account_cookie = str(_cookie_value(self.session.cookies, "_account") or account_cookie or "").strip()
                     self._latest_chatgpt_warmup_authenticated_session(refreshed_access_token)
                     account_data = session_data.get("account") if isinstance(session_data.get("account"), dict) else {}
                     user_data = session_data.get("user") if isinstance(session_data.get("user"), dict) else user_data
@@ -4217,6 +4270,12 @@ class RegistrationEngine:
                     )
             except Exception as exc:
                 self._log(f"设置帐号密码后刷新 session 失败: {exc}", "warning")
+        session_cookies_header = _cookies_to_header(self.session.cookies)
+        self._log(
+            "[REG-DIAG][session][protocol] saved_cookie_header "
+            f"names={self._diag_cookie_names_text()} "
+            f"count={len([part for part in session_cookies_header.split(';') if part.strip()])}"
+        )
 
         result.success = True
         result.email = self.email or ""
@@ -4243,6 +4302,7 @@ class RegistrationEngine:
             "is_existing_account": self._is_existing_account,
             "cookies": session_cookies_header,
             "login_state_cookie": session_cookies_header,
+            "cookie_header": session_cookies_header,
             "profile": user_data,
             "expires_at": str(session_data.get("expires") or ""),
             "session": session_data,
@@ -4399,7 +4459,7 @@ class RegistrationEngine:
                 if str(getattr(self, "_last_create_account_error_code", "") or "") == "account_deactivated":
                     return self._latest_chatgpt_login_after_account_deactivated(result)
                 if str(getattr(self, "_last_create_account_error_code", "") or "") == "registration_disallowed":
-                    result.error_message = "registration_disallowed，当前邮箱已标记无效邮箱"
+                    result.error_message = "registration_disallowed，当前邮箱已标记为已注册且子邮箱耗尽"
                     return result
                 result.error_message = (
                     "EMAIL_ALIAS_PARENT_EXHAUSTED: user_already_exists - parent email alias quota exhausted"
@@ -5733,7 +5793,7 @@ class RegistrationEngine:
         This forces the mailbox provider to tag the parent email as "registered",
         so the next get_email() call skips it and allocates a new parent.
         """
-        marker = getattr(self.email_service, "mark_parent_exhausted", None)
+        marker = getattr(getattr(self, "email_service", None), "mark_parent_exhausted", None)
         if not callable(marker):
             self._log("当前邮箱服务不支持标记父邮箱耗尽: " + str(self.email), "warning")
             return []
@@ -5995,7 +6055,7 @@ class RegistrationEngine:
                     self._response_json_dict(response)
                 )
                 if self._last_create_account_error_code == "registration_disallowed":
-                    self._mark_current_email_invalid("registration_disallowed")
+                    self._mark_parent_email_exhausted("registration_disallowed")
 
                 if self._is_deleted_or_deactivated_account_response(response):
                     self._log("OpenAI 判定该邮箱关联账号已删除或停用，准备删除当前邮箱", "warning")
@@ -7956,6 +8016,8 @@ class RegistrationEngine:
             "registration_refresh_token_usable": False,
             "refresh_token_source": "",
             "cookies": chatgpt_cookies,
+            "login_state_cookie": chatgpt_cookies,
+            "cookie_header": chatgpt_cookies,
             "profile": chatgpt_user,
             "expires_at": str(chatgpt_session.get("expires") or "") if isinstance(chatgpt_session, dict) else "",
             "session": chatgpt_session,
@@ -8155,6 +8217,8 @@ class RegistrationEngine:
 
             "refresh_token_source": "",
             "cookies": chatgpt_cookies,
+            "login_state_cookie": chatgpt_cookies,
+            "cookie_header": chatgpt_cookies,
             "profile": chatgpt_user,
             "expires_at": str(chatgpt_session.get("expires") or "") if isinstance(chatgpt_session, dict) else "",
             "session": chatgpt_session,
@@ -9485,10 +9549,9 @@ class RegistrationEngine:
 
             # 提取 session cookie
 
-            session_token = self.session.cookies.get("__Secure-next-auth.session-token")
+            session_token = _cookie_value(self.session.cookies, "__Secure-next-auth.session-token")
 
-            account_cookie = self.session.cookies.get("_account", "")
-            session_cookies_header = _cookies_to_header(self.session.cookies)
+            account_cookie = _cookie_value(self.session.cookies, "_account")
 
             if session_token:
 
@@ -9523,8 +9586,16 @@ class RegistrationEngine:
 
 
             session_data = session_resp.json()
+            session_cookies_header = _cookies_to_header(self.session.cookies)
 
             access_token = session_data.get("accessToken", "")
+            session_token = str(
+                session_data.get("sessionToken")
+                or _cookie_value(self.session.cookies, "__Secure-next-auth.session-token")
+                or session_token
+                or ""
+            ).strip()
+            account_cookie = str(_cookie_value(self.session.cookies, "_account") or account_cookie or "").strip()
 
             user_data = session_data.get("user", {})
             session_account_id = _extract_chatgpt_account_id(access_token)
@@ -9958,6 +10029,7 @@ class RegistrationEngine:
                 # 保存 cookie/session，便于后续用 /api/auth/session 复验。
                 "cookies": session_cookies_header,
                 "login_state_cookie": session_cookies_header,
+                "cookie_header": session_cookies_header,
                 "profile": session_profile,
                 "expires_at": session_expires,
                 "session": session_data,

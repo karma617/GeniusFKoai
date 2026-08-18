@@ -464,6 +464,7 @@ def run_protocol_get_rt(
     smsapi_url: str = "",
     phone_callback=None,
     phone_change_limit: int = 10,
+    phone_code_timeout: int = 60,
     totp_secret: str = "",
 ) -> dict[str, Any]:
     email_service = _GetRtMailboxEmailService(otp_callback, log_fn=log_fn, email=email)
@@ -563,8 +564,11 @@ def run_protocol_get_rt(
                 continue_data = passwordless_data
                 page_type = _extract_page_type(continue_data)
 
-    if prefer_password_totp_login and page_type in {"email_otp_send", "email_otp_verification"}:
-        raise RuntimeError(f"获取rt协议模式密码+2FA链路返回邮箱验证码步骤: {page_type}")
+    if page_type in {"email_otp_send", "email_otp_verification"}:
+        if prefer_password_totp_login:
+            log_fn(f"  获取rt(协议): 密码+2FA账号返回邮箱验证码步骤，改用邮箱 OTP 后继续 TOTP: {page_type}")
+        if not callable(otp_callback):
+            raise RuntimeError(f"获取rt协议模式进入邮箱验证码步骤但邮箱 OTP 服务不可用: {page_type}")
 
     if page_type == "email_otp_send":
         log_fn("  \u83b7\u53d6rt(\u534f\u8bae): email_otp_send \u9875\u9762\uff0c\u663e\u5f0f\u89e6\u53d1\u90ae\u7bb1\u9a8c\u8bc1\u7801")
@@ -639,6 +643,14 @@ def run_protocol_get_rt(
                 raise RuntimeError(f"获取rt协议模式手机回调创建失败: {phone_error}")
         if phone_callback_obj is None:
             raise RuntimeError("获取rt协议模式进入 add_phone，但未配置手机验证码回调")
+
+        try:
+            phone_code_timeout = max(1, int(phone_code_timeout or 60))
+        except (TypeError, ValueError):
+            phone_code_timeout = 60
+        if hasattr(phone_callback_obj, "set_code_timeout"):
+            phone_callback_obj.set_code_timeout(phone_code_timeout)
+        log_fn(f"  获取rt(协议): 手机验证码等待上限 {phone_code_timeout}s，超时释放号码并切换下一个")
 
         last_send_error = ""
         for attempt in range(1, max(int(phone_change_limit or 1), 1) + 1):
@@ -732,10 +744,16 @@ def run_protocol_get_rt(
                             phone_callback_obj.mark_send_failed(last_send_error)
                     except Exception:
                         pass
-                    log_fn(
-                        "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u83b7\u53d6\u5931\u8d25\uff0c"
-                        f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt} detail={last_send_error}"
-                    )
+                    if "超时" in last_send_error or "timeout" in last_send_error.lower():
+                        log_fn(
+                            f"  获取rt(协议): 等待手机验证码超过 {phone_code_timeout}s，"
+                            f"已释放当前手机号并切换下一个 attempt={attempt} detail={last_send_error}"
+                        )
+                    else:
+                        log_fn(
+                            "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u83b7\u53d6\u5931\u8d25\uff0c"
+                            f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt} detail={last_send_error}"
+                        )
                     continue
                 if not code:
                     last_send_error = "empty phone otp"

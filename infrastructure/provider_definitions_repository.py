@@ -294,8 +294,8 @@ _BUILTIN_DEFINITIONS: list[dict] = [
     {
         "provider_type": "mailbox",
         "provider_key": "gmail_api_code",
-        "label": "Gmail API接码",
-        "description": "使用固定 Gmail 邮箱和对应接码链接读取验证码",
+        "label": "API接码邮箱",
+        "description": "使用固定 Gmail/iCloud 邮箱和对应接码链接读取验证码",
         "driver_type": "gmail_api_code",
         "default_auth_mode": "apikey",
         "enabled": True,
@@ -304,11 +304,11 @@ _BUILTIN_DEFINITIONS: list[dict] = [
         "fields": [
             {
                 "key": "gmail_api_code_pool_text",
-                "label": "Gmail API接码邮箱",
+                "label": "API接码邮箱池",
                 "type": "textarea",
                 "category": "auth",
-                "hint": "一行一个：邮箱----接码链接。左侧为注册使用的 Gmail，右侧为该邮箱的取码 API URL。",
-                "placeholder": "phkong8269@gmail.com----https://gapi.mailsapi.com/api/code/fetch?token=xxx&uid=yyy",
+                "hint": "一行一个：邮箱----接码链接。左侧为注册使用的 Gmail/iCloud 邮箱，右侧为该邮箱的取码 API URL。",
+                "placeholder": "user@gmail.com----https://example.test/api/code?token=xxx\nuser@icloud.com----https://example.test/message/uid/token/user@icloud.com",
             },
             {
                 "key": "gmail_api_code_poll_interval",

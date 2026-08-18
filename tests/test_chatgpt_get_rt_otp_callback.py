@@ -130,7 +130,7 @@ def test_refresh_session_classifies_cloudflare_managed_challenge(monkeypatch):
     assert result["data"].get("delete_local_account") is None
 
 
-def test_refresh_session_password_totp_skips_mailbox_service(monkeypatch):
+def test_refresh_session_password_totp_provides_optional_mailbox_service(monkeypatch):
     account = Account(
         platform="chatgpt",
         email="refresh-totp@test.com",
@@ -139,10 +139,11 @@ def test_refresh_session_password_totp_skips_mailbox_service(monkeypatch):
         extra={"totp_secret": "JBSWY3DPEHPK3PXP"},
     )
     platform = ChatGPTPlatform(RegisterConfig())
+    mailbox_service = object()
     monkeypatch.setattr(
         platform,
         "_build_refresh_session_mailbox_email_service",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("mailbox service should not be built")),
+        lambda *_args, **_kwargs: (mailbox_service, ""),
     )
 
     captured = {}
@@ -186,11 +187,75 @@ def test_refresh_session_password_totp_skips_mailbox_service(monkeypatch):
     result = platform._handle_refresh_session(account, {})
 
     assert result["ok"] is True
-    assert captured["email_service"] is None
+    assert captured["email_service"] is mailbox_service
     assert captured["engine"]["email"] == "refresh-totp@test.com"
     assert captured["engine"]["password"] == "Secret123!"
     assert captured["engine"]["totp_secret"] == "JBSWY3DPEHPK3PXP"
     assert captured["engine"]["prefer_password_totp_login"] is True
+
+
+def test_refresh_session_totp_without_password_uses_mailbox_service(monkeypatch):
+    account = Account(
+        platform="chatgpt",
+        email="refresh-otp-totp@test.com",
+        password="",
+        user_id="acct-refresh-otp-totp",
+        extra={"totp_secret": "JBSWY3DPEHPK3PXP"},
+    )
+    platform = ChatGPTPlatform(RegisterConfig())
+    mailbox_service = object()
+    monkeypatch.setattr(
+        platform,
+        "_build_refresh_session_mailbox_email_service",
+        lambda *_args, **_kwargs: (mailbox_service, ""),
+    )
+
+    captured = {}
+
+    class FakeRegistrationEngine:
+        def __init__(self, *, email_service, proxy_url=None, callback_logger=None):
+            captured["email_service"] = email_service
+            self.email = ""
+            self.password = "initial"
+            self.totp_secret = ""
+            self.prefer_password_totp_login = True
+            self.k12_join_enabled = True
+            self.set_password_after_register = True
+
+        def run_chatgpt_refresh_session_latest(self):
+            captured["engine"] = {
+                "email": self.email,
+                "password": self.password,
+                "totp_secret": self.totp_secret,
+                "prefer_password_totp_login": self.prefer_password_totp_login,
+            }
+            return type(
+                "Result",
+                (),
+                {
+                    "success": True,
+                    "access_token": "access-token",
+                    "session_token": "session-token",
+                    "account_id": "acct-refresh-otp-totp",
+                    "metadata": {
+                        "session": {"accessToken": "access-token", "sessionToken": "session-token"},
+                        "cookies": "__Secure-next-auth.session-token=session-token",
+                    },
+                },
+            )()
+
+    import platforms.chatgpt.register as register_module
+
+    monkeypatch.setattr(register_module, "RegistrationEngine", FakeRegistrationEngine)
+
+    result = platform._handle_refresh_session(account, {})
+
+    assert result["ok"] is True
+    assert captured["email_service"] is mailbox_service
+    assert captured["engine"]["email"] == "refresh-otp-totp@test.com"
+    assert captured["engine"]["password"] == ""
+    assert captured["engine"]["totp_secret"] == "JBSWY3DPEHPK3PXP"
+    assert captured["engine"]["prefer_password_totp_login"] is False
 
 
 def test_get_rt_mailbox_otp_callback_uses_attached_mailbox_resource(monkeypatch):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from types import SimpleNamespace
 
 from core.base_platform import RegisterConfig
@@ -13,6 +14,74 @@ from core.registration import (
 )
 import core.registration.helpers as helpers_module
 import core.registration.flows as flows_module
+
+
+def _mailbox_context():
+    released = []
+    mailbox_account = SimpleNamespace(email="user@example.com")
+    mailbox = SimpleNamespace(
+        release_account=lambda account: released.append(account.email),
+    )
+    platform = SimpleNamespace(mailbox=mailbox)
+    identity = SimpleNamespace(
+        email="user@example.com",
+        has_mailbox=True,
+        identity_provider="mailbox",
+        mailbox_account=mailbox_account,
+    )
+    return released, platform, identity
+
+
+def test_browser_flow_releases_mailbox_after_registration_failure(monkeypatch):
+    released, platform, identity = _mailbox_context()
+    monkeypatch.setattr(flows_module, "build_phone_callbacks", lambda ctx, service=None: (None, None))
+
+    ctx = RegistrationContext(
+        platform_name="chatgpt",
+        platform_display_name="ChatGPT",
+        platform=platform,
+        identity=identity,
+        config=RegisterConfig(executor_type="headless", extra={}),
+        email="user@example.com",
+        password="Secret123!",
+        log_fn=lambda message: None,
+    )
+    adapter = BrowserRegistrationAdapter(
+        browser_worker_builder=lambda ctx, artifacts: object(),
+        browser_register_runner=lambda worker, ctx, artifacts: (_ for _ in ()).throw(RuntimeError("boom")),
+        result_mapper=lambda ctx, raw: raw,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        BrowserRegistrationFlow(adapter).run(ctx)
+
+    assert released == ["user@example.com"]
+
+
+def test_protocol_flow_releases_mailbox_after_registration_failure(monkeypatch):
+    released, platform, identity = _mailbox_context()
+    monkeypatch.setattr(flows_module, "build_phone_callbacks", lambda ctx, service=None: (None, None))
+
+    ctx = RegistrationContext(
+        platform_name="chatgpt",
+        platform_display_name="ChatGPT",
+        platform=platform,
+        identity=identity,
+        config=RegisterConfig(executor_type="protocol", extra={}),
+        email="user@example.com",
+        password="Secret123!",
+        log_fn=lambda message: None,
+    )
+    adapter = ProtocolMailboxAdapter(
+        worker_builder=lambda ctx, artifacts: object(),
+        register_runner=lambda worker, ctx, artifacts: (_ for _ in ()).throw(RuntimeError("boom")),
+        result_mapper=lambda ctx, raw: raw,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        ProtocolMailboxFlow(adapter).run(ctx)
+
+    assert released == ["user@example.com"]
 
 
 def test_browser_flow_wires_phone_callback_and_runs_cleanup(monkeypatch):

@@ -50,6 +50,49 @@ def test_get_rt_route_handlers_are_sync_playwright_handlers():
     assert browser_get_rt._state_store["oauth_state"] == "state_123"
 
 
+def test_get_rt_phone_timeout_releases_and_switches_number(monkeypatch):
+    events = []
+    attempts = []
+
+    class PhoneCallback:
+        phase = "need_code"
+        activation = "activation-1"
+        completed = False
+
+        def set_code_timeout(self, timeout):
+            events.append(("timeout", timeout))
+
+        def cleanup(self):
+            events.append("cleanup")
+
+    def fake_attempt(*_args, **kwargs):
+        attempts.append(kwargs["phone_code_timeout"])
+        if len(attempts) == 1:
+            raise RuntimeError(
+                f"{browser_register.PHONE_CODE_TIMEOUT_SENTINEL}: 等待短信验证码超过 60s"
+            )
+        return {"page_type": "consent"}
+
+    monkeypatch.setattr(browser_register, "_do_add_phone_attempt", fake_attempt)
+    monkeypatch.setattr(browser_register, "_goto_with_retry", lambda *_args, **_kwargs: None)
+
+    result = browser_register._handle_add_phone_challenge(
+        object(),
+        PhoneCallback(),
+        device_id="device-1",
+        user_agent="Mozilla/5.0",
+        log=events.append,
+        max_phone_attempts=2,
+        phone_code_timeout=60,
+        retry_on_timeout=True,
+    )
+
+    assert result == {"page_type": "consent"}
+    assert attempts == [60, 60]
+    assert "cleanup" in events
+    assert any("切换下一个" in event for event in events if isinstance(event, str))
+
+
 def test_oauth_state_capture_is_sync_and_does_not_rewrite_responses():
     page = _FakePage()
     browser_get_rt._state_store.clear()

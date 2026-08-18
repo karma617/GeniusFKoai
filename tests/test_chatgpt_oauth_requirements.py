@@ -324,6 +324,7 @@ def test_protocol_mailbox_mapper_preserves_registration_refresh_token_without_fo
     assert mapped.extra["registration_refresh_token_usable"] is False
     assert mapped.extra["refresh_token_source"] == ""
     assert mapped.extra["login_state_cookie"] == "session=abc"
+    assert mapped.extra["cookie_header"] == "session=abc"
 
 
 def test_browser_registration_mapper_accepts_completed_registration_without_codex_tokens():
@@ -349,6 +350,7 @@ def test_browser_registration_mapper_accepts_completed_registration_without_code
     assert mapped.extra["access_token"] == ""
     assert mapped.extra["cookies"] == "{\"login_session\":\"yes\"}"
     assert mapped.extra["login_state_cookie"] == "{\"login_session\":\"yes\"}"
+    assert mapped.extra["cookie_header"] == "{\"login_session\":\"yes\"}"
 
 
 def test_browser_registration_mapper_records_unsupported_post_register_password():
@@ -775,6 +777,29 @@ def test_protocol_cookie_header_preserves_duplicate_cookie_names():
     ]
 
     assert register_module._cookies_to_header(cookies) == (
+        "oai-did=did_123; cf_clearance=chatgpt_cf; "
+        "cf_clearance=openai_cf; __Secure-next-auth.session-token=sess_123"
+    )
+
+
+def test_protocol_cookie_header_reads_cookiejar_with_conflicting_names():
+    class Cookies:
+        jar = [
+            SimpleNamespace(name="oai-did", value="did_123", domain=".chatgpt.com", path="/"),
+            SimpleNamespace(name="cf_clearance", value="chatgpt_cf", domain=".chatgpt.com", path="/"),
+            SimpleNamespace(name="cf_clearance", value="openai_cf", domain=".openai.com", path="/"),
+            SimpleNamespace(
+                name="__Secure-next-auth.session-token",
+                value="sess_123",
+                domain=".chatgpt.com",
+                path="/",
+            ),
+        ]
+
+        def items(self):
+            raise RuntimeError("duplicate cookie names")
+
+    assert register_module._cookies_to_header(Cookies()) == (
         "oai-did=did_123; cf_clearance=chatgpt_cf; "
         "cf_clearance=openai_cf; __Secure-next-auth.session-token=sess_123"
     )

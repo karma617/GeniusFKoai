@@ -15,6 +15,7 @@ type LogEvent = {
   line: string;
   subtaskId: string;
   subtaskLabel: string;
+  detail: Record<string, any>;
 };
 
 type LogGroup = {
@@ -169,6 +170,7 @@ export function TaskLogPanel({
             line: String(payload.line),
             subtaskId: String(detail?.subtask_id || ""),
             subtaskLabel: String(detail?.subtask_label || ""),
+            detail: detail && typeof detail === "object" ? detail : {},
           },
         ]);
       }
@@ -390,9 +392,25 @@ export function TaskLogPanel({
   }, [friendlyError, groupSummaries, healthCheckFailureDetails, t]);
 
   const copyLogs = () => {
-    navigator.clipboard
-      ?.writeText(events.map((ev) => ev.line).join("\n"))
-      .catch(() => {});
+    const text = events
+      .map((ev) => {
+        const detail = ev.detail || {};
+        const copyText =
+          typeof detail.copy_text === "string" && detail.copy_text.trim()
+            ? detail.copy_text
+            : "";
+        if (copyText) return copyText;
+        const responseBody =
+          typeof detail.response_body === "string" && detail.response_body.trim()
+            ? detail.response_body
+            : "";
+        if (responseBody) {
+          return `${ev.line}\n${responseBody}`;
+        }
+        return ev.line;
+      })
+      .join("\n");
+    navigator.clipboard?.writeText(text).catch(() => {});
   };
 
   return (

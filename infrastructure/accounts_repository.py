@@ -90,6 +90,23 @@ def _record_tag_values(item: AccountRecord) -> set[str]:
         if text and text != "unknown":
             values.add(text)
 
+    protocol_variant = _tag_text(
+        overview.get("registration_protocol_variant")
+        or legacy_extra.get("registration_protocol_variant")
+    )
+    registration_mode = _tag_text(
+        overview.get("registration_mode")
+        or legacy_extra.get("registration_mode")
+    )
+    registration_label = _tag_text(
+        overview.get("registration_mode_label")
+        or legacy_extra.get("registration_mode_label")
+    )
+    if protocol_variant in {"android", "android_app", "android_protocol"}:
+        values.add("安卓协议")
+    elif protocol_variant in {"web", "web_protocol"} or registration_mode == "protocol" or registration_label == "协议模式":
+        values.add("web协议")
+
     if overview.get("k12_workspace_id") or overview.get("k12_session") or (isinstance(overview.get("k12"), dict) and overview["k12"].get("session")):
         values.add("k12")
     if bool(overview.get("bugfree")):

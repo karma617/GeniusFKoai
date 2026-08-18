@@ -52,6 +52,25 @@ class BaseMailbox(ABC):
         """删除或释放当前邮箱账号；默认 provider 不支持。"""
         return False
 
+    def release_account(self, account: MailboxAccount) -> bool:
+        """释放本次任务的本地占用，不修改邮箱业务状态。"""
+        released = False
+        release_local = getattr(self, "_release_local_account_reservation", None)
+        if callable(release_local):
+            try:
+                release_local(account)
+                released = True
+            except Exception:
+                pass
+        release_claim = getattr(self, "_release_active_claim", None)
+        if callable(release_claim):
+            try:
+                release_claim(getattr(account, "email", ""))
+                released = True
+            except Exception:
+                pass
+        return released
+
     def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
         """标记当前邮箱为无效；默认 provider 不支持打标签。"""
         return []
@@ -132,6 +151,14 @@ class FallbackMailbox(BaseMailbox):
         if not callable(delete):
             return False
         return bool(delete(account, reason=reason))
+
+    def release_account(self, account: MailboxAccount) -> bool:
+        """转发本次任务的临时占用释放，不修改邮箱业务状态。"""
+        mailbox = self._resolve_mailbox(account)
+        release = getattr(mailbox, "release_account", None)
+        if not callable(release):
+            return False
+        return bool(release(account))
 
     def mark_invalid_email(self, account: MailboxAccount, reason: str = "") -> list[str]:
         """转发无效邮箱打标请求到实际领取该邮箱的 provider。"""

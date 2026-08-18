@@ -126,6 +126,19 @@ class AliasExhaustedMarkMailbox(InvalidMarkMailbox):
         return ["别名已上限"]
 
 
+class NoAliasMailbox(FakeMailbox):
+    def email_alias_limit_for_parent(self, email: str) -> int:
+        return 0
+
+
+class ApiICloudMailbox(FakeMailbox):
+    def email_alias_limit_for_parent(self, email: str) -> int:
+        return 1
+
+    def email_alias_uses_parent_account_for_parent(self, email: str) -> bool:
+        return True
+
+
 def _mailbox_resource(email: str, *, parent_email: str = "", is_alias: bool = False) -> dict:
     metadata = {"email": email}
     if is_alias:
@@ -149,18 +162,26 @@ def _mailbox_resource(email: str, *, parent_email: str = "", is_alias: bool = Fa
     }
 
 
-def _save_registered(email: str, *, parent_email: str = "", is_alias: bool = False, platform: str = "chatgpt") -> None:
+def _save_registered(
+    email: str,
+    *,
+    parent_email: str = "",
+    is_alias: bool = False,
+    platform: str = "chatgpt",
+    with_provider_resource: bool = True,
+) -> None:
+    extra = {}
+    if with_provider_resource:
+        extra["provider_resources"] = [
+            _mailbox_resource(email, parent_email=parent_email, is_alias=is_alias)
+        ]
     save_account(
         Account(
             platform=platform,
             email=email,
             password="Secret123!",
             user_id=email,
-            extra={
-                "provider_resources": [
-                    _mailbox_resource(email, parent_email=parent_email, is_alias=is_alias)
-                ],
-            },
+            extra=extra,
         )
     )
 
@@ -178,6 +199,30 @@ def test_email_alias_mailbox_generates_alias_and_reads_parent_inbox():
     assert account.extra["provider_resource"]["metadata"]["alias_parent_email"] == "main@example.com"
     assert wrapper.get_current_ids(account) == {"message-1"}
     assert mailbox.current_id_emails == ["main@example.com"]
+
+
+def test_email_alias_mailbox_respects_provider_disabled_alias_limit():
+    mailbox = NoAliasMailbox("main@example.com")
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=4, platform="chatgpt")
+
+    account = wrapper.get_email()
+
+    assert account.email == "main@example.com"
+    assert "email_alias" not in account.extra
+    assert wrapper.mark_registration_success(account) == ["registered"]
+    assert mailbox.marked_success == ["main@example.com"]
+
+
+def test_api_icloud_alias_uses_child_when_parent_account_exists_without_mailbox_resource():
+    _save_registered("main@icloud.com", with_provider_resource=False)
+    mailbox = ApiICloudMailbox("main@icloud.com")
+    wrapper = EmailAliasMailbox(mailbox, alias_limit=6, platform="chatgpt")
+
+    account = wrapper.get_email()
+
+    assert account.email.startswith("main+")
+    assert account.email.endswith("@icloud.com")
+    assert account.extra["email_alias"]["parent_email"] == "main@icloud.com"
 
 
 def test_email_alias_limit_clamps_to_six_aliases():
@@ -353,14 +398,14 @@ def test_email_alias_logs_parent_selection_and_allocation():
     assert any(item.startswith("Email alias allocated: ") for item in logs)
 
 
-def test_email_alias_parent_exhausted_marks_parent_invalid_before_success():
+def test_email_alias_parent_exhausted_never_marks_parent_invalid():
     mailbox = InvalidMarkMailbox()
     wrapper = EmailAliasMailbox(mailbox, alias_limit=2, platform="chatgpt")
     account = wrapper.get_email()
 
-    assert wrapper.mark_parent_exhausted(account) == ["invalid"]
-    assert mailbox.invalid_marks == [("main@example.com", "user_already_exists")]
-    assert mailbox.marked_success == []
+    assert wrapper.mark_parent_exhausted(account) == ["registered"]
+    assert mailbox.invalid_marks == []
+    assert mailbox.marked_success == ["main@example.com"]
     assert mailbox.released == ["main@example.com"]
 
 
@@ -403,8 +448,13 @@ def test_build_platform_instance_wraps_mailbox_when_email_alias_enabled(monkeypa
             self.log_fn = log_fn
 
     class FakeLogger:
+        task_id = "task-1"
+
         def log(self, *_args, **_kwargs):
             return None
+
+        def is_cancel_requested(self):
+            return False
 
     fake_logger = FakeLogger()
     fake_mailbox = FakeMailbox()

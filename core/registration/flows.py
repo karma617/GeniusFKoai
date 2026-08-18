@@ -15,6 +15,18 @@ from .helpers import (
 from .models import RegistrationArtifacts, RegistrationContext, RegistrationResult
 
 
+def _release_mailbox_account(ctx: RegistrationContext) -> None:
+    mailbox = getattr(ctx.platform, "mailbox", None)
+    account = getattr(ctx.identity, "mailbox_account", None)
+    release = getattr(mailbox, "release_account", None)
+    if not account or not callable(release):
+        return
+    try:
+        release(account)
+    except Exception:
+        return
+
+
 class BrowserRegistrationFlow:
     def __init__(self, adapter: BrowserRegistrationAdapter):
         self.adapter = adapter
@@ -74,8 +86,11 @@ class BrowserRegistrationFlow:
             artifacts.raw_result = raw
             return self.adapter.result_mapper(ctx, raw)
         finally:
-            if artifacts.phone_cleanup:
-                artifacts.phone_cleanup()
+            try:
+                if artifacts.phone_cleanup:
+                    artifacts.phone_cleanup()
+            finally:
+                _release_mailbox_account(ctx)
 
 
 class ProtocolMailboxFlow:
@@ -123,8 +138,11 @@ class ProtocolMailboxFlow:
                 artifacts.raw_result = raw
                 return self.adapter.result_mapper(ctx, raw)
         finally:
-            if artifacts.phone_cleanup:
-                artifacts.phone_cleanup()
+            try:
+                if artifacts.phone_cleanup:
+                    artifacts.phone_cleanup()
+            finally:
+                _release_mailbox_account(ctx)
 
 
 class ProtocolOAuthFlow:

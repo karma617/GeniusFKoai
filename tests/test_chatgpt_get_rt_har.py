@@ -216,13 +216,14 @@ def test_get_rt_protocol_executor_uses_protocol_runner_without_browser(monkeypat
     assert seen["sms_provider"] == ""
 
 
-def test_get_rt_protocol_password_totp_skips_mailbox_callback(monkeypatch):
+def test_get_rt_protocol_password_totp_provides_optional_mailbox_callback(monkeypatch):
     seen = {}
+    otp_callback = lambda: "123456"
 
     monkeypatch.setattr(
         ChatGPTPlatform,
         "_build_get_rt_mailbox_otp_callback",
-        lambda self, account, log_fn, proxy: (_ for _ in ()).throw(AssertionError("不应初始化邮箱 OTP 服务")),
+        lambda self, account, log_fn, proxy: (otp_callback, ""),
     )
     monkeypatch.setattr(
         plugin_module,
@@ -232,7 +233,7 @@ def test_get_rt_protocol_password_totp_skips_mailbox_callback(monkeypatch):
 
     def fake_run_protocol_get_rt(**kwargs):
         seen.update(kwargs)
-        assert kwargs["otp_callback"] is None
+        assert kwargs["otp_callback"] is otp_callback
         assert kwargs["totp_secret"] == "JBSWY3DPEHPK3PXP"
         return {
             "access_token": "access-token",
@@ -258,6 +259,52 @@ def test_get_rt_protocol_password_totp_skips_mailbox_callback(monkeypatch):
     assert result["ok"] is True
     assert result["data"]["refresh_token"] == "refresh-token"
     assert seen["email"] == "user@example.com"
+
+
+def test_get_rt_protocol_totp_without_password_uses_mailbox_callback(monkeypatch):
+    seen = {}
+    otp_callback = lambda: "123456"
+
+    monkeypatch.setattr(
+        ChatGPTPlatform,
+        "_build_get_rt_mailbox_otp_callback",
+        lambda self, account, log_fn, proxy: (otp_callback, ""),
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "_save_get_rt_token_backup",
+        lambda account, result, action_label="get_rt": "",
+    )
+
+    def fake_run_protocol_get_rt(**kwargs):
+        seen.update(kwargs)
+        assert kwargs["password"] == ""
+        assert kwargs["otp_callback"] is otp_callback
+        assert kwargs["totp_secret"] == "JBSWY3DPEHPK3PXP"
+        return {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "id_token": "id-token",
+            "account_id": "acct-123",
+            "email": kwargs["email"],
+        }
+
+    monkeypatch.setattr(protocol_get_rt_module, "run_protocol_get_rt", fake_run_protocol_get_rt)
+
+    platform = ChatGPTPlatform(RegisterConfig())
+    result = platform._handle_get_rt(
+        Account(
+            platform="chatgpt",
+            email="otp-totp@example.com",
+            password="",
+            extra={"totp_secret": "JBSWY3DPEHPK3PXP"},
+        ),
+        {"executor_type": "protocol", "sms_provider": "none"},
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["refresh_token"] == "refresh-token"
+    assert seen["email"] == "otp-totp@example.com"
 
 
 def test_get_rt_protocol_executor_cleans_phone_callback_after_failure(monkeypatch):

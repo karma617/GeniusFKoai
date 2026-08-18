@@ -982,6 +982,63 @@ def test_chatgpt_free_plus_trial_retries_network_error(monkeypatch):
     assert result["attempts"] == 3
 
 
+def test_chatgpt_free_plus_trial_retries_http_403(monkeypatch):
+    calls = []
+
+    class _Resp:
+        def __init__(self, status_code: int, text: str, data: dict | None = None):
+            self.status_code = status_code
+            self.text = text
+            self._data = data
+
+        def json(self):
+            if self._data is None:
+                raise RuntimeError("json() not expected for non-200 response")
+            return self._data
+
+    def _fake_get(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) < 3:
+            return _Resp(403, "<html><body>blocked</body></html>")
+        return _Resp(
+            200,
+            "{}",
+            {
+                "accounts": {
+                    "acct-123": {
+                        "eligible_promo_campaigns": {
+                            "plus": {
+                                "id": "plus-1-month-free",
+                                "metadata": {
+                                    "title": "Try Plus free",
+                                    "plan_name": "chatgptplusplan",
+                                    "discount": {"percentage": 100},
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+        )
+
+    monkeypatch.setattr(tasks_module.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("curl_cffi.requests.get", _fake_get)
+    account = Account(
+        platform="chatgpt",
+        email="trial-403@example.com",
+        password="Secret123!",
+        user_id="acct-123",
+        extra={"access_token": "access-token"},
+    )
+
+    result = tasks_module._inspect_chatgpt_free_plus_trial(account)
+
+    assert len(calls) == 3
+    assert result["ok"] is True
+    assert result["eligible"] is True
+    assert result["attempts"] == 3
+
+
 def test_chatgpt_free_plus_trial_uses_runtime_proxy_upstream(monkeypatch):
     captured_kwargs = {}
 
@@ -1093,6 +1150,47 @@ def test_chatgpt_trial_post_register_check_logs_network_retries(monkeypatch):
     assert any("第 1/3 次查询失败" in event[1] for event in logger.events)
     assert any("第 2/3 次查询失败" in event[1] for event in logger.events)
     assert any("已确认免费领取 Plus 权益" in event[1] for event in logger.events)
+
+
+def test_chatgpt_trial_post_register_check_includes_full_response_body_in_copy_detail(monkeypatch):
+    def _fake_inspect(*_args, **_kwargs):
+        return {
+            "ok": False,
+            "url": tasks_module.CHATGPT_ACCOUNTS_CHECK_URL,
+            "status_code": 403,
+            "eligible": False,
+            "attempts": 3,
+            "error": "accounts/check HTTP 403: <html><body>blocked</body></html>",
+            "response_body": "<html><body>blocked</body></html>",
+        }
+
+    monkeypatch.setattr(tasks_module, "_inspect_chatgpt_free_plus_trial", _fake_inspect)
+    monkeypatch.setattr(
+        tasks_module,
+        "_run_chatgpt_trial_post_register_check",
+        _ORIGINAL_RUN_CHATGPT_TRIAL_POST_REGISTER_CHECK,
+    )
+    logger = _FakeLogger()
+
+    result = tasks_module._run_chatgpt_trial_post_register_check(
+        account=Account(
+            platform="chatgpt",
+            email="trial-copy@example.com",
+            password="Secret123!",
+            user_id="acct-123",
+            extra={"access_token": "access-token"},
+        ),
+        saved_account_id=0,
+        logger=logger,
+        proxy=None,
+    )
+
+    assert result is False
+    warning_events = [event for event in logger.events if event[0] == "log" and "查询失败" in event[1]]
+    assert warning_events
+    detail = warning_events[0][2]["detail"]
+    assert detail["response_body"] == "<html><body>blocked</body></html>"
+    assert "<html><body>blocked</body></html>" in detail["copy_text"]
 
 
 def test_chatgpt_trial_post_register_check_runs_in_background_with_subtask(monkeypatch):
@@ -2696,6 +2794,59 @@ def test_execute_get_rt_task_filters_non_registered_ids(monkeypatch):
     assert seen_account_ids == [2]
     assert logger.finished == (tasks_module.TASK_STATUS_SUCCEEDED, "")
     assert any("过滤" in str(event[1]) for event in logger.events)
+
+
+def test_get_rt_filters_by_missing_refresh_token_not_status():
+    with Session(engine) as session:
+        no_rt_invalid = AccountModel(platform="chatgpt", email="no-rt-invalid@test.com", password="Secret123!")
+        has_rt_registered = AccountModel(platform="chatgpt", email="has-rt-registered@test.com", password="Secret123!")
+        has_rt_pending = AccountModel(platform="chatgpt", email="has-rt-pending@test.com", password="Secret123!")
+        session.add(no_rt_invalid)
+        session.add(has_rt_registered)
+        session.add(has_rt_pending)
+        session.commit()
+        session.refresh(no_rt_invalid)
+        session.refresh(has_rt_registered)
+        session.refresh(has_rt_pending)
+        patch_account_graph(
+            session,
+            no_rt_invalid,
+            lifecycle_status="invalid",
+            summary_updates={"display_status": "invalid"},
+            credential_updates={"access_token": "access-token"},
+        )
+        patch_account_graph(
+            session,
+            has_rt_registered,
+            lifecycle_status="registered",
+            summary_updates={"display_status": "registered"},
+            credential_updates={"refresh_token": "refresh-token", "access_token": "access-token"},
+        )
+        patch_account_graph(
+            session,
+            has_rt_pending,
+            lifecycle_status="rt_pending_upload",
+            summary_updates={"display_status": "rt_pending_upload"},
+            credential_updates={"refresh_token": "refresh-token-2", "access_token": "access-token"},
+        )
+        session.commit()
+        no_rt_id = int(no_rt_invalid.id or 0)
+        has_rt_id = int(has_rt_registered.id or 0)
+        pending_id = int(has_rt_pending.id or 0)
+
+    single_allowed, single_skipped = tasks_module._filter_registered_get_rt_ids(
+        [no_rt_id, has_rt_id, pending_id],
+        platform="chatgpt",
+    )
+    target_allowed, target_skipped = tasks_module._filter_get_rt_target_ids(
+        [no_rt_id, has_rt_id, pending_id],
+        platform="chatgpt",
+    )
+
+    assert single_allowed == [no_rt_id]
+    assert single_skipped == [has_rt_id, pending_id]
+    assert target_allowed == [no_rt_id, pending_id]
+    assert target_skipped == [has_rt_id]
 
 
 def test_get_rt_task_allows_explicit_sms_disable(monkeypatch):

@@ -7,6 +7,7 @@ import { apiFetch, cn } from '@/lib/utils'
 
 type UsageItem = {
   parent_email: string
+  mailbox_type: string
   configured: boolean
   alias_limit: number
   successful_alias_count: number
@@ -51,7 +52,7 @@ function formatDate(value: string) {
 
 function statusBadge(item: UsageItem) {
   if (item.email_status === 'unusable') return <Badge variant="danger">不可用</Badge>
-  if (item.email_status === 'registered') return <Badge variant="warning">主邮箱已注册</Badge>
+  if (item.email_status === 'registered') return <Badge variant="warning">邮箱已注册</Badge>
   if (item.status === 'full') return <Badge variant="danger">已满</Badge>
   if (item.status === 'has_unconfirmed') return <Badge variant="warning">有未确认分配</Badge>
   return <Badge variant="success">可用</Badge>
@@ -87,7 +88,7 @@ export default function GmailApiCodeUsage() {
       const result = await apiFetch('/stats/gmail-api-code-alias-usage')
       setData(result)
     } catch (exc: any) {
-      setError(exc?.message || '加载 Gmail API接码统计失败')
+      setError(exc?.message || '加载 API接码邮箱统计失败')
     } finally {
       setLoading(false)
     }
@@ -117,44 +118,44 @@ export default function GmailApiCodeUsage() {
   const summary = data?.summary
   const statCards = [
     {
-      label: '母邮箱数',
+      label: '邮箱数',
       value: summary?.parent_count ?? '-',
-      description: '当前 Gmail API接码邮箱池里配置的 Gmail 主邮箱总数。',
+      description: '当前 API接码邮箱池里配置的 Gmail/iCloud 邮箱总数。',
       icon: MailCheck,
       tone: 'text-[var(--accent)]',
     },
     {
-      label: '已成功别名',
+      label: '已成功邮箱/子邮箱',
       value: summary?.successful_alias_count ?? 0,
-      description: '本地账号表和 gmail_api_code 邮箱资源里已落库的 alias。',
+      description: '本地账号表和 gmail_api_code 邮箱资源里已落库的邮箱或子邮箱。',
       icon: CheckCircle2,
       tone: 'text-emerald-500',
     },
     {
-      label: '不可用母邮箱',
+      label: '不可用邮箱',
       value: summary?.unusable_parent_count ?? 0,
-      description: '已被标记为 invalid 的主邮箱，后续注册会直接跳过。',
+      description: '已被标记为 invalid 的邮箱，后续注册会直接跳过。',
       icon: AlertTriangle,
       tone: 'text-red-500',
     },
     {
       label: '未确认分配',
       value: summary?.allocated_only_count ?? 0,
-      description: '任务日志里分配过，但本地没有成功账号的 alias。',
+      description: '任务日志里分配过，但本地没有成功账号的子邮箱。',
       icon: AlertTriangle,
       tone: 'text-amber-500',
     },
     {
       label: '确认剩余额度',
       value: summary?.confirmed_remaining ?? 0,
-      description: '只扣已成功 alias，不扣未确认分配。',
+      description: '只扣已成功邮箱/子邮箱，不扣未确认分配。',
       icon: MailCheck,
       tone: 'text-emerald-500',
     },
     {
       label: '保守剩余额度',
       value: summary?.conservative_remaining ?? 0,
-      description: '扣已成功 alias，也扣未确认分配。',
+      description: '扣已成功邮箱/子邮箱，也扣未确认分配。',
       icon: MailCheck,
       tone: 'text-sky-500',
     },
@@ -164,9 +165,9 @@ export default function GmailApiCodeUsage() {
     <div className="space-y-5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-xl font-bold text-[var(--text-primary)]">Gmail API接码邮箱池</h1>
+          <h1 className="text-xl font-bold text-[var(--text-primary)]">API接码邮箱池</h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            只按当前 Gmail API接码邮箱池里的母邮箱统计已成功 alias、未成功落库 alias，以及剩余额度。
+            只按当前 API接码邮箱池里的 Gmail/iCloud 邮箱统计已成功邮箱/子邮箱、未成功落库分配，以及剩余额度。
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
@@ -177,7 +178,7 @@ export default function GmailApiCodeUsage() {
 
       {data && !data.config_pool_recorded && (
         <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-          当前 Gmail API接码邮箱池配置文本没有在配置表里记录；请先在邮箱服务配置 Gmail API接码邮箱池。
+          当前 API接码邮箱池配置文本没有在配置表里记录；请先在邮箱服务配置 API接码邮箱池。
         </div>
       )}
       {error && (
@@ -206,7 +207,7 @@ export default function GmailApiCodeUsage() {
       <Card>
         <CardHeader className="gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <CardTitle>母邮箱用量</CardTitle>
+            <CardTitle>邮箱用量</CardTitle>
             <p className="mt-1 text-xs text-[var(--text-muted)]">
               确认剩余只扣成功落库；保守剩余会同时扣除未确认分配。
             </p>
@@ -217,7 +218,7 @@ export default function GmailApiCodeUsage() {
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="搜索母邮箱或别名"
+                placeholder="搜索邮箱或子邮箱"
                 className="h-9 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-pane)] pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--accent-edge)] sm:w-72"
               />
             </label>
@@ -229,7 +230,7 @@ export default function GmailApiCodeUsage() {
               <option value="all">全部状态</option>
               <option value="available">可用</option>
               <option value="unusable">不可用</option>
-              <option value="registered">主邮箱已注册</option>
+              <option value="registered">邮箱已注册</option>
               <option value="has_unconfirmed">有未确认分配</option>
               <option value="full">已满</option>
             </select>
@@ -240,14 +241,14 @@ export default function GmailApiCodeUsage() {
             <table className="w-full min-w-[1080px] text-left text-sm">
               <thead className="border-b border-[var(--border-soft)] text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">
                 <tr>
-                  <th className="px-3 py-3">母邮箱</th>
+                  <th className="px-3 py-3">邮箱</th>
                   <th className="px-3 py-3">状态</th>
                   <th className="px-3 py-3">成功</th>
                   <th className="px-3 py-3">未确认</th>
                   <th className="px-3 py-3">确认剩余</th>
                   <th className="px-3 py-3">保守剩余</th>
                   <th className="px-3 py-3">最后记录</th>
-                  <th className="px-3 py-3">alias 明细</th>
+                  <th className="px-3 py-3">子邮箱/分配明细</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-soft)]">
@@ -257,7 +258,8 @@ export default function GmailApiCodeUsage() {
                       <div className="font-mono text-sm font-semibold text-[var(--text-primary)]">{item.parent_email}</div>
                       <div className="mt-1 flex gap-1.5">
                         <Badge variant="default">当前池</Badge>
-                        {item.main_registered && <Badge variant="warning">母邮箱已注册</Badge>}
+                        {item.mailbox_type && <Badge variant="secondary">{item.mailbox_type === 'icloud' ? 'iCloud' : 'Gmail'}</Badge>}
+                        {item.main_registered && <Badge variant="warning">邮箱已注册</Badge>}
                       </div>
                     </td>
                     <td className="px-3 py-3">
@@ -279,7 +281,7 @@ export default function GmailApiCodeUsage() {
                       <div className="space-y-2">
                         <div>
                           <div className="mb-1 text-[11px] font-semibold text-[var(--text-muted)]">已成功</div>
-                          {aliasList(item.successful_aliases, '暂无成功 alias')}
+                          {aliasList(item.successful_aliases, '暂无成功记录')}
                         </div>
                         <div>
                           <div className="mb-1 text-[11px] font-semibold text-[var(--text-muted)]">已分配未成功落库</div>
@@ -292,7 +294,7 @@ export default function GmailApiCodeUsage() {
                 {!loading && items.length === 0 && (
                   <tr>
                     <td colSpan={8} className="px-3 py-10 text-center text-sm text-[var(--text-muted)]">
-                      暂无 Gmail API接码 alias 统计记录。
+                      暂无 API接码邮箱统计记录。
                     </td>
                   </tr>
                 )}

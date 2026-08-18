@@ -7976,3 +7976,446 @@ egister.py` 通过。
 - `platforms/chatgpt/protocol_get_rt.py`：TOTP 完成后用最新 OAuth payload 推导 `next_page`。
 - `progress.md`：追加本轮修正记录。
 - 回滚方式：还原 `platforms/chatgpt/protocol_get_rt.py` 与 `progress.md` 本轮 diff。
+
+## 2026-08-02 - Task: 新注册账号保存完整 ChatGPT Cookie
+### What was done
+- 修复协议注册保存登录态 cookie 的时机，改为 callback、首页预热和 `/api/auth/session` 完成后再截取最终 cookie 快照。
+- 修复 CookieJar 读取逻辑，优先从底层 jar 遍历所有域名 cookie，保留同名多域 cookie，避免因 `items()` 冲突或迭代方式不兼容只保存单个 session-token。
+- 协议注册、platform reference 注册和重登结果同步写入 `cookies`、`login_state_cookie`、`cookie_header`，前端“复制AT|cookie”可优先复制完整 cookie header。
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\register.py platforms\chatgpt\plugin.py tests\test_chatgpt_oauth_requirements.py tests\test_chatgpt_protocol_otp.py` -> passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_oauth_requirements.py::test_protocol_mailbox_mapper_preserves_registration_refresh_token_without_formal_rt tests\test_chatgpt_oauth_requirements.py::test_browser_registration_mapper_accepts_completed_registration_without_codex_tokens tests\test_chatgpt_oauth_requirements.py::test_protocol_cookie_header_preserves_duplicate_cookie_names tests\test_chatgpt_oauth_requirements.py::test_protocol_cookie_header_reads_cookiejar_with_conflicting_names tests\test_chatgpt_protocol_otp.py::test_latest_chatgpt_fetch_session_saves_cookie_snapshot_after_session_api tests\test_api_accounts.py::test_chatgpt_registered_account_persists_full_session_for_copy -q --disable-warnings --tb=short` -> 6 passed, 1 warning。
+- 本地 curl_cffi CookieJar 烟测：同名 `cf_clearance` 多域 cookie、`oai-did`、`__Secure-next-auth.session-token` 均能进入 `_cookies_to_header()` 输出。
+- `git diff --check -- platforms/chatgpt/register.py platforms/chatgpt/plugin.py tests/test_chatgpt_oauth_requirements.py tests/test_chatgpt_protocol_otp.py docs/account-actions.md progress.md` -> passed，仅保留现有 LF/CRLF 提示。
+### Notes
+- Modified `platforms/chatgpt/register.py`: 完整遍历 CookieJar，并在 session API 后保存最终 cookie 快照。
+- Modified `platforms/chatgpt/plugin.py`: 注册/重登映射同步保留 `cookie_header`。
+- Modified `tests/test_chatgpt_oauth_requirements.py`: 增加 CookieJar 冲突和 mapper 写入 cookie header 的回归测试。
+- Modified `tests/test_chatgpt_protocol_otp.py`: 增加 session API 后 cookie 快照保存回归测试。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原 `platforms/chatgpt/register.py`、`platforms/chatgpt/plugin.py`、`tests/test_chatgpt_oauth_requirements.py`、`tests/test_chatgpt_protocol_otp.py` 与 `progress.md` 本轮 diff。
+
+## 2026-08-02 - Task: API接码邮箱支持 Gmail/iCloud 与邮箱类型额度
+### What was done
+- 将原 `Gmail API接码` 前端显示名和配置文案改为 `API接码邮箱` / `API接码邮箱池`，邮箱池格式统一为 `邮箱----api链接地址`。
+- API接码邮箱池统计同时识别 Gmail、googlemail、iCloud、me、mac 域名，并按邮箱类型返回 `mailbox_type` 与单邮箱额度。
+- 调整别名包装器：Gmail API接码邮箱直用原邮箱，不再生成 plus 子邮箱；iCloud API接码邮箱最多生成 1 个子邮箱；非别名账号的成功/无效打标直接透传到底层邮箱池。
+- 注册数量上限改用 API接码邮箱池的保守剩余额度，不再按前端通用别名上限乘以 Gmail 邮箱数。
+- 同步更新 API接码邮箱说明文档、邮箱别名说明与相关引用。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\gmail_api_code_mailbox.py core\email_alias_mailbox.py application\gmail_api_code_usage.py application\tasks.py tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py tests\test_email_alias_mailbox.py` -> passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py tests\test_email_alias_mailbox.py -q --disable-warnings --tb=short` -> 48 passed, 1 warning。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check -- core/gmail_api_code_mailbox.py core/email_alias_mailbox.py application/gmail_api_code_usage.py application/tasks.py infrastructure/provider_definitions_repository.py frontend/src/components/settings/ProviderCards.tsx frontend/src/pages/GmailApiCodeUsage.tsx frontend/src/pages/Accounts.tsx frontend/src/lib/i18n.ts tests/test_gmail_api_code_mailbox.py tests/test_gmail_api_code_usage_stats.py tests/test_email_alias_mailbox.py docs/gmail-api-code.md docs/email-alias-mailbox.md docs/icloud-hme-provider.md docs/sub2api-management.md` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `core/gmail_api_code_mailbox.py`: 更新服务文案、日志前缀，并按域名提供 API接码邮箱的类型化子邮箱额度。
+- Modified `core/email_alias_mailbox.py`: 支持底层邮箱按父邮箱返回别名额度，Gmail 直用原邮箱，iCloud 按 1 个子邮箱额度生成。
+- Modified `application/gmail_api_code_usage.py`: 统计 Gmail/iCloud 邮箱池并按每个邮箱的真实额度计算确认/保守剩余。
+- Modified `application/tasks.py`: 兼容新旧 API接码邮箱错误文案，避免软重试判断失效。
+- Modified `infrastructure/provider_definitions_repository.py`: 更新内置 provider 显示名、说明、字段 label、hint 和 placeholder。
+- Modified `frontend/src/components/settings/ProviderCards.tsx`: 设置弹窗的 API接码邮箱池预览改为 Gmail/iCloud 通用文案和按行额度显示。
+- Modified `frontend/src/pages/GmailApiCodeUsage.tsx`: 统计页改名为 API接码邮箱池，并展示 Gmail/iCloud 类型与邮箱/子邮箱统计。
+- Modified `frontend/src/pages/Accounts.tsx`: 注册数量限制改用 API接码邮箱池保守剩余额度。
+- Modified `frontend/src/lib/i18n.ts`: 更新菜单名、注册数量提示和别名额度说明。
+- Modified `tests/test_gmail_api_code_mailbox.py`: 覆盖 iCloud 池行、Gmail 不分裂、iCloud 1 个子邮箱和新标签文案。
+- Modified `tests/test_gmail_api_code_usage_stats.py`: 覆盖 iCloud 统计、Gmail/iCloud 混合池状态与新额度。
+- Modified `tests/test_email_alias_mailbox.py`: 覆盖底层 provider 禁用子邮箱分裂时的直用和打标透传。
+- Modified `docs/gmail-api-code.md`: 重写为 API接码邮箱说明，记录 Gmail/iCloud 支持、格式和额度规则。
+- Modified `docs/email-alias-mailbox.md`: 更新 API接码邮箱类型化额度和注册数量计算说明。
+- Modified `docs/icloud-hme-provider.md`: 更新设置页中 API接码邮箱的显示名引用。
+- Modified `docs/sub2api-management.md`: 更新 API接码邮箱显示名引用。
+- 回滚方式：还原上述文件本轮 diff；如只回滚 Gmail/iCloud 额度规则，优先还原 `core/email_alias_mailbox.py`、`core/gmail_api_code_mailbox.py`、`application/gmail_api_code_usage.py`、`frontend/src/pages/Accounts.tsx` 与相关测试。
+
+## 2026-08-02 - Task: API接码邮箱 iCloud 原邮箱加子邮箱额度修正
+### What was done
+- 修正 API接码邮箱开启子邮箱开关时的 iCloud 领取顺序：先使用原邮箱注册，再使用 `主账号+随机字符串@icloud.com` 注册 1 个子邮箱。
+- Gmail 仍保持原邮箱直用，不生成子邮箱；普通邮箱别名逻辑不变。
+- API接码邮箱池统计中 iCloud 单行容量改为 2（原邮箱 1 + 子邮箱 1），Gmail 单行容量仍为 1。
+- 更新注册弹窗提示和 API接码邮箱说明，明确 iCloud 一个池邮箱最多产出两个账号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\gmail_api_code_mailbox.py core\email_alias_mailbox.py application\gmail_api_code_usage.py tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py` -> passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py tests\test_email_alias_mailbox.py -q --disable-warnings --tb=short` -> 48 passed, 1 warning。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check -- core/gmail_api_code_mailbox.py core/email_alias_mailbox.py application/gmail_api_code_usage.py frontend/src/lib/i18n.ts tests/test_gmail_api_code_mailbox.py tests/test_gmail_api_code_usage_stats.py docs/gmail-api-code.md docs/email-alias-mailbox.md progress.md` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `core/gmail_api_code_mailbox.py`: 增加 iCloud API接码邮箱可先用原邮箱再用子邮箱的 provider 能力标识，并允许别名包装模式下已存在原邮箱账号后继续领取该 iCloud 邮箱。
+- Modified `core/email_alias_mailbox.py`: 仅对显式声明“先用原邮箱”的 provider 走原邮箱优先逻辑，避免影响普通邮箱别名。
+- Modified `application/gmail_api_code_usage.py`: iCloud 邮箱池容量按 2 计算，Gmail 仍按 1 计算。
+- Modified `frontend/src/lib/i18n.ts`: 更新邮箱别名上限提示，说明 iCloud 原邮箱加 1 个子邮箱。
+- Modified `tests/test_gmail_api_code_mailbox.py`: 覆盖 iCloud API接码邮箱先原邮箱再子邮箱、子邮箱成功后标记已注册。
+- Modified `tests/test_gmail_api_code_usage_stats.py`: 调整 iCloud 容量统计断言为 2。
+- Modified `docs/gmail-api-code.md`: 记录 iCloud 原邮箱 + 1 个子邮箱的产能规则。
+- Modified `docs/email-alias-mailbox.md`: 同步说明 API接码邮箱 iCloud 单邮箱最多两个账号。
+- 回滚方式：还原 `core/gmail_api_code_mailbox.py`、`core/email_alias_mailbox.py`、`application/gmail_api_code_usage.py`、`frontend/src/lib/i18n.ts`、相关测试、文档与 `progress.md` 的本轮 diff。
+
+## 2026-08-03 - Task: 账号列表批量设置密码/2FA入口
+### What was done
+- 隐藏账号列表里的“检测MOMO试用资格”工具栏入口，保留原后台能力不删除。
+- 新增“批量设置密码/2FA”按钮：有勾选账号时只处理勾选账号；未勾选时后端自动筛选全部未绑定 2FA 的 ChatGPT 账号。
+- 新增批量安全设置后台任务，按账号独立执行：先设置账号密码，密码成功后再绑定 TOTP 2FA，并保存密码、TOTP 密钥、MFA 信息、最新 cookie 和“2FA已绑”标签。
+- 任务记录筛选列表增加“批量设置密码/2FA”任务类型，并补充账号动作说明文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py application\task_commands.py api\task_commands.py` -> passed。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check -- api/task_commands.py application/task_commands.py application/tasks.py frontend/src/pages/Accounts.tsx frontend/src/pages/TaskHistory.tsx docs/account-actions.md progress.md` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `application/tasks.py`: 增加批量设置密码/2FA任务类型、未绑定2FA账号筛选、密码设置与2FA绑定执行器、结果持久化和账号级任务锁。
+- Modified `application/task_commands.py`: 增加批量安全设置任务创建服务入口。
+- Modified `api/task_commands.py`: 增加 `/tasks/batch-security-setup` 后台任务接口。
+- Modified `frontend/src/pages/Accounts.tsx`: 隐藏MOMO检测入口，新增“批量设置密码/2FA”按钮并接入任务日志弹窗。
+- Modified `frontend/src/pages/TaskHistory.tsx`: 增加新任务类型的任务记录筛选和展示名称。
+- Modified `docs/account-actions.md`: 记录批量设置密码/2FA的选择规则、执行顺序和保存内容。
+- Modified `frontend/.frontend-build.stamp`: 前端构建刷新时间戳。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述文件本轮 diff；如只撤回入口，优先还原 `frontend/src/pages/Accounts.tsx`；如撤回后台任务，优先还原 `application/tasks.py`、`application/task_commands.py` 和 `api/task_commands.py`。
+
+## 2026-08-03 - Task: 账号标签显示注册 IP 地区
+### What was done
+- ChatGPT 注册成功后保存本次注册代理的出口地区码、中文地区名、出口 IP 和代理诊断摘要。
+- 账号展示摘要和账号列表标签列读取注册地区并显示为中文标签，例如 `JP` 显示“日本”、`SG` 显示“新加坡”。
+- 前端标签兜底会把注册地区标签前置，避免账号已有多个标签时地区被列表前三个标签截断隐藏。
+- 从历史注册任务日志中回填 99 个已有账号的注册地区与出口 IP；剩余未匹配到注册代理日志的历史账号保持为空，后续新注册会自动写入。
+- 同步更新账号操作说明文档，记录注册地区标签展示规则。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py core\account_display.py` -> passed。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check -- application/tasks.py core/account_display.py frontend/src/pages/Accounts.tsx docs/account-actions.md progress.md` -> passed，仅保留现有 LF/CRLF 提示。
+- `AccountsRepository().get(3241/3240/3238)` 抽查 -> display_summary badges 已包含“日本”或“新加坡”，overview 已写入 `registration_ip_country_code` / `registration_ip_country_label` / `registration_ip`。
+
+### Notes
+- Modified `application/tasks.py`: 增加注册代理地区解析、中文地区映射，并在 ChatGPT 注册成功保存账号前写入注册地区字段。
+- Modified `core/account_display.py`: 账号展示摘要 badges 增加注册 IP 地区标签。
+- Modified `frontend/src/pages/Accounts.tsx`: 账号列表标签列增加注册地区兜底展示，并将地区标签前置保证可见。
+- Modified `docs/account-actions.md`: 记录账号列表标签会显示 ChatGPT 注册代理出口地区。
+- Modified `account_manager.db-wal` / `account_manager.db-shm`: 回填历史账号的注册地区字段。
+- Modified `frontend/.frontend-build.stamp`: 前端构建刷新时间戳。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述代码、文档和 `progress.md` 的本轮 diff；如需回滚历史回填，在账号 overview/extra 中删除 `registration_ip_country_code`、`registration_ip_country_label`、`registration_ip`、`registration_proxy_detail` 字段。
+
+## 2026-08-03 - Task: 获取RT改为按是否缺少RT筛选
+### What was done
+- 移除账号列表“获取rt”对账号展示状态“仅注册”的前端限制，改为只要已勾选账号没有正式 `refresh_token` 就可以进入获取 RT 任务。
+- 后端创建和执行获取 RT 任务时同步改为按账号图谱是否已有 `refresh_token` 过滤，不再因账号状态不是“仅注册”而跳过。
+- 目标模式保留“已获取rt，未上传”账号的重试上传能力；普通获取 RT 任务会跳过已有 RT 的账号。
+- 更新获取 RT 弹窗提示、错误提示和账号操作说明文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> passed。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py::test_get_rt_filters_by_missing_refresh_token_not_status tests\test_platform_action_task.py::test_create_get_rt_task_filters_non_registered_ids tests\test_platform_action_task.py::test_execute_get_rt_task_filters_non_registered_ids -q --disable-warnings --tb=short` -> 3 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_platform_action_task.py -k "get_rt" -q --disable-warnings --tb=short` -> 31 passed, 67 deselected, 1 warning。
+- `git diff --check -- application/tasks.py frontend/src/pages/Accounts.tsx tests/test_platform_action_task.py docs/account-actions.md progress.md` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `application/tasks.py`: 获取 RT 任务筛选改为检查账号是否已有正式 `refresh_token`，并更新过滤日志和空任务错误文案。
+- Modified `frontend/src/pages/Accounts.tsx`: 获取 RT 按钮、弹窗和任务提交改为按“缺少 RT”判断账号是否可执行。
+- Modified `tests/test_platform_action_task.py`: 增加不同账号状态下按缺少 RT 筛选的回归测试。
+- Modified `docs/account-actions.md`: 记录获取 RT 不再受“仅注册”状态限制，改按是否已有 `refresh_token` 判断。
+- Modified `frontend/.frontend-build.stamp`: 前端构建刷新时间戳。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述文件本轮 diff；如只恢复前端限制，优先还原 `frontend/src/pages/Accounts.tsx`；如恢复后端状态限制，优先还原 `application/tasks.py` 中 `_filter_registered_get_rt_ids` / `_filter_get_rt_target_ids` 的本轮改动。
+## 2026-08-03 - Task: ChatGPT 试用权益查询 403 重试与完整响应体复制
+### What was done
+- 将注册后低优先级的 ChatGPT 试用权益查询补上 403 重试，避免把风控页直接判成一次性失败。
+- 失败日志保留页面可读的简短摘要，同时把完整响应体放进事件详情，供“复制日志”导出。
+- 任务日志面板复制行为改为优先导出事件内的完整响应体，而不是只复制页面摘要。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py tests\test_platform_action_task.py` -> passed。
+- `.\.venv\Scripts\python.exe -m pytest tests/test_platform_action_task.py -k "chatgpt_free_plus_trial or chatgpt_trial_post_register_check" -q --disable-warnings --tb=short` -> 8 passed, 92 deselected, 1 warning。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check -- application/tasks.py frontend/src/components/tasks/TaskLogPanel.tsx tests/test_platform_action_task.py docs/chatgpt-register-flow.md` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `application/tasks.py`: `accounts/check` 的 403 现在会进入有限重试，并把完整响应体写入任务事件详情，供复制日志使用。
+- Modified `frontend/src/components/tasks/TaskLogPanel.tsx`: 事件对象保留 `detail`，复制日志时优先拼接完整响应体。
+- Modified `tests/test_platform_action_task.py`: 增加 403 可重试与完整响应体复制详情的回归测试。
+- Modified `docs/chatgpt-register-flow.md`: 记录 403 重试和复制日志包含完整响应体的行为。
+- Modified `frontend/.frontend-build.stamp`: 前端构建刷新时间戳。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述文件本轮 diff；若只回退日志导出，先还原 `frontend/src/components/tasks/TaskLogPanel.tsx` 和 `application/tasks.py` 中试用查询返回值/日志详情的改动。
+## 2026-08-03 - Task: 修复 API接码邮箱重复验证码误判
+### What was done
+- 修复 Gmail API 接码邮箱的去重身份：当前邮件 ID 与验证码一起组成 current_id，避免新邮件刚好复用同一 6 位验证码时被误判为“已见过”。
+- 保留邮件正文/详情的解码提取逻辑，并把消息 ID 写入调试日志，方便定位列表页与详情页的对应关系。
+- 更新 API接码邮箱文档，说明同码新邮件也会按新消息继续返回。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\gmail_api_code_mailbox.py tests\test_gmail_api_code_mailbox.py` -> passed。
+- ` .\.venv\Scripts\python.exe -m pytest tests/test_gmail_api_code_mailbox.py -q --disable-warnings --tb=short` -> 25 passed, 1 warning。
+
+### Notes
+- Modified `core/gmail_api_code_mailbox.py`: current_id 改为 `mail:<message_id>|code:<otp>` 优先，message_id 来自列表页/详情 URL/邮件项 ID。
+- Modified `tests/test_gmail_api_code_mailbox.py`: 新增“同码新邮件不同 message id 仍可返回”的回归测试。
+- Modified `docs/gmail-api-code.md`: 记录同码新邮件的去重规则。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述文件本轮 diff；如只恢复旧去重逻辑，优先还原 `core/gmail_api_code_mailbox.py` 中 `_message_identity_key` / `_current_id` / `_fetch_text` 的本轮改动。
+
+## 2026-08-03 - Task: 区分已使用的 iCloud API 母邮箱并生成子邮箱
+### What was done
+- 母邮箱占用统计同时检查账号表和邮箱资源表，历史账号缺少 `provider_resources` 时仍能识别母邮箱已经注册使用。
+- iCloud API 邮箱在识别到母邮箱已使用后直接进入子邮箱分支，并增加对应任务日志，避免再次使用原邮箱注册。
+- 增加历史账号无邮箱资源记录时的回归测试，并更新别名邮箱说明文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_email_alias_mailbox.py -q --disable-warnings --tb=short` -> 20 passed, 1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile core\email_alias_mailbox.py tests\test_email_alias_mailbox.py` -> passed。
+- `git diff --check -- core/email_alias_mailbox.py tests/test_email_alias_mailbox.py` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `core/email_alias_mailbox.py`: 从账号表补充母邮箱已使用判断，并记录母邮箱已使用后生成子邮箱的日志。
+- Modified `tests/test_email_alias_mailbox.py`: 增加 iCloud API 母邮箱已有账号但缺少邮箱资源时仍生成子邮箱的测试。
+- Modified `docs/email-alias-mailbox.md`: 记录账号表和邮箱资源表的双重母邮箱占用判断。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原本轮上述四个文件的 diff；保留账号表数据，不涉及数据库结构变更。
+
+## 2026-08-03 - Task: 修复 API iCloud 别名注册异常后的邮箱占用残留
+### What was done
+- 为邮箱基类、provider fallback 和别名包装层增加非破坏性的 release_account，统一释放临时 claim 与 alias 占位，不修改已注册/无效状态。
+- 浏览器注册和协议注册的流程 finally 统一释放当前邮箱，避免异常退出后后续任务持续收到“邮箱池暂未找到可用邮箱”并不断递增重试序号。
+- 保留邮箱池已有的有限软重试行为，仅让仍在运行中的任务有机会等待邮箱释放；已注册或无效邮箱仍按原状态跳过。
+
+### Testing
+- .\.venv\Scripts\python.exe -m pytest tests\test_registration_phone_callbacks.py tests\test_email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py -q --disable-warnings --tb=short -> passed，52 passed，1 warning。
+- .\.venv\Scripts\python.exe -m py_compile core\base_mailbox.py core\email_alias_mailbox.py core\registration\flows.py tests\test_registration_phone_callbacks.py tests\test_gmail_api_code_mailbox.py -> passed。
+- git diff --check -- core\base_mailbox.py core\email_alias_mailbox.py core\registration\flows.py tests\test_registration_phone_callbacks.py tests\test_gmail_api_code_mailbox.py docs\email-alias-mailbox.md progress.md -> passed。
+
+### Notes
+- Modified core/base_mailbox.py: 增加临时邮箱占用释放接口，并由 fallback 转发到实际 provider。
+- Modified core/email_alias_mailbox.py: 释放 alias 占位和父邮箱 claim。
+- Modified core/registration/flows.py: 浏览器/协议注册的 finally 统一释放邮箱。
+- Modified tests/test_registration_phone_callbacks.py: 增加浏览器和协议异常退出释放回归测试。
+- Modified tests/test_gmail_api_code_mailbox.py: 增加 API 接码邮箱 claim 释放回归测试。
+- Modified docs/email-alias-mailbox.md: 记录临时占用与业务状态的边界。
+- Modified progress.md: 追加本轮变更记录。
+- 回滚方式：还原本轮上述文件的 diff；服务重启后旧进程内存中的残留 claim 会自然清空，不涉及数据库结构或邮箱状态数据。
+
+## 2026-08-03 - Task: 修复已注册 iCloud 母邮箱未生成子邮箱
+### What was done
+- API 接码邮箱池保留 registered 的 iCloud 条目供别名包装层领取；别名关闭或 Gmail 条目仍会跳过已注册邮箱。
+- 别名包装层读取 provider 的 registered 状态，在账号表缺少对应记录时也能判定母邮箱已使用并生成 plus 子邮箱。
+- 为已注册 iCloud 母邮箱、别名额度耗尽和 API 邮箱领取流程补充回归覆盖。
+
+### Testing
+- .\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_email_alias_mailbox.py -q --disable-warnings --tb=short -> passed，47 passed，1 warning。
+- .\.venv\Scripts\python.exe -m py_compile core\gmail_api_code_mailbox.py core\email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py -> passed。
+- 实测已注册 woofer_emoji_12@icloud.com 生成 woofer_emoji_12+99v4e17l@icloud.com。
+- git diff --check -- core\gmail_api_code_mailbox.py core\email_alias_mailbox.py tests\test_gmail_api_code_mailbox.py docs\email-alias-mailbox.md progress.md -> passed。
+
+### Notes
+- Modified core/gmail_api_code_mailbox.py: registered iCloud 条目可进入别名流程，invalid 条目仍过滤。
+- Modified core/email_alias_mailbox.py: 使用 provider registered 状态判断母邮箱已使用。
+- Modified tests/test_gmail_api_code_mailbox.py: 增加已注册 iCloud 母邮箱生成子邮箱测试。
+- Modified docs/email-alias-mailbox.md: 记录 registered iCloud 的别名规则。
+- Modified progress.md: 追加本轮变更记录。
+- 回滚方式：还原本轮上述文件的 diff；不涉及账号数据和邮箱池状态写入。
+
+## 2026-08-03 - Task: 增加 ChatGPT WEB / ANDROID 协议注册分流
+### What was done
+- 移植 `ctf/chatgpt_register_app.py` 的 Android 邮箱注册协议，接入当前邮箱池、验证码基线和任务代理。
+- 在 ChatGPT 协议模式下增加 `WEB协议` 与 `ANDROID协议` 两个选择卡片；Android 仅允许邮箱身份，并通过任务参数选择后端 worker。
+- 增加 Android 协议请求头、授权参数、PKCE、first-party authorize 页面推进和 OAuth token 交换的回归测试，并更新注册流程文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_android.py platforms\chatgpt\plugin.py tests\test_chatgpt_protocol_android.py` -> passed。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_android.py tests\test_chatgpt_authflow_experimental.py -q --disable-warnings --tb=short` -> 4 passed，1 warning。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check -- platforms/chatgpt/protocol_android.py platforms/chatgpt/plugin.py frontend/src/pages/Accounts.tsx tests/test_chatgpt_protocol_android.py docs/chatgpt-register-flow.md` -> passed，仅保留现有 LF/CRLF 提示。
+- 现有 ChatGPT protocol 测试集：95 passed、6 failed；失败均落在既有 `register.py` 测试的 fake session 缺少 `cookies` 属性（`_diag_cookie_names_text` / `_latest_chatgpt_cookie_names`），不涉及本轮 Android worker 或协议选择改动。
+
+### Notes
+- Modified `platforms/chatgpt/protocol_android.py`: 新增 Android App 注册协议 worker。
+- Modified `platforms/chatgpt/plugin.py`: 根据 `chatgpt_protocol_variant` 选择 Android 或现有 WEB 协议 worker。
+- Modified `frontend/src/pages/Accounts.tsx`: 增加协议选择卡片并提交协议分流参数。
+- Modified `tests/test_chatgpt_protocol_android.py`: 覆盖 Android 请求顺序、请求头、请求体、PKCE token 交换和 worker 选择。
+- Modified `docs/chatgpt-register-flow.md`: 记录 WEB/ANDROID 协议分流规则。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原本轮新增的 `platforms/chatgpt/protocol_android.py`、`tests/test_chatgpt_protocol_android.py`，并回退 `platforms/chatgpt/plugin.py`、`frontend/src/pages/Accounts.tsx`、`docs/chatgpt-register-flow.md` 和本记录；不涉及数据库结构或账号数据。
+
+## 2026-08-03 - Task: 补充 Android 协议 about_you 400 诊断
+### What was done
+- 针对 Android 协议在验证码验证成功后提交账号资料返回 HTTP 400 的日志，保留空响应体标识和服务端追踪请求头，避免只显示 `HTTP 400: {}` 无法定位。
+- 失败时记录脱敏后的页面类型、请求字段和响应体摘要，验证码字段不会写入诊断日志。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_android.py -q --disable-warnings --tb=short` -> 3 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_android.py tests\test_chatgpt_protocol_android.py` -> passed。
+- `git diff --check -- platforms/chatgpt/protocol_android.py tests/test_chatgpt_protocol_android.py progress.md` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `platforms/chatgpt/protocol_android.py`: 增加 about_you/first-party 请求失败的响应体和追踪头诊断。
+- Modified `tests/test_chatgpt_protocol_android.py`: 增加空响应体 HTTP 400 的诊断回归测试。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述三个文件本轮 diff；不涉及账号数据和数据库结构。
+
+## 2026-08-03 - Task: 修复 Android 协议账号有效期缺失
+### What was done
+- Android OAuth token 交换结果读取 `expires_in`，计算 UTC `expires_at` 并写入注册结果 metadata，同时保留秒数用于诊断。
+- 复用现有账号保存与列表展示映射，让 Android 协议新注册账号显示 token 剩余有效期。
+- 增加 token 有效期回归测试并补充注册流程文档说明。
+
+### Testing
+- ` .\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_android.py -q --disable-warnings --tb=short` -> 4 passed，1 warning。
+- ` .\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_android.py tests\test_chatgpt_protocol_android.py` -> passed。
+- `git diff --check -- platforms/chatgpt/protocol_android.py tests/test_chatgpt_protocol_android.py docs/chatgpt-register-flow.md progress.md` -> passed；仅有现有 LF/CRLF 提示。
+
+### Notes
+- Modified `platforms/chatgpt/protocol_android.py`: 保存 Android OAuth token 的 `expires_at` / `expires_in`。
+- Modified `tests/test_chatgpt_protocol_android.py`: 增加 Android token 有效期回归断言。
+- Modified `docs/chatgpt-register-flow.md`: 记录 Android OAuth 有效期保存规则。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原本轮上述四个文件的 diff；不涉及账号数据、数据库结构或已有账号有效期。
+
+## 2026-08-03 - Task: 将协议账号标签拆分为 WEB协议与安卓协议
+### What was done
+- ChatGPT 账号列表标签由“协议模式”拆分为“WEB协议”和“安卓协议”，前端筛选项同步更新。
+- 注册协议结果保存 `registration_protocol_variant`；Android 新账号显示“安卓协议”，WEB 新账号显示“WEB协议”。历史未记录变体的协议账号兼容按“WEB协议”显示和筛选。
+- 后端账号展示和服务端标签筛选同步支持两种协议标签，并增加 Android 标签筛选回归覆盖。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_api_accounts.py -k "registration_mode_badge_and_tag_filter or android_protocol_badge_and_tag_filter" -q --disable-warnings --tb=short` -> 2 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_mailbox_fallback.py tests\test_chatgpt_protocol_android.py -q --disable-warnings --tb=short` -> 14 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile core\account_display.py infrastructure\accounts_repository.py platforms\chatgpt\plugin.py tests\test_api_accounts.py` -> passed。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check -- frontend/src/pages/Accounts.tsx core/account_display.py infrastructure/accounts_repository.py platforms/chatgpt/plugin.py tests/test_api_accounts.py` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `frontend/src/pages/Accounts.tsx`: 更新标签显示、兼容旧协议标签并替换筛选项。
+- Modified `platforms/chatgpt/plugin.py`: 保存协议变体并生成对应注册标签。
+- Modified `core/account_display.py`: 统一后端展示标签和历史协议兼容规则。
+- Modified `infrastructure/accounts_repository.py`: 增加 WEB/安卓协议服务端筛选值。
+- Modified `tests/test_api_accounts.py`: 增加两种协议标签和筛选回归测试。
+- Modified `docs/account-actions.md`: 更新账号标签说明。
+- Modified `docs/chatgpt-register-flow.md`: 更新协议标签说明。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述文件本轮 diff；不涉及账号数据和数据库结构。
+
+## 2026-08-03 - Task: 处理 Android 协议已注册邮箱误触发注册请求
+### What was done
+- 识别到授权最终页面为 `/email-verification` 或 `/log-in` 时，当前邮箱已进入登录流程，不再发送 `create_account_password` 注册触发请求，避免得到 `Session Ended`。
+- 调用邮箱 provider 的注册成功打标接口，释放当前任务占用并避免后续任务重复领取该邮箱。
+- 增加已有账号页面的回归测试，确认不会继续发起 first-party 注册请求。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_android.py -q --disable-warnings --tb=short` -> 4 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_android.py tests\test_chatgpt_protocol_android.py` -> passed。
+- `git diff --check -- platforms/chatgpt/protocol_android.py tests/test_chatgpt_protocol_android.py` -> passed。
+
+### Notes
+- Modified `platforms/chatgpt/protocol_android.py`: 增加授权最终页面判断和已有邮箱打标。
+- Modified `tests/test_chatgpt_protocol_android.py`: 增加已有账号页面跳过注册的回归测试。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述三个文件本轮 diff；不涉及账号数据和数据库结构。
+
+## 2026-08-03 - Task: 对齐 Android 协议账号资料字段
+### What was done
+- 根据独立 App 脚本成功案例与当前失败日志对比，确认当前失败请求唯一可见的业务差异是账号资料名称：独立脚本使用显式自然姓名，集成链路此前从邮箱本地部分直接生成名称。
+- Android 协议现在复用项目已有随机自然姓名生成器，生日仍保持 App 脚本的 `1995-06-15`，并记录最终提交的非敏感资料字段。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_android.py -q --disable-warnings --tb=short` -> 3 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_android.py tests\test_chatgpt_protocol_android.py` -> passed。
+- `git diff --check -- platforms/chatgpt/protocol_android.py tests/test_chatgpt_protocol_android.py` -> passed。
+
+### Notes
+- Modified `platforms/chatgpt/protocol_android.py`: about_you 使用自然姓名而非邮箱本地部分。
+- Modified `tests/test_chatgpt_protocol_android.py`: 固定自然姓名并校验 about_you 请求体。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述三个文件本轮 diff；不涉及账号数据和数据库结构。
+
+## 2026-08-03 - Task: registration_disallowed 邮箱立即标记不可用
+### What was done
+- 浏览器注册任务首次识别 `registration_disallowed` 或明确的 Terms of Use 注册拒绝时，立即标记当前实际领取邮箱为不可用，后续邮箱池选择会跳过该邮箱。
+- 协议注册链路取消该业务错误的重复 `create_account` 提交；保留网络/TLS 类错误的原有重试。
+- 增加错误文案、邮箱 provider 打标调用和协议不重试回归覆盖，并同步更新注册流程说明。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -k "registration_disallowed or create_account_retries_transport_error" -q --disable-warnings --tb=short` -> 3 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_smsbower_mail_retry.py -q --disable-warnings --tb=short` -> 3 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py platforms\chatgpt\register.py tests\test_smsbower_mail_retry.py tests\test_chatgpt_protocol_otp.py` -> passed。
+- `tests\test_chatgpt_protocol_otp.py` 全量测试当前仍有 6 个既有 cookie mock 兼容性失败（`Session`/`_FakeSession` 缺少 `cookies`），不属于本轮邮箱标记逻辑。
+
+### Notes
+- Modified `application/tasks.py`: 增加明确注册拒绝识别、浏览器任务邮箱无效打标和失败处理调用。
+- Modified `platforms/chatgpt/register.py`: `registration_disallowed` 首次识别后立即打标并停止重试。
+- Modified `tests/test_chatgpt_protocol_otp.py`: 更新协议不重试断言。
+- Modified `tests/test_smsbower_mail_retry.py`: 增加浏览器邮箱无效打标和文案匹配测试。
+- Modified `docs/chatgpt-register-flow.md`: 更新注册拒绝与邮箱池处理说明。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：仅反向移除上述新增 helper、任务异常分支和协议重试分支，并恢复对应测试/文档段落；不要整文件回退，以免覆盖工作树中的其他改动。
+
+## 2026-08-03 - Task: 修正 API 接码 iCloud 父邮箱的注册拒绝与子邮箱额度统计
+### What was done
+- `registration_disallowed` / Terms of Use 注册拒绝不再调用无效邮箱打标，统一记录为“已注册且子邮箱耗尽”；普通 iCloud `registered` 父邮箱仍保留 1 个子邮箱额度。
+- API 接码邮箱池新增 `registered_exhausted` 状态和资源元数据，领取邮箱时跳过已耗尽父邮箱；兼容历史资源中以 `registration_disallowed` 或 `user_already_exists` 原因误记为 invalid 的记录。
+- 修正统计和设置页可用数量：iCloud 已注册但仍有子邮箱额度的父邮箱计入可用池，耗尽/不可用邮箱的剩余量为 0；普通 Gmail 仍按单邮箱额度计算。
+- 不修改当前真实邮箱池数据；现有仅有 `# registered` 状态且没有拒绝原因的历史 iCloud 行按“主号已用、子号可用”处理，避免误伤仍可用的子号。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_gmail_api_code_mailbox.py tests\test_gmail_api_code_usage_stats.py tests\test_email_alias_mailbox.py tests\test_smsbower_mail_retry.py -q --disable-warnings --tb=short` -> 58 passed，1 warning。
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_protocol_otp.py -k "registration_disallowed or create_account_retries_transport_error" -q --disable-warnings --tb=short` -> 3 passed，1 warning。
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `.\.venv\Scripts\python.exe -m py_compile application\tasks.py platforms\chatgpt\register.py core\email_alias_mailbox.py core\gmail_api_code_mailbox.py application\gmail_api_code_usage.py platforms\chatgpt\protocol_mailbox.py` -> passed。
+- `tests\test_chatgpt_protocol_otp.py` 全量仍有 6 个既有 cookie mock 兼容性失败（`Session`/`_FakeSession` 缺少 `cookies`），与本轮邮箱池状态改动无关。
+
+### Notes
+- Modified `core/gmail_api_code_mailbox.py`: 增加 `registered_exhausted` 池状态、持久化元数据和领取跳过规则。
+- Modified `core/email_alias_mailbox.py`: 父邮箱耗尽支持原因透传，移除该分支向 invalid 的回退。
+- Modified `platforms/chatgpt/protocol_mailbox.py`: 向底层邮箱 provider 透传父邮箱耗尽原因并兼容旧签名。
+- Modified `application/tasks.py`: 浏览器注册拒绝改用父邮箱耗尽打标。
+- Modified `platforms/chatgpt/register.py`: 协议注册拒绝改用父邮箱耗尽打标并更新错误文案。
+- Modified `application/gmail_api_code_usage.py`: 修正 iCloud 子邮箱剩余、历史拒绝状态和可用父邮箱统计。
+- Modified `frontend/src/components/settings/ProviderCards.tsx`: 识别新状态，并把仍有 iCloud 子邮箱额度的已注册父邮箱计入可用数量。
+- Modified `tests/test_gmail_api_code_mailbox.py`, `tests/test_gmail_api_code_usage_stats.py`, `tests/test_email_alias_mailbox.py`, `tests/test_smsbower_mail_retry.py`, `tests/test_chatgpt_protocol_otp.py`: 增加和更新状态、打标及回归测试。
+- Modified `docs/gmail-api-code.md`, `docs/email-alias-mailbox.md`, `docs/chatgpt-register-flow.md`: 补充父邮箱耗尽与 iCloud 子邮箱额度规则。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：仅反向移除本轮上述逻辑、前端判断、测试和文档 diff；不要整文件回退，以免覆盖工作树中的其他修改；本轮未写入真实邮箱池数据。
+
+## 2026-08-03 - Task: 增加 API 接码邮箱“已上限”操作
+### What was done
+- 在 API 接码邮箱池每行操作中增加“已上限”按钮，支持当前为 active 或 registered 的邮箱手动标记为母号和子号额度全部耗尽。
+- 点击后将该行转换为 `# registered_exhausted`，保存设置后生效；该状态会显示为“已注册，子邮箱已耗尽”，后续不再参与邮箱领取。
+- 保留原有“删除”操作，未修改真实邮箱池数据。
+
+### Testing
+- `npm run build`（frontend）-> passed；仅保留 Vite chunk size 提示。
+- `git diff --check` -> passed，仅保留现有 LF/CRLF 提示。
+
+### Notes
+- Modified `frontend/src/components/settings/ProviderCards.tsx`: 增加“已上限”按钮、状态解析和保存前的行标记逻辑。
+- Modified `docs/gmail-api-code.md`: 补充手动标记已上限的使用说明。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：还原上述三个文件本轮 diff；不涉及数据库结构和真实邮箱池数据。
+
+## 2026-08-03 - Task: get_rt 短信验证码 60 秒超时换号
+### What was done
+- 获取RT协议和浏览器链路的手机号短信验证码等待上限统一为 60 秒。
+- 当前手机号超时后释放号码；协议链路继续同一登录会话换下一个号码，浏览器 get_rt 链路也启用同样的换号重试；注册主流程保留原有等待与超时行为。
+- 增加超时换号回归测试，并补充获取RT行为文档。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest tests\test_chatgpt_get_rt_phone_reuse.py tests\test_chatgpt_protocol_get_rt.py tests\test_chatgpt_browser_get_rt.py -q --disable-warnings --tb=short`
+- `.\.venv\Scripts\python.exe -m py_compile platforms\chatgpt\protocol_get_rt.py platforms\chatgpt\browser_get_rt.py platforms\chatgpt\browser_register.py platforms\chatgpt\plugin.py`
+- `git diff --check`
+
+### Notes
+- Modified `platforms/chatgpt/protocol_get_rt.py`: 将 get_rt 协议短信等待设置为 60 秒，超时释放并换号。
+- Modified `platforms/chatgpt/browser_get_rt.py`: get_rt 回调默认短信等待改为 60 秒。
+- Modified `platforms/chatgpt/browser_register.py`: 为 OAuth add_phone 增加 get_rt 专用超时和超时换号参数，保持注册调用默认行为不变。
+- Modified `platforms/chatgpt/plugin.py`: 协议和浏览器 get_rt 显式传入 60 秒配置。
+- Modified `tests/test_chatgpt_get_rt_phone_reuse.py`, `tests/test_chatgpt_protocol_get_rt.py`, `tests/test_chatgpt_browser_get_rt.py`: 增加超时配置与换号回归覆盖。
+- Modified `docs/account-actions.md`: 记录获取RT短信验证码 60 秒超时换号规则。
+- Modified `progress.md`: 追加本轮变更记录。
+- 回滚方式：仅反向移除本轮上述文件中的 60 秒 get_rt 超时参数、换号分支、测试和文档段落；不要整文件回退，以免覆盖工作树中的其他改动。
+
+### Verification result
+- 三组 get_rt 相关测试：32 passed，1 warning。
+- `tests/test_chatgpt_oauth_requirements.py`：67 passed，1 warning。
+- 目标文件 `py_compile` 通过；`git diff --check` 通过，仅保留现有 LF/CRLF 提示。

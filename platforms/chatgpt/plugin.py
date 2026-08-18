@@ -63,8 +63,13 @@ def _safe_dict(value):
     return value if isinstance(value, dict) else {}
 
 
-def _registration_mode_metadata(executor_type: str | None, browser_mode: str | None = "") -> dict:
+def _registration_mode_metadata(
+    executor_type: str | None,
+    browser_mode: str | None = "",
+    protocol_variant: str | None = "",
+) -> dict:
     normalized = str(executor_type or "protocol").strip().lower() or "protocol"
+    normalized_variant = str(protocol_variant or "").strip().lower()
     if normalized == "headless":
         mode = "headless_browser"
         label = "无头浏览器"
@@ -73,12 +78,20 @@ def _registration_mode_metadata(executor_type: str | None, browser_mode: str | N
         label = "有头浏览器"
     else:
         mode = "protocol"
-        label = "协议模式"
+        if normalized_variant in {"android", "android_app", "android_protocol"}:
+            label = "安卓协议"
+            normalized_variant = "android"
+        elif normalized_variant in {"web", "web_protocol"}:
+            label = "WEB协议"
+            normalized_variant = "web"
+        else:
+            label = "协议模式"
     return {
         "registration_mode": mode,
         "registration_mode_label": label,
         "registration_executor_type": normalized,
         "browser_mode": str(browser_mode or "").strip(),
+        "registration_protocol_variant": normalized_variant if mode == "protocol" else "",
     }
 
 
@@ -604,6 +617,7 @@ class ChatGPTPlatform(BasePlatform):
                 "workspace_id": result.get("workspace_id", ""),
                 "cookies": result.get("cookies", ""),
                 "login_state_cookie": result.get("login_state_cookie") or result.get("cookies", ""),
+                "cookie_header": result.get("cookie_header") or result.get("login_state_cookie") or result.get("cookies", ""),
                 "profile": result.get("profile", {}),
                 "expires_at": result.get("expires_at", ""),
                 "session": result.get("session", {}),
@@ -794,6 +808,14 @@ class ChatGPTPlatform(BasePlatform):
         )
 
     def build_protocol_mailbox_adapter(self):
+        def _use_android_protocol(ctx) -> bool:
+            variant = str(
+                (ctx.extra or {}).get("chatgpt_protocol_variant")
+                or (ctx.extra or {}).get("protocol_variant")
+                or ""
+            ).strip().lower()
+            return variant in {"android", "android_app", "android_protocol"}
+
         def _use_authflow_experimental(ctx) -> bool:
             extra = ctx.extra or {}
             variant = str(
@@ -814,6 +836,19 @@ class ChatGPTPlatform(BasePlatform):
                     proxy_url=ctx.proxy,
                     log_fn=ctx.log,
                     phone_change_limit=max(_int_param(ctx.extra or {}, "phone_change_limit", 10), 1),
+                )
+
+            if _use_android_protocol(ctx):
+                if getattr(ctx.identity, "identity_provider", "") != "mailbox":
+                    raise ValueError("ANDROID协议仅支持邮箱身份")
+                from platforms.chatgpt.protocol_android import ChatGPTAndroidProtocolWorker
+
+                ctx.log("启用 ANDROID 协议注册链路（ChatGPT App 移植版）")
+                return ChatGPTAndroidProtocolWorker(
+                    mailbox=self.mailbox,
+                    mailbox_account=ctx.identity.mailbox_account,
+                    proxy_url=ctx.proxy,
+                    log_fn=ctx.log,
                 )
 
             if _use_authflow_experimental(ctx):
@@ -856,6 +891,11 @@ class ChatGPTPlatform(BasePlatform):
             refresh_token = result.refresh_token or ""
             session_token = result.session_token or ""
             metadata = getattr(result, "metadata", None) or {}
+            protocol_variant = str(
+                metadata.get("protocol_variant")
+                or (getattr(ctx, "extra", {}) or {}).get("chatgpt_protocol_variant")
+                or ""
+            ).strip().lower()
             registration_refresh_token = str(
                 refresh_token
                 or metadata.get("registration_refresh_token")
@@ -877,6 +917,7 @@ class ChatGPTPlatform(BasePlatform):
                     "account_overview": _registration_mode_metadata(
                         getattr(ctx, "executor_type", "protocol"),
                         (getattr(ctx, "extra", {}) or {}).get("browser_mode", ""),
+                        protocol_variant,
                     ),
                     "access_token": access_token,
                     "refresh_token": "",
@@ -888,6 +929,7 @@ class ChatGPTPlatform(BasePlatform):
                     "workspace_id": result.workspace_id,
                     "cookies": metadata.get("cookies", ""),
                     "login_state_cookie": metadata.get("login_state_cookie") or metadata.get("cookies", ""),
+                    "cookie_header": metadata.get("cookie_header") or metadata.get("login_state_cookie") or metadata.get("cookies", ""),
                     "profile": metadata.get("profile", {}),
                     "expires_at": metadata.get("expires_at", ""),
                     "session": metadata.get("session", {}),
@@ -905,6 +947,7 @@ class ChatGPTPlatform(BasePlatform):
                     "k12_deferred_sub2api_upload_enabled": metadata.get("k12_deferred_sub2api_upload_enabled", False),
                     "k12_remote_upload_handled": metadata.get("k12_remote_upload_handled", False),
                     "oauth_error": metadata.get("oauth_error", ""),
+                    "chatgpt_protocol_variant": protocol_variant,
                     "password_set_after_register": metadata.get("password_set_after_register", False),
                     "post_register_password_error": metadata.get("post_register_password_error", ""),
                 },
@@ -1955,17 +1998,18 @@ class ChatGPTPlatform(BasePlatform):
             action_label="重新登录",
         )
 
-        if not account.password:
-            return self._refresh_session_failed_result(account, "账号缺少密码，无法重新登录")
-
         if callable(cancel_fn) and cancel_fn():
             return {"ok": False, "error": "任务已取消", "data": {"email": account.email}}
 
         totp_secret = _account_secret_value(account, "totp_secret")
         prefer_password_totp_login = bool(str(account.password or "").strip() and totp_secret)
         email_service = None
+        mailbox_error = ""
         if prefer_password_totp_login:
-            log_fn("重新登录检测到账号已保存密码和 2FA，本次使用密码 + TOTP，不初始化邮箱 OTP 服务")
+            log_fn("重新登录检测到账号已保存密码和 2FA，优先使用密码 + TOTP；同时按需准备邮箱 OTP 服务")
+            email_service, mailbox_error = self._build_refresh_session_mailbox_email_service(account, log_fn, proxy)
+            if email_service is None:
+                log_fn(f"重新登录邮箱 OTP 服务不可用，继续尝试密码 + TOTP 链路: {mailbox_error}", "warning")
         else:
             email_service, mailbox_error = self._build_refresh_session_mailbox_email_service(account, log_fn, proxy)
             if email_service is None:
@@ -2044,6 +2088,7 @@ class ChatGPTPlatform(BasePlatform):
                 "session_token": session_token,
                 "cookies": metadata.get("cookies", ""),
                 "login_state_cookie": metadata.get("login_state_cookie") or metadata.get("cookies", ""),
+                "cookie_header": metadata.get("cookie_header") or metadata.get("login_state_cookie") or metadata.get("cookies", ""),
                 "session": session,
                 "session_refreshed_at": now,
                 "session_refresh_status": "refreshed",
@@ -2080,9 +2125,6 @@ class ChatGPTPlatform(BasePlatform):
             action_label="获取rt",
         )
 
-        if not account.password:
-            return {"ok": False, "error": "账号缺少密码，无法进行 OAuth 登录"}
-
         acquired_profile_id = ""
         bit_profile_id = ""
         phone_callback = None
@@ -2093,9 +2135,13 @@ class ChatGPTPlatform(BasePlatform):
             )
             totp_secret = _account_secret_value(account, "totp_secret")
             prefer_password_totp_login = bool(str(account.password or "").strip() and totp_secret)
+            otp_callback = None
+            otp_error = ""
             if prefer_password_totp_login:
-                otp_callback = None
-                log_fn("  获取rt: 检测到账号已保存密码和 2FA，本次使用密码 + TOTP，不初始化邮箱 OTP 服务")
+                log_fn("  获取rt: 检测到账号已保存密码和 2FA，优先使用密码 + TOTP；同时按需准备邮箱 OTP 服务")
+                otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
+                if not otp_callback:
+                    log_fn(f"  获取rt: 邮箱 OTP 服务不可用，继续尝试密码 + TOTP 链路: {otp_error}")
             else:
                 otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
                 if not otp_callback:
@@ -2162,6 +2208,7 @@ class ChatGPTPlatform(BasePlatform):
                     smsapi_url=str(params.get("smsapi_url") or ""),
                     phone_callback=phone_callback,
                     phone_change_limit=phone_change_limit,
+                    phone_code_timeout=60,
                     totp_secret=totp_secret,
                 )
                 refresh_token = str(result.get("refresh_token") or "")
@@ -2261,6 +2308,8 @@ class ChatGPTPlatform(BasePlatform):
                         proxy, log_fn,
                         max_phone_attempts=phone_change_limit,
                         totp_secret=totp_secret,
+                        phone_code_timeout=60,
+                        retry_phone_timeout=True,
                     )
 
                     if not isinstance(result, dict) or not result.get("access_token"):
@@ -2371,9 +2420,6 @@ class ChatGPTPlatform(BasePlatform):
             action_label="获取rt(绕过)",
         )
 
-        if not account.password:
-            return {"ok": False, "error": "账号缺少密码，无法进行 OAuth 登录"}
-
         acquired_profile_id = ""
         bit_profile_id = ""
 
@@ -2407,9 +2453,14 @@ class ChatGPTPlatform(BasePlatform):
 
             backend_config = parse_checkout_mode(browser_mode, bit_profile_id=bit_profile_id)
             totp_secret = _account_secret_value(account, "totp_secret")
-            if str(account.password or "").strip() and totp_secret:
-                otp_callback = None
-                log_fn("  获取rt(绕过): 检测到账号已保存密码和 2FA，本次使用密码 + TOTP，不初始化邮箱 OTP 服务")
+            prefer_password_totp_login = bool(str(account.password or "").strip() and totp_secret)
+            otp_callback = None
+            otp_error = ""
+            if prefer_password_totp_login:
+                log_fn("  获取rt(绕过): 检测到账号已保存密码和 2FA，优先使用密码 + TOTP；同时按需准备邮箱 OTP 服务")
+                otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
+                if not otp_callback:
+                    log_fn(f"  获取rt(绕过): 邮箱 OTP 服务不可用，继续尝试密码 + TOTP 链路: {otp_error}")
             else:
                 otp_callback, otp_error = self._build_get_rt_mailbox_otp_callback(account, log_fn, proxy)
                 if not otp_callback:

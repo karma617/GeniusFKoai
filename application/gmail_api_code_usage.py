@@ -13,8 +13,11 @@ from core.gmail_api_code_mailbox import GmailApiCodeMailbox, parse_gmail_api_cod
 from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
 
-ALIAS_LIMIT = 6
+ICLOUD_ALIAS_LIMIT = 1
+DIRECT_MAILBOX_LIMIT = 1
 _ALLOCATED_RE = re.compile(r"Email alias allocated:\s+([^\s]+)\s+parent=([^\s]+)")
+_SUPPORTED_DOMAINS = {"gmail.com", "googlemail.com", "icloud.com", "me.com", "mac.com"}
+_ICLOUD_DOMAINS = {"icloud.com", "me.com", "mac.com"}
 
 
 def _normalize_email(value: Any) -> str:
@@ -29,22 +32,40 @@ def _safe_json(value: str) -> dict[str, Any]:
         return {}
 
 
-def _gmail_parent(email: str) -> str:
+def _mailbox_kind(email: str) -> str:
+    target = _normalize_email(email)
+    if "@" not in target:
+        return ""
+    domain = target.rsplit("@", 1)[1]
+    if domain in {"gmail.com", "googlemail.com"}:
+        return "gmail"
+    if domain in _ICLOUD_DOMAINS:
+        return "icloud"
+    return ""
+
+
+def _pool_parent(email: str) -> str:
     target = _normalize_email(email)
     if "@" not in target:
         return ""
     local, domain = target.split("@", 1)
-    if domain not in {"gmail.com", "googlemail.com"}:
+    if domain not in _SUPPORTED_DOMAINS:
         return ""
-    return f"{local.split('+', 1)[0]}@gmail.com"
+    if domain == "googlemail.com":
+        domain = "gmail.com"
+    return f"{local.split('+', 1)[0]}@{domain}"
 
 
-def _resolve_gmail_parent(*values: Any) -> str:
+def _resolve_pool_parent(*values: Any) -> str:
     for value in values:
-        parent = _gmail_parent(_normalize_email(value))
+        parent = _pool_parent(_normalize_email(value))
         if parent:
             return parent
     return ""
+
+
+def _mailbox_limit(parent: str) -> int:
+    return DIRECT_MAILBOX_LIMIT + ICLOUD_ALIAS_LIMIT if _mailbox_kind(parent) == "icloud" else DIRECT_MAILBOX_LIMIT
 
 
 def _metadata_text(metadata: dict[str, Any], *keys: str) -> str:
@@ -65,7 +86,7 @@ def _configured_parent_emails() -> tuple[set[str], bool]:
     settings = ProviderSettingsRepository().resolve_runtime_settings("mailbox", "gmail_api_code", {})
     pool_text = str(settings.get("gmail_api_code_pool_text") or "")
     parents = {
-        _resolve_gmail_parent(item.email)
+        _resolve_pool_parent(item.email)
         for item in parse_gmail_api_code_pool_rows(pool_text)
         if item.status != "deleted"
     }
@@ -77,11 +98,13 @@ def _configured_parent_statuses() -> dict[str, tuple[str, str]]:
     pool_text = str(settings.get("gmail_api_code_pool_text") or "")
     statuses: dict[str, tuple[str, str]] = {}
     for row in parse_gmail_api_code_pool_rows(pool_text):
-        parent = _resolve_gmail_parent(row.email)
+        parent = _resolve_pool_parent(row.email)
         if not parent or row.status in {"active", "deleted"}:
             continue
         if row.status == "invalid":
             statuses[parent] = ("unusable", "pool_invalid")
+        elif row.status == "registered_exhausted":
+            statuses[parent] = ("registered_exhausted", "pool_registered_exhausted")
         elif row.status == "registered":
             statuses[parent] = ("registered", "pool_registered")
     return statuses
@@ -90,13 +113,15 @@ def _configured_parent_statuses() -> dict[str, tuple[str, str]]:
 def _empty_parent(parent: str, configured: bool) -> dict[str, Any]:
     return {
         "parent_email": parent,
+        "mailbox_type": _mailbox_kind(parent),
         "configured": configured,
-        "alias_limit": ALIAS_LIMIT,
+        "alias_limit": _mailbox_limit(parent),
         "successful_alias_count": 0,
         "allocated_only_count": 0,
-        "confirmed_remaining": ALIAS_LIMIT,
-        "conservative_remaining": ALIAS_LIMIT,
+        "confirmed_remaining": _mailbox_limit(parent),
+        "conservative_remaining": _mailbox_limit(parent),
         "main_registered": False,
+        "alias_exhausted": False,
         "email_status": "usable",
         "email_status_reason": "",
         "status": "available",
@@ -127,9 +152,13 @@ def _runtime_invalid_emails() -> set[str]:
 
 def _mark_email_status(item: dict[str, Any], status: str, reason: str = "") -> None:
     current = str(item.get("email_status") or "usable")
-    if current == "unusable":
+    if current == "unusable" and status != "unusable":
         return
-    if status == "unusable" or (status == "registered" and current == "usable"):
+    if status == "unusable" or (
+        status == "registered_exhausted" and current != "unusable"
+    ) or (
+        status == "registered" and current == "usable"
+    ):
         item["email_status"] = status
         item["email_status_reason"] = reason or item.get("email_status_reason") or ""
 
@@ -144,9 +173,13 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
     for parent, (status, reason) in configured_statuses.items():
         if parent not in parents:
             continue
+        if status in {"registered", "registered_exhausted"}:
+            parents[parent]["main_registered"] = True
+        if status == "registered_exhausted":
+            parents[parent]["alias_exhausted"] = True
         _mark_email_status(parents[parent], status, reason)
     for parent in _runtime_invalid_emails():
-        parent = _resolve_gmail_parent(parent)
+        parent = _resolve_pool_parent(parent)
         if not parent or parent not in configured_parents:
             continue
         item = parents[parent]
@@ -168,14 +201,22 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                 or _metadata_text(metadata, "account_id", "parent_account_id")
                 or resource_email
             )
-            parent = _resolve_gmail_parent(raw_parent)
+            parent = _resolve_pool_parent(raw_parent)
             if not parent or parent not in configured_parents:
                 continue
             item = parents[parent]
             _add_seen(item, resource.created_at)
             _add_seen(item, resource.updated_at)
             registration_status = str(metadata.get("registration_status") or "").strip().lower()
+            invalid_reason = str(metadata.get("registration_invalid_reason") or "").strip().lower()
             if (
+                registration_status == "invalid"
+                and invalid_reason in {"user_already_exists", "registration_disallowed"}
+            ):
+                item["main_registered"] = True
+                item["alias_exhausted"] = True
+                _mark_email_status(item, "registered_exhausted", invalid_reason)
+            elif (
                 registration_status == "invalid"
                 or metadata.get("registration_invalid")
             ):
@@ -183,6 +224,21 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                     item,
                     "unusable",
                     str(metadata.get("registration_invalid_reason") or registration_status or "invalid"),
+                )
+            elif (
+                registration_status == "registered_exhausted"
+                or metadata.get("registration_alias_exhausted")
+            ):
+                item["main_registered"] = True
+                item["alias_exhausted"] = True
+                _mark_email_status(
+                    item,
+                    "registered_exhausted",
+                    str(
+                        metadata.get("registration_alias_exhausted_reason")
+                        or registration_status
+                        or "registered_exhausted"
+                    ),
                 )
             elif (
                 registration_status == "registered"
@@ -210,18 +266,18 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                 or _metadata_text(metadata, "account_id", "parent_account_id")
                 or alias_email
             )
-            parent = _resolve_gmail_parent(raw_parent)
+            parent = _resolve_pool_parent(raw_parent)
             if not parent or parent not in configured_parents:
                 continue
             item = parents[parent]
             _add_seen(item, resource.created_at)
             _add_seen(item, account.created_at)
+            alias_parent = _pool_parent(alias_email)
+            if alias_parent != parent:
+                continue
             if alias_email == parent:
                 item["main_registered"] = True
-                _mark_email_status(item, "registered", "main_registered")
-                continue
-            if _gmail_parent(alias_email) == parent:
-                successful_aliases_by_parent[parent].add(alias_email)
+            successful_aliases_by_parent[parent].add(alias_email)
 
         events = session.exec(
             select(TaskEventModel, TaskModel)
@@ -240,10 +296,10 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
             if not match:
                 continue
             alias_email = _normalize_email(match.group(1))
-            parent = _resolve_gmail_parent(match.group(2))
+            parent = _resolve_pool_parent(match.group(2))
             if not parent or parent not in configured_parents:
                 continue
-            if _gmail_parent(alias_email) != parent:
+            if _pool_parent(alias_email) != parent:
                 continue
             item = parents[parent]
             allocated_aliases_by_parent[parent].add(alias_email)
@@ -252,11 +308,15 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
     for parent, item in parents.items():
         successful_aliases = sorted(successful_aliases_by_parent.get(parent, set()))
         allocated_only_aliases = sorted(allocated_aliases_by_parent.get(parent, set()) - set(successful_aliases))
+        if item.get("main_registered") and parent not in successful_aliases:
+            successful_aliases.append(parent)
+            successful_aliases.sort()
         success_count = len(successful_aliases)
         allocated_only_count = len(allocated_only_aliases)
-        confirmed_remaining = max(0, ALIAS_LIMIT - success_count)
-        conservative_remaining = max(0, ALIAS_LIMIT - success_count - allocated_only_count)
-        if item.get("email_status") != "usable":
+        limit = int(item.get("alias_limit") or DIRECT_MAILBOX_LIMIT)
+        confirmed_remaining = max(0, limit - success_count)
+        conservative_remaining = max(0, limit - success_count - allocated_only_count)
+        if item.get("email_status") in {"unusable", "registered_exhausted"}:
             confirmed_remaining = 0
             conservative_remaining = 0
         item.update(
@@ -270,7 +330,7 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
                 "allocated_only_aliases": allocated_only_aliases,
             }
         )
-        if success_count >= ALIAS_LIMIT:
+        if item.get("email_status") in {"unusable", "registered_exhausted"} or confirmed_remaining <= 0:
             item["status"] = "full"
         elif allocated_only_count > 0:
             item["status"] = "has_unconfirmed"
@@ -290,14 +350,16 @@ def gmail_api_code_alias_usage() -> dict[str, Any]:
     total_confirmed_remaining = sum(int(item["confirmed_remaining"]) for item in items)
     total_conservative_remaining = sum(int(item["conservative_remaining"]) for item in items)
     unusable_parent_count = sum(1 for item in items if item["email_status"] == "unusable")
-    registered_parent_count = sum(1 for item in items if item["email_status"] == "registered")
+    registered_parent_count = sum(
+        1 for item in items if item["email_status"] in {"registered", "registered_exhausted"}
+    )
     return {
-        "alias_limit": ALIAS_LIMIT,
+        "alias_limit": DIRECT_MAILBOX_LIMIT,
         "config_pool_recorded": config_pool_recorded,
         "summary": {
             "parent_count": len(items),
             "configured_parent_count": len(configured_parents),
-            "usable_parent_count": sum(1 for item in items if item["email_status"] == "usable"),
+            "usable_parent_count": sum(1 for item in items if int(item["conservative_remaining"]) > 0),
             "unusable_parent_count": unusable_parent_count,
             "registered_parent_count": registered_parent_count,
             "successful_alias_count": total_success,

@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getTaskStatusText, TASK_STATUS_VARIANTS, isTerminalTaskStatus } from '@/lib/tasks'
-import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search, ListChecks, Eye, EyeOff } from 'lucide-react'
+import { RefreshCw, Copy, ExternalLink, Download, Upload, Plus, X, Mail, Trash2, Zap, Loader2, ShieldCheck, Search, ListChecks, Eye, EyeOff, Globe2, Smartphone } from 'lucide-react'
 
 const STATUS_VARIANT: Record<string, any> = {
   registered: 'default', authorized: 'success', rt_pending_upload: 'warning', rt_uploaded: 'success', agent_identity_uploaded: 'success', trial: 'success', subscribed: 'success',
@@ -36,6 +36,7 @@ const BROWSER_MODE_OPTIONS = [
 
 type GetRtSmsBalanceAction = 'auto_switch' | 'wait_release' | 'terminate'
 type RegisterCountMode = 'child' | 'parent'
+type ChatGPTProtocolVariant = 'web' | 'android'
 type TotpDialogState = {
   accountId: number
   email: string
@@ -53,6 +54,8 @@ type GmailApiCodeAliasUsage = {
   summary?: {
     configured_parent_count?: number
     usable_parent_count?: number
+    confirmed_remaining?: number
+    conservative_remaining?: number
   }
 }
 
@@ -92,7 +95,7 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'invalid',
   'banned',
 ]
-const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'MOMO试用', '2FA已绑', '协议模式', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
+const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'MOMO试用', '2FA已绑', 'WEB协议', '安卓协议', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
 const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -158,17 +161,13 @@ function getDisplayStatus(acc: any) {
   return getDisplaySummary(acc)?.status?.display || acc?.display_status || acc?.plan_state || getLifecycleStatus(acc)
 }
 
-function isRegisteredOnlyAccount(acc: any) {
-  return String(getDisplayStatus(acc) || '').trim().toLowerCase() === 'registered'
-}
-
 function isRtPendingUploadAccount(acc: any) {
   const status = String(getDisplayStatus(acc) || getLifecycleStatus(acc) || '').trim().toLowerCase()
   return status === 'rt_pending_upload'
 }
 
 function isGetRtTargetModeAccount(acc: any) {
-  return isRegisteredOnlyAccount(acc) || isRtPendingUploadAccount(acc)
+  return !hasChatgptRefreshToken(acc) || isRtPendingUploadAccount(acc)
 }
 
 function normalizeGetRtSmsProviderKey(value: any) {
@@ -251,17 +250,91 @@ function getDisplayBadges(acc: any) {
 function getRegistrationModeBadge(acc: any) {
   const overview = getAccountOverview(acc)
   const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const variant = String(
+    overview?.registration_protocol_variant || legacyExtra?.registration_protocol_variant || '',
+  ).trim().toLowerCase()
+  if (variant === 'android' || variant === 'android_app' || variant === 'android_protocol') {
+    return { label: '安卓协议', tone: 'muted' }
+  }
+  if (variant === 'web' || variant === 'web_protocol') {
+    return { label: 'WEB协议', tone: 'muted' }
+  }
   const label = String(overview?.registration_mode_label || legacyExtra?.registration_mode_label || '').trim()
-  if (label) return { label, tone: 'muted' }
+  if (label) return { label: label === '协议模式' ? 'WEB协议' : label, tone: 'muted' }
   const mode = String(overview?.registration_mode || legacyExtra?.registration_mode || '').trim().toLowerCase()
   if (mode === 'headless_browser') return { label: '无头浏览器', tone: 'muted' }
   if (mode === 'headed_browser') return { label: '有头浏览器', tone: 'muted' }
-  if (mode === 'protocol') return { label: '协议模式', tone: 'muted' }
+  if (mode === 'protocol') return { label: 'WEB协议', tone: 'muted' }
   const executor = String(overview?.registration_executor_type || legacyExtra?.registration_executor_type || '').trim().toLowerCase()
   if (executor === 'headless') return { label: '无头浏览器', tone: 'muted' }
   if (executor === 'headed') return { label: '有头浏览器', tone: 'muted' }
-  if (executor === 'protocol') return { label: '协议模式', tone: 'muted' }
+  if (executor === 'protocol') return { label: 'WEB协议', tone: 'muted' }
   return null
+}
+
+const COUNTRY_LABEL_FALLBACK: Record<string, string> = {
+  JP: '日本',
+  US: '美国',
+  SG: '新加坡',
+  HK: '香港',
+  TW: '台湾',
+  KR: '韩国',
+  TH: '泰国',
+  VN: '越南',
+  PH: '菲律宾',
+  ID: '印度尼西亚',
+  MY: '马来西亚',
+  GB: '英国',
+  CA: '加拿大',
+  AU: '澳大利亚',
+  TR: '土耳其',
+  BR: '巴西',
+  MX: '墨西哥',
+  IN: '印度',
+}
+
+function normalizeCountryCode(value: any) {
+  const text = String(value || '').trim().toUpperCase()
+  return /^[A-Z]{2}$/.test(text) ? text : ''
+}
+
+function formatCountryLabel(value: any) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const code = normalizeCountryCode(raw)
+  if (!code) return raw
+  try {
+    const DisplayNamesCtor = (Intl as any)?.DisplayNames
+    if (DisplayNamesCtor) {
+      const name = new DisplayNamesCtor(['zh-CN'], { type: 'region' }).of(code)
+      if (name && name !== code) return String(name)
+    }
+  } catch {
+    // Fallback to local map below.
+  }
+  return COUNTRY_LABEL_FALLBACK[code] || code
+}
+
+function getRegistrationIpRegionBadge(acc: any) {
+  if (String(acc?.platform || '').trim().toLowerCase() !== 'chatgpt') return null
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const label = formatCountryLabel(
+    overview?.registration_ip_country_label ||
+    legacyExtra?.registration_ip_country_label ||
+    overview?.registration_ip_country_code ||
+    legacyExtra?.registration_ip_country_code ||
+    overview?.registration_ip_region ||
+    legacyExtra?.registration_ip_region ||
+    '',
+  )
+  if (!label) return null
+  return { label, tone: 'success' }
+}
+
+function isSameRegistrationIpRegionLabel(value: any, regionLabel: string) {
+  const label = String(value || '').trim()
+  return Boolean(label) && (label === regionLabel || formatCountryLabel(label) === regionLabel)
 }
 
 function isChatgptK12Account(acc: any) {
@@ -278,9 +351,19 @@ function isChatgptK12Account(acc: any) {
 
 function normalizeAccountBadges(acc: any, badges: any[]) {
   const registrationModeBadge = getRegistrationModeBadge(acc)
-  const withRegistrationMode = registrationModeBadge && !badges.some((badge: any) => String(badge?.label || '').trim() === registrationModeBadge.label)
-    ? [...badges, registrationModeBadge]
+  const registrationIpRegionBadge = getRegistrationIpRegionBadge(acc)
+  const withRegistrationRegion = registrationIpRegionBadge
+    ? [
+      registrationIpRegionBadge,
+      ...badges.filter((badge: any) => !isSameRegistrationIpRegionLabel(badge?.label, registrationIpRegionBadge.label)),
+    ]
     : badges
+  const withoutLegacyProtocolLabel = String(acc?.platform || '').trim().toLowerCase() === 'chatgpt'
+    ? withRegistrationRegion.filter((badge: any) => !['协议模式', 'WEB协议', '安卓协议'].includes(String(badge?.label || '').trim()))
+    : withRegistrationRegion
+  const withRegistrationMode = registrationModeBadge && !withoutLegacyProtocolLabel.some((badge: any) => String(badge?.label || '').trim() === registrationModeBadge.label)
+    ? [...withoutLegacyProtocolLabel, registrationModeBadge]
+    : withoutLegacyProtocolLabel
   const normalizedBadges = String(acc?.platform || '').trim().toLowerCase() === 'chatgpt'
     && getChatgptTotpSecret(acc)
     && !withRegistrationMode.some((badge: any) => String(badge?.label || '').trim() === '2FA已绑')
@@ -384,6 +467,14 @@ function getCredentialValue(acc: any, keys: string[]) {
     item?.scope === 'platform' && wanted.has(String(item?.key || '').trim().toLowerCase()) && item?.value,
   )
   return credential?.value ? String(credential.value).trim() : ''
+}
+
+function hasChatgptRefreshToken(acc: any) {
+  const credentialToken = getCredentialValue(acc, ['refresh_token', 'refreshToken'])
+  if (credentialToken) return true
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  return Boolean(String(overview?.refresh_token || overview?.refreshToken || legacyExtra?.refresh_token || legacyExtra?.refreshToken || '').trim())
 }
 
 function normalizeCookieHeaderForCopy(value: any) {
@@ -1259,6 +1350,7 @@ function RegisterModal({
   const [setPasswordAfterRegister, setSetPasswordAfterRegister] = useState(true)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
   const [authflowExperimental] = useState(false)
+  const [chatgptProtocolVariant, setChatgptProtocolVariant] = useState<ChatGPTProtocolVariant>('web')
   const [recordHar, setRecordHar] = useState(false)
   const [registerPhoneChangeLimit, setRegisterPhoneChangeLimit] = useState(10)
   const [enableEmailAlias, setEnableEmailAlias] = useState(false)
@@ -1421,6 +1513,12 @@ function RegisterModal({
     }
   }, [selection.executorType, recordHar])
 
+  useEffect(() => {
+    if (chatgptProtocolVariant === 'android' && selection.identityProvider !== 'mailbox') {
+      setChatgptProtocolVariant('web')
+    }
+  }, [chatgptProtocolVariant, selection.identityProvider])
+
   const defaultMailboxProvider = (configOptions.mailbox_settings || []).find(item => item.is_default) || configOptions.mailbox_settings?.[0] || null
   const normalizedEmailAliasLimit = Math.min(Math.max(Number(emailAliasLimit || EMAIL_ALIAS_HARD_LIMIT), 1), EMAIL_ALIAS_HARD_LIMIT)
   const aliasCountLimitActive = platform === 'chatgpt'
@@ -1428,11 +1526,16 @@ function RegisterModal({
     && enableEmailAlias
     && defaultMailboxProvider?.provider_key === 'gmail_api_code'
   const emailAliasParentCount = Number(gmailAliasUsage?.summary?.usable_parent_count || 0)
+  const apiCodeMailboxCapacity = Number(
+    gmailAliasUsage?.summary?.conservative_remaining
+      ?? gmailAliasUsage?.summary?.confirmed_remaining
+      ?? 0,
+  )
   const registerCountMax = aliasCountLimitActive && gmailAliasUsage
-    ? (registerCountMode === 'parent' ? emailAliasParentCount : emailAliasParentCount * normalizedEmailAliasLimit)
+    ? (registerCountMode === 'parent' ? emailAliasParentCount : apiCodeMailboxCapacity)
     : 99
   const registerCountConsumedParents = aliasCountLimitActive && gmailAliasUsage
-    ? (registerCountMode === 'parent' ? regCount : Math.ceil(Math.max(regCount, 0) / normalizedEmailAliasLimit))
+    ? Math.min(emailAliasParentCount, Math.max(regCount, 0))
     : 0
 
   useEffect(() => {
@@ -1509,8 +1612,10 @@ function RegisterModal({
         extra.record_har = recordHar ? 'true' : ''
         extra.phone_change_limit = Math.max(Number(registerPhoneChangeLimit || 10), 1)
       }
-      if (platform === 'chatgpt' && selection.executorType === 'protocol' && authflowExperimental) {
-        extra.chatgpt_protocol_variant = 'authflow_experimental'
+      if (platform === 'chatgpt' && selection.executorType === 'protocol') {
+        extra.chatgpt_protocol_variant = authflowExperimental
+          ? 'authflow_experimental'
+          : chatgptProtocolVariant
       }
       if (platform === 'chatgpt' && enableEmailAlias) {
         extra.enable_email_alias = true
@@ -1714,6 +1819,47 @@ function RegisterModal({
                       </div>
                     </div>
                   )}
+                  {platform === 'chatgpt' && selection.executorType === 'protocol' ? (
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <button
+                        type="button"
+                        aria-pressed={chatgptProtocolVariant === 'web'}
+                        onClick={() => setChatgptProtocolVariant('web')}
+                        className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                          chatgptProtocolVariant === 'web'
+                            ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                            : 'border-[var(--border)] bg-[var(--bg-pane)]/45 hover:border-[var(--accent)]/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+                          <Globe2 className="h-4 w-4" />
+                          WEB协议
+                        </div>
+                        <div className="mt-1 text-xs text-[var(--text-muted)]">使用当前 ChatGPT WEB 协议注册链路</div>
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={chatgptProtocolVariant === 'android'}
+                        disabled={selection.identityProvider !== 'mailbox'}
+                        onClick={() => selection.identityProvider === 'mailbox' && setChatgptProtocolVariant('android')}
+                        className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                          selection.identityProvider !== 'mailbox'
+                            ? 'cursor-not-allowed border-[var(--border)] bg-[var(--bg-hover)] opacity-50'
+                            : chatgptProtocolVariant === 'android'
+                              ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                              : 'border-[var(--border)] bg-[var(--bg-pane)]/45 hover:border-[var(--accent)]/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+                          <Smartphone className="h-4 w-4" />
+                          ANDROID协议
+                        </div>
+                        <div className="mt-1 text-xs text-[var(--text-muted)]">
+                          {selection.identityProvider === 'mailbox' ? '使用 ChatGPT Android App 注册协议链路' : 'ANDROID协议仅支持邮箱身份'}
+                        </div>
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className={cn("grid gap-3", platform === 'chatgpt' ? "md:grid-cols-3" : "grid-cols-2")}>
@@ -1754,7 +1900,7 @@ function RegisterModal({
                             : gmailAliasUsage
                               ? t('accounts.registrationCountAliasCapacity', {
                                 parents: emailAliasParentCount,
-                                aliasLimit: normalizedEmailAliasLimit,
+                                aliasLimit: apiCodeMailboxCapacity,
                                 max: registerCountMax,
                                 consumed: registerCountConsumedParents,
                               })
@@ -3552,6 +3698,7 @@ export default function Accounts() {
   const [getRtBypassConfirmOpen, setGetRtBypassConfirmOpen] = useState(false)
   const [refreshSessionTaskId, setRefreshSessionTaskId] = useState('')
   const [refreshSessionBusy, setRefreshSessionBusy] = useState(false)
+  const [batchSecurityBusy, setBatchSecurityBusy] = useState(false)
   const [getRtSmsProvider, setGetRtSmsProvider] = useState('')
   const [getRtSmsapiPhone, setGetRtSmsapiPhone] = useState('')
   const [getRtSmsapiUrl, setGetRtSmsapiUrl] = useState('')
@@ -3710,7 +3857,7 @@ export default function Accounts() {
   const selectedCount = selectedIds.size
   const selectedAccounts = accounts.filter(acc => selectedIds.has(acc.id))
   const getRtEligibleIds = selectedAccounts
-    .filter(acc => getRtTaskMode === 'target' ? isGetRtTargetModeAccount(acc) : isRegisteredOnlyAccount(acc))
+    .filter(acc => getRtTaskMode === 'target' ? isGetRtTargetModeAccount(acc) : !hasChatgptRefreshToken(acc))
     .map(acc => Number(acc.id))
     .filter(id => Number.isFinite(id) && id > 0)
   const ppLiveMap = (ppPlusStatus?.accounts && typeof ppPlusStatus.accounts === 'object') ? ppPlusStatus.accounts : {}
@@ -4555,8 +4702,8 @@ export default function Accounts() {
     if (ids.length === 0) {
       setError(
         getRtTaskMode === 'target'
-          ? '\u76ee\u6807\u6a21\u5f0f\u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u6216\u201c\u5df2\u83b7\u53d6rt\uff0c\u672a\u4e0a\u4f20\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\u3002'
-          : '\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5df2\u6388\u6743\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002',
+          ? '目标模式会处理已选中且没有 RT 的账号；已获取 RT、未上传账号会重试上传。'
+          : '获取rt 会处理已选中且没有 RT 的账号；已有 RT 的账号会跳过。',
       )
       return
     }
@@ -4618,7 +4765,7 @@ export default function Accounts() {
       return
     }
     if (getRtAnyModeEligibleIds.length === 0) {
-      setError('\u83b7\u53d6rt \u53ea\u80fd\u5bf9\u201c\u4ec5\u6ce8\u518c\u201d\u6216\u201c\u5df2\u83b7\u53d6rt\uff0c\u672a\u4e0a\u4f20\u201d\u72b6\u6001\u7684\u8d26\u53f7\u8d77\u4efb\u52a1\uff0c\u5176\u4ed6\u8d26\u53f7\u4f1a\u88ab\u8fc7\u6ee4\u3002')
+      setError('获取rt 会处理已选中且没有 RT 的账号；已有 RT 的账号会跳过。')
       return
     }
     setGetRtConfirmOpen(true)
@@ -4683,6 +4830,34 @@ export default function Accounts() {
     setSelectedIds(new Set())
     await load()
   }, [load])
+
+  const startBatchSecuritySetup = async () => {
+    setError('')
+    setBatchSecurityBusy(true)
+    let submitted = false
+    try {
+      const ids = selectedIds.size > 0 ? [...selectedIds].map(Number) : []
+      const data = await apiFetch('/tasks/batch-security-setup', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids,
+          concurrency: Math.max(1, Math.min(Number(actionConcurrency) || 1, 5)),
+        }),
+      })
+      const taskId = String(data?.task_id || data?.id || '')
+      if (!taskId) {
+        throw new Error('任务创建失败')
+      }
+      submitted = true
+      setBatchTask({ taskId, title: '批量设置密码/2FA' })
+      setBatchTaskStatus(null)
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      if (!submitted) setBatchSecurityBusy(false)
+    }
+  }
 
   const deleteInvalidAndBanned = async () => {
     setError('')
@@ -5023,6 +5198,7 @@ export default function Accounts() {
             setBatchRefreshing(false)
             setBatchHealthChecking(false)
             setAgentsUploadBusy(false)
+            setBatchSecurityBusy(false)
             load()
           }}
           onDone={(status) => {
@@ -5030,6 +5206,7 @@ export default function Accounts() {
             setBatchRefreshing(false)
             setBatchHealthChecking(false)
             setAgentsUploadBusy(false)
+            setBatchSecurityBusy(false)
             load()
           }}
         />
@@ -5142,7 +5319,7 @@ export default function Accounts() {
                     获取rt（refresh_token）
                   </h2>
                   <div className="mt-1 text-xs help-text">
-                    已选 {selectedIds.size} 个账户。使用浏览器 OAuth + 手机验证跳过获取 refresh_token。
+                    已选 {selectedIds.size} 个账户；将处理没有 RT 的账号，已有 RT 的账号会跳过。
                   </div>
                 </div>
                 <button
@@ -5610,20 +5787,17 @@ export default function Accounts() {
               <Button
                 size="sm"
                 variant="outline"
-                disabled={oauthBusy}
-                onClick={() => {
-                  setError('')
-                  setActionConcurrency(prev => Math.max(1, Math.min(10, Number(prev) || 3)))
-                  setOauthConfirmOpen(true)
-                }}
+                disabled={batchSecurityBusy}
+                onClick={startBatchSecuritySetup}
                 className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
+                title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个账号设置密码和2FA` : '未勾选：处理全部未绑定2FA的账号'}
               >
-                {oauthBusy ? (
+                {batchSecurityBusy ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <ShieldCheck className="mr-2 h-4 w-4" />
                 )}
-                检测MOMO试用资格
+                批量设置密码/2FA
               </Button>
             ) : null}
             {tab === 'chatgpt' ? (
@@ -6018,8 +6192,8 @@ export default function Accounts() {
                           </td>
                           <td className="px-3 py-3 align-middle">
                             {displayBadges.length > 0 ? (
-                              <div className="flex max-w-[140px] flex-wrap gap-1">
-                                {displayBadges.slice(0, 3).map((badge: any, index: number) => (
+                              <div className="flex max-w-[180px] flex-wrap gap-1">
+                                {displayBadges.map((badge: any, index: number) => (
                                   <span key={`${badge?.label || 'badge'}-${index}`} className={getAccountBadgeClassName(badge, 'modern')}>
                                     {badge?.label}
                                   </span>
@@ -6278,20 +6452,17 @@ export default function Accounts() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => {
-                  setError('')
-                  setActionConcurrency(prev => Math.max(1, Math.min(10, Number(prev) || 3)))
-                  setOauthConfirmOpen(true)
-                }}
-                disabled={oauthBusy}
+                onClick={startBatchSecuritySetup}
+                disabled={batchSecurityBusy}
                 className={ACCOUNT_TOOL_BUTTON_CLASS}
+                title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个账号设置密码和2FA` : '未勾选：处理全部未绑定2FA的账号'}
               >
-                {oauthBusy ? (
+                {batchSecurityBusy ? (
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />
                 ) : (
                   <ShieldCheck className="mr-1.5 h-3.5 w-3.5 shrink-0" />
                 )}
-                检测MOMO试用资格
+                批量设置密码/2FA
               </Button>
             )}
             {tab === 'chatgpt' && (

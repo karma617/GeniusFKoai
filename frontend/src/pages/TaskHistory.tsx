@@ -47,6 +47,7 @@ const TASK_TYPE_OPTIONS = [
   { value: 'get_rt', zh: '批量获取RT', en: 'Batch Get RT' },
   { value: 'get_rt_bypass', zh: '批量获取RT(绕过)', en: 'Batch Get RT (Bypass)' },
   { value: 'refresh_session', zh: '重登验证', en: 'Refresh Session' },
+  { value: 'batch_security_setup', zh: '批量设置密码/2FA', en: 'Batch Password/2FA' },
   { value: 'agents_upload_sub2api', zh: '上传SUB2API', en: 'Upload SUB2API' },
   { value: 'gopay_pay_chatgpt', zh: '开通PLUS', en: 'Open PLUS' },
   { value: 'gopay_register_account', zh: '注册GoPay', en: 'Register GoPay' },

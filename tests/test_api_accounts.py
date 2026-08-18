@@ -164,12 +164,30 @@ def test_registration_mode_badge_and_tag_filter(client):
         overview={"registration_mode_label": "无头浏览器", "registration_mode": "headless_browser"},
     )
 
-    list_resp = client.get("/api/accounts", params={"platform": "chatgpt", "tag": "协议模式"})
+    list_resp = client.get("/api/accounts", params={"platform": "chatgpt", "tag": "WEB协议"})
     items = list_resp.json()["items"]
     badges = [badge["label"] for badge in items[0]["display_summary"]["badges"]]
 
     assert [item["email"] for item in items] == ["protocol-mode@test.com"]
-    assert "协议模式" in badges
+    assert "WEB协议" in badges
+
+
+def test_android_protocol_badge_and_tag_filter(client):
+    _create_account(
+        client,
+        platform="chatgpt",
+        email="android-mode@test.com",
+        overview={
+            "registration_mode": "protocol",
+            "registration_protocol_variant": "android",
+        },
+    )
+
+    list_resp = client.get("/api/accounts", params={"platform": "chatgpt", "tag": "安卓协议"})
+    items = list_resp.json()["items"]
+
+    assert [item["email"] for item in items] == ["android-mode@test.com"]
+    assert "安卓协议" in [badge["label"] for badge in items[0]["display_summary"]["badges"]]
 
 
 def test_codex_probe_401_warning_has_business_message(client):

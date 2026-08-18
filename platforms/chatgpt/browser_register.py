@@ -5570,6 +5570,8 @@ def _do_codex_oauth(
     max_phone_attempts: int | None = None,
     oauth_start=None,
     totp_secret: str = "",
+    phone_code_timeout: int | None = None,
+    retry_phone_timeout: bool = False,
 ) -> dict | None:
     """在真实浏览器会话内完成 Codex OAuth，返回完整 token 包。
 
@@ -5785,6 +5787,8 @@ def _do_codex_oauth(
                             device_id=device_id, user_agent=user_agent,
                             log=log, resume_url=resume_auth_url or oauth_start.auth_url,
                             max_phone_attempts=add_phone_attempt_limit,
+                            phone_code_timeout=phone_code_timeout,
+                            retry_on_timeout=retry_phone_timeout,
                         )
                         phone_verification_completed = bool(getattr(phone_callback, "completed", False))
                         for candidate_url in (
@@ -6158,6 +6162,8 @@ def _handle_add_phone_challenge(
     log,
     resume_url: str = "",
     max_phone_attempts: int = PHONE_ATTEMPTS_PER_COUNTRY * PHONE_MAX_COUNTRIES,
+    phone_code_timeout: int = PHONE_CODE_TIMEOUT_SECONDS,
+    retry_on_timeout: bool = False,
 ) -> dict:
     """在 add-phone 页面通过 UI 交互完成手机号验证。
 
@@ -6169,6 +6175,13 @@ def _handle_add_phone_challenge(
             "ChatGPT 注册遇到手机号验证，但未配置 phone_callback。"
             "请在 RegisterConfig.extra 中配置接码服务，或手动完成手机验证。"
         )
+
+    try:
+        phone_code_timeout = max(1, int(phone_code_timeout or PHONE_CODE_TIMEOUT_SECONDS))
+    except (TypeError, ValueError):
+        phone_code_timeout = PHONE_CODE_TIMEOUT_SECONDS
+    if hasattr(phone_callback, "set_code_timeout"):
+        phone_callback.set_code_timeout(phone_code_timeout)
 
     attempt_limit = _resolve_add_phone_attempt_limit(phone_callback, max_phone_attempts)
     last_error = None
@@ -6187,15 +6200,22 @@ def _handle_add_phone_challenge(
                 page, phone_callback,
                 device_id=device_id, user_agent=user_agent,
                 log=log, resume_url=resume_url,
+                phone_code_timeout=phone_code_timeout,
             )
             return result
         except RuntimeError as exc:
             last_error = exc
             error_msg = str(exc)
             if PHONE_CODE_TIMEOUT_SENTINEL in error_msg:
-                log(f"⚠️ 短信验证码 {PHONE_CODE_TIMEOUT_SECONDS}s 未到达，跳过当前账号")
+                log(
+                    f"⚠️ 短信验证码 {phone_code_timeout}s 未到达，"
+                    f"{'释放当前手机号并切换下一个' if retry_on_timeout else '结束当前流程'}"
+                )
                 if hasattr(phone_callback, "cleanup"):
                     phone_callback.cleanup()
+                if retry_on_timeout:
+                    _reset_phone_callback_for_new_number(phone_callback, error_msg, mark_failed=False)
+                    continue
                 raise
 
             # 号码已被使用、虚拟号/不支持等页面拒号时换号重试，其他错误直接抛出
@@ -6229,6 +6249,7 @@ def _do_add_phone_attempt(
     user_agent: str,
     log,
     resume_url: str = "",
+    phone_code_timeout: int = PHONE_CODE_TIMEOUT_SECONDS,
 ) -> dict:
     """单次手机号验证尝试（内部函数）。"""
 
@@ -6271,7 +6292,7 @@ def _do_add_phone_attempt(
     if hasattr(phone_callback, "set_resend_callback"):
         phone_callback.set_resend_callback(_request_openai_resend)
     if hasattr(phone_callback, "set_code_timeout"):
-        phone_callback.set_code_timeout(PHONE_CODE_TIMEOUT_SECONDS)
+        phone_callback.set_code_timeout(phone_code_timeout)
 
     def _raise_phone_send_failed(reason: str):
         # 统一上报接码 provider，令本地号池/第三方 provider 能把当前号标失败。
@@ -6362,7 +6383,7 @@ def _do_add_phone_attempt(
         except RuntimeError as exc:
             message = str(exc)
             if "timeout" in message.lower() or "超时" in message:
-                raise RuntimeError(f"{PHONE_CODE_TIMEOUT_SENTINEL}: 等待短信验证码超过 {PHONE_CODE_TIMEOUT_SECONDS}s") from exc
+                raise RuntimeError(f"{PHONE_CODE_TIMEOUT_SENTINEL}: 等待短信验证码超过 {phone_code_timeout}s") from exc
             raise
         if not sms_code:
             raise RuntimeError(f"{PHONE_CODE_TIMEOUT_SENTINEL}: 未获取到短信验证码")
