@@ -95,10 +95,14 @@ class Scheduler:
                         summary_updates = {"checked_at": _utcnow_iso(), "valid": valid}
                         if hasattr(plugin, "get_last_check_overview"):
                             summary_updates.update(plugin.get_last_check_overview() or {})
+                        credential_updates = {}
+                        if hasattr(plugin, "get_last_check_credentials"):
+                            credential_updates.update(plugin.get_last_check_credentials() or {})
                         patch_account_graph(
                             s,
                             a,
                             summary_updates=summary_updates,
+                            credential_updates=credential_updates or None,
                         )
                         s.add(a)
                         s.commit()

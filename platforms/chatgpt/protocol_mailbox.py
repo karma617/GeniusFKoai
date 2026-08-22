@@ -293,6 +293,7 @@ class ChatGPTProtocolMailboxWorker:
         proxy_url: str | None = None,
 
         log_fn: Callable[[str], None] = print,
+        region_code: str = "",
         initial_before_ids: set | None = None,
         skip_post_register_oauth: bool = False,
         k12_workspace_ids: str = "",
@@ -312,6 +313,7 @@ class ChatGPTProtocolMailboxWorker:
         self.proxy_url = proxy_url
 
         self.log_fn = log_fn
+        self.region_code = str(region_code or "").strip().upper()
         self.skip_post_register_oauth = skip_post_register_oauth
         self.k12_workspace_ids = k12_workspace_ids
         self.remote_upload_enabled = remote_upload_enabled
@@ -340,6 +342,8 @@ class ChatGPTProtocolMailboxWorker:
 
             callback_logger=log_fn,
 
+            region_code=self.region_code,
+
         )
         self.engine.k12_join_enabled = self.skip_post_register_oauth
         self.engine.k12_workspace_ids = self.k12_workspace_ids
@@ -360,24 +364,24 @@ class ChatGPTProtocolMailboxWorker:
 
 
     def run(self, *, email: str, password: str):
-
         self.engine.email = email
-
         self.engine.password = password
+        try:
+            latest_runner = getattr(self.engine, "run_chatgpt_register_latest", None)
+            if callable(latest_runner):
+                result = latest_runner()
+            else:
+                result = self.engine.run()
 
-        latest_runner = getattr(self.engine, "run_chatgpt_register_latest", None)
-        if callable(latest_runner):
-            result = latest_runner()
-        else:
-            result = self.engine.run()
+            if not result or not result.success:
+                raise RuntimeError(result.error_message if result else "注册失败")
 
-        if not result or not result.success:
-            raise RuntimeError(result.error_message if result else "??????")
+            if self.skip_post_register_oauth and result.success:
+                self._run_k12_flow(result)
 
-        if self.skip_post_register_oauth and result and result.success:
-            self._run_k12_flow(result)
-
-        return result
+            return result
+        finally:
+            self.engine.close()
 
     def _run_k12_flow(self, result):
         """K12 强入空间流程：注册成功后跳过接码/支付，加入 workspace 后先导出 session。"""

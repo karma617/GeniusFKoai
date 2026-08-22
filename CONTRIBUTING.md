@@ -10,18 +10,6 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## 运行测试
-
-```bash
-pytest
-```
-
-运行单个测试文件：
-
-```bash
-pytest tests/test_api_health.py -v
-```
-
 ## 提交规范
 
 使用 [Conventional Commits](https://www.conventionalcommits.org/)：
@@ -40,7 +28,6 @@ pytest tests/test_api_health.py -v
 3. 实现 `protocol_mailbox.py`（协议模式注册逻辑）
 4. 可选：实现 `browser_register.py` 和 `browser_oauth.py`
 5. 在 `resources/platform_capabilities.json` 中添加平台能力声明
-6. 添加对应的测试
 
 ## 代码风格
 

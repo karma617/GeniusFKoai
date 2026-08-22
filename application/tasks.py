@@ -75,7 +75,7 @@ CHATGPT_TRIAL_LABEL = "试用"
 MOMO_TRIAL_LABEL = "MOMO试用"
 CHATGPT_RELOGIN_REQUIRED_STATUS = "relogin_required"
 CHATGPT_FREE_PLUS_CAMPAIGN_ID = "plus-1-month-free"
-CHATGPT_ACCOUNTS_CHECK_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=-480"
+CHATGPT_ACCOUNTS_CHECK_BASE_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 CHATGPT_TRIAL_CHECK_MAX_ATTEMPTS = 3
 CHATGPT_TRIAL_CHECK_BACKGROUND_CONCURRENCY = 2
 _CHATGPT_TRIAL_CHECK_EXECUTOR = ThreadPoolExecutor(
@@ -2470,17 +2470,13 @@ def _is_local_proxy_url(value: Any) -> bool:
 
 
 def _chatgpt_trial_check_request_kwargs(proxy: str | None) -> dict[str, Any]:
-    from core.http_client import _normalize_runtime_proxy_url, _proxy_curl_options
-    from core.proxy_pool import get_proxy_runtime_config, normalize_proxy_url
+    from core.http_client import _normalize_runtime_proxy_url
+    from core.proxy_pool import normalize_proxy_url
 
     request_kwargs: dict[str, Any] = {}
     proxy_url = _normalize_runtime_proxy_url(normalize_proxy_url(proxy) or proxy)
     if proxy_url:
         request_kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
-        if not _is_local_proxy_url(proxy_url):
-            curl_options = _proxy_curl_options(get_proxy_runtime_config().get("upstream_url", ""))
-            if curl_options:
-                request_kwargs["curl_options"] = curl_options
     return request_kwargs
 
 
@@ -2494,11 +2490,27 @@ def _inspect_chatgpt_free_plus_trial(
 ) -> dict[str, Any]:
     from curl_cffi import requests as cffi_requests
 
+    from platforms.chatgpt.register import LATEST_CHATGPT_FIREFOX_USER_AGENT, build_chatgpt_protocol_profile
+
+    account_extra = dict(getattr(account, "extra", {}) or {})
+    account_overview = dict(account_extra.get("account_overview") or {})
+    region_code = str(
+        account_extra.get("registration_ip_country_code")
+        or account_overview.get("registration_ip_country_code")
+        or getattr(account, "region", "")
+        or ""
+    ).strip().upper()
+    protocol_profile = build_chatgpt_protocol_profile(region_code=region_code, proxy_url=proxy)
+    accounts_check_url = (
+        f"{CHATGPT_ACCOUNTS_CHECK_BASE_URL}?timezone_offset_min="
+        f"{protocol_profile.timezone_offset_min}"
+    )
+
     access_token = _extract_chatgpt_access_token(account)
     if not access_token:
         return {
             "ok": False,
-            "url": CHATGPT_ACCOUNTS_CHECK_URL,
+            "url": accounts_check_url,
             "eligible": False,
             "error": "缺少 access_token，无法查询免费 Plus 试用权益",
         }
@@ -2506,7 +2518,9 @@ def _inspect_chatgpt_free_plus_trial(
     headers = {
         "authorization": f"Bearer {access_token}",
         "accept": "application/json",
-        "oai-language": "zh-CN",
+        "accept-language": protocol_profile.accept_language,
+        "oai-language": protocol_profile.language,
+        "user-agent": LATEST_CHATGPT_FIREFOX_USER_AGENT,
         "sec-fetch-site": "same-origin",
         "sec-fetch-mode": "cors",
         "sec-fetch-dest": "empty",
@@ -2523,10 +2537,10 @@ def _inspect_chatgpt_free_plus_trial(
     for attempt in range(1, attempts + 1):
         try:
             response = cffi_requests.get(
-                CHATGPT_ACCOUNTS_CHECK_URL,
+                accounts_check_url,
                 headers=headers,
                 timeout=timeout,
-                impersonate="chrome124",
+                impersonate="firefox135",
                 **request_kwargs,
             )
             status_code = int(getattr(response, "status_code", 0) or 0)
@@ -2543,7 +2557,7 @@ def _inspect_chatgpt_free_plus_trial(
                     continue
                 return {
                     "ok": False,
-                    "url": CHATGPT_ACCOUNTS_CHECK_URL,
+                    "url": accounts_check_url,
                     "status_code": status_code,
                     "eligible": False,
                     "attempts": attempt,
@@ -2554,7 +2568,7 @@ def _inspect_chatgpt_free_plus_trial(
             if not isinstance(data, dict):
                 return {
                     "ok": False,
-                    "url": CHATGPT_ACCOUNTS_CHECK_URL,
+                    "url": accounts_check_url,
                     "status_code": status_code,
                     "eligible": False,
                     "attempts": attempt,
@@ -2577,7 +2591,7 @@ def _inspect_chatgpt_free_plus_trial(
                 continue
             return {
                 "ok": False,
-                "url": CHATGPT_ACCOUNTS_CHECK_URL,
+                "url": accounts_check_url,
                 "status_code": 0,
                 "eligible": False,
                 "attempts": attempt,
@@ -2587,7 +2601,7 @@ def _inspect_chatgpt_free_plus_trial(
     else:
         return {
             "ok": False,
-            "url": CHATGPT_ACCOUNTS_CHECK_URL,
+            "url": accounts_check_url,
             "status_code": 0,
             "eligible": False,
             "attempts": attempts,
@@ -2601,7 +2615,7 @@ def _inspect_chatgpt_free_plus_trial(
     duration = metadata.get("duration") if isinstance(metadata.get("duration"), dict) else {}
     return {
         "ok": True,
-        "url": CHATGPT_ACCOUNTS_CHECK_URL,
+        "url": accounts_check_url,
         "status_code": status_code,
         "eligible": bool(campaign),
         "attempts": attempt,
@@ -2707,7 +2721,22 @@ def _run_chatgpt_trial_post_register_check(
 ) -> bool:
     if str(getattr(account, "platform", "") or "").strip().lower() != "chatgpt":
         return False
-    logger.log(f"  [试用] 请求权益接口: {CHATGPT_ACCOUNTS_CHECK_URL}")
+    from platforms.chatgpt.register import build_chatgpt_protocol_profile
+
+    account_extra = dict(getattr(account, "extra", {}) or {})
+    account_overview = dict(account_extra.get("account_overview") or {})
+    region_code = str(
+        account_extra.get("registration_ip_country_code")
+        or account_overview.get("registration_ip_country_code")
+        or getattr(account, "region", "")
+        or ""
+    ).strip().upper()
+    trial_profile = build_chatgpt_protocol_profile(region_code=region_code, proxy_url=proxy)
+    trial_url = f"{CHATGPT_ACCOUNTS_CHECK_BASE_URL}?timezone_offset_min={trial_profile.timezone_offset_min}"
+    logger.log(
+        f"  [试用] 请求权益接口: {trial_url} "
+        f"profile={trial_profile.country_code}/{trial_profile.language}/{trial_profile.timezone_name}"
+    )
 
     def _log_trial_check_retry(attempt: int, total: int, delay: float, error: str) -> None:
         logger.log(
@@ -3547,6 +3576,10 @@ def _run_single_account_check(account_id: int, logger: TaskLogger | None = None)
 
                 summary_updates.update(plugin.get_last_check_overview() or {})
 
+            credential_updates = {}
+            if hasattr(plugin, "get_last_check_credentials"):
+                credential_updates.update(plugin.get_last_check_credentials() or {})
+
             lifecycle_status = None
 
             if valid:
@@ -3580,6 +3613,8 @@ def _run_single_account_check(account_id: int, logger: TaskLogger | None = None)
                 lifecycle_status=lifecycle_status,
 
                 summary_updates=summary_updates,
+
+                credential_updates=credential_updates or None,
 
             )
 
@@ -3797,6 +3832,7 @@ def _run_single_chatgpt_health_check(
 
         attempts = max(int(CHATGPT_HEALTH_CHECK_NETWORK_RETRIES or 0), 0) + 1
         state: dict[str, Any] | None = None
+        previous_exit_ip = ""
         for attempt in range(1, attempts + 1):
             proxy = _resolve_probe_proxy(retry=attempt > 1)
             try:
@@ -3809,6 +3845,7 @@ def _run_single_chatgpt_health_check(
                     chatgpt_account_id=chatgpt_account_id,
                     existing_extra=extra,
                     force_usage=True,
+                    previous_exit_ip=previous_exit_ip,
                 )
             except Exception as exc:
                 error_text = f"{exc.__class__.__name__}: {exc}"
@@ -3831,6 +3868,7 @@ def _run_single_chatgpt_health_check(
 
             if not isinstance(state, dict):
                 raise ValueError("账号状态/订阅响应格式异常")
+            previous_exit_ip = str(state.get("probe_exit_ip") or previous_exit_ip).strip()
             if bool(state.get("valid")):
                 break
             retry_error = _chatgpt_health_state_error(state)
@@ -3853,8 +3891,9 @@ def _run_single_chatgpt_health_check(
                         pass
                 delay = min(1.5 * attempt, 5.0)
                 if logger:
+                    retry_label = "403 换出口 IP重试" if retry_status_code == 403 else "测活网络错误"
                     logger.log(
-                        f"{account.email}: 测活网络错误第 {attempt}/{attempts} 次: {retry_error_text[:240]}，{delay:g}s 后重试",
+                        f"{account.email}: {retry_label}第 {attempt}/{attempts} 次: {retry_error_text[:240]}，{delay:g}s 后重试",
                         level="warning",
                     )
                 time.sleep(delay)
@@ -4396,11 +4435,44 @@ def _is_get_rt_balance_error(message: Any) -> bool:
 
 
 
+def _is_get_rt_proxy_pool_required_error(message: Any) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    return "get_rt_proxy_pool_required" in text or "请使用代理池ip" in text
+
+
+def _is_get_rt_phone_verification_retry_error(message: Any) -> bool:
+    text = str(message or "").strip().lower()
+    if not text:
+        return False
+    if "get_rt_phone_verification_rate_limit" in text:
+        return True
+    if "too many phone verification requests" in text:
+        return True
+    return "rate_limit_exceeded" in text and any(
+        marker in text
+        for marker in (
+            "phone verification",
+            "phone_number",
+            "phone number",
+            "add_phone",
+            "add-phone",
+            "phone-otp",
+            "phone otp",
+        )
+    )
+
+
 def _is_get_rt_sms_provider_switch_error(message: Any) -> bool:
     if _is_get_rt_balance_error(message):
         return True
     text = str(message or "").strip().lower()
     if not text:
+        return False
+    if _is_get_rt_phone_verification_retry_error(text):
+        return False
+    if _is_get_rt_proxy_pool_required_error(text):
         return False
     if "codex_sms_pool_exhausted" in text or "codex_sms_pool_blocked" in text:
         return True
@@ -4609,6 +4681,8 @@ def _is_get_rt_login_restart_error(message: Any) -> bool:
 
 
 def _is_get_rt_target_recoverable_error(message: Any) -> bool:
+    if _is_get_rt_proxy_pool_required_error(message):
+        return False
     if _is_get_rt_sms_provider_switch_error(message):
         return False
     if _is_get_rt_email_login_cooldown_error(message):
@@ -6826,6 +6900,15 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     f"ChatGPT register: using SMS provider={candidate_provider} "
                     f"({current_register_sms_index + 1}/{len(register_sms_candidates)})"
                 )
+        if platform_name == "chatgpt":
+            registration_proxy = _extract_chatgpt_proxy_registration_region(resolved_proxy)
+            registration_region = str(registration_proxy.get("registration_ip_country_code") or "").strip().upper()
+            if registration_region:
+                payload_extra = dict(_build_payload.get("extra") or {})
+                payload_extra["registration_proxy_region"] = registration_region
+                _build_payload["extra"] = payload_extra
+                logger.log(f"WEB协议环境地区: {registration_region}（语言/时区/价格地区同步）")
+
         try:
 
             platform = _build_platform_instance(platform_name, _build_payload, logger, resolved_proxy=resolved_proxy, shared_mailbox=shared_mailbox)
@@ -8189,6 +8272,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     results: list[dict[str, Any] | None] = [None] * total
 
     target_success_ids: set[int] = set()
+    stop_for_proxy_pool_required = False
 
 
 
@@ -8370,25 +8454,47 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
                 )
 
-            result = runtime.execute_action(
+            command = type("Command", (), {
 
-                type("Command", (), {
+                "platform": "chatgpt",
 
-                    "platform": "chatgpt",
+                "account_id": account_id,
 
-                    "account_id": account_id,
+                "action_id": "get_rt",
 
-                    "action_id": "get_rt",
+                "params": command_params,
 
-                    "params": command_params,
+            })()
+            result = None
+            for action_attempt in range(1, 3):
+                result = runtime.execute_action(
 
-                })(),
+                    command,
 
-                log_fn=logger.log,
+                    log_fn=logger.log,
 
-                cancel_check=logger.is_cancel_requested,
+                    cancel_check=logger.is_cancel_requested,
 
-            )
+                )
+                login_restart_error = _is_get_rt_login_restart_error(result.error)
+                phone_rate_limit_error = _is_get_rt_phone_verification_retry_error(result.error)
+                if result.ok or not (login_restart_error or phone_rate_limit_error) or action_attempt >= 2:
+                    break
+                if phone_rate_limit_error:
+                    logger.log(
+                        f"[{index + 1}/{total}] 获取rt: 手机验证请求过多，当前手机号已释放，"
+                        f"重新租用代理IP和手机号后重试完整授权 ({action_attempt + 1}/2)",
+                        level="warning",
+                    )
+                else:
+                    logger.log(
+                        f"[{index + 1}/{total}] 获取rt: 登录 session 失效，释放当前代理后重试完整授权 "
+                        f"({action_attempt + 1}/2)",
+                        level="warning",
+                    )
+                if logger.is_cancel_requested():
+                    break
+                time.sleep(1)
 
             if result.ok:
 
@@ -8449,8 +8555,12 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             else:
 
                 error = str(result.error or "unknown error")
+                proxy_pool_required_error = _is_get_rt_proxy_pool_required_error(error)
 
-                logger.log(f"[{index + 1}/{total}] 获取rt失败 #{account_id}: {error}", level="error")
+                if proxy_pool_required_error:
+                    logger.log(f"[{index + 1}/{total}] 获取rt失败 #{account_id}: 请使用代理池IP", level="error")
+                else:
+                    logger.log(f"[{index + 1}/{total}] 获取rt失败 #{account_id}: {error}", level="error")
 
                 return {
 
@@ -8466,19 +8576,25 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
                     "sms_balance_error": _is_get_rt_balance_error(error),
 
-                    "sms_provider_switch_error": _is_get_rt_sms_provider_switch_error(error),
+                    "sms_provider_switch_error": False if proxy_pool_required_error else _is_get_rt_sms_provider_switch_error(error),
 
-                    "recoverable_error": _is_get_rt_target_recoverable_error(error),
+                    "recoverable_error": False if proxy_pool_required_error else _is_get_rt_target_recoverable_error(error),
 
-                    "hard_error": _is_get_rt_hard_retry_error(error),
+                    "hard_error": proxy_pool_required_error or _is_get_rt_hard_retry_error(error),
+
+                    "proxy_pool_required_error": proxy_pool_required_error,
 
                 }
 
         except Exception as exc:
 
             error = str(exc)
+            proxy_pool_required_error = _is_get_rt_proxy_pool_required_error(error)
 
-            logger.log(f"[{index + 1}/{total}] 获取rt异常 #{account_id}: {error}", level="error")
+            if proxy_pool_required_error:
+                logger.log(f"[{index + 1}/{total}] 获取rt失败 #{account_id}: 请使用代理池IP", level="error")
+            else:
+                logger.log(f"[{index + 1}/{total}] 获取rt异常 #{account_id}: {error}", level="error")
 
             return {
 
@@ -8494,11 +8610,13 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
                 "sms_balance_error": _is_get_rt_balance_error(error),
 
-                "sms_provider_switch_error": _is_get_rt_sms_provider_switch_error(error),
+                "sms_provider_switch_error": False if proxy_pool_required_error else _is_get_rt_sms_provider_switch_error(error),
 
-                "recoverable_error": _is_get_rt_target_recoverable_error(error),
+                "recoverable_error": False if proxy_pool_required_error else _is_get_rt_target_recoverable_error(error),
 
-                "hard_error": _is_get_rt_hard_retry_error(error),
+                "hard_error": proxy_pool_required_error or _is_get_rt_hard_retry_error(error),
+
+                "proxy_pool_required_error": proxy_pool_required_error,
 
             }
 
@@ -8509,6 +8627,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
 
     def run_single_pass(pending_indices: list[int], *, progress_on_finished: bool) -> tuple[list[dict[str, Any]], bool]:
+        nonlocal stop_for_proxy_pool_required
         completed_in_pass = 0
         pass_results: list[dict[str, Any]] = []
         stop_pass_for_login_restart = False
@@ -8520,6 +8639,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 and len(future_map) < concurrency
                 and not logger.is_cancel_requested()
                 and not stop_pass_for_login_restart
+                and not stop_for_proxy_pool_required
             ):
                 account_index = pending_indices[next_index]
                 future = pool.submit(run_one, account_index, ids[account_index])
@@ -8557,9 +8677,11 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
                     if task_mode == "target":
 
+                        account_id_value = int(item.get("account_id") or 0)
+
                         if item.get("final_ok"):
 
-                            target_success_ids.add(int(item.get("account_id") or 0))
+                            target_success_ids.add(account_id_value)
 
                         logger.set_progress(len(target_success_ids), total)
 
@@ -8567,6 +8689,10 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                         completed_in_pass += 1
                         done_count = sum(1 for result_item in results if result_item is not None)
                         logger.set_progress(done_count, total)
+                    if item.get("proxy_pool_required_error") or _is_get_rt_proxy_pool_required_error(item.get("error")):
+                        if not stop_for_proxy_pool_required:
+                            logger.log("获取rt: 当前未使用代理池IP触发手机验证限制，请使用代理池IP，已终止后续账号", level="error")
+                        stop_for_proxy_pool_required = True
                     if task_mode == "target" and _is_get_rt_login_restart_error(item.get("error")):
                         stop_pass_for_login_restart = True
                         logger.log(
@@ -8580,6 +8706,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     and len(future_map) < concurrency
                     and not logger.is_cancel_requested()
                     and not stop_pass_for_login_restart
+                    and not stop_for_proxy_pool_required
                 ):
                     account_index = pending_indices[next_index]
                     future = pool.submit(run_one, account_index, ids[account_index])
@@ -8659,7 +8786,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
             pending_indices = list(range(total))
 
-            while pending_indices and not logger.is_cancel_requested():
+            while pending_indices and not logger.is_cancel_requested() and not stop_for_proxy_pool_required:
 
                 logger.log(
 
@@ -8863,6 +8990,7 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         "results": final_results,
 
         "task_mode": task_mode,
+        "proxy_pool_required": stop_for_proxy_pool_required,
         "sms_balance_action": sms_balance_action,
     }
 
@@ -8893,6 +9021,12 @@ def _execute_get_rt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     else:
 
         logger.set_progress(len(final_results), total)
+
+    if stop_for_proxy_pool_required:
+
+        logger.finish(TASK_STATUS_FAILED, error="请使用代理池IP")
+
+        return
 
     logger.finish(final_status)
 

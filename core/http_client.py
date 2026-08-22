@@ -114,12 +114,10 @@ def build_cffi_proxy_request_kwargs(
     proxy = _normalize_runtime_proxy_url(proxy_url)
     if not proxy:
         return {}
-    kwargs: dict[str, Any] = {"proxies": {"http": proxy, "https": proxy}}
-    if not _is_local_runtime_proxy_url(proxy):
-        curl_options = _proxy_curl_options(proxy_upstream_url)
-        if curl_options:
-            kwargs["curl_options"] = curl_options
-    return kwargs
+    # curl_cffi 只接受 curl_options 作为 Session 初始化参数，不能
+    # 传给 Session.request()/get()/post()。直接请求调用方统一只接收代理；
+    # HTTPClient 会在创建 Session 时配置 PRE_PROXY。
+    return {"proxies": {"http": proxy, "https": proxy}}
 
 
 def _normalize_runtime_proxy_url(value: str | None) -> str:
@@ -203,6 +201,9 @@ class HTTPClient:
         Raises:
             HTTPClientError: 请求失败
         """
+        # curl_cffi 0.15 的 Session.request() 不支持 curl_options。
+        # 兼容旧调用方/热加载残留，禁止该参数进入单次请求。
+        kwargs.pop("curl_options", None)
         # 设置默认参数
         kwargs.setdefault("timeout", self.config.timeout)
         kwargs.setdefault("allow_redirects", self.config.follow_redirects)

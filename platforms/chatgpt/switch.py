@@ -674,27 +674,66 @@ def get_codex_desktop_state() -> dict:
     return state
 
 
-def _fetch_profile(access_token: str, proxy: str | None = None) -> tuple[bool, dict]:
+def _fetch_profile(
+    access_token: str,
+    proxy: str | None = None,
+    *,
+    previous_exit_ip: str = "",
+) -> tuple[bool, dict, str]:
+    """Fetch the profile through one fresh chatgpt.com connection.
+
+    A rotating gateway can retain the same gateway URL while changing its exit IP
+    per TCP connection. Keeping the trace and profile request in one new session
+    lets a 403 retry prove that the request itself uses a different exit IP.
+    """
     if not access_token:
-        return False, {}
+        return False, {}, ""
+    session = None
     try:
-        response = curl_requests.get(
+        session = curl_requests.Session(impersonate="chrome124")
+        request_kwargs = _build_proxy_request_kwargs(proxy)
+        trace = session.get(
+            "https://chatgpt.com/cdn-cgi/trace",
+            headers={"connection": "keep-alive"},
+            timeout=20,
+            **request_kwargs,
+        )
+        exit_ip = ""
+        if trace.status_code == 200:
+            for line in str(trace.text or "").splitlines():
+                if line.startswith("ip="):
+                    exit_ip = line.split("=", 1)[1].strip()
+                    break
+        if previous_exit_ip and exit_ip == previous_exit_ip:
+            return False, {
+                "status_code": 0,
+                "error": "代理未轮换出口 IP",
+                "previous_exit_ip": previous_exit_ip,
+                "exit_ip": exit_ip,
+            }, exit_ip
+        response = session.get(
             "https://chatgpt.com/backend-api/me",
             headers={
                 "authorization": f"Bearer {access_token}",
                 "accept": "application/json",
                 "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+                "connection": "keep-alive",
             },
             timeout=20,
-            impersonate="chrome124",
-            **_build_proxy_request_kwargs(proxy),
+            **request_kwargs,
         )
         if response.status_code == 200:
-            return True, response.json()
-        return False, {"status_code": response.status_code, "body": response.text[:400]}
+            return True, response.json(), exit_ip
+        return False, {"status_code": response.status_code, "body": response.text[:400]}, exit_ip
     except Exception as exc:
-        return False, {"error": str(exc)}
+        return False, {"error": str(exc)}, ""
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
 
 
 def fetch_chatgpt_account_state(
@@ -706,6 +745,7 @@ def fetch_chatgpt_account_state(
     chatgpt_account_id: str = "",
     existing_extra: dict[str, Any] | None = None,
     force_usage: bool = True,
+    previous_exit_ip: str = "",
 ) -> dict:
     state = {
         "platform": "chatgpt",
@@ -744,10 +784,22 @@ def fetch_chatgpt_account_state(
         _refresh_access_from_session()
 
     if resolved_access:
-        ok, profile = _fetch_profile(resolved_access, proxy=proxy)
+        ok, profile, exit_ip = _fetch_profile(
+            resolved_access,
+            proxy=proxy,
+            previous_exit_ip=previous_exit_ip,
+        )
+        if exit_ip:
+            state["probe_exit_ip"] = exit_ip
         if not ok and resolved_session and not token_refresh_attempted:
             if _refresh_access_from_session():
-                ok, profile = _fetch_profile(resolved_access, proxy=proxy)
+                ok, profile, exit_ip = _fetch_profile(
+                    resolved_access,
+                    proxy=proxy,
+                    previous_exit_ip=previous_exit_ip,
+                )
+                if exit_ip:
+                    state["probe_exit_ip"] = exit_ip
         state["valid"] = ok
         if ok:
             state["profile"] = profile

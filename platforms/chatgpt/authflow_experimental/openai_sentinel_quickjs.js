@@ -1,10 +1,29 @@
-const EXPOSE_PATCH = "return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.token=ye,t}({});";
-const EXPOSE_REPLACEMENT =
-  "return o?r?.[n(63)]?ce({so:o,c:r[n(63)]},t):o:null},t.__debug_setSessionObserver=se,t.token=ye,t.__debug_n=_n,t.__debug_bindProof=D,t}({});";
-const INSTANCE_PATCH = "var P=new _;";
-const INSTANCE_REPLACEMENT = "var P=new _;globalThis.__debugP=P;";
 const SDK_GLOBAL_PATCH = "var SentinelSDK=";
 const SDK_GLOBAL_REPLACEMENT = "globalThis.SentinelSDK=";
+
+let runtimeControls = null;
+let sentinelRuntimeInitialized = false;
+let sentinelSdkApi = null;
+
+function discoverSdkInternals(sdk) {
+  const bindMatch = sdk.match(
+    /const\s+([A-Za-z_$][\w$]*)=new WeakMap;[\s\S]{0,600}?function\s+([A-Za-z_$][\w$]*)\(t,n\)\{[^{}]{0,160}?\1[^{}]{0,160}?\(t,n\)\}/,
+  );
+  const turnstileMatch = sdk.match(/\.dx\?await\s+([A-Za-z_$][\w$]*)\(/);
+  const observerMatch = sdk.match(
+    /function\s+([A-Za-z_$][\w$]*)\(t,n\)\{[^{}]{0,500}sessionObserverCollectorActive/,
+  );
+  const exportMatch = sdk.match(/,t\.token=([A-Za-z_$][\w$]*),t\}\(\{\}\);\s*$/);
+  if (!bindMatch || !turnstileMatch || !observerMatch || !exportMatch) {
+    throw new Error("unsupported Sentinel SDK layout");
+  }
+  return {
+    bindProof: bindMatch[2],
+    solveTurnstile: turnstileMatch[1],
+    setSessionObserver: observerMatch[1],
+    tokenExport: exportMatch[1],
+  };
+}
 
 function bytesToBase64(bytes) {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -96,23 +115,24 @@ function createStorage(seed) {
 
 function createCookieJar(initialCookie) {
   const values = new Map();
-  for (const part of String(initialCookie || "").split(";")) {
-    const text = part.trim();
-    if (!text) continue;
-    const idx = text.indexOf("=");
-    if (idx <= 0) continue;
-    values.set(text.slice(0, idx).trim(), text.slice(idx + 1).trim());
-  }
+  const merge = (cookieHeader) => {
+    for (const part of String(cookieHeader || "").split(";")) {
+      const text = part.trim();
+      if (!text) continue;
+      const idx = text.indexOf("=");
+      if (idx <= 0) continue;
+      values.set(text.slice(0, idx).trim(), text.slice(idx + 1).trim());
+    }
+  };
+  merge(initialCookie);
   return {
     get cookie() {
       return Array.from(values.entries()).map(([key, value]) => `${key}=${value}`).join("; ");
     },
     set cookie(value) {
-      const text = String(value || "").split(";", 1)[0].trim();
-      const idx = text.indexOf("=");
-      if (idx <= 0) return;
-      values.set(text.slice(0, idx).trim(), text.slice(idx + 1).trim());
+      merge(String(value || "").split(";", 1)[0]);
     },
+    merge,
     get(name) {
       return values.get(String(name || "")) || "";
     },
@@ -307,7 +327,7 @@ function installRuntime(payload) {
     compatMode: "CSS1Compat",
     contentType: "text/html",
     scripts,
-    currentScript: { src: sdkUrl, getAttribute(name) { return String(name || "").toLowerCase() === "src" ? sdkUrl : null; } },
+    currentScript: { src: sdkUrl, getAttribute(name) { return String(name || "").toLowerCase() === "src" ? String(this.src || "") : null; } },
     documentElement,
     body,
     head,
@@ -411,15 +431,17 @@ function installRuntime(payload) {
     return result;
   };
 
-  const performanceBase = Number(payload.performance_now || 3500);
-  let performanceTick = 0;
+  let performanceValue = Number(payload.performance_now || 3500);
   const performance = {
     now: () => {
-      performanceTick += 1 + Math.random() * 25;
-      return performanceBase + performanceTick;
+      performanceValue += 1 + Math.random() * 25;
+      return performanceValue;
+    },
+    setBase(value) {
+      const next = Number(value || 0);
+      if (Number.isFinite(next) && next > performanceValue) performanceValue = next;
     },
     timeOrigin: Number(payload.time_origin || 1710000000000),
-    memory: { jsHeapSizeLimit: Number(payload.js_heap_size_limit || 4294967296) },
     getEntries() {
       return [];
     },
@@ -814,6 +836,20 @@ function installRuntime(payload) {
     throw new Error("fetch should not be called");
   });
 
+  if (!isFirefox) {
+    performance.memory = { jsHeapSizeLimit: Number(payload.js_heap_size_limit || 4294967296) };
+  }
+  const timezoneDisplayName = String(payload.timezone_display_name || "").trim();
+  if (timezoneDisplayName && globalThis.Date && globalThis.Date.prototype) {
+    const nativeDateToString = globalThis.Date.prototype.toString;
+    globalThis.Date.prototype.toString = makeNativeFunction("toString", function toString() {
+      const value = nativeDateToString.call(this);
+      return value.replace(/\s*\([^)]*\)$/, ` (${timezoneDisplayName})`);
+    });
+  }
+
+  runtimeControls = { cookieJar, document, location, performance };
+
   const randomFill = (arr) => {
     for (let i = 0; i < arr.length; i += 1) {
       arr[i] = Math.floor(Math.random() * 256);
@@ -828,19 +864,64 @@ function installRuntime(payload) {
   });
 }
 
+function updateRuntime(payload) {
+  if (!runtimeControls) return;
+  const controls = runtimeControls;
+  controls.cookieJar.merge(payload.document_cookie || "");
+  controls.performance.setBase(payload.performance_now);
+  const sdkUrl = String(payload.sdk_url || "").trim();
+  if (sdkUrl && controls.document.currentScript) controls.document.currentScript.src = sdkUrl;
+  const pageUrl = String(payload.page_url || "").trim();
+  if (pageUrl) {
+    const match = pageUrl.match(/^(https?:)\/\/([^\/]+)(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i);
+    const origin = match ? `${match[1]}//${match[2]}` : "https://auth.openai.com";
+    controls.location.href = pageUrl;
+    controls.location.origin = origin;
+    controls.location.pathname = match && match[3] ? match[3] : "/";
+    controls.location.search = match && match[4] ? match[4] : "";
+    controls.document.URL = pageUrl;
+    controls.document.baseURI = pageUrl;
+    controls.document.domain = match ? match[2] : "auth.openai.com";
+    if (payload.referrer) controls.document.referrer = String(payload.referrer);
+    globalThis.origin = origin;
+  }
+}
+
 function loadPatchedSdk(sdkSource) {
   let sdk = String(sdkSource || "");
+  const internals = discoverSdkInternals(sdk);
   sdk = sdk.replace(SDK_GLOBAL_PATCH, SDK_GLOBAL_REPLACEMENT);
-  sdk = sdk.replace(INSTANCE_PATCH, INSTANCE_REPLACEMENT);
-  sdk = sdk.replace(EXPOSE_PATCH, EXPOSE_REPLACEMENT);
+  sdk = sdk.replace(
+    /var\s+([A-Za-z_$][\w$]*)=new\s+([A-Za-z_$][\w$]*);/g,
+    (statement, instanceName) =>
+      `${statement}globalThis.__sentinelInstances=(globalThis.__sentinelInstances||[]);globalThis.__sentinelInstances.push(${instanceName});`,
+  );
+  sdk = sdk.replace(
+    /,t\.token=([A-Za-z_$][\w$]*),t\}\(\{\}\);\s*$/,
+    `,t.__debug_setSessionObserver=${internals.setSessionObserver},t.token=${internals.tokenExport},t.__debug_n=${internals.solveTurnstile},t.__debug_bindProof=${internals.bindProof},t}({});`,
+  );
   eval(sdk);
+  sentinelSdkApi = globalThis.SentinelSDK;
+  globalThis.__debugP = (globalThis.__sentinelInstances || []).find(
+    (candidate) =>
+      candidate &&
+      typeof candidate.getRequirementsToken === "function" &&
+      typeof candidate.getEnforcementToken === "function",
+  );
+  if (!globalThis.__debugP) throw new Error("Sentinel SDK requirements instance not found");
   hideGlobal("SentinelSDK");
   hideGlobal("__debugP");
+  hideGlobal("__sentinelInstances");
 }
 
 async function run(payload, sdkSource) {
-  installRuntime(payload);
-  loadPatchedSdk(sdkSource);
+  if (!sentinelRuntimeInitialized) {
+    installRuntime(payload);
+    loadPatchedSdk(sdkSource);
+    sentinelRuntimeInitialized = true;
+  } else {
+    updateRuntime(payload);
+  }
 
   if (payload.action === "requirements") {
     const requestP = await globalThis.__debugP.getRequirementsToken();
@@ -852,18 +933,18 @@ async function run(payload, sdkSource) {
     const requestP = String(payload.request_p || "").trim();
     if (!requestP) throw new Error("missing request_p");
     const finalP = await globalThis.__debugP.getEnforcementToken(challenge);
-    globalThis.SentinelSDK.__debug_bindProof(challenge, requestP);
+    sentinelSdkApi.__debug_bindProof(challenge, requestP);
     const dx = challenge && challenge.turnstile ? challenge.turnstile.dx : null;
-    const tValue = dx ? await globalThis.SentinelSDK.__debug_n(challenge, dx) : null;
+    const tValue = dx ? await sentinelSdkApi.__debug_n(challenge, dx) : null;
     let soToken = "";
     try {
       const flow = String(payload.flow || "authorize_continue");
       if (
-        typeof globalThis.SentinelSDK.__debug_setSessionObserver === "function" &&
-        typeof globalThis.SentinelSDK.sessionObserverToken === "function"
+        typeof sentinelSdkApi.__debug_setSessionObserver === "function" &&
+        typeof sentinelSdkApi.sessionObserverToken === "function"
       ) {
-        globalThis.SentinelSDK.__debug_setSessionObserver(flow, challenge);
-        soToken = await globalThis.SentinelSDK.sessionObserverToken(flow) || "";
+        sentinelSdkApi.__debug_setSessionObserver(flow, challenge);
+        soToken = await sentinelSdkApi.sessionObserverToken(flow) || "";
       }
     } catch {
       soToken = "";
@@ -874,21 +955,26 @@ async function run(payload, sdkSource) {
   throw new Error(`unsupported action: ${payload.action}`);
 }
 
-(async () => {
-  try {
-    const payload = JSON.parse(String(globalThis.__payload_json || "{}"));
-    const sdkSource = String(globalThis.__sdk_source || "");
-    const result = await run(payload, sdkSource);
-    globalThis.__vm_output_json = JSON.stringify(result);
-  } catch (error) {
-    const detail = {
-      name: error && error.name ? String(error.name) : "Error",
-      message: error && error.message ? String(error.message) : String(error),
-      stack: error && error.stack ? String(error.stack) : String(error),
-    };
-    const message = `${detail.name}: ${detail.message}\n${detail.stack}`;
-    globalThis.__vm_error = message;
-  } finally {
-    globalThis.__vm_done = true;
-  }
-})();
+globalThis.__sentinel_worker_execute = (payload) => run(payload, String(globalThis.__sdk_source || ""));
+
+if (!globalThis.__sentinel_worker_mode) {
+  (async () => {
+    try {
+      const payload = JSON.parse(String(globalThis.__payload_json || "{}"));
+      const sdkSource = String(globalThis.__sdk_source || "");
+      const result = await run(payload, sdkSource);
+      globalThis.__vm_output_json = JSON.stringify(result);
+    } catch (error) {
+      const detail = {
+        name: error && error.name ? String(error.name) : "Error",
+        message: error && error.message ? String(error.message) : String(error),
+        stack: error && error.stack ? String(error.stack) : String(error),
+      };
+      const message = `${detail.name}: ${detail.message}\n${detail.stack}`;
+      globalThis.__vm_error = message;
+    } finally {
+      globalThis.__vm_done = true;
+    }
+  })();
+
+}

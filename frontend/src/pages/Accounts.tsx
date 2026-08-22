@@ -25,6 +25,16 @@ const STATUS_VARIANT: Record<string, any> = {
 const platformActionsCache = new Map<string, any[]>()
 const platformActionsPromiseCache = new Map<string, Promise<any[]>>()
 const CHATGPT_K12_WORKSPACE_IDS_STORAGE_KEY = 'accounts.chatgpt.k12WorkspaceIds'
+const GOPAY_REGISTER_FORM_STORAGE_KEY = 'accounts.gopay.registerForm'
+
+const GOPAY_SMS_PROVIDER_OPTIONS = [
+  { value: 'herosms', label: 'HeroSMS', country: '6', service: 'ni', apiKeyField: 'herosms_api_key' },
+  { value: 'smsbower', label: 'SMSBower', country: '6', service: 'ni', apiKeyField: 'smsbower_api_key' },
+  { value: 'smspool', label: 'SMSPool', country: '9', service: '392', apiKeyField: 'smspool_api_key' },
+  { value: 'smsapi', label: 'SmsApi（自有固定号）', country: '', service: 'gopay', apiKeyField: '' },
+] as const
+
+type GopaySmsProvider = typeof GOPAY_SMS_PROVIDER_OPTIONS[number]['value']
 
 const BROWSER_MODE_OPTIONS = [
   { value: 'camoufox_headed', label: 'Camoufox Headed' },
@@ -1310,6 +1320,32 @@ function writeStoredChatgptK12WorkspaceIds(value: string) {
   }
 }
 
+function readStoredGopayRegisterForm(): Record<string, any> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(GOPAY_REGISTER_FORM_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function getProviderSettingValues(setting: any): Record<string, any> {
+  return {
+    ...(setting?.config || {}),
+    ...(setting?.auth || {}),
+  }
+}
+
+function normalizeGopaySmsProvider(value: any): GopaySmsProvider {
+  const key = String(value || '').trim().toLowerCase()
+  if (key.includes('smsbower')) return 'smsbower'
+  if (key.includes('smspool') || key.includes('sms_pool')) return 'smspool'
+  if (key === 'smsapi' || key === 'sms_api') return 'smsapi'
+  return 'herosms'
+}
+
 // ── 注册弹框 ────────────────────────────────────────────────
 function RegisterModal({
   platform,
@@ -1335,10 +1371,10 @@ function RegisterModal({
     oauth_provider_options: [],
   })
   const [configLoading, setConfigLoading] = useState(true)
-  const [regCount, setRegCount] = useState(1)
+  const [regCount, setRegCount] = useState(() => platform === 'gopay' ? Math.max(Number(readStoredGopayRegisterForm().count || 1), 1) : 1)
   const [registerCountMode, setRegisterCountMode] = useState<RegisterCountMode>('child')
   const [registerCountNotice, setRegisterCountNotice] = useState('')
-  const [concurrency, setConcurrency] = useState(1)
+  const [concurrency, setConcurrency] = useState(() => platform === 'gopay' ? Math.max(Number(readStoredGopayRegisterForm().concurrency || 1), 1) : 1)
   // chatgpt 平台特定：注册成功后自动获取支付链接能力保留；当前仅前端隐藏入口。
   const [autoPaymentLink] = useState(false)
   const [remoteUploadEnabled, setRemoteUploadEnabled] = useState(false)
@@ -1358,14 +1394,19 @@ function RegisterModal({
   const [gmailAliasUsage, setGmailAliasUsage] = useState<GmailApiCodeAliasUsage | null>(null)
   const [gmailAliasUsageLoading, setGmailAliasUsageLoading] = useState(false)
   const [gmailAliasUsageError, setGmailAliasUsageError] = useState('')
-  // GoPay 专属：PIN（6 位数字）、Hero-SMS API key、注册代理。仅当
-  // platform === 'gopay' 时显示，未填时后端走环境变量回退。
-  const [gopayPin, setGopayPin] = useState('147258')
-  const [gopayApiKey, setGopayApiKey] = useState('')
-  const [gopayProxy, setGopayProxy] = useState('')
-  // Hero-SMS getNumber 价格上限（USD，小数）。0.011 ≈ 175 IDR，对 GoPay
-  // service=ni 完全够，0 表示不限。
-  const [gopayMaxPrice, setGopayMaxPrice] = useState('0.011')
+  // GoPay 注册草稿按浏览器保存，重新打开弹窗或刷新页面后恢复。
+  const [gopaySmsProvider, setGopaySmsProvider] = useState<GopaySmsProvider>(() =>
+    normalizeGopaySmsProvider(readStoredGopayRegisterForm().sms_provider || 'herosms'),
+  )
+  const [gopaySmsApiKeys, setGopaySmsApiKeys] = useState<Record<string, string>>(() => {
+    const stored = readStoredGopayRegisterForm().sms_api_keys
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
+  })
+  const [gopayPin, setGopayPin] = useState(() => String(readStoredGopayRegisterForm().pin || '147258'))
+  const [gopayProxy, setGopayProxy] = useState(() => String(readStoredGopayRegisterForm().proxy || ''))
+  const [gopayMaxPrice, setGopayMaxPrice] = useState(() => String(readStoredGopayRegisterForm().max_price || '0.011'))
+  const [gopaySmsapiPhone, setGopaySmsapiPhone] = useState(() => String(readStoredGopayRegisterForm().smsapi_phone || ''))
+  const [gopaySmsapiUrl, setGopaySmsapiUrl] = useState(() => String(readStoredGopayRegisterForm().smsapi_url || ''))
   const [selection, setSelection] = useState({
     identityProvider: '',
     oauthProvider: '',
@@ -1390,6 +1431,39 @@ function RegisterModal({
     option.identityProvider === selection.identityProvider && option.oauthProvider === selection.oauthProvider,
   )
   const selectedExecutor = executorOptions.find(option => option.value === selection.executorType)
+  const enabledGopaySmsSettings = (configOptions.sms_settings || []).filter((item: any) => item?.enabled)
+  const configuredGopaySmsOptions = GOPAY_SMS_PROVIDER_OPTIONS.filter(option => {
+    if (enabledGopaySmsSettings.length === 0) return true
+    return enabledGopaySmsSettings.some((item: any) => normalizeGopaySmsProvider(item.provider_key) === option.value)
+  })
+  const gopaySmsProviderOptions = configuredGopaySmsOptions.length > 0
+    ? configuredGopaySmsOptions
+    : GOPAY_SMS_PROVIDER_OPTIONS
+  const selectedGopaySms = GOPAY_SMS_PROVIDER_OPTIONS.find(option => option.value === gopaySmsProvider) || GOPAY_SMS_PROVIDER_OPTIONS[0]
+  const selectedGopaySmsApiKey = String(gopaySmsApiKeys[gopaySmsProvider] || '')
+
+  useEffect(() => {
+    if (platform !== 'gopay') return
+    if (!gopaySmsProviderOptions.some(option => option.value === gopaySmsProvider)) {
+      setGopaySmsProvider(gopaySmsProviderOptions[0]?.value || 'herosms')
+      return
+    }
+    const setting = enabledGopaySmsSettings.find((item: any) => normalizeGopaySmsProvider(item.provider_key) === gopaySmsProvider)
+    if (!setting) return
+    const values = getProviderSettingValues(setting)
+    const keyField = selectedGopaySms.apiKeyField
+    if (keyField && !gopaySmsApiKeys[gopaySmsProvider] && values[keyField]) {
+      setGopaySmsApiKeys(current => ({ ...current, [gopaySmsProvider]: String(values[keyField]) }))
+    }
+    const configuredPrice = values[gopaySmsProvider + '_max_price'] || values[gopaySmsProvider + '_max_price_usd']
+    if (configuredPrice && gopayMaxPrice === '0.011') {
+      setGopayMaxPrice(String(configuredPrice))
+    }
+    if (gopaySmsProvider === 'smsapi') {
+      if (!gopaySmsapiPhone && values.smsapi_phone) setGopaySmsapiPhone(String(values.smsapi_phone))
+      if (!gopaySmsapiUrl && values.smsapi_url) setGopaySmsapiUrl(String(values.smsapi_url))
+    }
+  }, [platform, gopaySmsProvider, gopaySmsApiKeys, gopayMaxPrice, gopaySmsapiPhone, gopaySmsapiUrl, configOptions.sms_settings])
 
   useEffect(() => {
     let active = true
@@ -1424,6 +1498,25 @@ function RegisterModal({
       })
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    if (platform !== 'gopay' || typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(GOPAY_REGISTER_FORM_STORAGE_KEY, JSON.stringify({
+        sms_provider: gopaySmsProvider,
+        sms_api_keys: gopaySmsApiKeys,
+        pin: gopayPin,
+        proxy: gopayProxy,
+        max_price: gopayMaxPrice,
+        smsapi_phone: gopaySmsapiPhone,
+        smsapi_url: gopaySmsapiUrl,
+        count: regCount,
+        concurrency,
+      }))
+    } catch {
+      // Ignore browsers that block localStorage.
+    }
+  }, [platform, gopaySmsProvider, gopaySmsApiKeys, gopayPin, gopayProxy, gopayMaxPrice, gopaySmsapiPhone, gopaySmsapiUrl, regCount, concurrency])
 
   useEffect(() => {
     if (platform !== 'chatgpt') return
@@ -1627,20 +1720,42 @@ function RegisterModal({
         }
         extra.mail_provider = defaultMailboxProvider.provider_key
       }
-      // GoPay 专属：手机号接码注册需要 PIN / API key / 代理
+      // GoPay 专属：渠道决定对应的 GoPay country/service，避免服务码错配。
       if (platform === 'gopay') {
-        if (!gopayApiKey.trim()) {
-          throw new Error('GoPay 注册必须填写 Hero-SMS API key')
-        }
         if (!/^\d{6}$/.test(gopayPin.trim())) {
           throw new Error('GoPay PIN 必须是 6 位数字')
         }
-        extra.herosms_api_key = gopayApiKey.trim()
+        extra.sms_provider = gopaySmsProvider
         extra.gopay_pin = gopayPin.trim()
+        extra.gopay_sms_country = selectedGopaySms.country
+        extra.gopay_sms_service = selectedGopaySms.service
         if (gopayProxy.trim()) extra.gopay_proxy = gopayProxy.trim()
-        // maxPrice 走 Hero-SMS getNumber 参数，单位 USD，0/空表示不限
-        const mp = parseFloat((gopayMaxPrice || '').trim())
-        if (!isNaN(mp) && mp >= 0) extra.herosms_max_price_usd = mp
+        if (gopaySmsProvider === 'smsapi') {
+          if (!gopaySmsapiPhone.trim() || !gopaySmsapiUrl.trim()) {
+            throw new Error('SmsApi 注册必须填写固定手机号和短信查询 URL')
+          }
+          extra.smsapi_phone = gopaySmsapiPhone.trim()
+          extra.smsapi_url = gopaySmsapiUrl.trim()
+        } else {
+          if (!selectedGopaySmsApiKey.trim()) {
+            throw new Error(selectedGopaySms.label + ' 注册必须填写 API key，或在设置页配置对应平台')
+          }
+          extra[selectedGopaySms.apiKeyField] = selectedGopaySmsApiKey.trim()
+          const mp = parseFloat((gopayMaxPrice || '').trim())
+          if (!isNaN(mp) && mp >= 0) {
+            if (gopaySmsProvider === 'smspool') extra.smspool_max_price = mp
+            else if (gopaySmsProvider === 'smsbower') extra.smsbower_max_price = mp
+            else extra.herosms_max_price_usd = mp
+          }
+          if (gopaySmsProvider === 'smspool') {
+            extra.smspool_country = selectedGopaySms.country
+            extra.smspool_service = selectedGopaySms.service
+          }
+          if (gopaySmsProvider === 'smsbower') {
+            extra.smsbower_country = selectedGopaySms.country
+            extra.smsbower_service = selectedGopaySms.service
+          }
+        }
       }
       // chatgpt + 勾选"注册完后获取支付链接"：注册成功后自动调
       // payment_link action 生成 cashier_url 并写回账号 extra。
@@ -1995,20 +2110,66 @@ function RegisterModal({
                   </div>
                 )}
 
-                {/* GoPay 专属：手机号接码 + PIN + 代理（platform === 'gopay'） */}
+                {/* GoPay 专属：接码平台下拉 + 固定 GoPay 服务码 */}
                 {platform === 'gopay' && (
                   <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3 space-y-3">
                     <div className="text-sm font-medium text-[var(--text-primary)]">GoPay 注册参数</div>
-                    <div>
-                      <label className="text-xs text-[var(--text-muted)] block mb-1">Hero-SMS API key（必填）</label>
-                      <input
-                        type="text"
-                        value={gopayApiKey}
-                        onChange={(e) => setGopayApiKey(e.target.value)}
-                        placeholder="herosms 接码平台 API key"
-                        className="control-surface control-surface-compact w-full"
-                      />
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div>
+                        <label className="text-xs text-[var(--text-muted)] block mb-1">接码平台</label>
+                        <select
+                          value={gopaySmsProvider}
+                          onChange={(e) => setGopaySmsProvider(e.target.value as GopaySmsProvider)}
+                          className="control-surface control-surface-compact w-full"
+                        >
+                          {gopaySmsProviderOptions.map(option => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-[var(--text-muted)] block mb-1">GoPay 固定服务</label>
+                        <div className="control-surface control-surface-compact flex w-full items-center justify-between text-sm">
+                          <span>{selectedGopaySms.service || '固定手机号查询'}</span>
+                          <span className="text-xs text-[var(--text-muted)]">国家 {selectedGopaySms.country || '自有固定号'}</span>
+                        </div>
+                      </div>
                     </div>
+                    {gopaySmsProvider === 'smsapi' ? (
+                      <>
+                        <div>
+                          <label className="text-xs text-[var(--text-muted)] block mb-1">固定手机号（必填）</label>
+                          <textarea
+                            value={gopaySmsapiPhone}
+                            onChange={(e) => setGopaySmsapiPhone(e.target.value)}
+                            rows={2}
+                            placeholder="+628xxxxxxxxx"
+                            className="control-surface control-surface-compact w-full resize-y"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-[var(--text-muted)] block mb-1">短信查询 URL（必填）</label>
+                          <input
+                            type="text"
+                            value={gopaySmsapiUrl}
+                            onChange={(e) => setGopaySmsapiUrl(e.target.value)}
+                            placeholder="https://example.com/api/sms"
+                            className="control-surface control-surface-compact w-full"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div>
+                        <label className="text-xs text-[var(--text-muted)] block mb-1">{selectedGopaySms.label} API key（必填）</label>
+                        <input
+                          type="text"
+                          value={selectedGopaySmsApiKey}
+                          onChange={(e) => setGopaySmsApiKeys(current => ({ ...current, [gopaySmsProvider]: e.target.value }))}
+                          placeholder={selectedGopaySms.label + ' API key'}
+                          className="control-surface control-surface-compact w-full"
+                        />
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="text-xs text-[var(--text-muted)] block mb-1">PIN（6 位数字）</label>
@@ -2043,7 +2204,7 @@ function RegisterModal({
                       />
                     </div>
                     <div className="text-xs text-[var(--text-muted)]">
-                      留空时分别回退到环境变量 OPAI_HEROSMS_API_KEY / OPAI_GOPAY_DEFAULT_PIN / OPAI_GOPAY_REGISTER_PROXY / OPAI_HEROSMS_MAX_PRICE_USD。maxPrice 设 0 不限价。
+                      平台切换后自动使用对应的 GoPay 服务码；API key、PIN、代理和价格上限会自动保存，下次打开继续使用。
                     </div>
                   </div>
                 )}

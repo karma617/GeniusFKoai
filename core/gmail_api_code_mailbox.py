@@ -421,8 +421,10 @@ class GmailApiCodeMailbox(BaseMailbox):
         return text[:limit]
 
     @classmethod
-    def _expand_html_body(cls, text: str) -> str:
+    def _expand_html_body(cls, text: str, _depth: int = 0) -> str:
         value = str(text or "")
+        if _depth > 4:
+            return value
         decoded_parts: list[str] = []
         data_uris: list[str] = []
         for match in re.finditer(
@@ -442,6 +444,24 @@ class GmailApiCodeMailbox(BaseMailbox):
             decoded = cls._decode_data_uri(uri)
             if decoded:
                 decoded_parts.append(decoded)
+        # iframe srcdoc 属性值：其中的 HTML 已被转义（&lt; &gt; &quot; &amp;），
+        # 展开后可继续走 data URI / 嵌套 srcdoc / 正文提取流程。
+        seen_srcdocs: set[str] = set()
+        for match in re.finditer(
+            r"""srcdoc\s*=\s*(["'])(.*?)(\1)""",
+            value,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            doc = match.group(2)
+            for _ in range(4):
+                unescaped = html.unescape(doc)
+                if unescaped == doc:
+                    break
+                doc = unescaped
+            if doc in seen_srcdocs:
+                continue
+            seen_srcdocs.add(doc)
+            decoded_parts.append(cls._expand_html_body(doc, _depth + 1))
         if decoded_parts:
             return " ".join(decoded_parts) + " " + value
         return value
@@ -485,6 +505,9 @@ class GmailApiCodeMailbox(BaseMailbox):
                 r"""data-id\s*=\s*["'](\d+)["']""",
                 r"""/messages?/(\d+)/""",
                 r"""id\s*=\s*["']mail-(\d+)["']""",
+                r"""data-(?:message|mail)-id\s*=\s*["'](\d+)["']""",
+                r"""[?&](?:message_id|msg_id|messageId)=(\d+)""",
+                r"""id\s*=\s*["']message-(\d+)["']""",
             ):
                 match = re.search(pattern, source, flags=re.IGNORECASE)
                 if match:
@@ -638,6 +661,7 @@ class GmailApiCodeMailbox(BaseMailbox):
             r"(?is)enter this temporary verification code[^\d]{0,100}(\d{6})(?!\d)",
             r"(?is)security code[^\d]{0,80}(\d{6})(?!\d)",
             r"(?is)验证码[^\d]{0,80}(\d{6})(?!\d)",
+            r"(?is)确认码[^\d]{0,80}(\d{6})(?!\d)",
         )
         for raw_pattern in contextual_patterns:
             match = re.search(raw_pattern, plain)

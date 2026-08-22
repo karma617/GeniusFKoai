@@ -160,9 +160,13 @@ def check_accounts_validity(
                     summary_updates = {"checked_at": _utcnow_iso(), "valid": valid}
                     if hasattr(plugin, "get_last_check_overview"):
                         summary_updates.update(plugin.get_last_check_overview() or {})
+                    credential_updates = {}
+                    if hasattr(plugin, "get_last_check_credentials"):
+                        credential_updates.update(plugin.get_last_check_credentials() or {})
                     patch_account_graph(
                         session, model,
                         summary_updates=summary_updates,
+                        credential_updates=credential_updates or None,
                     )
                     session.add(model)
                     session.commit()
@@ -214,10 +218,6 @@ def refresh_expiring_tokens(
             results["skipped"] += 1
             continue
 
-        if not str(acc.password or "").strip():
-            results["skipped"] += 1
-            continue
-
         try:
             from domain.actions import ActionExecutionCommand
             from infrastructure.accounts_repository import AccountsRepository
@@ -227,7 +227,7 @@ def refresh_expiring_tokens(
                 ActionExecutionCommand(
                     platform="chatgpt",
                     account_id=int(acc.id or 0),
-                    action_id="refresh_session",
+                    action_id="refresh_token",
                     params={},
                 ),
                 log_fn=log,
@@ -387,46 +387,57 @@ def refresh_and_sync_cpa(
             results["skipped"] += 1
             continue
 
-        credentials = {
-            c["key"]: c["value"]
-            for c in (graph.get("credentials") or [])
-            if c.get("scope") == "platform"
-        }
         session_token = credentials.get("session_token", "")
-        if not session_token:
+        oauth_refresh_token = credentials.get("refresh_token") or credentials.get("registration_refresh_token", "")
+        if not (session_token or oauth_refresh_token):
             results["skipped"] += 1
             continue
 
         try:
-            # 1. 用 session_token 刷新 access_token
+            # WEB 协议优先使用 NextAuth session；ANDROID 协议使用 OAuth RT。
             proxy = credentials.get("proxy", None)
-            s = cffi_requests.Session(impersonate="chrome120", proxy=proxy)
-            s.cookies.set("__Secure-next-auth.session-token", session_token,
-                          domain=".chatgpt.com", path="/")
-            resp = s.get("https://chatgpt.com/api/auth/session",
-                         headers={"accept": "application/json"}, timeout=30)
+            data = {}
+            new_session = session_token
+            credential_updates = {}
+            if session_token:
+                s = cffi_requests.Session(impersonate="chrome120", proxy=proxy)
+                s.cookies.set("__Secure-next-auth.session-token", session_token,
+                              domain=".chatgpt.com", path="/")
+                resp = s.get("https://chatgpt.com/api/auth/session",
+                             headers={"accept": "application/json"}, timeout=30)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"session 刷新失败 HTTP {resp.status_code}")
+                data = resp.json()
+                access_token = data.get("accessToken", "")
+                new_session = s.cookies.get("__Secure-next-auth.session-token") or session_token
+                if new_session != session_token:
+                    credential_updates["session_token"] = new_session
+            else:
+                from platforms.chatgpt.token_refresh import TokenRefreshManager
+                class _A:
+                    pass
+                refresh_account = _A()
+                refresh_account.email = acc.email
+                refresh_account.access_token = credentials.get("access_token", "")
+                refresh_account.refresh_token = oauth_refresh_token
+                refresh_account.session_token = ""
+                refresh_account.cookies = credentials.get("cookies", "")
+                refresh_account.client_id = credentials.get("client_id", "")
+                refreshed = TokenRefreshManager(proxy_url=proxy).refresh_account(refresh_account)
+                if not refreshed.success:
+                    raise RuntimeError(refreshed.error_message or "OAuth RT 刷新失败")
+                access_token = refreshed.access_token
+                if refreshed.refresh_token:
+                    credential_updates["refresh_token"] = refreshed.refresh_token
 
-            if resp.status_code != 200:
-                log(f"  ✗ {acc.email}: session 刷新失败 HTTP {resp.status_code}")
-                results["error"] += 1
-                continue
-
-            data = resp.json()
-            access_token = data.get("accessToken", "")
             if not access_token:
-                log(f"  ✗ {acc.email}: 无 accessToken")
-                results["error"] += 1
-                continue
+                raise RuntimeError("刷新未返回 accessToken")
 
             results["refreshed"] += 1
-
-            # 更新 credential
-            new_session = s.cookies.get("__Secure-next-auth.session-token") or session_token
-            credential_updates = {"access_token": access_token}
-            if new_session != session_token:
-                credential_updates["session_token"] = new_session
-            # id_token = access_token (NextAuth 没有独立 id_token)
-            credential_updates["id_token"] = access_token
+            credential_updates["access_token"] = access_token
+            if session_token:
+                # id_token = access_token (NextAuth 没有独立 id_token)
+                credential_updates["id_token"] = access_token
 
             with Session(engine) as sess:
                 model = sess.get(AccountModel, acc.id)
@@ -473,18 +484,39 @@ def refresh_and_sync_cpa(
                             sess.add(model)
                             sess.commit()
                     continue
-                log(f"  ✗ {acc.email}: 已封禁 ({check_resp.status_code}: {err_detail})")
-                results["dead"] += 1
-                with Session(engine) as sess:
-                    model = sess.get(AccountModel, acc.id)
-                    if model:
-                        patch_account_graph(
-                            sess, model,
-                            lifecycle_status=AccountStatus.INVALID.value,
-                            summary_updates={"deactivated_at": _utcnow_iso(), "deactivated_reason": err_detail},
-                        )
-                        sess.add(model)
-                        sess.commit()
+                hard_dead_markers = (
+                    "account_deactivated", "deleted", "disabled", "suspended", "banned",
+                )
+                hard_dead = any(marker in err_detail.lower() for marker in hard_dead_markers)
+                if hard_dead:
+                    log(f"  ✗ {acc.email}: 账号已注销/封禁 ({check_resp.status_code}: {err_detail})")
+                    results["dead"] += 1
+                    with Session(engine) as sess:
+                        model = sess.get(AccountModel, acc.id)
+                        if model:
+                            patch_account_graph(
+                                sess, model,
+                                lifecycle_status=AccountStatus.INVALID.value,
+                                summary_updates={"deactivated_at": _utcnow_iso(), "deactivated_reason": err_detail},
+                            )
+                            sess.add(model)
+                            sess.commit()
+                else:
+                    log(f"  ↷ {acc.email}: 测活暂时失败，保留当前状态 ({check_resp.status_code}: {err_detail})")
+                    results["error"] += 1
+                    with Session(engine) as sess:
+                        model = sess.get(AccountModel, acc.id)
+                        if model:
+                            patch_account_graph(
+                                sess,
+                                model,
+                                summary_updates={
+                                    "checked_at": _utcnow_iso(),
+                                    "check_error": f"/backend-api/me HTTP {check_resp.status_code}: {err_detail}",
+                                },
+                            )
+                            sess.add(model)
+                            sess.commit()
                 continue
 
             # 3. 上传到 CPA

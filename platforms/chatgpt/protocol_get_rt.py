@@ -24,7 +24,11 @@ class _GetRtMailboxEmailService:
         return {"email": self._email, "service_id": self._email, "token": self._email}
 
     def get_verification_code(self, email=None, email_id=None, timeout=120, pattern=None, otp_sent_at=None):
-        return self._otp_callback()
+        return self._otp_callback(
+            timeout=timeout,
+            pattern=pattern,
+            otp_sent_at=otp_sent_at,
+        )
 
     def update_status(self, success, error=None):
         return None
@@ -326,6 +330,12 @@ def _login_cooldown_error(stage: str, detail: str = "") -> RuntimeError:
     return RuntimeError(f"GET_RT_EMAIL_LOGIN_COOLDOWN: {stage}{suffix}")
 
 
+def _wait_before_authorize_retry(log_fn: Callable[[str], None], delay_seconds: int = 5) -> None:
+    delay = max(1, int(delay_seconds or 5))
+    log_fn(f"  获取rt(协议): authorize 重试退避 {delay}s，等待 Cloudflare/登录状态稳定")
+    time.sleep(delay)
+
+
 def _is_login_restart_required_text(text: str) -> bool:
     value = str(text or "").lower()
     if not value:
@@ -334,6 +344,8 @@ def _is_login_restart_required_text(text: str) -> bool:
         marker in value
         for marker in (
             "invalid_state",
+            "invalid_auth_step",
+            "invalid authorization step",
             "sign-in session is no longer valid",
             "session is no longer valid",
             "please start over",
@@ -396,6 +408,33 @@ def _is_retryable_phone_send_failure_text(text: str) -> bool:
     )
 
 
+def _is_phone_verification_rate_limit_text(text: str) -> bool:
+    value = str(text or "").lower()
+    if not value:
+        return False
+    if "too many phone verification requests" in value:
+        return True
+    if "made too many phone verification requests" in value:
+        return True
+    return "rate_limit_exceeded" in value and (
+        "phone verification" in value
+        or "phone_number" in value
+        or "phone number" in value
+        or "add_phone" in value
+        or "add-phone" in value
+    )
+
+
+def _phone_verification_rate_limit_error(stage: str, detail: str = "") -> RuntimeError:
+    suffix = f": {detail}" if detail else ""
+    return RuntimeError(f"GET_RT_PHONE_VERIFICATION_RATE_LIMIT: {stage}{suffix}")
+
+
+def _proxy_pool_required_error(stage: str, detail: str = "") -> RuntimeError:
+    suffix = f": {detail}" if detail else ""
+    return RuntimeError(f"GET_RT_PROXY_POOL_REQUIRED: 请使用代理池IP: {stage}{suffix}")
+
+
 def _send_passwordless_login_otp(
     *,
     session,
@@ -444,6 +483,34 @@ def _complete_mfa_challenge_if_needed(
     return next_payload if isinstance(next_payload, dict) else {}
 
 
+def _activate_add_phone_step(
+    *,
+    session,
+    engine: RegistrationEngine,
+    continue_url: str,
+    referer: str,
+    log_fn: Callable[[str], None],
+) -> str:
+    """Navigate to the post-MFA add-phone page before submitting a number."""
+    add_phone_url = _normalize_auth_url(continue_url, base_url=OPENAI_AUTH)
+    if not add_phone_url:
+        add_phone_url = f"{OPENAI_AUTH}/add-phone"
+    response = session.get(
+        add_phone_url,
+        headers=engine._platform_nav_headers(referer=referer),
+        allow_redirects=True,
+        timeout=30,
+    )
+    status = int(getattr(response, "status_code", 0) or 0)
+    final_url = str(getattr(response, "url", "") or add_phone_url)
+    log_fn(f"  获取rt(协议): add_phone 页面激活 -> {status} url={_short_url(final_url)}")
+    _log_response_debug(log_fn, "add_phone activate", response)
+    detail = _continue_error_message(response)
+    if status >= 400 or _is_login_restart_required_text(detail):
+        raise _login_restart_required_error("add-phone/activate", detail or f"HTTP {status}")
+    return final_url
+
+
 def run_protocol_get_rt(
     *,
     email: str,
@@ -466,6 +533,7 @@ def run_protocol_get_rt(
     phone_change_limit: int = 10,
     phone_code_timeout: int = 60,
     totp_secret: str = "",
+    proxy_from_pool: bool = False,
 ) -> dict[str, Any]:
     email_service = _GetRtMailboxEmailService(otp_callback, log_fn=log_fn, email=email)
     engine = RegistrationEngine(
@@ -522,6 +590,7 @@ def run_protocol_get_rt(
     _log_response_debug(log_fn, "authorize/continue", continue_resp)
     if continue_resp.status_code == 409 and engine._is_invalid_state_response(continue_resp):
         log_fn("  获取rt(协议): authorize/continue invalid_state，重建 authorize + sentinel 后重试")
+        _wait_before_authorize_retry(log_fn)
         auth_resp = session.get(oauth_start.auth_url, timeout=30, allow_redirects=True)
         _log_response_debug(log_fn, "authorize retry", auth_resp)
         sentinel_header = engine._build_sentinel_header_for_client(client, device_id, "authorize_continue")
@@ -623,6 +692,13 @@ def run_protocol_get_rt(
     next_page = _extract_page_type(oauth_payload) or str(((otp_data.get("page") or {}).get("type")) or page_type or "")
     phone_callback_obj = phone_callback
     if next_page == "add_phone":
+        _activate_add_phone_step(
+            session=session,
+            engine=engine,
+            continue_url=oauth_continue_url,
+            referer=oauth_referer,
+            log_fn=log_fn,
+        )
         if phone_callback_obj is None and sms_provider:
             phone_callback_obj, phone_error = build_get_rt_phone_callback(
                 sms_provider=sms_provider,
@@ -706,6 +782,26 @@ def run_protocol_get_rt(
                 )
                 raise _login_restart_required_error("add-phone/send", last_send_error)
 
+            if _is_phone_verification_rate_limit_text(send_detail_text):
+                last_send_error = send_detail_text[:240]
+                try:
+                    if hasattr(phone_callback_obj, "mark_send_failed"):
+                        phone_callback_obj.mark_send_failed(last_send_error)
+                except Exception:
+                    pass
+                if not proxy_from_pool:
+                    log_fn(
+                        "  获取rt(协议): add_phone 触发手机验证频率限制，当前未使用代理池IP，终止任务: 请使用代理池IP "
+                        f"attempt={attempt} detail={last_send_error}"
+                    )
+                    raise _proxy_pool_required_error("add-phone/send", last_send_error)
+                log_fn(
+                    "  获取rt(协议): add_phone 触发手机验证频率限制，已释放当前手机号，"
+                    "本次授权退出后更换代理IP并重新租用手机号 "
+                    f"attempt={attempt} detail={last_send_error}"
+                )
+                raise _phone_verification_rate_limit_error("add-phone/send", last_send_error)
+
             if _is_retryable_phone_send_failure_text(send_detail_text):
                 last_send_error = send_detail_text[:240]
                 try:
@@ -744,17 +840,11 @@ def run_protocol_get_rt(
                             phone_callback_obj.mark_send_failed(last_send_error)
                     except Exception:
                         pass
-                    if "超时" in last_send_error or "timeout" in last_send_error.lower():
-                        log_fn(
-                            f"  获取rt(协议): 等待手机验证码超过 {phone_code_timeout}s，"
-                            f"已释放当前手机号并切换下一个 attempt={attempt} detail={last_send_error}"
-                        )
-                    else:
-                        log_fn(
-                            "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u83b7\u53d6\u5931\u8d25\uff0c"
-                            f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt} detail={last_send_error}"
-                        )
-                    continue
+                    log_fn(
+                        f"  获取rt(协议): phone OTP 获取失败，已释放当前手机号；"
+                        f"当前授权已进入验证码步骤，将从头重新登录后换号 attempt={attempt} detail={last_send_error}"
+                    )
+                    raise _login_restart_required_error("phone-otp/wait", last_send_error)
                 if not code:
                     last_send_error = "empty phone otp"
                     try:
@@ -768,10 +858,10 @@ def run_protocol_get_rt(
                     except Exception:
                         pass
                     log_fn(
-                        "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u4e3a\u7a7a\uff0c"
-                        f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt}"
+                        "  获取rt(协议): phone OTP 为空，已释放当前手机号；"
+                        f"当前授权已进入验证码步骤，将从头重新登录后换号 attempt={attempt}"
                     )
-                    continue
+                    raise _login_restart_required_error("phone-otp/wait", last_send_error)
                 validate_headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/phone-verification")
                 validate_resp = _post_json(
                     session,
@@ -802,18 +892,25 @@ def run_protocol_get_rt(
                             f"\u5c06\u4ece\u5934\u91cd\u65b0\u767b\u5f55 detail={last_send_error}"
                         )
                         raise _login_restart_required_error("phone-otp/validate", last_send_error)
-                    if int(getattr(validate_resp, "status_code", 0) or 0) == 429:
-                        raise RuntimeError(f"GET_RT_PHONE_VERIFICATION_RATE_LIMIT: {last_send_error}")
+                    if int(getattr(validate_resp, "status_code", 0) or 0) == 429 or _is_phone_verification_rate_limit_text(validate_detail):
+                        try:
+                            if hasattr(phone_callback_obj, "mark_send_failed"):
+                                phone_callback_obj.mark_send_failed(last_send_error)
+                        except Exception:
+                            pass
+                        if not proxy_from_pool:
+                            raise _proxy_pool_required_error("phone-otp/validate", last_send_error)
+                        raise _phone_verification_rate_limit_error("phone-otp/validate", last_send_error)
                     try:
                         if hasattr(phone_callback_obj, "mark_send_failed"):
                             phone_callback_obj.mark_send_failed(last_send_error)
                     except Exception:
                         pass
                     log_fn(
-                        "  \u83b7\u53d6rt(\u534f\u8bae): phone OTP \u6821\u9a8c\u5931\u8d25\uff0c"
-                        f"\u4fdd\u6301\u5f53\u524d session \u6362\u53f7 attempt={attempt} detail={last_send_error}"
+                        "  获取rt(协议): phone OTP 校验失败，已释放当前手机号；"
+                        f"当前授权无法返回 add_phone，将从头重新登录后换号 attempt={attempt} detail={last_send_error}"
                     )
-                    continue
+                    raise _login_restart_required_error("phone-otp/validate", last_send_error)
                 phone_validate_data = _response_json(validate_resp)
                 phone_continue_url = _extract_continue_url_from_payload(phone_validate_data)
                 phone_page = _extract_page_type(phone_validate_data)

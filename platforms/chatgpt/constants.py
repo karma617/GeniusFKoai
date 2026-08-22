@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 # ============================================================================
@@ -100,42 +100,112 @@ def extract_sentinel_sdk_url(entry_script: str, *, entry_url: str = SENTINEL_ENT
     return ""
 
 
-def get_latest_sentinel_sdk_url(*, force: bool = False) -> str:
+def _session_sentinel_sdk_cache(session: Any) -> tuple[str, float]:
+    if session is None:
+        return "", 0.0
+    try:
+        return (
+            str(getattr(session, "_openai_sentinel_sdk_url", "") or ""),
+            float(getattr(session, "_openai_sentinel_sdk_expires_at", 0.0) or 0.0),
+        )
+    except Exception:
+        return "", 0.0
+
+
+def _set_session_sentinel_sdk_cache(session: Any, url: str, expires_at: float, source: str) -> None:
+    if session is None:
+        return
+    try:
+        setattr(session, "_openai_sentinel_sdk_url", str(url or ""))
+        setattr(session, "_openai_sentinel_sdk_expires_at", float(expires_at or 0.0))
+        setattr(session, "_openai_sentinel_sdk_source", str(source or ""))
+    except Exception:
+        pass
+
+
+def get_latest_sentinel_sdk_url(
+    *,
+    force: bool = False,
+    session: Any = None,
+    accept_language: str = "",
+    user_agent: str = "",
+    timeout: int = 10,
+) -> str:
     override_url = os.environ.get("SENTINEL_SDK_URL", "").strip()
     if override_url:
+        _set_session_sentinel_sdk_cache(session, override_url, time.time() + _SENTINEL_SDK_CACHE_TTL_SECONDS, "override")
         return override_url
     if _SENTINEL_SDK_VERSION_OVERRIDE:
+        _set_session_sentinel_sdk_cache(session, SENTINEL_SDK_URL, time.time() + _SENTINEL_SDK_CACHE_TTL_SECONDS, "version_override")
         return SENTINEL_SDK_URL
 
     now = time.time()
-    with _sentinel_sdk_cache_lock:
-        cached_url = str(_sentinel_sdk_cache.get("url") or "")
-        if not force and cached_url and float(_sentinel_sdk_cache.get("expires_at") or 0) > now:
+    if session is not None:
+        cached_url, expires_at = _session_sentinel_sdk_cache(session)
+        if not force and cached_url and expires_at > now:
             return cached_url
+    else:
+        with _sentinel_sdk_cache_lock:
+            cached_url = str(_sentinel_sdk_cache.get("url") or "")
+            if not force and cached_url and float(_sentinel_sdk_cache.get("expires_at") or 0) > now:
+                return cached_url
 
+    headers = {
+        "accept": "*/*",
+        "accept-language": str(accept_language or "en-US,en;q=0.5"),
+        "referer": "https://auth.openai.com/",
+        "sec-fetch-dest": "script",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-site": "same-site",
+        "user-agent": str(user_agent or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0"),
+    }
     try:
-        request = urllib.request.Request(
-            SENTINEL_ENTRY_SDK_URL,
-            headers={
-                "accept": "*/*",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            body = response.read(200000).decode("utf-8", errors="replace")
+        if session is not None:
+            response = session.get(SENTINEL_ENTRY_SDK_URL, headers=headers, timeout=max(int(timeout or 10), 1))
+            if int(getattr(response, "status_code", 0) or 0) != 200:
+                raise RuntimeError(f"sentinel entry sdk HTTP {getattr(response, 'status_code', 0)}")
+            body = str(getattr(response, "text", "") or "")[:200000]
+            source = "session_network"
+        else:
+            request = urllib.request.Request(SENTINEL_ENTRY_SDK_URL, headers=headers)
+            with urllib.request.urlopen(request, timeout=max(int(timeout or 10), 1)) as response:
+                body = response.read(200000).decode("utf-8", errors="replace")
+            source = "direct_network"
         resolved = extract_sentinel_sdk_url(body)
         if resolved:
+            expires_at = now + _SENTINEL_SDK_CACHE_TTL_SECONDS
+            _set_session_sentinel_sdk_cache(session, resolved, expires_at, source)
             with _sentinel_sdk_cache_lock:
                 _sentinel_sdk_cache["url"] = resolved
-                _sentinel_sdk_cache["expires_at"] = now + _SENTINEL_SDK_CACHE_TTL_SECONDS
+                _sentinel_sdk_cache["expires_at"] = expires_at
             return resolved
     except Exception:
         pass
+
+    with _sentinel_sdk_cache_lock:
+        cached_url = str(_sentinel_sdk_cache.get("url") or "")
+        if cached_url:
+            _set_session_sentinel_sdk_cache(session, cached_url, now + _SENTINEL_SDK_CACHE_TTL_SECONDS, "shared_cache")
+            return cached_url
+    _set_session_sentinel_sdk_cache(session, SENTINEL_SDK_URL, now + _SENTINEL_SDK_CACHE_TTL_SECONDS, "default")
     return SENTINEL_SDK_URL
 
 
-def get_latest_sentinel_frame_url(*, force: bool = False) -> str:
-    sdk_url = get_latest_sentinel_sdk_url(force=force)
+def get_latest_sentinel_frame_url(
+    *,
+    force: bool = False,
+    session: Any = None,
+    accept_language: str = "",
+    user_agent: str = "",
+    timeout: int = 10,
+) -> str:
+    sdk_url = get_latest_sentinel_sdk_url(
+        force=force,
+        session=session,
+        accept_language=accept_language,
+        user_agent=user_agent,
+        timeout=timeout,
+    )
     match = re.search(r"/sentinel/([^/]+)/sdk\.js$", sdk_url)
     if match:
         return f"{SENTINEL_BASE}/backend-api/sentinel/frame.html?sv={urllib.parse.quote(match.group(1), safe='')}"

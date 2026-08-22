@@ -1,4 +1,4 @@
-﻿# GeniusFKoai
+# GeniusFKoai
 
 <p align="center">
   <b>多平台 AI 账号自动注册与管理 · 协议化付款一键开通 奥特曼 Plus</b>
@@ -560,7 +560,6 @@ user@example.com----mail-password----client-id----refresh-token
 ├── services/               # 后台服务（Solver 进程管理 / 任务执行器）
 ├── customer_portal_api/    # C 端 / 管理端独立 API
 ├── electron/               # Electron 桌面端打包
-├── tests/                  # 测试
 └── frontend/               # React 前端
 ```
 

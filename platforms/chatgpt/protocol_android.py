@@ -28,9 +28,10 @@ SCOPES = (
     "openid email profile offline_access model.request model.read "
     "organization.read organization.write"
 )
-APP_VERSION = "1.2026.202"
+APP_VERSION = "1.2026.223"
+APP_BUILD = "2622307"
 APP_HASH = "zFKflHMWTnT"
-APP_USER_AGENT = "ChatGPT/1.2026.202 (Android 10; MIX 2S; build 2620225)"
+APP_USER_AGENT = "ChatGPT/1.2026.223 (Android 10; MIX 2S; build 2622307)"
 WEBVIEW_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 10; MIX 2S) "
     "AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -342,6 +343,8 @@ class ChatGPTAndroidProtocolWorker:
                 "source": "chatgpt_android_app_protocol",
                 "device_id": self.device_id,
                 "chatgpt_user_agent": APP_USER_AGENT,
+                "chatgpt_app_version": APP_VERSION,
+                "chatgpt_app_build": APP_BUILD,
                 "chatgpt_accept_language": "en-US",
                 "redirect_uri": REDIRECT_URI,
                 "cookies": "",

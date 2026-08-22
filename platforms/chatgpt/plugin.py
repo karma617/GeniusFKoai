@@ -12,7 +12,7 @@ from core.base_mailbox import BaseMailbox
 from core.registration import BrowserRegistrationAdapter, OtpSpec, ProtocolMailboxAdapter, ProtocolOAuthAdapter, RegistrationCapability, RegistrationResult
 from core.registration.helpers import resolve_timeout
 from core.registry import register
-from core.proxy_pool import get_proxy_runtime_config, proxy_pool, resolve_runtime_proxy
+from core.proxy_pool import get_proxy_runtime_config, normalize_proxy_url, proxy_pool, resolve_runtime_proxy
 from platforms._browser_backend import BrowserBackendConfig
 
 
@@ -170,6 +170,28 @@ def _save_get_rt_token_backup(account: Account, result: dict, *, action_label: s
     return str(backup_path)
 
 
+def _is_chatgpt_account_deactivated_error(message: str) -> bool:
+    return "account_deactivated" in str(message or "").lower()
+
+
+def _run_get_rt_protocol_with_restarts(run_once, *, otp_callback, log_fn, max_attempts: int):
+    attempt_limit = max(1, int(max_attempts or 1))
+    for attempt in range(1, attempt_limit + 1):
+        try:
+            return run_once()
+        except Exception as exc:
+            if "GET_RT_LOGIN_RESTART_REQUIRED" not in str(exc) or attempt >= attempt_limit:
+                raise
+            log_fn(
+                f"  获取rt(协议): 当前授权状态无法继续，准备从头重新登录 "
+                f"({attempt}/{attempt_limit}) detail={exc}"
+            )
+            refresh_baseline = getattr(otp_callback, "refresh_before_ids", None)
+            if callable(refresh_baseline):
+                refresh_baseline()
+    raise RuntimeError("获取rt协议模式重试耗尽")
+
+
 def _is_chatgpt_deleted_or_deactivated_error(message: str) -> bool:
     text = str(message or "").lower()
     if not text:
@@ -177,6 +199,7 @@ def _is_chatgpt_deleted_or_deactivated_error(message: str) -> bool:
     return any(
         marker in text
         for marker in (
+            "account_deactivated",
             "deleted or deactivated",
             "account has been deleted",
             "account was deleted",
@@ -269,14 +292,15 @@ def _refresh_chatgpt_session_after_get_rt(account: Account, *, proxy: str | None
     return {"ok": True, "data": data}
 
 
-def _resolve_action_proxy(
+def _resolve_action_proxy_with_source(
     configured_proxy: str | None,
     *,
     region: str = "",
     log_fn=None,
     action_label: str = "操作",
-) -> str | None:
-    """按代理页配置解析平台动作代理，并输出可排查日志。"""
+    lease: bool = False,
+) -> tuple[str | None, str]:
+    """按代理页配置解析平台动作代理，并返回 actual proxy 和来源。"""
     try:
         runtime_config = get_proxy_runtime_config()
     except Exception as exc:
@@ -286,16 +310,40 @@ def _resolve_action_proxy(
         }
         if callable(log_fn):
             log_fn(f"  {action_label}: 代理配置读取失败，改用降级策略: {exc}")
+
+    source_kind = "none"
     try:
-        resolved = resolve_runtime_proxy(
-            explicit_proxy=configured_proxy,
-            proxy_getter=lambda: proxy_pool.get_next(region=region),
-            region=region,
-        )
+        explicit = normalize_proxy_url(configured_proxy)
+        strategy = str(runtime_config.get("strategy") or "pool_then_default").strip()
+        fallback_url = normalize_proxy_url(runtime_config.get("fallback_url") or "") or ""
+        if explicit:
+            resolved = explicit
+            source_kind = "explicit"
+        elif strategy == "direct":
+            resolved = None
+            source_kind = "direct"
+        elif strategy == "default_only":
+            resolved = fallback_url or None
+            source_kind = "fallback" if resolved else "none"
+        else:
+            pooled = normalize_proxy_url(
+                proxy_pool.lease_next(region=region) if lease else proxy_pool.get_next(region=region)
+            )
+            if pooled:
+                resolved = pooled
+                source_kind = "pool_lease" if lease else "pool"
+            elif strategy == "pool_then_default":
+                resolved = fallback_url or None
+                source_kind = "fallback" if resolved else "none"
+            else:
+                resolved = None
+                source_kind = "none"
     except Exception as exc:
         resolved = str(configured_proxy or runtime_config.get("fallback_url") or "").strip() or None
+        source_kind = "fallback" if resolved else "none"
         if callable(log_fn):
             log_fn(f"  {action_label}: 代理解析失败，改用 fallback={_proxy_log_value(resolved)}: {exc}")
+
     if callable(log_fn):
         source = "显式代理" if str(configured_proxy or "").strip() else (
             f"全局策略={runtime_config['strategy']}"
@@ -303,8 +351,24 @@ def _resolve_action_proxy(
         log_fn(
             f"  {action_label}: 代理解析 {source} "
             f"fallback={_proxy_log_value(runtime_config.get('fallback_url'))} "
-            f"region={region or '(未指定)'} actual={_proxy_log_value(resolved)}"
+            f"region={region or '(未指定)'} actual={_proxy_log_value(resolved)} source={source_kind}"
         )
+    return resolved, source_kind
+
+
+def _resolve_action_proxy(
+    configured_proxy: str | None,
+    *,
+    region: str = "",
+    log_fn=None,
+    action_label: str = "操作",
+) -> str | None:
+    resolved, _source_kind = _resolve_action_proxy_with_source(
+        configured_proxy,
+        region=region,
+        log_fn=log_fn,
+        action_label=action_label,
+    )
     return resolved
 
 
@@ -479,8 +543,35 @@ class ChatGPTPlatform(BasePlatform):
         super().__init__(config)
         self.mailbox = mailbox
 
+    def _refresh_for_health_check(self, account: Account, extra: dict, proxy: str | None):
+        """Refresh an expired access token using WEB session or Android OAuth RT."""
+        from platforms.chatgpt.token_refresh import TokenRefreshManager
+
+        class _A:
+            pass
+
+        target = _A()
+        target.email = account.email
+        target.access_token = extra.get("access_token") or account.token
+        target.refresh_token = str(extra.get("refresh_token") or extra.get("registration_refresh_token") or "")
+        target.session_token = str(extra.get("session_token") or "")
+        target.cookies = extra.get("cookies", "")
+        target.client_id = extra.get("client_id") or extra.get("clientId") or ""
+        if not (target.refresh_token or target.session_token):
+            return None
+        refreshed = TokenRefreshManager(proxy_url=proxy).refresh_account(target)
+        if not refreshed.success:
+            return None
+        credentials = {
+            "access_token": refreshed.access_token,
+        }
+        if refreshed.refresh_token:
+            credentials["refresh_token"] = refreshed.refresh_token
+        return target, credentials
+
     def check_valid(self, account: Account) -> bool:
         self._last_check_overview = {}
+        self._last_check_credentials = {}
         try:
             from platforms.chatgpt.payment import fetch_subscription_status_details
             class _A: pass
@@ -500,7 +591,17 @@ class ChatGPTPlatform(BasePlatform):
                 action_label="账号检测",
             )
 
-            details = fetch_subscription_status_details(a, proxy=proxy)
+            try:
+                details = fetch_subscription_status_details(a, proxy=proxy)
+            except Exception as first_error:
+                refreshed = self._refresh_for_health_check(account, extra, proxy)
+                if not refreshed:
+                    raise first_error
+                _, refreshed_credentials = refreshed
+                a.access_token = refreshed_credentials["access_token"]
+                self._last_check_credentials = refreshed_credentials
+                self._last_check_overview["refresh_during_check"] = True
+                details = fetch_subscription_status_details(a, proxy=proxy)
             if proxy:
                 try:
                     proxy_pool.report_success(proxy)
@@ -533,9 +634,10 @@ class ChatGPTPlatform(BasePlatform):
             }
             if isinstance(details.get("usage"), dict):
                 overview["chatgpt_usage"] = details["usage"]
-            self._last_check_overview = overview
+            self._last_check_overview.update(overview)
             return status not in ("expired", "invalid", "banned", None)
-        except Exception:
+        except Exception as exc:
+            self._last_check_overview["check_error"] = str(exc)[:500]
             try:
                 if "proxy" in locals() and proxy:
                     proxy_pool.report_fail(proxy)
@@ -546,6 +648,9 @@ class ChatGPTPlatform(BasePlatform):
 
     def get_last_check_overview(self) -> dict:
         return dict(getattr(self, "_last_check_overview", {}) or {})
+
+    def get_last_check_credentials(self) -> dict:
+        return dict(getattr(self, "_last_check_credentials", {}) or {})
 
     def _prepare_registration_password(self, password: str | None) -> str | None:
         if password:
@@ -871,6 +976,7 @@ class ChatGPTPlatform(BasePlatform):
                 provider=(self.config.extra or {}).get("mail_provider", ""),
                 proxy_url=ctx.proxy,
                 log_fn=ctx.log,
+                region_code=str((ctx.extra or {}).get("registration_proxy_region") or "").strip().upper(),
                 initial_before_ids=(
                     None
                     if (getattr(ctx.identity, "metadata", {}) or {}).get("mailbox_baseline_error")
@@ -920,10 +1026,10 @@ class ChatGPTPlatform(BasePlatform):
                         protocol_variant,
                     ),
                     "access_token": access_token,
-                    "refresh_token": "",
+                    "refresh_token": registration_refresh_token,
                     "registration_refresh_token": registration_refresh_token,
-                    "refresh_token_source": refresh_token_source,
-                    "registration_refresh_token_usable": False,
+                    "refresh_token_source": refresh_token_source or ("oauth_registration" if registration_refresh_token else ""),
+                    "registration_refresh_token_usable": bool(registration_refresh_token),
                     "id_token": result.id_token,
                     "session_token": session_token,
                     "workspace_id": result.workspace_id,
@@ -1364,7 +1470,7 @@ class ChatGPTPlatform(BasePlatform):
         a = _A()
         a.email = account.email
         a.access_token = extra.get("access_token") or account.token
-        a.refresh_token = extra.get("refresh_token", "")
+        a.refresh_token = extra.get("refresh_token") or extra.get("registration_refresh_token", "")
         a.session_token = extra.get("session_token", "")
         a.cookies = extra.get("cookies", "")
         from .constants import OAUTH_CLIENT_ID
@@ -1628,13 +1734,17 @@ class ChatGPTPlatform(BasePlatform):
         except Exception as exc:
             log_fn(f"  获取rt: 邮箱 OTP 基线读取失败，继续等待新验证码: {exc}")
 
-        def _otp_callback():
-            log_fn(f"  获取rt: 等待真实邮箱 OTP provider={selected_provider_name} email={selected_mailbox_email}")
+        def _otp_callback(timeout=120, pattern=None, otp_sent_at=None):
+            log_fn(
+                f"  获取rt: 等待真实邮箱 OTP provider={selected_provider_name} "
+                f"email={selected_mailbox_email} timeout={timeout}s"
+            )
             return mailbox.wait_for_code(
                 mailbox_account,
                 keyword="",
-                timeout=600,
+                timeout=timeout,
                 before_ids=before_ids or None,
+                code_pattern=pattern,
             )
 
         def _refresh_before_ids():
@@ -2035,12 +2145,13 @@ class ChatGPTPlatform(BasePlatform):
             message = f"重新登录异常: {exc}"
             cloudflare_challenge = _is_cloudflare_managed_challenge_error(message)
             validate_otp_http_403 = _is_validate_otp_http_403_error(message)
+            account_deactivated = _is_chatgpt_account_deactivated_error(message)
             return self._refresh_session_failed_result(
                 account,
                 message,
                 account_banned=validate_otp_http_403 or _is_chatgpt_deleted_or_deactivated_error(message),
                 error_type="cloudflare_managed_challenge" if cloudflare_challenge else "",
-                delete_local_account=not validate_otp_http_403,
+                delete_local_account=not (validate_otp_http_403 or account_deactivated),
             )
 
         if callable(cancel_fn) and cancel_fn():
@@ -2050,12 +2161,13 @@ class ChatGPTPlatform(BasePlatform):
             error = str(getattr(result, "error_message", "") or "重新登录失败")
             cloudflare_challenge = _is_cloudflare_managed_challenge_error(error)
             validate_otp_http_403 = _is_validate_otp_http_403_error(error)
+            account_deactivated = _is_chatgpt_account_deactivated_error(error)
             return self._refresh_session_failed_result(
                 account,
                 error,
                 account_banned=validate_otp_http_403 or _is_chatgpt_deleted_or_deactivated_error(error),
                 error_type="cloudflare_managed_challenge" if cloudflare_challenge else "",
-                delete_local_account=not validate_otp_http_403,
+                delete_local_account=not (validate_otp_http_403 or account_deactivated),
             )
 
         metadata = getattr(result, "metadata", None) or {}
@@ -2118,11 +2230,12 @@ class ChatGPTPlatform(BasePlatform):
             phone_change_limit = 10
         extra = account.extra or {}
         region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
-        proxy = _resolve_action_proxy(
+        proxy, proxy_source = _resolve_action_proxy_with_source(
             self.config.proxy if self.config else None,
             region=region,
             log_fn=log_fn,
             action_label="获取rt",
+            lease=True,
         )
 
         acquired_profile_id = ""
@@ -2189,27 +2302,36 @@ class ChatGPTPlatform(BasePlatform):
             if executor_type == "protocol":
                 from platforms.chatgpt.protocol_get_rt import run_protocol_get_rt
 
-                result = run_protocol_get_rt(
-                    email=account.email,
-                    password=account.password,
-                    proxy=proxy,
+                def _run_protocol_once():
+                    return run_protocol_get_rt(
+                        email=account.email,
+                        password=account.password,
+                        proxy=proxy,
+                        otp_callback=otp_callback,
+                        log_fn=log_fn,
+                        sms_provider=sms_provider,
+                        smspool_api_key=str(params.get("smspool_api_key") or ""),
+                        smspool_max_price=str(params.get("smspool_max_price") or "0.13"),
+                        smspool_country=str(params.get("smspool_country") or ""),
+                        smspool_service=str(params.get("smspool_service") or ""),
+                        smspool_base_url=str(params.get("smspool_base_url") or ""),
+                        smspool_compat_base_url=str(params.get("smspool_compat_base_url") or ""),
+                        smspool_pricing_option=str(params.get("smspool_pricing_option") or ""),
+                        smspool_poll_interval=str(params.get("smspool_poll_interval") or ""),
+                        smsapi_phone=str(params.get("smsapi_phone") or ""),
+                        smsapi_url=str(params.get("smsapi_url") or ""),
+                        phone_callback=phone_callback,
+                        phone_change_limit=phone_change_limit,
+                        phone_code_timeout=60,
+                        totp_secret=totp_secret,
+                        proxy_from_pool=proxy_source in {"pool", "pool_lease"},
+                    )
+
+                result = _run_get_rt_protocol_with_restarts(
+                    _run_protocol_once,
                     otp_callback=otp_callback,
                     log_fn=log_fn,
-                    sms_provider=sms_provider,
-                    smspool_api_key=str(params.get("smspool_api_key") or ""),
-                    smspool_max_price=str(params.get("smspool_max_price") or "0.13"),
-                    smspool_country=str(params.get("smspool_country") or ""),
-                    smspool_service=str(params.get("smspool_service") or ""),
-                    smspool_base_url=str(params.get("smspool_base_url") or ""),
-                    smspool_compat_base_url=str(params.get("smspool_compat_base_url") or ""),
-                    smspool_pricing_option=str(params.get("smspool_pricing_option") or ""),
-                    smspool_poll_interval=str(params.get("smspool_poll_interval") or ""),
-                    smsapi_phone=str(params.get("smsapi_phone") or ""),
-                    smsapi_url=str(params.get("smsapi_url") or ""),
-                    phone_callback=phone_callback,
-                    phone_change_limit=phone_change_limit,
-                    phone_code_timeout=60,
-                    totp_secret=totp_secret,
+                    max_attempts=phone_change_limit,
                 )
                 refresh_token = str(result.get("refresh_token") or "")
                 access_token = str(result.get("access_token") or "")
@@ -2394,6 +2516,11 @@ class ChatGPTPlatform(BasePlatform):
                     release_acquired_profile(acquired_profile_id, log_fn=log_fn)
                 except Exception:
                     pass
+            if proxy_source == "pool_lease" and proxy:
+                try:
+                    proxy_pool.release_lease(proxy)
+                except Exception as exc:
+                    log_fn(f"  获取rt代理租约释放失败: {exc}")
 
     def _handle_get_rt_bypass(self, account: Account, params: dict) -> dict:
         """通过浏览器 OAuth 获取 refresh_token（session/select 拦截绕过手机验证）。
