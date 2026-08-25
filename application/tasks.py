@@ -60,6 +60,7 @@ TASK_TYPE_PHONE_BIND = "phone_bind"
 
 TASK_TYPE_CODEX_OAUTH = "codex_oauth"
 TASK_TYPE_MOMO_TRIAL_PROBE = "momo_trial_probe"
+TASK_TYPE_TRIAL_ELIGIBILITY_PROBE = "trial_eligibility_probe"
 TASK_TYPE_GET_RT = "get_rt"
 TASK_TYPE_GET_RT_BYPASS = "get_rt_bypass"
 TASK_TYPE_REFRESH_SESSION = "refresh_session"
@@ -73,6 +74,14 @@ TASK_DB_WRITE_ATTEMPTS = 5
 BUGFREE_LABEL = "BUGFREE"
 CHATGPT_TRIAL_LABEL = "试用"
 MOMO_TRIAL_LABEL = "MOMO试用"
+TRIAL_ELIGIBILITY_REGION_LABELS = {
+    "JP": "日本",
+    "PH": "菲律宾",
+    "GB": "英国",
+    "ID": "印度尼西亚",
+    "NL": "荷兰",
+    "IN": "印度",
+}
 CHATGPT_RELOGIN_REQUIRED_STATUS = "relogin_required"
 CHATGPT_FREE_PLUS_CAMPAIGN_ID = "plus-1-month-free"
 CHATGPT_ACCOUNTS_CHECK_BASE_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
@@ -786,7 +795,7 @@ def _task_account_keys(task_type: str, payload: dict[str, Any]) -> list[str]:
             # 防止多个批量测活任务同时打 ChatGPT，触发 WAF/IP 403。
             keys.append("chatgpt-health-check")
         return keys
-    if task_type in {TASK_TYPE_PHONE_BIND, TASK_TYPE_CODEX_OAUTH, TASK_TYPE_MOMO_TRIAL_PROBE, TASK_TYPE_BATCH_SECURITY_SETUP}:
+    if task_type in {TASK_TYPE_PHONE_BIND, TASK_TYPE_CODEX_OAUTH, TASK_TYPE_MOMO_TRIAL_PROBE, TASK_TYPE_TRIAL_ELIGIBILITY_PROBE, TASK_TYPE_BATCH_SECURITY_SETUP}:
         ids = [int(item) for item in payload.get("ids") or [] if int(item or 0) > 0]
         if not ids and int(payload.get("account_id") or 0) > 0:
             ids = [int(payload.get("account_id") or 0)]
@@ -1182,6 +1191,38 @@ def create_momo_trial_probe_task(payload: dict[str, Any]) -> dict[str, Any]:
         progress_total=max(int(total or 0), 1),
     )
 
+
+
+def create_trial_eligibility_probe_task(payload: dict[str, Any]) -> dict[str, Any]:
+    ids = _normalize_task_ids(payload.get("ids"))
+    platform = str(payload.get("platform") or "chatgpt").strip().lower() or "chatgpt"
+    if platform != "chatgpt":
+        raise ValueError("试用资格检测仅支持 ChatGPT 账号")
+    proxies = _normalize_chatgpt_trial_region_proxies(payload.get("proxies"))
+    if not proxies:
+        raise ValueError("请至少填写一个地区的检测代理地址")
+    try:
+        concurrency = max(1, min(int(payload.get("concurrency") or 3), 10))
+    except Exception:
+        concurrency = 3
+
+    if ids:
+        total = len(ids)
+    else:
+        with Session(engine) as session:
+            total = len(session.exec(select(AccountModel).where(AccountModel.platform == platform)).all())
+
+    return create_task(
+        task_type=TASK_TYPE_TRIAL_ELIGIBILITY_PROBE,
+        platform=platform,
+        payload={
+            "ids": ids,
+            "platform": platform,
+            "concurrency": concurrency,
+            "proxies": proxies,
+        },
+        progress_total=max(int(total or 0), 1),
+    )
 
 
 def create_get_rt_task(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2484,6 +2525,7 @@ def _inspect_chatgpt_free_plus_trial(
     account,
     *,
     proxy: str | None = None,
+    region_code: str = "",
     timeout: int = 20,
     max_attempts: int = CHATGPT_TRIAL_CHECK_MAX_ATTEMPTS,
     retry_log: Callable[[int, int, float, str], None] | None = None,
@@ -2494,13 +2536,14 @@ def _inspect_chatgpt_free_plus_trial(
 
     account_extra = dict(getattr(account, "extra", {}) or {})
     account_overview = dict(account_extra.get("account_overview") or {})
-    region_code = str(
-        account_extra.get("registration_ip_country_code")
+    effective_region_code = str(
+        region_code
+        or account_extra.get("registration_ip_country_code")
         or account_overview.get("registration_ip_country_code")
         or getattr(account, "region", "")
         or ""
     ).strip().upper()
-    protocol_profile = build_chatgpt_protocol_profile(region_code=region_code, proxy_url=proxy)
+    protocol_profile = build_chatgpt_protocol_profile(region_code=effective_region_code, proxy_url=proxy)
     accounts_check_url = (
         f"{CHATGPT_ACCOUNTS_CHECK_BASE_URL}?timezone_offset_min="
         f"{protocol_profile.timezone_offset_min}"
@@ -2628,7 +2671,14 @@ def _inspect_chatgpt_free_plus_trial(
     }
 
 
-def _mark_chatgpt_trial_account(saved_account_id: int, trial_info: dict[str, Any]) -> None:
+def _mark_chatgpt_trial_account(
+    saved_account_id: int,
+    trial_info: dict[str, Any],
+    *,
+    trial_label: str = CHATGPT_TRIAL_LABEL,
+    region_code: str = "",
+    region_label: str = "",
+) -> None:
     if saved_account_id <= 0:
         return
     with Session(engine) as session:
@@ -2642,21 +2692,31 @@ def _mark_chatgpt_trial_account(saved_account_id: int, trial_info: dict[str, Any
             for item in (overview.get("chips") or [])
             if str(item or "").strip()
         ]
-        if CHATGPT_TRIAL_LABEL not in chips:
-            chips.append(CHATGPT_TRIAL_LABEL)
-        patch_account_graph(
-            session,
-            model,
-            summary_updates={
-                "chips": chips,
-                "chatgpt_free_plus_trial": True,
-                "chatgpt_free_plus_trial_campaign_id": str(trial_info.get("campaign_id") or ""),
-                "chatgpt_free_plus_trial_plan_name": str(trial_info.get("plan_name") or ""),
-                "chatgpt_free_plus_trial_title": str(trial_info.get("title") or ""),
-                "chatgpt_free_plus_trial_discount_percentage": trial_info.get("discount_percentage"),
-                "chatgpt_free_plus_trial_duration": trial_info.get("duration") or {},
-            },
-        )
+        if trial_label not in chips:
+            chips.append(trial_label)
+        eligible_regions = [
+            str(item).strip().upper()
+            for item in (overview.get("chatgpt_free_plus_trial_regions") or [])
+            if str(item or "").strip()
+        ]
+        if region_code and region_code not in eligible_regions:
+            eligible_regions.append(region_code)
+        summary_updates = {
+            "chatgpt_free_plus_trial_regions": eligible_regions,
+            "chips": chips,
+            "chatgpt_free_plus_trial": True,
+            "chatgpt_free_plus_trial_campaign_id": str(trial_info.get("campaign_id") or ""),
+            "chatgpt_free_plus_trial_plan_name": str(trial_info.get("plan_name") or ""),
+            "chatgpt_free_plus_trial_title": str(trial_info.get("title") or ""),
+            "chatgpt_free_plus_trial_discount_percentage": trial_info.get("discount_percentage"),
+            "chatgpt_free_plus_trial_duration": trial_info.get("duration") or {},
+            "chatgpt_free_plus_trial_checked_at": _utcnow_iso(),
+        }
+        if region_code:
+            summary_updates["chatgpt_free_plus_trial_country_code"] = region_code
+        if region_label:
+            summary_updates["chatgpt_free_plus_trial_country_label"] = region_label
+        patch_account_graph(session, model, summary_updates=summary_updates)
         model.updated_at = _utcnow()
         session.add(model)
         session.commit()
@@ -2712,15 +2772,147 @@ def _run_bugfree_post_register_check(
     return True
 
 
+def _safe_trial_eligibility_error(value: Any) -> str:
+    return re.sub(r"([a-z][a-z0-9+.-]*://)[^/@\s]+@", r"\1***@", str(value or ""), flags=re.IGNORECASE)
+
+
+def _chatgpt_trial_probe_after_register_enabled(extra: dict[str, Any] | None) -> bool:
+    values = dict(extra or {})
+    return _bool_config(values.get("trial_probe_after_register"), False)
+
+
+def _normalize_chatgpt_trial_region_proxies(raw: Any) -> dict[str, str]:
+    from core.proxy_pool import normalize_proxy_url
+
+    values = raw if isinstance(raw, dict) else {}
+    return {
+        code: normalized
+        for code in TRIAL_ELIGIBILITY_REGION_LABELS
+        if (normalized := str(normalize_proxy_url(values.get(code)) or "").strip())
+    }
+
+
+def _validate_chatgpt_trial_region_proxies(
+    raw: Any,
+    logger: TaskLogger,
+    *,
+    required: bool,
+) -> dict[str, str]:
+    from core.proxy_pool import proxy_pool
+
+    proxies = _normalize_chatgpt_trial_region_proxies(raw)
+    if not proxies:
+        if required:
+            raise ValueError("请至少填写一个地区的检测代理地址")
+        return {}
+
+    validated: dict[str, str] = {}
+    for expected_code, proxy in proxies.items():
+        expected_label = TRIAL_ELIGIBILITY_REGION_LABELS[expected_code]
+        logger.log(f"正在验证{expected_label}代理出口...")
+        try:
+            proxy_check = proxy_pool.check_one(proxy, timeout=15)
+        except Exception as exc:
+            error = _safe_trial_eligibility_error(f"{type(exc).__name__}: {exc}")
+            raise ValueError(f"{expected_label}代理不可用：{error}") from exc
+        proxy_result = dict(proxy_check.get("result") or {})
+        actual_code = str(proxy_result.get("region") or "").strip().upper()
+        if not proxy_result.get("ok") or not re.fullmatch(r"[A-Z]{2}", actual_code):
+            error = _safe_trial_eligibility_error(proxy_result.get("error") or "无法识别代理出口地区")
+            raise ValueError(f"{expected_label}代理不可用：{error}")
+        if actual_code != expected_code:
+            actual_label = _country_label_from_code(actual_code)
+            raise ValueError(f"{expected_label}代理实际出口为 {actual_label}（{actual_code}）")
+        validated[expected_code] = proxy
+        logger.log(f"{expected_label}代理出口验证通过（{expected_code}）")
+    return validated
+
+
 def _run_chatgpt_trial_post_register_check(
     *,
     account,
     saved_account_id: int,
     logger: TaskLogger,
     proxy: str | None,
+    region_proxies: dict[str, str] | None = None,
 ) -> bool:
     if str(getattr(account, "platform", "") or "").strip().lower() != "chatgpt":
         return False
+
+    normalized_region_proxies = _normalize_chatgpt_trial_region_proxies(region_proxies)
+    if region_proxies is not None and not normalized_region_proxies:
+        logger.log("  [试用] 未配置地区检测代理，跳过注册后试用资格检查")
+        return False
+    if normalized_region_proxies:
+        region_items = [
+            (code, TRIAL_ELIGIBILITY_REGION_LABELS[code], region_proxy)
+            for code, region_proxy in normalized_region_proxies.items()
+        ]
+        logger.log(f"  [试用] 开始并行检测 {len(region_items)} 个已配置地区")
+
+        def _inspect_region(item: tuple[str, str, str]) -> tuple[str, str, dict[str, Any]]:
+            code, label, region_proxy = item
+            try:
+                trial_info = _inspect_chatgpt_free_plus_trial(
+                    account,
+                    proxy=region_proxy,
+                    region_code=code,
+                    retry_log=lambda attempt, total, delay, error: logger.log(
+                        f"  [试用][{label}] 第 {attempt}/{total} 次查询失败: "
+                        f"{_safe_trial_eligibility_error(error)}，{delay:g}s 后重试",
+                        level="warning",
+                    ),
+                )
+            except Exception as exc:
+                trial_info = {
+                    "ok": False,
+                    "eligible": False,
+                    "error": _safe_trial_eligibility_error(f"{type(exc).__name__}: {exc}"),
+                }
+            return code, label, trial_info
+
+        with ThreadPoolExecutor(max_workers=len(region_items)) as pool:
+            futures = [pool.submit(_inspect_region, item) for item in region_items]
+            results = [future.result() for future in futures]
+
+        eligible = False
+        for code, label, trial_info in results:
+            if not trial_info.get("ok"):
+                response_body = str(trial_info.get("response_body") or "")
+                log_detail = {
+                    "response_body": response_body,
+                    "copy_text": "\n".join(
+                        part
+                        for part in (
+                            str(trial_info.get("error") or "unknown").strip(),
+                            response_body.strip(),
+                        )
+                        if part
+                    ),
+                }
+                logger.log(
+                    f"  [试用][{label}] 查询失败，保留已注册账号: "
+                    f"{trial_info.get('error') or 'unknown'}",
+                    level="warning",
+                    detail=log_detail,
+                )
+                continue
+            if not trial_info.get("eligible"):
+                logger.log(f"  [试用][{label}] 当前账号没有免费领取 Plus 权益")
+                continue
+
+            trial_label = f"{label}试用"
+            _mark_chatgpt_trial_account(
+                saved_account_id,
+                trial_info,
+                trial_label=trial_label,
+                region_code=code,
+                region_label=label,
+            )
+            eligible = True
+            logger.log(f"  [试用][{label}] 已确认免费领取 Plus 权益并打标签 {trial_label}")
+        return eligible
+
     from platforms.chatgpt.register import build_chatgpt_protocol_profile
 
     account_extra = dict(getattr(account, "extra", {}) or {})
@@ -2783,8 +2975,21 @@ def _schedule_chatgpt_trial_post_register_check(
     saved_account_id: int,
     logger: TaskLogger,
     proxy: str | None,
+    region_proxies: dict[str, str] | None = None,
+    enabled: bool = False,
 ) -> None:
+    if not enabled:
+        return
     if str(getattr(account, "platform", "") or "").strip().lower() != "chatgpt":
+        return
+
+    normalized_region_proxies = (
+        _normalize_chatgpt_trial_region_proxies(region_proxies)
+        if region_proxies is not None
+        else None
+    )
+    if region_proxies is not None and not normalized_region_proxies:
+        logger.log("  [试用] 未配置地区检测代理，已跳过注册后试用资格检查")
         return
 
     subtask_id, subtask_label = logger._current_subtask()
@@ -2798,15 +3003,17 @@ def _schedule_chatgpt_trial_post_register_check(
                 saved_account_id=saved_account_id,
                 logger=logger,
                 proxy=proxy,
+                region_proxies=normalized_region_proxies,
             )
         finally:
             if subtask_id:
                 logger.clear_subtask()
 
     _CHATGPT_TRIAL_CHECK_EXECUTOR.submit(_run_in_background)
-    logger.log("  [试用] 权益检查已转入低优先级后台")
-
-
+    if normalized_region_proxies is not None:
+        logger.log(f"  [试用] {len(normalized_region_proxies)} 个地区的权益检查已转入低优先级后台")
+    else:
+        logger.log("  [试用] 权益检查已转入低优先级后台")
 
 
 def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
@@ -4125,6 +4332,7 @@ def execute_task(task_id: str) -> None:
 
         TASK_TYPE_CODEX_OAUTH: _execute_codex_oauth_task,
         TASK_TYPE_MOMO_TRIAL_PROBE: _execute_momo_trial_probe_task,
+        TASK_TYPE_TRIAL_ELIGIBILITY_PROBE: _execute_trial_eligibility_probe_task,
         TASK_TYPE_GET_RT: _execute_get_rt_task,
         TASK_TYPE_GET_RT_BYPASS: _execute_get_rt_bypass_task,
         TASK_TYPE_REFRESH_SESSION: _execute_refresh_session_task,
@@ -5187,6 +5395,89 @@ def _int_config(value: Any, default: int) -> int:
 
 
 
+def _normalize_gopay_form_proxy(value: Any) -> str:
+    """修正常见协议头拼写，并拒绝无法连接的 GoPay 表单代理。"""
+    from urllib.parse import urlsplit
+
+    from core.proxy_pool import normalize_proxy_url
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    raw = re.sub(
+        r"^(?:(?:https?|socks5):\/\/)?(https?|socks5);\/\/",
+        r"\1://",
+        raw,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    raw = re.sub(
+        r"^(?:https?|socks5):\/\/((?:https?|socks5):\/\/)",
+        r"\1",
+        raw,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    normalized = str(normalize_proxy_url(raw) or "").strip()
+    try:
+        parsed = urlsplit(normalized)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"GoPay 注册代理格式无效: {exc}") from exc
+    if parsed.scheme.lower() not in {"http", "https", "socks5"} or not parsed.hostname or port is None:
+        raise ValueError("GoPay 注册代理格式无效，请使用 http://user:pass@host:port")
+
+    return normalized
+
+
+def _parse_gopay_proxy_pool(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        raw_entries = [str(item or "").strip() for item in value]
+    else:
+        raw_entries = [line.strip() for line in str(value or "").splitlines()]
+    entries: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_entries:
+        if not raw:
+            continue
+        normalized = _normalize_gopay_form_proxy(raw)
+        key = normalized
+        if key in seen:
+            raise ValueError("GoPay 注册代理池存在重复代理，请确保每个账号使用不同代理")
+        seen.add(key)
+        entries.append(normalized)
+    return entries
+
+
+def _parse_gopay_api_sms_pool(value: Any) -> list[dict[str, str]]:
+    from urllib.parse import urlsplit
+
+    raw_entries = value if isinstance(value, (list, tuple)) else str(value or "").splitlines()
+    entries: list[dict[str, str]] = []
+    seen_phones: set[str] = set()
+    for line_number, raw_entry in enumerate(raw_entries, start=1):
+        if isinstance(raw_entry, dict):
+            phone = str(raw_entry.get("phone") or "").strip()
+            url = str(raw_entry.get("url") or raw_entry.get("smsapi_url") or "").strip()
+        else:
+            text = str(raw_entry or "").strip()
+            if not text:
+                continue
+            if "----" not in text:
+                raise ValueError(f"API 接码第 {line_number} 行格式错误，请使用 手机号----接码地址")
+            phone, url = (part.strip() for part in text.split("----", 1))
+        if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
+            raise ValueError(f"API 接码第 {line_number} 行手机号无效，请使用 + 开头的 E.164 格式")
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(f"API 接码第 {line_number} 行接码地址无效，请使用完整 HTTP(S) URL")
+        if phone in seen_phones:
+            raise ValueError(f"API 接码手机号重复：{phone}")
+        seen_phones.add(phone)
+        entries.append({"phone": phone, "url": url})
+    return entries
+
+
 def _resolve_registration_proxy_for_platform(
 
     platform_name: str,
@@ -5250,6 +5541,64 @@ def _mask_proxy_for_log(proxy: str | None) -> str:
     return value
 
 
+def _gopay_proxy_rotation_candidates(
+    proxy_pool: list[str],
+    initial_proxy: str,
+    *,
+    resource_index: int,
+    account_count: int,
+    max_switches: int = 5,
+) -> list[str]:
+    candidates: list[str] = []
+    initial = str(initial_proxy or "").strip()
+    if initial:
+        candidates.append(initial)
+    pool = [str(item or "").strip() for item in proxy_pool if str(item or "").strip()]
+    if not pool:
+        return candidates
+    stride = max(int(account_count or 0), 1)
+    for switch_index in range(1, max(int(max_switches or 0), 0) + 1):
+        candidate = pool[(int(resource_index or 0) + switch_index * stride) % len(pool)]
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _can_switch_gopay_precharge_proxy(attempt: dict[str, Any]) -> bool:
+    return (
+        str(attempt.get("status") or "")
+        in {"claimed", "preparing", "failed_precharge", "cancelled"}
+        and not str(attempt.get("midtrans_url") or "")
+        and not str(attempt.get("snap_id") or "")
+        and not bool(attempt.get("uncertain"))
+    )
+
+
+def _is_gopay_precharge_proxy_retryable(error: object) -> bool:
+    text = str(error or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "unusual activity",
+            "检测到异常活动",
+            "当前账号或固定代理被风控",
+            "proxy connect aborted",
+            "could not connect to proxy",
+            "could not resolve proxy",
+            "server disconnected",
+            "remote disconnected",
+            "connection reset",
+            "connection aborted",
+            "unexpected_eof",
+            "tls connect error",
+            "curl: (28)",
+            "curl: (35)",
+            "curl: (56)",
+            "timed out",
+            "timeout",
+        )
+    )
+
 
 _CHATGPT_PROXY_PREFLIGHT_DETAIL_CACHE: dict[str, str] = {}
 
@@ -5305,6 +5654,7 @@ CHATGPT_REGISTRATION_COUNTRY_LABELS = {
     "ID": "印度尼西亚",
     "MY": "马来西亚",
     "GB": "英国",
+    "NL": "荷兰",
     "CA": "加拿大",
     "AU": "澳大利亚",
     "TR": "土耳其",
@@ -6241,6 +6591,57 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     extra = dict(payload.get("extra") or {})
 
+    if platform_name == "chatgpt":
+        if _chatgpt_trial_probe_after_register_enabled(extra):
+            try:
+                trial_eligibility_proxies = _validate_chatgpt_trial_region_proxies(
+                    extra.get("trial_eligibility_proxies"),
+                    logger,
+                    required=False,
+                )
+            except ValueError as exc:
+                logger.log(str(exc), level="error")
+                logger.finish(TASK_STATUS_FAILED, error=str(exc))
+                return
+            extra["trial_eligibility_proxies"] = trial_eligibility_proxies
+        else:
+            extra["trial_eligibility_proxies"] = {}
+        payload = dict(payload)
+        payload["extra"] = extra
+
+    if platform_name == "gopay":
+        try:
+            gopay_proxy_pool = _parse_gopay_proxy_pool(
+                extra.get("gopay_proxy_pool")
+                or extra.get("gopay_proxies")
+                or extra.get("gopay_proxy")
+            )
+        except ValueError as exc:
+            logger.log(str(exc), level="error")
+            logger.finish(TASK_STATUS_FAILED, error=str(exc))
+            return
+        if gopay_proxy_pool and len(gopay_proxy_pool) < count:
+            error = f"GoPay 注册代理数量不足：账号数 {count}，代理数 {len(gopay_proxy_pool)}"
+            logger.log(error, level="error")
+            logger.finish(TASK_STATUS_FAILED, error=error)
+            return
+        extra["gopay_proxy_pool"] = gopay_proxy_pool
+        if str(extra.get("sms_provider") or "").strip().lower() == "api_sms":
+            try:
+                api_sms_pool = _parse_gopay_api_sms_pool(extra.get("api_sms_pool"))
+            except ValueError as exc:
+                logger.log(str(exc), level="error")
+                logger.finish(TASK_STATUS_FAILED, error=str(exc))
+                return
+            if len(api_sms_pool) < count:
+                error = f"API 接码数量不足：账号数 {count}，号码数 {len(api_sms_pool)}"
+                logger.log(error, level="error")
+                logger.finish(TASK_STATUS_FAILED, error=error)
+                return
+            extra["api_sms_pool"] = api_sms_pool
+        payload = dict(payload)
+        payload["extra"] = extra
+
     manual_post_register_capture = (
         platform_name == "chatgpt"
         and str(payload.get("executor_type", "") or "").strip().lower() == "headed"
@@ -6743,9 +7144,22 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
 
         try:
+            explicit_registration_proxy = proxy
+            if platform_name == "gopay":
+                payload_extra = dict(payload.get("extra") or {})
+                gopay_proxy_pool = list(payload_extra.get("gopay_proxy_pool") or [])
+                if gopay_proxy_pool:
+                    if index >= len(gopay_proxy_pool):
+                        raise RuntimeError(
+                            f"GoPay 注册代理数量不足：当前账号序号 {index + 1}，代理数 {len(gopay_proxy_pool)}"
+                        )
+                    explicit_registration_proxy = str(gopay_proxy_pool[index])
+                    logger.log(
+                        f"GoPay 注册代理来源: 表单代理池 {index + 1}/{len(gopay_proxy_pool)}"
+                    )
             resolved_proxy = _resolve_chatgpt_reachable_proxy(
                 platform_name=platform_name,
-                explicit_proxy=proxy,
+                explicit_proxy=explicit_registration_proxy,
                 proxy_getter=_current_registration_proxy_getter,
                 logger=logger,
                 continue_on_transient_failure=(
@@ -6781,6 +7195,24 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         )
 
         _build_payload = payload
+        if platform_name == "gopay":
+            payload_extra = dict(payload.get("extra") or {})
+            api_sms_pool = list(payload_extra.get("api_sms_pool") or [])
+            if str(payload_extra.get("sms_provider") or "").strip().lower() == "api_sms":
+                if index >= len(api_sms_pool):
+                    raise RuntimeError(
+                        f"API 接码数量不足：当前账号序号 {index + 1}，号码数 {len(api_sms_pool)}"
+                    )
+                sms_entry = dict(api_sms_pool[index])
+                worker_extra = dict(payload_extra)
+                worker_extra["smsapi_phone"] = str(sms_entry.get("phone") or "")
+                worker_extra["smsapi_url"] = str(sms_entry.get("url") or "")
+                _build_payload = dict(payload)
+                _build_payload["extra"] = worker_extra
+                logger.log(
+                    f"GoPay API 接码来源: 号码池 {index + 1}/{len(api_sms_pool)} "
+                    f"({worker_extra['smsapi_phone']})"
+                )
 
         _sl_acquired_profile = ""
 
@@ -6930,11 +7362,12 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
             if resolved_proxy:
 
+                proxy_log_value = _mask_proxy_for_log(resolved_proxy)
                 proxy_detail = _chatgpt_proxy_detail_for_log(resolved_proxy)
                 if proxy_detail:
-                    logger.log(f"使用代理: {resolved_proxy}（{proxy_detail}）")
+                    logger.log(f"使用代理: {proxy_log_value}（{proxy_detail}）")
                 else:
-                    logger.log(f"使用代理: {resolved_proxy}")
+                    logger.log(f"使用代理: {proxy_log_value}")
 
             account = platform.register(email=email, password=password)
             if platform_name == "chatgpt":
@@ -6951,12 +7384,16 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(shared_mailbox, account, "registration_success", logger)
             saved_account_id = _saved_account_id(saved_model, account)
-            _schedule_chatgpt_trial_post_register_check(
-                account=account,
-                saved_account_id=saved_account_id,
-                logger=logger,
-                proxy=resolved_proxy,
-            )
+            registration_extra = dict(_build_payload.get("extra") or {})
+            if _chatgpt_trial_probe_after_register_enabled(registration_extra):
+                _schedule_chatgpt_trial_post_register_check(
+                    account=account,
+                    saved_account_id=saved_account_id,
+                    logger=logger,
+                    proxy=resolved_proxy,
+                    region_proxies=dict(registration_extra.get("trial_eligibility_proxies") or {}),
+                    enabled=True,
+                )
 
             if bugfree_mode_enabled:
                 if not _run_bugfree_post_register_check(
@@ -9230,57 +9667,6 @@ def _chatgpt_extra_password_set(extra: dict[str, Any]) -> bool:
     return _bool_config(_chatgpt_extra_value(extra, "password_set_after_register"), False)
 
 
-def _parse_cookie_pairs(cookie_header: str) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    for part in str(cookie_header or "").split(";"):
-        if "=" not in part:
-            continue
-        name, value = part.split("=", 1)
-        name = name.strip()
-        value = value.strip()
-        if name and value:
-            pairs.append((name, value))
-    return pairs
-
-
-def _seed_chatgpt_security_cookies(engine: Any, cookie_header: str, session_token: str = "") -> None:
-    session = getattr(engine, "session", None)
-    if not session:
-        return
-    pairs = _parse_cookie_pairs(cookie_header)
-    token = str(session_token or "").strip()
-    if token and not any(name == "__Secure-next-auth.session-token" for name, _value in pairs):
-        pairs.append(("__Secure-next-auth.session-token", token))
-    for name, value in pairs:
-        secure = name.startswith("__Secure-") or name.startswith("__Host-")
-        try:
-            session.cookies.set(name, value, secure=secure)
-        except TypeError:
-            try:
-                session.cookies.set(name, value)
-            except Exception:
-                pass
-        except Exception:
-            pass
-        for domain in (
-            ".chatgpt.com",
-            "chatgpt.com",
-            ".auth.openai.com",
-            "auth.openai.com",
-            ".openai.com",
-            "openai.com",
-        ):
-            try:
-                session.cookies.set(name, value, domain=domain, path="/", secure=secure)
-            except TypeError:
-                try:
-                    session.cookies.set(name, value, domain=domain, path="/")
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
-
 def _chatgpt_security_cookie_updates(engine: Any, fallback_extra: dict[str, Any]) -> dict[str, str]:
     try:
         from platforms.chatgpt.register import _cookie_value, _cookies_to_header
@@ -9311,6 +9697,7 @@ def _set_chatgpt_account_password_protocol(
     logger: TaskLogger,
 ) -> tuple[bool, dict[str, str], str]:
     try:
+        from platforms.chatgpt.constants import CHATGPT_APP
         from platforms.chatgpt.register import RegistrationEngine
     except Exception as exc:
         return False, {}, f"password_engine_import_failed: {exc}"
@@ -9332,39 +9719,97 @@ def _set_chatgpt_account_password_protocol(
         proxy_url=proxy,
         callback_logger=logger.log,
     )
-    if not engine._init_latest_chatgpt_session():
-        return False, {}, "init_latest_chatgpt_session_failed"
-
     engine.email = getattr(account, "email", "") or ""
-    engine.password = password
     engine.email_info = {"service_id": getattr(account, "email", "") or ""}
+    engine.password = ""
+    engine.set_password_after_register = False
+    engine.prefer_password_totp_login = False
+
+    logger.log("设置帐号密码: 先按注册同源链路重新登录并建立全新 Web session")
+    login_result = engine.run_chatgpt_refresh_session_latest(
+        session_source="batch_security_setup_relogin",
+    )
+    if not bool(getattr(login_result, "success", False)):
+        error = str(getattr(login_result, "error_message", "") or "security_relogin_failed")
+        return False, {}, f"security_relogin_failed: {error}"[:240]
+
+    updates: dict[str, str] = {}
+    login_metadata = dict(getattr(login_result, "metadata", {}) or {})
+    for key in (
+        "cookies",
+        "cookie_header",
+        "login_state_cookie",
+        "chatgpt_user_agent",
+        "chatgpt_accept_language",
+        "chatgpt_oai_client_version",
+        "chatgpt_oai_client_build_number",
+        "chatgpt_oai_device_id",
+        "chatgpt_oai_session_id",
+        "expires_at",
+    ):
+        value = str(login_metadata.get(key) or "").strip()
+        if value:
+            updates[key] = value
+    fresh_access_token = str(getattr(login_result, "access_token", "") or "").strip()
+    fresh_session_token = str(getattr(login_result, "session_token", "") or "").strip()
+    if fresh_access_token:
+        updates["access_token"] = fresh_access_token
+    if fresh_session_token:
+        updates["session_token"] = fresh_session_token
+
+    removed_auth_cookies = engine._clear_completed_auth_step_cookies()
+    current_device_id = str(getattr(engine, "_device_id", "") or "").strip()
+    if current_device_id:
+        engine._seed_oai_did_cookie(current_device_id)
+    engine._log(
+        "[REG-DIAG][security][protocol] reset completed auth step before add_password "
+        f"removed={removed_auth_cookies} device_id={engine._diag_shape(current_device_id)} "
+        f"cookies={engine._diag_cookie_names_text()}"
+    )
+
+    engine.password = password
     engine.set_password_after_register = True
+    ok = bool(engine._latest_chatgpt_add_password_after_register(fresh_access_token))
+    if ok:
+        try:
+            session_headers = engine._latest_chatgpt_browser_headers(
+                accept="application/json",
+                referer=f"{CHATGPT_APP}/",
+                sec_fetch_dest="empty",
+                sec_fetch_mode="cors",
+                sec_fetch_site="same-origin",
+            )
+            refreshed_session_resp = engine.session.get(
+                f"{CHATGPT_APP}/api/auth/session",
+                headers=session_headers,
+                timeout=20,
+            )
+            refreshed_session_data = engine._response_json_dict(refreshed_session_resp)
+            refreshed_access_token = str(refreshed_session_data.get("accessToken") or "").strip()
+            engine._log(
+                "[REG-DIAG][security][protocol] session_api after add_password "
+                f"status={getattr(refreshed_session_resp, 'status_code', 0)} "
+                f"access_token={engine._diag_shape(refreshed_access_token)} "
+                f"cookies={engine._diag_cookie_names_text()}"
+            )
+            if refreshed_access_token:
+                updates["access_token"] = refreshed_access_token
+                engine._latest_chatgpt_warmup_authenticated_session(refreshed_access_token)
+        except Exception as exc:
+            engine._log(f"批量设置密码后刷新 session 失败，继续使用重新登录 session: {exc}", "warning")
 
-    client_version = str(_chatgpt_extra_value(extra, "chatgpt_oai_client_version") or "").strip()
-    client_build = str(_chatgpt_extra_value(extra, "chatgpt_oai_client_build_number") or "").strip()
-    device_id = str(_chatgpt_extra_value(extra, "chatgpt_oai_device_id") or "").strip()
-    oai_session_id = str(_chatgpt_extra_value(extra, "chatgpt_oai_session_id") or "").strip()
-    if client_version:
-        engine._chatgpt_client_version = client_version
-    if client_build:
-        engine._chatgpt_client_build_number = client_build
-    if device_id:
-        engine._device_id = device_id
-    if oai_session_id:
-        engine._chatgpt_oai_session_id = oai_session_id
-
-    cookie_header = str(
-        _chatgpt_extra_value(extra, "cookie_header")
-        or _chatgpt_extra_value(extra, "cookies")
-        or _chatgpt_extra_value(extra, "cookie")
-        or ""
-    ).strip()
-    session_token = str(_chatgpt_extra_value(extra, "session_token") or "").strip()
-    _seed_chatgpt_security_cookies(engine, cookie_header, session_token)
-
-    access_token = str(_chatgpt_extra_value(extra, "access_token") or getattr(account, "token", "") or "").strip()
-    ok = bool(engine._latest_chatgpt_add_password_after_register(access_token))
-    updates = _chatgpt_security_cookie_updates(engine, extra)
+    updates.update(_chatgpt_security_cookie_updates(engine, {}))
+    updates.update(
+        {
+            "chatgpt_user_agent": engine._latest_chatgpt_user_agent(),
+            "chatgpt_accept_language": engine._latest_chatgpt_accept_language(),
+            "chatgpt_oai_client_version": engine._latest_chatgpt_client_version(),
+            "chatgpt_oai_client_build_number": engine._latest_chatgpt_client_build_number(),
+            "chatgpt_oai_device_id": str(getattr(engine, "_device_id", "") or ""),
+            "chatgpt_oai_session_id": str(getattr(engine, "_chatgpt_oai_session_id", "") or ""),
+        }
+    )
+    updates = {key: str(value) for key, value in updates.items() if value not in (None, "")}
     if ok:
         updates.update(
             {
@@ -9413,6 +9858,13 @@ def _persist_chatgpt_security_setup(
             "login_state_cookie",
             "session_token",
             "access_token",
+            "chatgpt_user_agent",
+            "chatgpt_accept_language",
+            "chatgpt_oai_client_version",
+            "chatgpt_oai_client_build_number",
+            "chatgpt_oai_device_id",
+            "chatgpt_oai_session_id",
+            "expires_at",
         )
         if extra.get(key) not in (None, "")
     }
@@ -10009,6 +10461,25 @@ def _execute_gopay_register_account_task(payload: dict[str, Any], logger: TaskLo
 
     max_price = str(payload.get("max_price") or "").strip()
 
+    try:
+        register_proxy_pool = _parse_gopay_proxy_pool(payload.get("proxy_pool") or "")
+        register_api_sms_pool = _parse_gopay_api_sms_pool(payload.get("api_sms_pool") or "")
+    except ValueError as exc:
+        logger.finish(TASK_STATUS_FAILED, error=str(exc))
+        return
+    if not register_proxy_pool:
+        logger.finish(TASK_STATUS_FAILED, error="GoPay 注册至少需要 1 条固定代理")
+        return
+    if sms_provider == "api_sms" and not register_api_sms_pool:
+        logger.finish(TASK_STATUS_FAILED, error="API 接码号码池至少需要 1 条 手机号----接码地址")
+        return
+
+    register_smsapi_phone = str(payload.get("smsapi_phone") or "").strip()
+    register_smsapi_url = str(payload.get("smsapi_url") or "").strip()
+    if sms_provider == "api_sms":
+        register_smsapi_phone = register_api_sms_pool[0]["phone"]
+        register_smsapi_url = register_api_sms_pool[0]["url"]
+
     auto_rebind = _bool_config(payload.get("auto_rebind"), False)
 
 
@@ -10033,7 +10504,7 @@ def _execute_gopay_register_account_task(payload: dict[str, Any], logger: TaskLo
 
             pin=pin,
 
-            proxy=str(payload.get("proxy") or "").strip(),
+            proxy=(register_proxy_pool[0] if register_proxy_pool else str(payload.get("proxy") or "").strip()),
 
             envelope_url=str(payload.get("envelope_url") or "").strip(),
 
@@ -10043,9 +10514,11 @@ def _execute_gopay_register_account_task(payload: dict[str, Any], logger: TaskLo
 
             smsbower_api_key=str(payload.get("smsbower_api_key") or "").strip(),
 
-            smsapi_url=str(payload.get("smsapi_url") or "").strip(),
+            five_sim_api_key=str(payload.get("five_sim_api_key") or "").strip(),
 
-            smsapi_phone=str(payload.get("smsapi_phone") or "").strip(),
+            smsapi_url=register_smsapi_url,
+
+            smsapi_phone=register_smsapi_phone,
 
             herosms_max_price_usd=max_price,
 
@@ -10173,7 +10646,18 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
 
 
-    chatgpt_ids = [int(v) for v in payload.get("chatgpt_account_ids") or [] if int(v or 0) > 0]
+    raw_chatgpt_ids = [int(v) for v in payload.get("chatgpt_account_ids") or [] if int(v or 0) > 0]
+    if len(set(raw_chatgpt_ids)) != len(raw_chatgpt_ids):
+        logger.finish(TASK_STATUS_FAILED, error="ChatGPT 账号列表存在重复 id，已阻止重复付款")
+        return
+    chatgpt_ids = raw_chatgpt_ids
+
+    try:
+        configured_proxy_pool = _parse_gopay_proxy_pool(payload.get("proxy_pool") or "")
+        configured_api_sms_pool = _parse_gopay_api_sms_pool(payload.get("api_sms_pool") or "")
+    except ValueError as exc:
+        logger.finish(TASK_STATUS_FAILED, error=str(exc))
+        return
 
     midtrans_url_override_early = str(payload.get("midtrans_url_override") or "").strip()
 
@@ -10207,6 +10691,31 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
             return
 
+        if len(configured_proxy_pool) < register_count:
+            logger.finish(
+                TASK_STATUS_FAILED,
+                error=(
+                    f"代理池只有 {len(configured_proxy_pool)} 条，但要注册 {register_count} 个账号；"
+                    "每个账号必须使用不同代理"
+                ),
+            )
+            return
+        early_sms_provider = str(payload.get("sms_provider") or "herosms").strip().lower()
+        early_gopay_source = str(payload.get("gopay_source") or "auto").strip().lower()
+        if (
+            early_sms_provider == "api_sms"
+            and early_gopay_source != "pool"
+            and len(configured_api_sms_pool) < register_count
+        ):
+            logger.finish(
+                TASK_STATUS_FAILED,
+                error=(
+                    f"API 接码号码池只有 {len(configured_api_sms_pool)} 条，"
+                    f"但要注册 {register_count} 个账号"
+                ),
+            )
+            return
+
         register_extra = dict(payload.get("register_extra") or {})
 
         # 注册阶段也按任务并发数并行（之前是串行 for 循环，导致 10 个号一个
@@ -10221,15 +10730,9 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
         # 短链模式：注册浏览器物理复用——在同一浏览器里注册→拿短链→抓 midtrans。
 
-        _short_link_early = payload.get("use_short_link")
-
-        _use_short_link_early = (
-
-            _short_link_early is True
-
-            or str(_short_link_early or "").strip().lower() in ("1", "true", "yes", "on")
-
-        )
+        # GoPay 必须在任何 cashier/Midtrans 会话创建前准备完成。
+        # 短链仍由 execute_gopay_pay_chatgpt 生成，但不再在 ChatGPT 注册浏览器里预抓。
+        _use_short_link_early = False
 
         if _use_short_link_early:
 
@@ -10261,6 +10764,8 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
                     proxy=payload.get("proxy") or None,
 
+                    proxy_pool=configured_proxy_pool,
+
                 )
 
             except Exception as exc:
@@ -10276,6 +10781,13 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
                 return
 
             chatgpt_ids = [int(r["account_id"]) for r in _sl_results]
+            payload["_registered_resource_map"] = {
+                int(r["account_id"]): {
+                    "seq": int(r.get("seq") or 0),
+                    "proxy": str(r.get("proxy") or ""),
+                }
+                for r in _sl_results
+            }
 
             # 把每账号抓到的 midtrans_url 存进 payload，供付款循环按账号取用。
 
@@ -10295,13 +10807,23 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
                 )
 
-                chatgpt_ids = _register_chatgpt_accounts_for_gopay(
+                _registered_results = _register_chatgpt_accounts_for_gopay(
 
                     register_count, register_extra, logger,
 
                     concurrency=register_concurrency,
 
+                    proxy_pool=configured_proxy_pool,
+
                 )
+                chatgpt_ids = [int(r["account_id"]) for r in _registered_results]
+                payload["_registered_resource_map"] = {
+                    int(r["account_id"]): {
+                        "seq": int(r.get("seq") or 0),
+                        "proxy": str(r.get("proxy") or ""),
+                    }
+                    for r in _registered_results
+                }
 
             except Exception as exc:
 
@@ -10369,7 +10891,9 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
     smsbower_api_key = str(payload.get("smsbower_api_key") or "")
 
-    # smsapi（固定号 + 查最新短信 API）渠道参数
+    five_sim_api_key = str(payload.get("five_sim_api_key") or "")
+
+    # smsapi / api_sms（固定号或号码池 + 查最新短信 API）渠道参数
 
     smsapi_url = str(payload.get("smsapi_url") or "")
 
@@ -10380,6 +10904,14 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
     # 空串交给插件用默认值。
 
     max_price = str(payload.get("max_price") or "").strip()
+    try:
+        max_payment_amount_rp = int(payload.get("max_payment_amount_rp", 0) or 0)
+    except (TypeError, ValueError):
+        logger.finish(TASK_STATUS_FAILED, error="最高支付金额必须是非负整数 IDR")
+        return
+    if max_payment_amount_rp < 0:
+        logger.finish(TASK_STATUS_FAILED, error="最高支付金额不能小于 0 IDR")
+        return
 
     # GoPay 号来源：auto（默认，先池后注册）/ pool（只用池）/ register（强制注册）。
 
@@ -10455,6 +10987,35 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
     total = len(chatgpt_ids)
 
+    try:
+        proxy_pool = configured_proxy_pool
+        api_sms_pool = configured_api_sms_pool
+    except ValueError as exc:
+        logger.finish(TASK_STATUS_FAILED, error=str(exc))
+        return
+
+    if len(proxy_pool) < total:
+        logger.finish(
+            TASK_STATUS_FAILED,
+            error=f"代理池只有 {len(proxy_pool)} 条，但任务有 {total} 个账号；每个账号必须提供不同的固定代理",
+        )
+        return
+    if gopay_account_id and total > 1:
+        logger.finish(
+            TASK_STATUS_FAILED,
+            error="指定单个 GoPay 账号时只能处理 1 个 ChatGPT 账号；批量任务必须使用自动号池分配不同 GoPay 账号",
+        )
+        return
+    if country != "ID" or currency != "IDR":
+        logger.finish(TASK_STATUS_FAILED, error="GoPay GPTPlus 付款仅允许 country=ID、currency=IDR")
+        return
+    if sms_provider == "api_sms" and gopay_source != "pool" and len(api_sms_pool) < total:
+        logger.finish(
+            TASK_STATUS_FAILED,
+            error=f"API 接码号码池只有 {len(api_sms_pool)} 条，但任务有 {total} 个账号",
+        )
+        return
+
     concurrency = min(max(int(payload.get("concurrency") or 1), 1), total)
 
     logger.set_progress(0, total)
@@ -10473,7 +11034,8 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
         f"GoPay 号选择：gopay_source={gopay_source}, "
 
-        f"gopay_account_id={gopay_account_id}, sms_provider={sms_provider}"
+        f"gopay_account_id={gopay_account_id}, "
+        f"auto_register_sms_provider={sms_provider}"
 
     )
 
@@ -10494,12 +11056,63 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
         )
 
         acquired_profile = ""
+        attempt_key = ""
 
         try:
 
             if logger.is_cancel_requested():
 
                 return {"ok": False, "chatgpt_account_id": chatgpt_account_id, "error": "任务已取消"}
+
+            resource_map = payload.get("_registered_resource_map") or {}
+            resource = resource_map.get(int(chatgpt_account_id)) or {}
+            resource_index = int(resource.get("seq") if resource else index)
+            account_proxy = str(resource.get("proxy") or "") if resource else ""
+            if not account_proxy:
+                account_proxy = proxy_pool[resource_index]
+
+            from application.gopay_payment_state import (
+                claim_payment_attempt,
+                payment_attempt_key,
+            )
+
+            attempt_key = payment_attempt_key(
+                chatgpt_account_id,
+                midtrans_url_override if use_override else "",
+            )
+            attempt_claim = claim_payment_attempt(
+                key=attempt_key,
+                chatgpt_account_id=chatgpt_account_id,
+                task_id=logger.task_id,
+                proxy=account_proxy,
+            )
+            attempt_action = str(attempt_claim.get("action") or "")
+            if attempt_action == "busy":
+                return {
+                    "ok": False,
+                    "chatgpt_account_id": chatgpt_account_id,
+                    "error": "该 ChatGPT 账号已有运行中的 GoPay 付款任务",
+                }
+            if attempt_action == "already_complete":
+                logger.log(f"[{index + 1}/{total}] 已存在结算成功记录，跳过重复付款")
+                return {
+                    "ok": True,
+                    "chatgpt_account_id": chatgpt_account_id,
+                    "idempotent_skip": True,
+                    "payment_status": attempt_claim.get("status"),
+                }
+            if attempt_action == "proxy_mismatch":
+                return {
+                    "ok": False,
+                    "chatgpt_account_id": chatgpt_account_id,
+                    "error": "该付款尝试必须继续使用首次分配的固定代理",
+                }
+            if attempt_action == "blocked":
+                return {
+                    "ok": False,
+                    "chatgpt_account_id": chatgpt_account_id,
+                    "error": f"已有不可自动恢复的付款状态: {attempt_claim.get('status')}",
+                }
 
             # BitBrowser 模式：从「设置 → BitBrowser」的 profile 池里取一个，
 
@@ -10529,7 +11142,17 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
                 )
 
-            logger.log(f"[{index + 1}/{total}] 处理账号 #{chatgpt_account_id}")
+            account_proxy = str(attempt_claim.get("proxy") or account_proxy)
+            account_smsapi_url = smsapi_url
+            account_smsapi_phone = smsapi_phone
+            if sms_provider == "api_sms" and resource_index < len(api_sms_pool):
+                account_smsapi_phone = api_sms_pool[resource_index]["phone"]
+                account_smsapi_url = api_sms_pool[resource_index]["url"]
+
+            proxy_label = _mask_proxy_for_log(account_proxy) if account_proxy else "直连"
+            logger.log(
+                f"[{index + 1}/{total}] 处理账号 #{chatgpt_account_id}，固定代理={proxy_label}"
+            )
 
             # 短链复用模式：midtrans_url 已经在注册同浏览器里抓好了，按账号取
 
@@ -10541,11 +11164,14 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
             _sl_midtrans = str(_sl_map.get(int(chatgpt_account_id)) or "")
 
-            _eff_midtrans_override = _sl_midtrans or (midtrans_url_override if use_override else "")
+            _attempt_midtrans = str(attempt_claim.get("midtrans_url") or "")
+            _eff_midtrans_override = _attempt_midtrans or _sl_midtrans or (midtrans_url_override if use_override else "")
 
-            out = execute_gopay_pay_chatgpt(
+            def execute_with_proxy(selected_proxy: str, selected_action: str) -> dict[str, Any]:
 
-                chatgpt_account_id=chatgpt_account_id,
+                return execute_gopay_pay_chatgpt(
+
+                    chatgpt_account_id=chatgpt_account_id,
 
                 gopay_account_id=gopay_account_id,
 
@@ -10565,9 +11191,9 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
                 envelope_url=envelope_url,
 
-                proxy=proxy,
+                    proxy=selected_proxy,
 
-                grab_timeout=grab_timeout,
+                    grab_timeout=grab_timeout,
 
                 herosms_api_key_override=herosms_api_key_override,
 
@@ -10583,9 +11209,11 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
                 smsbower_api_key=smsbower_api_key,
 
-                smsapi_url=smsapi_url,
+                five_sim_api_key=five_sim_api_key,
 
-                smsapi_phone=smsapi_phone,
+                smsapi_url=account_smsapi_url,
+
+                smsapi_phone=account_smsapi_phone,
 
                 max_price=max_price,
 
@@ -10613,7 +11241,87 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
                 cancel_check=logger.is_cancel_requested,
 
+                payment_attempt_key=attempt_key,
+
+                    payment_attempt_action=selected_action,
+
+                    task_id=logger.task_id,
+
+                max_payment_amount_rp=max_payment_amount_rp,
+
             )
+
+            proxy_candidates = _gopay_proxy_rotation_candidates(
+                proxy_pool,
+                account_proxy,
+                resource_index=resource_index,
+                account_count=total,
+                max_switches=5,
+            )
+            selected_action = attempt_action
+            out: dict[str, Any] | None = None
+            for proxy_attempt_index, candidate_proxy in enumerate(proxy_candidates):
+                try:
+                    out = execute_with_proxy(candidate_proxy, selected_action)
+                    account_proxy = candidate_proxy
+                    break
+                except Exception as proxy_exc:
+                    has_next_proxy = proxy_attempt_index + 1 < len(proxy_candidates)
+                    if (
+                        not has_next_proxy
+                        or not _is_gopay_precharge_proxy_retryable(proxy_exc)
+                        or logger.is_cancel_requested()
+                    ):
+                        raise
+
+                    from application.gopay_payment_state import (
+                        claim_payment_attempt,
+                        get_payment_attempt,
+                        release_gopay_lease,
+                        update_payment_attempt,
+                    )
+
+                    retry_state = get_payment_attempt(attempt_key) or {}
+                    retry_status = str(retry_state.get("status") or "")
+                    if not _can_switch_gopay_precharge_proxy(retry_state):
+                        raise
+                    if retry_status in {"claimed", "preparing"}:
+                        update_payment_attempt(
+                            attempt_key,
+                            task_id=logger.task_id,
+                            status="failed_precharge",
+                            uncertain=False,
+                            error="付款准备阶段代理失败，允许切换固定代理",
+                        )
+                    leased_gopay_id = int(retry_state.get("gopay_account_id") or 0)
+                    if leased_gopay_id:
+                        release_gopay_lease(
+                            account_id=leased_gopay_id,
+                            owner_key=attempt_key,
+                        )
+
+                    next_proxy = proxy_candidates[proxy_attempt_index + 1]
+                    next_claim = claim_payment_attempt(
+                        key=attempt_key,
+                        chatgpt_account_id=chatgpt_account_id,
+                        task_id=logger.task_id,
+                        proxy=next_proxy,
+                    )
+                    selected_action = str(next_claim.get("action") or "")
+                    if selected_action != "start":
+                        raise RuntimeError(
+                            f"代理切换后付款尝试无法安全重启: {selected_action or 'unknown'}"
+                        ) from proxy_exc
+                    account_proxy = next_proxy
+                    logger.log(
+                        f"[{index + 1}/{total}] 当前代理失败，自动切换代理 "
+                        f"{proxy_attempt_index + 1}/5："
+                        f"{_mask_proxy_for_log(next_proxy)}；原因={type(proxy_exc).__name__}",
+                        level="warning",
+                    )
+
+            if out is None:
+                raise RuntimeError("代理池轮换结束但付款流程未返回结果")
 
             logger.log(f"[{index + 1}/{total}] 成功: #{chatgpt_account_id}")
 
@@ -10640,12 +11348,48 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
         except Exception as exc:
 
             error = str(exc)
+            if attempt_key:
+                try:
+                    from application.gopay_payment_state import (
+                        get_payment_attempt,
+                        update_payment_attempt,
+                    )
+
+                    failed_attempt = get_payment_attempt(attempt_key) or {}
+                    if (
+                        str(failed_attempt.get("task_id") or "") == logger.task_id
+                        and str(failed_attempt.get("status") or "") in {"claimed", "preparing"}
+                    ):
+                        update_payment_attempt(
+                            attempt_key,
+                            task_id=logger.task_id,
+                            status="failed_precharge",
+                            uncertain=False,
+                            error="付款准备阶段失败，允许安全重试",
+                        )
+                except Exception as state_exc:
+                    logger.log(f"付款尝试失败状态更新异常: {state_exc}", level="warning")
 
             logger.log(f"[{index + 1}/{total}] 失败: {error}", level="error")
 
             return {"ok": False, "chatgpt_account_id": chatgpt_account_id, "error": error}
 
         finally:
+
+            if attempt_key:
+                try:
+                    from application.gopay_payment_state import (
+                        get_payment_attempt,
+                        release_gopay_lease,
+                    )
+
+                    attempt_state = get_payment_attempt(attempt_key) or {}
+                    attempt_status = str(attempt_state.get("status") or "")
+                    leased_gopay_id = int(attempt_state.get("gopay_account_id") or 0)
+                    if leased_gopay_id and attempt_status not in {"charging", "payment_pending", "uncertain"}:
+                        release_gopay_lease(account_id=leased_gopay_id, owner_key=attempt_key)
+                except Exception as lease_exc:
+                    logger.log(f"GoPay 账号租约释放失败: {lease_exc}", level="warning")
 
             if acquired_profile:
 
@@ -10773,6 +11517,8 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
     proxy: str | None = None,
 
+    proxy_pool: list[str] | None = None,
+
 ) -> list[dict[str, Any]]:
 
     """短链复用流程：每个账号在**同一个浏览器**里注册 → 拿短链 → 打开 → 抓
@@ -10835,9 +11581,10 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
         try:
 
+            assigned_proxy = proxy_pool[seq] if proxy_pool and seq < len(proxy_pool) else proxy
             resolved_proxy = _resolve_registration_proxy_for_platform(
 
-                "chatgpt", explicit_proxy=None, proxy_getter=lambda: None,
+                "chatgpt", explicit_proxy=assigned_proxy, proxy_getter=lambda: None,
 
             )
 
@@ -10883,7 +11630,7 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
                 short_url = chatgpt_payment.generate_plus_link(
 
-                    a, proxy=None, country=country, currency=currency,
+                    a, proxy=resolved_proxy, country=country, currency=currency,
 
                     use_short_link=True,
 
@@ -10933,11 +11680,14 @@ def _register_chatgpt_shortlink_grab_for_gopay(
             )
             saved_model = save_account(account)
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
+            slot_extra = dict(slot_payload.get("extra") or {})
             _schedule_chatgpt_trial_post_register_check(
                 account=account,
                 saved_account_id=_saved_account_id(saved_model, account),
                 logger=logger,
                 proxy=resolved_proxy,
+                region_proxies=dict(slot_extra.get("trial_eligibility_proxies") or {}),
+                enabled=_chatgpt_trial_probe_after_register_enabled(slot_extra),
             )
             with Session(engine) as session:
                 fresh = session.exec(
@@ -10956,7 +11706,12 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
                 with results_lock:
 
-                    results.append({"account_id": acc_id, "midtrans_url": midtrans_url})
+                    results.append({
+                        "seq": seq,
+                        "account_id": acc_id,
+                        "midtrans_url": midtrans_url,
+                        "proxy": resolved_proxy or "",
+                    })
 
                 logger.log(f"注册+短链+抓 midtrans 成功 #{seq + 1}: {account.email} -> ...{midtrans_url[-32:]}")
 
@@ -11018,7 +11773,7 @@ def _register_chatgpt_shortlink_grab_for_gopay(
 
 
 
-    return results
+    return sorted(results, key=lambda item: int(item.get("seq") or 0))
 
 
 
@@ -11036,7 +11791,9 @@ def _register_chatgpt_accounts_for_gopay(
 
     concurrency: int = 1,
 
-) -> list[int]:
+    proxy_pool: list[str] | None = None,
+
+) -> list[dict[str, Any]]:
 
     """为 GoPay 付款流水线先注册 N 个 ChatGPT 账号，返回新账号 id 列表。
 
@@ -11074,7 +11831,7 @@ def _register_chatgpt_accounts_for_gopay(
 
 
 
-    new_ids: list[int] = []
+    new_ids: list[int] = [0] * register_count
 
     new_ids_lock = threading.Lock()
 
@@ -11094,7 +11851,7 @@ def _register_chatgpt_accounts_for_gopay(
 
                 "chatgpt",
 
-                explicit_proxy=None,
+                explicit_proxy=(proxy_pool[seq] if proxy_pool and seq < len(proxy_pool) else None),
 
                 proxy_getter=lambda: None,
 
@@ -11120,11 +11877,14 @@ def _register_chatgpt_accounts_for_gopay(
 
             _mark_outlook_mailbox_event(getattr(platform, "mailbox", None), account, "registration_success", logger)
 
+            payload_extra = dict(payload.get("extra") or {})
             _schedule_chatgpt_trial_post_register_check(
                 account=account,
                 saved_account_id=_saved_account_id(None, account),
                 logger=logger,
                 proxy=resolved_proxy,
+                region_proxies=dict(payload_extra.get("trial_eligibility_proxies") or {}),
+                enabled=_chatgpt_trial_probe_after_register_enabled(payload_extra),
             )
 
             # save_account 返回的 model 出 session 即 detached，访问 .id 会抛
@@ -11146,7 +11906,7 @@ def _register_chatgpt_accounts_for_gopay(
 
                     with new_ids_lock:
 
-                        new_ids.append(int(fresh.id))
+                        new_ids[seq] = int(fresh.id)
 
             logger.log(f"ChatGPT 注册成功 #{seq + 1}: {account.email}")
 
@@ -11192,7 +11952,15 @@ def _register_chatgpt_accounts_for_gopay(
 
 
 
-    return new_ids
+    return [
+        {
+            "seq": seq,
+            "account_id": account_id,
+            "proxy": (proxy_pool[seq] if proxy_pool and seq < len(proxy_pool) else ""),
+        }
+        for seq, account_id in enumerate(new_ids)
+        if account_id > 0
+    ]
 
 
 
@@ -11385,6 +12153,170 @@ def _execute_account_health_check_task(payload: dict[str, Any], logger: TaskLogg
     result = {**counts, "total": total, "items": [item for item in items if item is not None]}
     logger.set_result_data(result)
     logger.finish(TASK_STATUS_SUCCEEDED if counts["error"] == 0 else TASK_STATUS_FAILED)
+
+
+def _execute_trial_eligibility_probe_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _safe_error(value: Any) -> str:
+        return _safe_trial_eligibility_error(value)
+
+    ids = _normalize_task_ids(payload.get("ids"))
+    platform = str(payload.get("platform") or "chatgpt").strip().lower() or "chatgpt"
+    try:
+        validated_proxy_map = _validate_chatgpt_trial_region_proxies(
+            payload.get("proxies"),
+            logger,
+            required=True,
+        )
+    except ValueError as exc:
+        error = str(exc)
+        logger.record_error(error)
+        logger.finish(TASK_STATUS_FAILED, error=error)
+        return
+    try:
+        concurrency = max(1, min(int(payload.get("concurrency") or 3), 10))
+    except Exception:
+        concurrency = 3
+
+    validated_proxies = [
+        (code, TRIAL_ELIGIBILITY_REGION_LABELS[code], proxy)
+        for code, proxy in validated_proxy_map.items()
+    ]
+
+    with Session(engine) as session:
+        statement = select(AccountModel).where(AccountModel.platform == platform)
+        if ids:
+            statement = statement.where(AccountModel.id.in_(ids))  # type: ignore[attr-defined]
+        models = list(session.exec(statement.order_by(AccountModel.id.asc())).all())
+        account_rows: list[tuple[int, Any]] = []
+        for model in models:
+            try:
+                account_rows.append((int(model.id), build_platform_account(session, model)))
+            except Exception as exc:
+                logger.log(f"账号 #{model.id} 构建失败: {type(exc).__name__}", level="warning")
+
+    total_accounts = len(account_rows)
+    total_checks = total_accounts * len(validated_proxies)
+    logger.set_progress(0, total_accounts)
+    region_stats = {
+        code: {"eligible": 0, "ineligible": 0, "failed": 0}
+        for code, _label, _proxy in validated_proxies
+    }
+    eligible_accounts = 0
+    eligible_checks = 0
+    ineligible_checks = 0
+    failed_checks = 0
+    completed_accounts = 0
+
+    def _publish_progress() -> None:
+        logger.set_result_data({
+            "total_accounts": total_accounts,
+            "total_checks": total_checks,
+            "completed_accounts": completed_accounts,
+            "remaining_accounts": max(total_accounts - completed_accounts, 0),
+            "eligible_accounts": eligible_accounts,
+            "eligible_checks": eligible_checks,
+            "ineligible_checks": ineligible_checks,
+            "failed_checks": failed_checks,
+            "regions": [
+                {
+                    "code": code,
+                    "label": label,
+                    **region_stats[code],
+                }
+                for code, label, _proxy in validated_proxies
+            ],
+        })
+
+    if total_accounts == 0:
+        _publish_progress()
+        logger.finish(TASK_STATUS_SUCCEEDED)
+        return
+
+    logger.log(
+        f"开始批量检测试用资格：账号 {total_accounts} 个，地区 {len(validated_proxies)} 个，"
+        f"共 {total_checks} 次检测，并发账号 {concurrency}"
+    )
+
+    def _worker(account_id: int, account: Any) -> tuple[int, str, list[tuple[str, str, dict[str, Any]]]]:
+        email = str(getattr(account, "email", "") or f"#{account_id}")
+        results: list[tuple[str, str, dict[str, Any]]] = []
+        for code, label, proxy in validated_proxies:
+            if logger.is_cancel_requested():
+                break
+            try:
+                trial_info = _inspect_chatgpt_free_plus_trial(
+                    account,
+                    proxy=proxy,
+                    region_code=code,
+                    retry_log=lambda attempt, max_attempts, delay, reason, region_label=label: logger.log(
+                        f"[{email}][{region_label}] 第 {attempt}/{max_attempts} 次检测失败，"
+                        f"{delay:.1f} 秒后重试：{_safe_error(reason)}",
+                        level="warning",
+                    ),
+                )
+            except Exception as exc:
+                trial_info = {"ok": False, "eligible": False, "error": _safe_error(f"{type(exc).__name__}: {exc}")}
+            results.append((code, label, trial_info))
+        return account_id, email, results
+
+    _publish_progress()
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = {pool.submit(_worker, account_id, account): account_id for account_id, account in account_rows}
+        for future in as_completed(futures):
+            account_id = futures[future]
+            if logger.is_cancel_requested():
+                break
+            account_eligible = False
+            try:
+                result_account_id, email, results = future.result()
+                for code, label, trial_info in results:
+                    if not trial_info.get("ok"):
+                        failed_checks += 1
+                        region_stats[code]["failed"] += 1
+                        error = _safe_error(trial_info.get("error") or "资格接口请求失败")
+                        logger.record_error(f"{email}[{label}]: {error}")
+                        logger.log(f"✗ {email} {label}检测失败：{error}", level="error")
+                    elif trial_info.get("eligible"):
+                        trial_label = f"{label}试用"
+                        _mark_chatgpt_trial_account(
+                            result_account_id,
+                            trial_info,
+                            trial_label=trial_label,
+                            region_code=code,
+                            region_label=label,
+                        )
+                        eligible_checks += 1
+                        region_stats[code]["eligible"] += 1
+                        account_eligible = True
+                        logger.record_success()
+                        logger.log(f"✓ {email} 具备{label}试用资格，已添加标签 {trial_label}")
+                    else:
+                        ineligible_checks += 1
+                        region_stats[code]["ineligible"] += 1
+                        logger.record_success()
+                        logger.log(f"· {email} 当前不具备{label}试用资格")
+                if account_eligible:
+                    eligible_accounts += 1
+            except Exception as exc:
+                failed_checks += len(validated_proxies)
+                error = _safe_error(f"账号 #{account_id}: {type(exc).__name__}: {exc}")
+                logger.record_error(error)
+                logger.log(error, level="error")
+            completed_accounts += 1
+            logger.set_progress(completed_accounts, total_accounts)
+            _publish_progress()
+
+    _publish_progress()
+    logger.log(
+        f"试用资格检测完成：账号={total_accounts}，地区={len(validated_proxies)}，"
+        f"有资格={eligible_checks}，无资格={ineligible_checks}，失败={failed_checks}"
+    )
+    if logger.is_cancel_requested():
+        logger.finish(TASK_STATUS_CANCELLED, error="任务已取消")
+    else:
+        logger.finish(TASK_STATUS_SUCCEEDED if failed_checks == 0 else TASK_STATUS_FAILED)
 
 
 def _is_momo_trial_result_taggable(result: dict[str, Any]) -> bool:

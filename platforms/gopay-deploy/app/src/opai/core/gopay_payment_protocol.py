@@ -38,7 +38,10 @@ from typing import Optional, Callable
 
 import tls_client
 
+from .log_redaction import install_sensitive_log_filter
+
 log = logging.getLogger(__name__)
+install_sensitive_log_filter(log)
 
 MIDTRANS_BASE = "https://app.midtrans.com"
 GWA_BASE = "https://gwa.gopayapi.com"
@@ -46,6 +49,7 @@ CUSTOMER_BASE = "https://customer.gopayapi.com"
 
 PIN_CLIENT_LINKING = "51b5f09a-3813-11ee-be56-0242ac120002-MGUPA"
 PIN_CLIENT_PAYMENT = "47180a8e-f56e-11ed-a05b-0242ac120003-GWC"
+GOPAY_TOKENIZATION_VERIFICATION_AMOUNT_IDR = 1
 
 # X-Snap-Signature（Midtrans Snap 请求签名）。来自抓包文档 2026-06-02：
 #   Signing Key : 1feab063-bf3f-4025-90bf-3be6fa4f4cc2
@@ -236,6 +240,116 @@ class GoPayPayment:
         except Exception:
             raise GoPayPaymentError(f"PIN verify parse error: {r.text[:200]}")
 
+    @staticmethod
+    def _extract_transaction_amount(body: dict) -> tuple[Optional[int], str]:
+        amount = None
+        currency = ""
+        preferred = [
+            body.get("transaction_details"),
+            body.get("order_details"),
+            body.get("transaction"),
+            body,
+        ]
+        for candidate in preferred:
+            if not isinstance(candidate, dict):
+                continue
+            for key in ("gross_amount", "total_amount", "amount"):
+                if key not in candidate:
+                    continue
+                try:
+                    amount = int(float(str(candidate[key]).replace(",", "")))
+                    break
+                except (TypeError, ValueError):
+                    pass
+            if amount is not None:
+                break
+        for candidate in preferred:
+            if isinstance(candidate, dict):
+                value = candidate.get("currency") or candidate.get("currency_code")
+                if value:
+                    currency = str(value).upper()
+                    break
+        return amount, currency
+
+    @staticmethod
+    def _is_one_idr_tokenization_verification(
+        body: dict, amount: Optional[int], currency: str
+    ) -> bool:
+        """识别 Midtrans 的 GoPay 强制绑定 1 IDR 验证交易。
+
+        2026-08-22 的成功抓包同时满足：金额 1 IDR、gopay.tokenization /
+        enforce_tokenization 为 true，且 enabled_payments 中 GoPay 状态为 up、
+        mode 包含 tokenization。四项必须同时命中，避免把普通 1 IDR 订单误当验证。
+        """
+        if amount != GOPAY_TOKENIZATION_VERIFICATION_AMOUNT_IDR or currency != "IDR":
+            return False
+        gopay = body.get("gopay") if isinstance(body, dict) else None
+        if not isinstance(gopay, dict):
+            return False
+        if (
+            gopay.get("tokenization") is not True
+            or gopay.get("enforce_tokenization") is not True
+        ):
+            return False
+        payments = body.get("enabled_payments")
+        if not isinstance(payments, list):
+            return False
+        for payment in payments:
+            if (
+                not isinstance(payment, dict)
+                or str(payment.get("type") or "").lower() != "gopay"
+            ):
+                continue
+            status = str(payment.get("status") or "").lower()
+            modes = payment.get("mode") or []
+            if isinstance(modes, str):
+                modes = [modes]
+            normalized_modes = {str(mode).lower() for mode in modes}
+            if status == "up" and "tokenization" in normalized_modes:
+                return True
+        return False
+
+    @staticmethod
+    def _check_cancel(cancel_check: Optional[Callable[[], bool]]) -> None:
+        if cancel_check and cancel_check():
+            raise GoPayPaymentError("payment cancelled")
+
+    @classmethod
+    def _sleep(cls, seconds: float, cancel_check: Optional[Callable[[], bool]]) -> None:
+        deadline = time.monotonic() + max(float(seconds or 0), 0)
+        while time.monotonic() < deadline:
+            cls._check_cancel(cancel_check)
+            time.sleep(min(0.25, max(deadline - time.monotonic(), 0)))
+
+    def inspect_transaction(
+        self,
+        midtrans_url: str,
+        *,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> dict:
+        """Query an existing Snap transaction without linking or charging again."""
+        match = re.search(r"/snap/v[34]/redirection/([0-9a-f-]{36})", midtrans_url)
+        if not match:
+            return {"success": False, "uncertain": False, "detail": "invalid midtrans URL"}
+        self._check_cancel(cancel_check)
+        snap = match.group(1)
+        response = self._midtrans_get(f"/snap/v1/transactions/{snap}/status")
+        body = response.get("body") if isinstance(response.get("body"), dict) else {}
+        status = str(body.get("transaction_status") or "unknown").lower()
+        amount, currency = self._extract_transaction_amount(body)
+        terminal_success = status in {"settlement", "capture"}
+        uncertain = status in {"pending", "authorize", "unknown", ""} or response.get("status") != 200
+        return {
+            "success": terminal_success,
+            "uncertain": uncertain,
+            "detail": f"transaction_status={status}",
+            "transaction_status": status,
+            "snap": snap,
+            "amount": amount,
+            "currency": currency,
+            "http_status": response.get("status"),
+        }
+
     def pay(
         self,
         midtrans_url: str,
@@ -245,6 +359,13 @@ class GoPayPayment:
         wait_otp: Callable[[str, int], Optional[str]] = None,
         otp_total_timeout: int = 120,
         otp_resend_after: int = 60,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        expected_currency: str = "",
+        max_amount: Optional[int] = None,
+        require_zero_amount: bool = False,
+        allow_one_idr_tokenization_verification: bool = False,
+        status_timeout: int = 45,
+        status_poll_interval: float = 2.0,
     ) -> dict:
         """
         执行完整的 GoPay 支付流程。
@@ -258,6 +379,8 @@ class GoPayPayment:
             otp_total_timeout: 等 OTP 的总超时秒数（默认 120=2 分钟）
             otp_resend_after: 第一段等待多少秒没收到码就重新触发 GoPay
                 发码（默认 60=1 分钟），之后继续等到总超时
+            allow_one_idr_tokenization_verification: 允许元数据完整命中的
+                GoPay 强制绑定 1 IDR 验证交易越过 0 元上限
 
         Returns:
             {"success": bool, "detail": str, "transaction_status": str}
@@ -267,7 +390,9 @@ class GoPayPayment:
         if not m:
             return {"success": False, "detail": "invalid midtrans URL"}
         snap = m.group(1)
-        log.info("[pay] snap=%s phone=%s%s", snap[:12], country_code, phone)
+        self._charge_attempted = False
+        self._check_cancel(cancel_check)
+        log.info("[pay] snap=%s phone=***%s", snap[:12], str(phone)[-4:])
 
         # === Phase A: Linking ===
 
@@ -275,15 +400,71 @@ class GoPayPayment:
         log.info("[pay] 拉交易详情取 client_key…")
         tx_r = self._midtrans_get(f"/snap/v1/transactions/{snap}")
         client_key = ""
-        if tx_r["status"] == 200 and isinstance(tx_r.get("body"), dict):
-            client_key = tx_r["body"].get("merchant", {}).get("client_key", "")
+        tx_body = tx_r.get("body") if isinstance(tx_r.get("body"), dict) else {}
+        if tx_r["status"] == 200:
+            client_key = tx_body.get("merchant", {}).get("client_key", "")
+        amount, detected_currency = self._extract_transaction_amount(tx_body)
+        is_tokenization_verification = bool(
+            allow_one_idr_tokenization_verification
+            and self._is_one_idr_tokenization_verification(
+                tx_body, amount, detected_currency
+            )
+        )
+        constraints_enabled = bool(
+            expected_currency or max_amount is not None or require_zero_amount
+        )
+        if constraints_enabled and amount is None:
+            return {
+                "success": False,
+                "uncertain": False,
+                "detail": "transaction amount unavailable; refusing to charge",
+                "snap": snap,
+            }
+        if expected_currency and detected_currency != str(expected_currency).upper():
+            return {
+                "success": False,
+                "uncertain": False,
+                "detail": f"currency mismatch: expected={expected_currency} actual={detected_currency or 'unknown'}",
+                "snap": snap,
+                "amount": amount,
+                "currency": detected_currency,
+            }
+        if require_zero_amount and amount != 0 and not is_tokenization_verification:
+            return {
+                "success": False,
+                "uncertain": False,
+                "detail": f"non-zero transaction blocked: amount={amount}",
+                "snap": snap,
+                "amount": amount,
+                "currency": detected_currency,
+            }
+        if (
+            max_amount is not None
+            and amount is not None
+            and amount > int(max_amount)
+            and not is_tokenization_verification
+        ):
+            return {
+                "success": False,
+                "uncertain": False,
+                "detail": f"transaction amount {amount} exceeds limit {max_amount}",
+                "snap": snap,
+                "amount": amount,
+                "currency": detected_currency,
+            }
+        if is_tokenization_verification:
+            log.info(
+                "[pay] detected enforced GoPay tokenization verification: %d %s",
+                amount,
+                detected_currency,
+            )
         if not client_key:
             log.warning("[pay] 未取到 client_key（继续尝试不带 Authorization）: %s", tx_r["status"])
         link_extra = {}
         if client_key:
             auth_str = base64.b64encode(f"{client_key}:".encode("utf-8")).decode("utf-8")
             link_extra = {"Authorization": f"Basic {auth_str}"}
-            log.info("[pay] client_key=%s", client_key)
+            log.info("[pay] merchant client key resolved")
 
         # Step 1: linking
         log.info("[pay] Step 1: linking")
@@ -297,8 +478,8 @@ class GoPayPayment:
         if link_r["status"] == 406:
             log.info("[pay] Already linked, unlinking first...")
             ul = self._midtrans_delete(f"/snap/v3/accounts/{snap}/gopay")
-            log.info("[pay] Unlink response: %d %s", ul["status"], json.dumps(ul["body"], ensure_ascii=False)[:300])
-            time.sleep(1)
+            log.info("[pay] Unlink response: %d", ul["status"])
+            self._sleep(1, cancel_check)
             link_r = self._midtrans_post(f"/snap/v3/accounts/{snap}/linking", {
                 "type": "gopay",
                 "country_code": country_code,
@@ -307,20 +488,19 @@ class GoPayPayment:
             if link_r["status"] == 406:
                 return {"success": False, "detail": "still linked after unlink attempt"}
         if link_r["status"] not in (200, 201):
-            link_body_str = json.dumps(link_r.get("body", {}), ensure_ascii=False)[:400]
-            log.warning("[pay] linking failed: %d body=%s", link_r["status"], link_body_str)
-            return {"success": False, "detail": f"linking failed: {link_r['status']} {link_body_str}"}
+            log.warning("[pay] linking failed: %d", link_r["status"])
+            return {"success": False, "detail": f"linking failed: {link_r['status']}"}
 
         # 从 response 提取 reference
         body = link_r["body"]
         act_url = body.get("activation_link_url", "")
         ref_m = re.search(r"reference=([0-9a-f-]{36})", act_url)
         if not ref_m:
-            return {"success": False, "detail": f"no reference in linking response: {str(body)[:200]}"}
+            return {"success": False, "detail": "no reference in linking response"}
         reference = ref_m.group(1)
-        log.info("[pay] reference=%s", reference)
+        log.info("[pay] linking reference=%s...", reference[:8])
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 2: validate-reference
         log.info("[pay] Step 2: validate-reference")
@@ -328,7 +508,7 @@ class GoPayPayment:
         if vr["status"] != 200:
             return {"success": False, "detail": f"validate-reference failed: {vr['status']}"}
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 3: user-consent
         log.info("[pay] Step 3: user-consent")
@@ -336,7 +516,7 @@ class GoPayPayment:
         if uc["status"] != 200:
             return {"success": False, "detail": f"user-consent failed: {uc['status']}"}
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 4: resend-otp (强制 SMS)
         log.info("[pay] Step 4: resend-otp (force SMS)")
@@ -364,8 +544,10 @@ class GoPayPayment:
         first_wait = max(min(int(otp_resend_after or 0), total), 0)
         otp_code = None
         if first_wait > 0:
-            log.info("[pay] Waiting for OTP on %s (first %ds)...", full_phone, first_wait)
+            log.info("[pay] Waiting for OTP on ***%s (first %ds)...", full_phone[-4:], first_wait)
+            self._check_cancel(cancel_check)
             otp_code = wait_otp(full_phone, first_wait)
+            self._check_cancel(cancel_check)
         if not otp_code:
             remaining = total - first_wait
             if remaining > 0:
@@ -374,13 +556,15 @@ class GoPayPayment:
                     _trigger_gopay_resend()
                 except Exception as exc:
                     log.warning("[pay] resend-otp retry failed: %s", exc)
-                log.info("[pay] Waiting for OTP on %s (remaining %ds)...", full_phone, remaining)
+                log.info("[pay] Waiting for OTP on ***%s (remaining %ds)...", full_phone[-4:], remaining)
+                self._check_cancel(cancel_check)
                 otp_code = wait_otp(full_phone, remaining)
+                self._check_cancel(cancel_check)
         if not otp_code:
             return {"success": False, "detail": "OTP timeout"}
-        log.info("[pay] OTP: %s", otp_code)
+        log.info("[pay] OTP received")
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 5: validate-otp
         log.info("[pay] Step 5: validate-otp")
@@ -393,7 +577,7 @@ class GoPayPayment:
 
         # 提取 challenge_id
         vo_body = vo.get("body", {})
-        log.info("[pay] validate-otp response: %s", json.dumps(vo_body, ensure_ascii=False)[:500])
+        log.info("[pay] validate-otp response received")
 
         # 尝试多种路径提取 challenge_id
         challenge_id = ""
@@ -416,17 +600,17 @@ class GoPayPayment:
                 challenge_id = m.group(1)
         if not challenge_id:
             log.error("[pay] No challenge_id found in validate-otp response")
-            return {"success": False, "detail": f"no challenge_id: {json.dumps(vo_body, ensure_ascii=False)[:300]}"}
+            return {"success": False, "detail": "no challenge_id after OTP validation"}
 
         log.info("[pay] challenge_id=%s", challenge_id[:16])
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 6: PIN verify (linking)
         log.info("[pay] Step 6: PIN verify (MGUPA)")
         pin_token = self._pin_verify(challenge_id, pin, PIN_CLIENT_LINKING)
-        log.info("[pay] pin_token=%s...", pin_token[:30])
+        log.info("[pay] linking PIN token received")
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 7: validate-pin
         log.info("[pay] Step 7: validate-pin")
@@ -443,7 +627,7 @@ class GoPayPayment:
         # Step 8: poll gopay status
         log.info("[pay] Step 8: poll gopay linked status")
         for _ in range(10):
-            time.sleep(2)
+            self._sleep(2, cancel_check)
             gs = self._midtrans_get(f"/snap/v3/accounts/{snap}/gopay")
             if gs["status"] == 200:
                 acct_status = gs["body"].get("account_status", "")
@@ -453,32 +637,54 @@ class GoPayPayment:
         else:
             return {"success": False, "detail": "gopay not linked after polling"}
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 9: charge
         log.info("[pay] Step 9: charge")
-        charge = self._midtrans_post(f"/snap/v2/transactions/{snap}/charge", {
-            "payment_type": "gopay",
-            "tokenization": "true",
-            "promo_details": None,
-        })
+        self._check_cancel(cancel_check)
+        self._charge_attempted = True
+        try:
+            charge = self._midtrans_post(f"/snap/v2/transactions/{snap}/charge", {
+                "payment_type": "gopay",
+                "tokenization": "true",
+                "promo_details": None,
+            })
+        except Exception as exc:
+            return {
+                "success": False,
+                "uncertain": True,
+                "charge_attempted": True,
+                "detail": f"charge response unavailable: {exc}",
+                "transaction_status": "unknown",
+                "snap": snap,
+                "amount": amount,
+                "currency": detected_currency,
+            }
         charge_body = charge["body"]
-        charge_json = json.dumps(charge_body, ensure_ascii=False)
-        log.info("[pay] charge response: %s", charge_json[:1000])
+        log.info("[pay] charge response received: HTTP %s", charge.get("status"))
 
         # fraud check（HTTP 可能是 200 但 body 里 status_code=202 + fraud_status=deny）
         body_status = str(charge_body.get("status_code", ""))
         fraud = charge_body.get("fraud_status", "")
         txn_status = charge_body.get("transaction_status", "")
         if fraud == "deny" or txn_status == "deny":
-            raise GoPayFraudDenyError(f"FRAUD DENIED: {charge_json[:300]}")
+            raise GoPayFraudDenyError("FRAUD DENIED")
         if charge["status"] not in (200, 201) and body_status not in ("200", "201"):
-            return {"success": False, "detail": f"charge failed: HTTP {charge['status']} body_status={body_status}"}
+            return {"success": False, "uncertain": True, "charge_attempted": True, "detail": f"charge failed: HTTP {charge['status']} body_status={body_status}", "snap": snap, "amount": amount, "currency": detected_currency}
 
         # charge 直接 settlement（无需 challenge）
         if txn_status in ("settlement", "capture"):
             log.info("[pay] charge already settled, no challenge needed")
-            return {"success": True, "detail": "payment completed (direct settlement)", "transaction_status": txn_status}
+            return {
+                "success": True,
+                "uncertain": False,
+                "charge_attempted": True,
+                "detail": "payment completed (direct settlement)",
+                "transaction_status": txn_status,
+                "snap": snap,
+                "amount": amount,
+                "currency": detected_currency,
+            }
 
         challenge_ref = ""
         actions = charge_body.get("actions") or []
@@ -497,15 +703,15 @@ class GoPayPayment:
                     break
         if not challenge_ref:
             log.warning("[pay] no challenge ref, charge_body keys: %s", list(charge_body.keys()))
-            return {"success": False, "detail": f"no challenge ref in charge response: {charge_json[:400]}"}
-        log.info("[pay] charge challenge_ref=%s", challenge_ref)
+            return {"success": False, "uncertain": True, "charge_attempted": True, "detail": "no challenge ref in charge response", "snap": snap, "amount": amount, "currency": detected_currency}
+        log.info("[pay] charge challenge reference received")
 
         # === Phase C: Challenge ===
 
         # HAR 里在 validate 之前先访问了 challenge 页面（可能设 cookie/session）
         verification_url = charge_body.get("gopay_verification_link_url") or ""
         if verification_url:
-            log.info("[pay] GET challenge page: %s", verification_url[:120])
+            log.info("[pay] GET challenge page")
             try:
                 vr = self._session.get(verification_url, headers={
                     **self._headers,
@@ -515,45 +721,45 @@ class GoPayPayment:
             except Exception as e:
                 log.warning("[pay] challenge page fetch failed: %s", e)
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 10: payment validate
         log.info("[pay] Step 10: payment validate")
         pv = self._gwa_get(f"/v1/payment/validate?reference_id={challenge_ref}")
-        log.info("[pay] validate response: %d %s", pv["status"], json.dumps(pv.get("body", {}), ensure_ascii=False)[:800])
+        log.info("[pay] validate response: %d", pv["status"])
         if pv["status"] != 200:
-            return {"success": False, "detail": f"payment validate failed: {pv['status']}"}
+            return {"success": False, "uncertain": True, "charge_attempted": True, "detail": f"payment validate failed: {pv['status']}", "snap": snap, "amount": amount, "currency": detected_currency}
 
         # 提取支付阶段的 challenge_id（可能嵌套在多层结构里）
         pv_body = pv.get("body", {})
         pay_challenge_id = self._extract_challenge_id(pv_body)
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 11: payment confirm
         log.info("[pay] Step 11: payment confirm")
         pc = self._gwa_post(f"/v1/payment/confirm?reference_id={challenge_ref}", {
             "payment_instructions": [],
         })
-        log.info("[pay] confirm response: %d %s", pc["status"], json.dumps(pc.get("body", {}), ensure_ascii=False)[:800])
+        log.info("[pay] confirm response: %d", pc["status"])
         if pc["status"] != 200:
-            return {"success": False, "detail": f"payment confirm failed: {pc['status']}"}
+            return {"success": False, "uncertain": True, "charge_attempted": True, "detail": f"payment confirm failed: {pc['status']}", "snap": snap, "amount": amount, "currency": detected_currency}
 
         # 从 confirm response 提取 challenge_id（如果 validate 没给）
         if not pay_challenge_id:
             pc_body = pc.get("body", {})
             pay_challenge_id = self._extract_challenge_id(pc_body)
         if not pay_challenge_id:
-            return {"success": False, "detail": "no challenge_id for payment PIN"}
-        log.info("[pay] payment challenge_id=%s", pay_challenge_id[:16])
+            return {"success": False, "uncertain": True, "charge_attempted": True, "detail": "no challenge_id for payment PIN", "snap": snap, "amount": amount, "currency": detected_currency}
+        log.info("[pay] payment challenge received")
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 12: PIN verify (payment)
         log.info("[pay] Step 12: PIN verify (GWC)")
         pay_pin_token = self._pin_verify(pay_challenge_id, pin, PIN_CLIENT_PAYMENT)
 
-        time.sleep(1)
+        self._sleep(1, cancel_check)
 
         # Step 13: payment process
         log.info("[pay] Step 13: payment process")
@@ -564,19 +770,47 @@ class GoPayPayment:
             },
         })
         if pp["status"] != 200:
-            return {"success": False, "detail": f"payment process failed: {pp['status']} {str(pp['body'])[:200]}"}
+            return {"success": False, "uncertain": True, "charge_attempted": True, "detail": f"payment process failed: {pp['status']}", "snap": snap, "amount": amount, "currency": detected_currency}
         log.info("[pay] Payment process OK!")
 
         # === Phase D: 验证 ===
-        time.sleep(2)
-
-        # Step 14: check status
-        log.info("[pay] Step 14: check transaction status")
-        ts = self._midtrans_get(f"/snap/v1/transactions/{snap}/status")
-        txn_status = ts.get("body", {}).get("transaction_status", "unknown")
-        log.info("[pay] Transaction status: %s", txn_status)
-
-        if txn_status in ("settlement", "capture"):
-            return {"success": True, "detail": "payment completed", "transaction_status": txn_status}
-        else:
-            return {"success": False, "detail": f"transaction_status={txn_status}", "transaction_status": txn_status}
+        deadline = time.monotonic() + max(int(status_timeout or 0), 1)
+        txn_status = "unknown"
+        while time.monotonic() < deadline:
+            self._sleep(status_poll_interval, cancel_check)
+            log.info("[pay] Step 14: check transaction status")
+            inspected = self.inspect_transaction(midtrans_url, cancel_check=cancel_check)
+            txn_status = str(inspected.get("transaction_status") or "unknown").lower()
+            log.info("[pay] Transaction status: %s", txn_status)
+            if txn_status in {"settlement", "capture"}:
+                return {
+                    "success": True,
+                    "uncertain": False,
+                    "charge_attempted": True,
+                    "detail": "payment completed",
+                    "transaction_status": txn_status,
+                    "snap": snap,
+                    "amount": amount,
+                    "currency": detected_currency,
+                }
+            if txn_status in {"deny", "cancel", "cancelled", "expire", "expired", "failure"}:
+                return {
+                    "success": False,
+                    "uncertain": False,
+                    "charge_attempted": True,
+                    "detail": f"transaction_status={txn_status}",
+                    "transaction_status": txn_status,
+                    "snap": snap,
+                    "amount": amount,
+                    "currency": detected_currency,
+                }
+        return {
+            "success": False,
+            "uncertain": True,
+            "charge_attempted": True,
+            "detail": f"payment status remains {txn_status}",
+            "transaction_status": txn_status,
+            "snap": snap,
+            "amount": amount,
+            "currency": detected_currency,
+        }

@@ -46,9 +46,16 @@ class CodexOAuthTaskRequest(BaseModel):
 
 
 class MomoTrialProbeTaskRequest(BaseModel):
-    ids: list[int] = []
+    ids: list[int] = Field(default_factory=list)
     platform: str = "chatgpt"
     concurrency: int = 3
+
+
+class TrialEligibilityProbeTaskRequest(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+    platform: str = "chatgpt"
+    concurrency: int = 3
+    proxies: dict[str, str] = Field(default_factory=dict)
 
 class GoPayPayChatGptTaskRequest(BaseModel):
     """GoPay 协议付款 ChatGPT Plus。
@@ -84,12 +91,17 @@ class GoPayPayChatGptTaskRequest(BaseModel):
     sms_provider: str = "herosms"
     smspool_api_key: str = ""
     smsbower_api_key: str = ""
-    # smsapi（固定手机号 + 查最新短信 API）渠道
+    five_sim_api_key: str = ""
+    api_sms_pool: str = ""
+    proxy_pool: str = ""
+    # smsapi / api_sms（固定手机号或号码池 + 查最新短信 API）渠道
     smsapi_url: str = ""
     smsapi_phone: str = ""
     herosms_api_key: str = ""
     # 拿号价格上限（USD），herosms 与 smspool 共用。空串走插件默认（0.11）。
     max_price: str = ""
+    # 付款安全上限（IDR）。默认 0 允许免费订单和元数据完整的 GoPay 1 IDR 绑定验证。
+    max_payment_amount_rp: int = 0
     # GoPay 号来源开关：auto（先池后注册）/ pool（只用号池，没号失败）/
     # register（强制现注册新号，忽略号池/指定号）。
     gopay_source: str = "auto"
@@ -123,6 +135,9 @@ class GoPayRegisterAccountTaskRequest(BaseModel):
     sms_provider: str = "herosms"
     smspool_api_key: str = ""
     smsbower_api_key: str = ""
+    five_sim_api_key: str = ""
+    api_sms_pool: str = ""
+    proxy_pool: str = ""
     smsapi_url: str = ""
     smsapi_phone: str = ""
     herosms_api_key: str = ""
@@ -152,6 +167,14 @@ def create_codex_oauth_task(body: CodexOAuthTaskRequest):
 @router.post("/momo-trial-probe")
 def create_momo_trial_probe_task(body: MomoTrialProbeTaskRequest):
     return command_service.create_momo_trial_probe_task(body.model_dump())
+
+
+@router.post("/trial-eligibility-probe")
+def create_trial_eligibility_probe_task(body: TrialEligibilityProbeTaskRequest):
+    try:
+        return command_service.create_trial_eligibility_probe_task(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class GetRtTaskRequest(BaseModel):

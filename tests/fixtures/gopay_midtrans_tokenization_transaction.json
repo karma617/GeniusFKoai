@@ -1,0 +1,41 @@
+{
+  "transaction_details": {
+    "order_id": "setatt_FIXTURE",
+    "gross_amount": "1",
+    "currency": "IDR"
+  },
+  "recommended_payment_method": "gopay",
+  "enabled_payments": [
+    {
+      "type": "gopay",
+      "mode": [
+        "deeplink",
+        "tokenization"
+      ],
+      "status": "up",
+      "minimum_amount": 1,
+      "maximum_amount": 20000000
+    },
+    {
+      "type": "qris",
+      "acquirer": "gopay",
+      "status": "up",
+      "minimum_amount": 1,
+      "maximum_amount": 10000000
+    }
+  ],
+  "gopay": {
+    "tokenization": true,
+    "enforce_tokenization": true,
+    "whitelist_country_codes": [],
+    "blacklist_country_codes": []
+  },
+  "merchant": {
+    "client_key": "Mid-client-FIXTURE",
+    "payment_settings": {
+      "gopay": {
+        "gopay_intent": "EWALLET_QR"
+      }
+    }
+  }
+}

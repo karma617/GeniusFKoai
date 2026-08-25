@@ -25,13 +25,16 @@ const STATUS_VARIANT: Record<string, any> = {
 const platformActionsCache = new Map<string, any[]>()
 const platformActionsPromiseCache = new Map<string, Promise<any[]>>()
 const CHATGPT_K12_WORKSPACE_IDS_STORAGE_KEY = 'accounts.chatgpt.k12WorkspaceIds'
+const CHATGPT_TRIAL_PROBE_FORM_STORAGE_KEY = 'accounts.chatgpt.trialProbeForm'
 const GOPAY_REGISTER_FORM_STORAGE_KEY = 'accounts.gopay.registerForm'
 
 const GOPAY_SMS_PROVIDER_OPTIONS = [
   { value: 'herosms', label: 'HeroSMS', country: '6', service: 'ni', apiKeyField: 'herosms_api_key' },
   { value: 'smsbower', label: 'SMSBower', country: '6', service: 'ni', apiKeyField: 'smsbower_api_key' },
   { value: 'smspool', label: 'SMSPool', country: '9', service: '392', apiKeyField: 'smspool_api_key' },
+  { value: 'five_sim', label: '5sim', country: 'indonesia', service: 'gojek', apiKeyField: 'five_sim_api_key' },
   { value: 'smsapi', label: 'SmsApi（自有固定号）', country: '', service: 'gopay', apiKeyField: '' },
+  { value: 'api_sms', label: 'API接码（号码池）', country: '按号码识别', service: 'gopay', apiKeyField: '' },
 ] as const
 
 type GopaySmsProvider = typeof GOPAY_SMS_PROVIDER_OPTIONS[number]['value']
@@ -105,7 +108,56 @@ const ACCOUNT_STATUS_FILTER_OPTIONS = [
   'invalid',
   'banned',
 ]
-const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', 'MOMO试用', '2FA已绑', 'WEB协议', '安卓协议', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
+const TRIAL_PROBE_REGIONS = [
+  { code: 'JP', label: '日本' },
+  { code: 'PH', label: '菲律宾' },
+  { code: 'GB', label: '英国' },
+  { code: 'ID', label: '印度尼西亚' },
+  { code: 'NL', label: '荷兰' },
+  { code: 'IN', label: '印度' },
+] as const
+
+type TrialProbeForm = {
+  proxies: Record<string, string>
+  concurrency: number
+}
+
+function readStoredTrialProbeForm(): TrialProbeForm {
+  const fallback: TrialProbeForm = {
+    proxies: Object.fromEntries(TRIAL_PROBE_REGIONS.map(region => [region.code, ''])),
+    concurrency: 3,
+  }
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(CHATGPT_TRIAL_PROBE_FORM_STORAGE_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback
+    const stored = parsed as Record<string, unknown>
+    const storedProxies = stored.proxies && typeof stored.proxies === 'object' && !Array.isArray(stored.proxies)
+      ? stored.proxies as Record<string, unknown>
+      : {}
+    return {
+      proxies: Object.fromEntries(TRIAL_PROBE_REGIONS.map(region => [
+        region.code,
+        String(storedProxies[region.code] || ''),
+      ])),
+      concurrency: Math.max(1, Math.min(10, Number(stored.concurrency) || 3)),
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function writeStoredTrialProbeForm(form: TrialProbeForm) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(CHATGPT_TRIAL_PROBE_FORM_STORAGE_KEY, JSON.stringify(form))
+  } catch {
+    // Ignore browsers that block localStorage.
+  }
+}
+
+const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', ...TRIAL_PROBE_REGIONS.map(region => `${region.label}试用`), 'MOMO试用', '2FA已绑', 'WEB协议', '安卓协议', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
 const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -255,6 +307,46 @@ function getDisplayWarnings(acc: any) {
 function getDisplayBadges(acc: any) {
   const badges = getDisplaySummary(acc)?.badges
   return normalizeAccountBadges(acc, Array.isArray(badges) ? badges : [])
+}
+
+function getGopayBalanceMeta(acc: any) {
+  const overview = getAccountOverview(acc)
+  const queryStatus = String(overview?.balance_query_status || '').trim().toLowerCase()
+  const raw = overview?.balance_rp
+  const amount = raw === null || raw === undefined || raw === '' ? Number.NaN : Number(raw)
+  const error = String(overview?.balance_check_error || overview?.check_error || '').trim()
+  if (queryStatus === 'error' || !Number.isFinite(amount) || (!queryStatus && amount === 0)) {
+    return { label: queryStatus === 'error' ? '查询失败' : '待刷新', amount: null, error }
+  }
+  const normalizedAmount = Math.max(0, amount)
+  return {
+    label: 'Rp ' + normalizedAmount.toLocaleString('id-ID'),
+    amount: normalizedAmount,
+    error: '',
+  }
+}
+
+function getGopayAccountBadges(acc: any, badges: any[]) {
+  if (String(acc?.platform || '').trim().toLowerCase() !== 'gopay') return badges
+  const overview = getAccountOverview(acc)
+  const next = [...badges]
+  const append = (label: string, tone: string) => {
+    if (label && !next.some((badge: any) => String(badge?.label || '').trim() === label)) {
+      next.push({ label, tone })
+    }
+  }
+  if (overview?.pin_set === true || String(acc?.password || '').trim()) append('PIN已设', 'success')
+  const provider = String(overview?.sms_provider || '').trim().toLowerCase()
+  const providerLabels: Record<string, string> = {
+    herosms: 'HeroSMS',
+    smsbower: 'SMSBower',
+    smspool: 'SMSPool',
+    five_sim: '5sim',
+    smsapi: 'SmsApi',
+    api_sms: 'API接码',
+  }
+  if (provider) append(providerLabels[provider] || provider, 'muted')
+  return next
 }
 
 function getRegistrationModeBadge(acc: any) {
@@ -1331,6 +1423,73 @@ function readStoredGopayRegisterForm(): Record<string, any> {
   }
 }
 
+function normalizeGopayProxyUrl(value: any): string {
+  let text = String(value || '').trim()
+  if (!text) return ''
+  text = text.replace(/^(?:(?:https?|socks5):\/\/)?(https?|socks5);\/\//i, '$1://')
+  text = text.replace(/^(?:https?|socks5):\/\/((?:https?|socks5):\/\/)/i, '$1')
+  if (!/^(?:https?|socks5):\/\//i.test(text)) text = 'http://' + text
+  let parsed: URL
+  try {
+    parsed = new URL(text)
+  } catch {
+    throw new Error('GoPay 注册代理格式无效，请使用 http://user:pass@host:port')
+  }
+  if (!['http:', 'https:', 'socks5:'].includes(parsed.protocol) || !parsed.hostname || !parsed.port) {
+    throw new Error('GoPay 注册代理格式无效，请使用 http://user:pass@host:port')
+  }
+  return text
+}
+
+function parseGopayProxyPool(value: any): string[] {
+  const entries = Array.isArray(value)
+    ? value.map(item => String(item || '').trim()).filter(Boolean)
+    : String(value || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean)
+  const normalized = entries.map(normalizeGopayProxyUrl)
+  const seen = new Set<string>()
+  normalized.forEach((proxy) => {
+    if (seen.has(proxy)) {
+      throw new Error('GoPay 注册代理池存在重复代理，请确保每个账号使用不同代理')
+    }
+    seen.add(proxy)
+  })
+  return normalized
+}
+
+type GopayApiSmsEntry = { phone: string; url: string }
+
+function parseGopayApiSmsPool(value: any): GopayApiSmsEntry[] {
+  const rawEntries = Array.isArray(value) ? value : String(value || '').split(/\r?\n/)
+  const seenPhones = new Set<string>()
+  return rawEntries.map((rawEntry, index) => {
+    const text = typeof rawEntry === 'object' && rawEntry
+      ? String(rawEntry.phone || '') + '----' + String(rawEntry.url || rawEntry.smsapi_url || '')
+      : String(rawEntry || '').trim()
+    if (!text) return null
+    const separator = text.indexOf('----')
+    if (separator < 0) throw new Error('API 接码第 ' + (index + 1) + ' 行格式错误，请使用 手机号----接码地址')
+    const phone = text.slice(0, separator).trim()
+    const url = text.slice(separator + 4).trim()
+    if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+      throw new Error('API 接码第 ' + (index + 1) + ' 行手机号无效，请使用 + 开头的 E.164 格式')
+    }
+    let parsed: URL
+    try { parsed = new URL(url) } catch {
+      throw new Error('API 接码第 ' + (index + 1) + ' 行接码地址无效，请使用完整 HTTP(S) URL')
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+      throw new Error('API 接码第 ' + (index + 1) + ' 行接码地址无效，请使用完整 HTTP(S) URL')
+    }
+    if (seenPhones.has(phone)) throw new Error('API 接码手机号重复：' + phone)
+    seenPhones.add(phone)
+    return { phone, url }
+  }).filter((entry): entry is GopayApiSmsEntry => Boolean(entry))
+}
+
+function formatGopayApiSmsPool(entries: GopayApiSmsEntry[]): string {
+  return entries.map(entry => entry.phone + '----' + entry.url).join('\n')
+}
+
 function getProviderSettingValues(setting: any): Record<string, any> {
   return {
     ...(setting?.config || {}),
@@ -1342,6 +1501,8 @@ function normalizeGopaySmsProvider(value: any): GopaySmsProvider {
   const key = String(value || '').trim().toLowerCase()
   if (key.includes('smsbower')) return 'smsbower'
   if (key.includes('smspool') || key.includes('sms_pool')) return 'smspool'
+  if (key.includes('five_sim') || key === '5sim' || key.includes('fivesim')) return 'five_sim'
+  if (key === 'api_sms' || key === 'api-sms') return 'api_sms'
   if (key === 'smsapi' || key === 'sms_api') return 'smsapi'
   return 'herosms'
 }
@@ -1350,11 +1511,15 @@ function normalizeGopaySmsProvider(value: any): GopaySmsProvider {
 function RegisterModal({
   platform,
   platformMeta,
+  trialProbeProxies,
+  onTrialProbeProxyChange,
   onClose,
   onDone,
 }: {
   platform: string
   platformMeta: any
+  trialProbeProxies: Record<string, string>
+  onTrialProbeProxyChange: (code: string, value: string) => void
   onClose: () => void
   onDone: () => void
 }) {
@@ -1382,8 +1547,9 @@ function RegisterModal({
   const [k12BatchUploadEnabled, setK12BatchUploadEnabled] = useState(false)
   const [bugfreeMode] = useState(false)
   const [k12Join, setK12Join] = useState(false)
-  const [set2faAfterRegister, setSet2faAfterRegister] = useState(true)
-  const [setPasswordAfterRegister, setSetPasswordAfterRegister] = useState(true)
+  const [set2faAfterRegister, setSet2faAfterRegister] = useState(false)
+  const [setPasswordAfterRegister, setSetPasswordAfterRegister] = useState(false)
+  const [trialProbeAfterRegisterEnabled, setTrialProbeAfterRegisterEnabled] = useState(false)
   const [k12WorkspaceIds, setK12WorkspaceIds] = useState(() => platform === 'chatgpt' ? readStoredChatgptK12WorkspaceIds() : '')
   const [authflowExperimental] = useState(false)
   const [chatgptProtocolVariant, setChatgptProtocolVariant] = useState<ChatGPTProtocolVariant>('web')
@@ -1403,10 +1569,26 @@ function RegisterModal({
     return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
   })
   const [gopayPin, setGopayPin] = useState(() => String(readStoredGopayRegisterForm().pin || '147258'))
-  const [gopayProxy, setGopayProxy] = useState(() => String(readStoredGopayRegisterForm().proxy || ''))
-  const [gopayMaxPrice, setGopayMaxPrice] = useState(() => String(readStoredGopayRegisterForm().max_price || '0.011'))
+  const [gopayProxy, setGopayProxy] = useState(() => {
+    const stored = readStoredGopayRegisterForm()
+    const raw = stored.proxy_pool || stored.proxies || stored.proxy || ''
+    try { return parseGopayProxyPool(raw).join('\n') } catch { return String(raw || '') }
+  })
+  const [gopayMaxPrice, setGopayMaxPrice] = useState(() => {
+    const stored = readStoredGopayRegisterForm()
+    const value = String(stored.max_price || '')
+    // 旧版本的 0.011 上限低于 5sim 当前 GoPay 价格，迁移到可用的 USD 上限。
+    if (normalizeGopaySmsProvider(stored.sms_provider) === 'five_sim' && value === '0.011') return '0.11'
+    return value || '0.011'
+  })
+  const [gopayFiveSimReuse, setGopayFiveSimReuse] = useState(() => readStoredGopayRegisterForm().five_sim_reuse !== false)
   const [gopaySmsapiPhone, setGopaySmsapiPhone] = useState(() => String(readStoredGopayRegisterForm().smsapi_phone || ''))
   const [gopaySmsapiUrl, setGopaySmsapiUrl] = useState(() => String(readStoredGopayRegisterForm().smsapi_url || ''))
+  const [gopayApiSmsPool, setGopayApiSmsPool] = useState(() => {
+    const stored = readStoredGopayRegisterForm().api_sms_pool || ''
+    try { return formatGopayApiSmsPool(parseGopayApiSmsPool(stored)) } catch { return String(stored || '') }
+  })
+  const [startError, setStartError] = useState('')
   const [selection, setSelection] = useState({
     identityProvider: '',
     oauthProvider: '',
@@ -1433,7 +1615,7 @@ function RegisterModal({
   const selectedExecutor = executorOptions.find(option => option.value === selection.executorType)
   const enabledGopaySmsSettings = (configOptions.sms_settings || []).filter((item: any) => item?.enabled)
   const configuredGopaySmsOptions = GOPAY_SMS_PROVIDER_OPTIONS.filter(option => {
-    if (enabledGopaySmsSettings.length === 0) return true
+    if (enabledGopaySmsSettings.length === 0 || option.value === 'api_sms' || option.value === 'smsapi') return true
     return enabledGopaySmsSettings.some((item: any) => normalizeGopaySmsProvider(item.provider_key) === option.value)
   })
   const gopaySmsProviderOptions = configuredGopaySmsOptions.length > 0
@@ -1456,14 +1638,23 @@ function RegisterModal({
       setGopaySmsApiKeys(current => ({ ...current, [gopaySmsProvider]: String(values[keyField]) }))
     }
     const configuredPrice = values[gopaySmsProvider + '_max_price'] || values[gopaySmsProvider + '_max_price_usd']
-    if (configuredPrice && gopayMaxPrice === '0.011') {
-      setGopayMaxPrice(String(configuredPrice))
+    const safeConfiguredPrice = gopaySmsProvider === 'five_sim' && String(configuredPrice || '') === '0.011'
+      ? ''
+      : configuredPrice
+    if (safeConfiguredPrice && (gopayMaxPrice === '0.011' || (gopaySmsProvider === 'five_sim' && gopayMaxPrice === ''))) {
+      setGopayMaxPrice(String(safeConfiguredPrice))
+    }
+    if (gopaySmsProvider === 'five_sim' && gopayMaxPrice === '0.011' && !safeConfiguredPrice) {
+      setGopayMaxPrice('0.11')
+    }
+    if (gopaySmsProvider === 'five_sim' && values.five_sim_reuse !== undefined) {
+      setGopayFiveSimReuse(values.five_sim_reuse !== false)
     }
     if (gopaySmsProvider === 'smsapi') {
       if (!gopaySmsapiPhone && values.smsapi_phone) setGopaySmsapiPhone(String(values.smsapi_phone))
       if (!gopaySmsapiUrl && values.smsapi_url) setGopaySmsapiUrl(String(values.smsapi_url))
     }
-  }, [platform, gopaySmsProvider, gopaySmsApiKeys, gopayMaxPrice, gopaySmsapiPhone, gopaySmsapiUrl, configOptions.sms_settings])
+  }, [platform, gopaySmsProvider, gopaySmsApiKeys, gopayMaxPrice, gopayFiveSimReuse, gopaySmsapiPhone, gopaySmsapiUrl, configOptions.sms_settings])
 
   useEffect(() => {
     let active = true
@@ -1507,16 +1698,19 @@ function RegisterModal({
         sms_api_keys: gopaySmsApiKeys,
         pin: gopayPin,
         proxy: gopayProxy,
+        proxy_pool: gopayProxy,
         max_price: gopayMaxPrice,
+        five_sim_reuse: gopayFiveSimReuse,
         smsapi_phone: gopaySmsapiPhone,
         smsapi_url: gopaySmsapiUrl,
+        api_sms_pool: gopayApiSmsPool,
         count: regCount,
         concurrency,
       }))
     } catch {
       // Ignore browsers that block localStorage.
     }
-  }, [platform, gopaySmsProvider, gopaySmsApiKeys, gopayPin, gopayProxy, gopayMaxPrice, gopaySmsapiPhone, gopaySmsapiUrl, regCount, concurrency])
+  }, [platform, gopaySmsProvider, gopaySmsApiKeys, gopayPin, gopayProxy, gopayMaxPrice, gopayFiveSimReuse, gopaySmsapiPhone, gopaySmsapiUrl, gopayApiSmsPool, regCount, concurrency])
 
   useEffect(() => {
     if (platform !== 'chatgpt') return
@@ -1685,6 +1879,7 @@ function RegisterModal({
 
   const start = async () => {
     setStarting(true)
+    setStartError('')
     try {
       const finalRegCount = aliasCountLimitActive && gmailAliasUsage
         ? Math.min(Math.max(Number(regCount || 0), 0), registerCountMax)
@@ -1729,8 +1924,24 @@ function RegisterModal({
         extra.gopay_pin = gopayPin.trim()
         extra.gopay_sms_country = selectedGopaySms.country
         extra.gopay_sms_service = selectedGopaySms.service
-        if (gopayProxy.trim()) extra.gopay_proxy = gopayProxy.trim()
-        if (gopaySmsProvider === 'smsapi') {
+        if (gopayProxy.trim()) {
+          const proxyPool = parseGopayProxyPool(gopayProxy)
+          if (proxyPool.length < finalRegCount) {
+            throw new Error('GoPay 注册代理数量不足：账号数 ' + finalRegCount + '，代理数 ' + proxyPool.length)
+          }
+          const normalizedPoolText = proxyPool.join('\n')
+          setGopayProxy(normalizedPoolText)
+          extra.gopay_proxy_pool = proxyPool
+          extra.gopay_proxy = proxyPool[0]
+        }
+        if (gopaySmsProvider === 'api_sms') {
+          const apiSmsPool = parseGopayApiSmsPool(gopayApiSmsPool)
+          if (apiSmsPool.length < finalRegCount) {
+            throw new Error('API 接码数量不足：账号数 ' + finalRegCount + '，号码数 ' + apiSmsPool.length)
+          }
+          setGopayApiSmsPool(formatGopayApiSmsPool(apiSmsPool))
+          extra.api_sms_pool = apiSmsPool
+        } else if (gopaySmsProvider === 'smsapi') {
           if (!gopaySmsapiPhone.trim() || !gopaySmsapiUrl.trim()) {
             throw new Error('SmsApi 注册必须填写固定手机号和短信查询 URL')
           }
@@ -1745,6 +1956,7 @@ function RegisterModal({
           if (!isNaN(mp) && mp >= 0) {
             if (gopaySmsProvider === 'smspool') extra.smspool_max_price = mp
             else if (gopaySmsProvider === 'smsbower') extra.smsbower_max_price = mp
+            else if (gopaySmsProvider === 'five_sim') extra.five_sim_max_price = mp
             else extra.herosms_max_price_usd = mp
           }
           if (gopaySmsProvider === 'smspool') {
@@ -1754,6 +1966,12 @@ function RegisterModal({
           if (gopaySmsProvider === 'smsbower') {
             extra.smsbower_country = selectedGopaySms.country
             extra.smsbower_service = selectedGopaySms.service
+          }
+          if (gopaySmsProvider === 'five_sim') {
+            extra.five_sim_country = selectedGopaySms.country
+            extra.five_sim_product = selectedGopaySms.service
+            extra.five_sim_operator = 'any'
+            extra.five_sim_reuse = gopayFiveSimReuse
           }
         }
       }
@@ -1779,6 +1997,14 @@ function RegisterModal({
         extra.k12_workspace_ids = k12WorkspaceIds.trim()
       }
       if (platform === 'chatgpt') {
+        extra.trial_probe_after_register = trialProbeAfterRegisterEnabled
+        if (trialProbeAfterRegisterEnabled) {
+          extra.trial_eligibility_proxies = Object.fromEntries(
+            TRIAL_PROBE_REGIONS
+              .map(region => [region.code, trialProbeProxies[region.code]?.trim() || ''])
+              .filter(([, proxyUrl]) => Boolean(proxyUrl)),
+          )
+        }
         extra.remote_upload_enabled = remoteUploadEnabled
         extra.agent_identity_auth_json_mode = agentIdentityAuthJsonMode
         extra.enable_2fa_after_register = set2faAfterRegister
@@ -1800,6 +2026,8 @@ function RegisterModal({
       if (platform === 'chatgpt') {
         writeStoredChatgptK12WorkspaceIds(k12WorkspaceIds)
       }
+    } catch (exc: any) {
+      setStartError(String(exc?.message || exc || t('login.requestFailed')))
     } finally { setStarting(false) }
   }
 
@@ -1939,7 +2167,11 @@ function RegisterModal({
                       <button
                         type="button"
                         aria-pressed={chatgptProtocolVariant === 'web'}
-                        onClick={() => setChatgptProtocolVariant('web')}
+                        onClick={() => {
+                          setChatgptProtocolVariant('web')
+                          setSet2faAfterRegister(false)
+                          setSetPasswordAfterRegister(false)
+                        }}
                         className={`rounded-xl border px-4 py-3 text-left transition-colors ${
                           chatgptProtocolVariant === 'web'
                             ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
@@ -1956,7 +2188,12 @@ function RegisterModal({
                         type="button"
                         aria-pressed={chatgptProtocolVariant === 'android'}
                         disabled={selection.identityProvider !== 'mailbox'}
-                        onClick={() => selection.identityProvider === 'mailbox' && setChatgptProtocolVariant('android')}
+                        onClick={() => {
+                          if (selection.identityProvider !== 'mailbox') return
+                          setChatgptProtocolVariant('android')
+                          setSet2faAfterRegister(false)
+                          setSetPasswordAfterRegister(false)
+                        }}
                         className={`rounded-xl border px-4 py-3 text-left transition-colors ${
                           selection.identityProvider !== 'mailbox'
                             ? 'cursor-not-allowed border-[var(--border)] bg-[var(--bg-hover)] opacity-50'
@@ -2032,6 +2269,47 @@ function RegisterModal({
                         {t('accounts.registrationCountModeInactiveHint')}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {platform === 'chatgpt' && (
+                  <div className="rounded-xl border border-[var(--border-soft)] bg-[var(--bg-hover)] px-4 py-3">
+                    <label className="flex cursor-pointer items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={trialProbeAfterRegisterEnabled}
+                        onChange={(event) => setTrialProbeAfterRegisterEnabled(event.target.checked)}
+                        className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                      />
+                      <div>
+                        <div className="text-sm font-medium text-[var(--text-primary)]">注册后检测试用资格</div>
+                        <div className="mt-1 text-xs text-[var(--text-muted)]">
+                          默认关闭。需要自动检测时再启用，并为本次任务选择地区代理。
+                        </div>
+                      </div>
+                    </label>
+                    <div className={
+                      trialProbeAfterRegisterEnabled
+                        ? 'mt-3 grid gap-3 md:grid-cols-2'
+                        : 'pointer-events-none mt-3 grid gap-3 opacity-45 md:grid-cols-2'
+                    }>
+                      {TRIAL_PROBE_REGIONS.map(region => (
+                        <label key={region.code} className="block">
+                          <span className="mb-1 block text-xs text-[var(--text-muted)]">{region.label}代理</span>
+                          <input
+                            type="text"
+                            value={trialProbeProxies[region.code] || ''}
+                            onChange={event => onTrialProbeProxyChange(region.code, event.target.value)}
+                            placeholder="http://user:pass@host:port"
+                            disabled={!trialProbeAfterRegisterEnabled}
+                            className="control-surface control-surface-compact w-full font-mono text-xs"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <div className="mt-2 text-[11px] text-[var(--text-muted)]">
+                      已配置 {TRIAL_PROBE_REGIONS.filter(region => trialProbeProxies[region.code]?.trim()).length} 个地区；启用后任务开始前会校验代理实际出口地区。
+                    </div>
                   </div>
                 )}
 
@@ -2135,7 +2413,25 @@ function RegisterModal({
                         </div>
                       </div>
                     </div>
-                    {gopaySmsProvider === 'smsapi' ? (
+                    {gopaySmsProvider === 'api_sms' ? (
+                      <div>
+                        <label className="text-xs text-[var(--text-muted)] block mb-1">API 接码号码池（每行一个）</label>
+                        <textarea
+                          value={gopayApiSmsPool}
+                          onChange={(e) => setGopayApiSmsPool(e.target.value)}
+                          onBlur={() => {
+                            if (!gopayApiSmsPool.trim()) return
+                            try { setGopayApiSmsPool(formatGopayApiSmsPool(parseGopayApiSmsPool(gopayApiSmsPool))) } catch {}
+                          }}
+                          rows={6}
+                          placeholder={'+447476554147----https://example.com/api/record?token=xxx\n+447868202799----https://example.com/api/record?token=yyy'}
+                          className="control-surface w-full resize-y font-mono text-xs"
+                        />
+                        <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                          已填写 {String(gopayApiSmsPool || '').split(/\r?\n/).filter(line => line.trim()).length} 条，当前任务需要 {Math.max(Number(regCount || 1), 1)} 条
+                        </div>
+                      </div>
+                    ) : gopaySmsProvider === 'smsapi' ? (
                       <>
                         <div>
                           <label className="text-xs text-[var(--text-muted)] block mb-1">固定手机号（必填）</label>
@@ -2183,28 +2479,46 @@ function RegisterModal({
                         />
                       </div>
                       <div>
-                        <label className="text-xs text-[var(--text-muted)] block mb-1">接码价格上限（USD）</label>
+                        <label className="text-xs text-[var(--text-muted)] block mb-1">接码价格上限（USD，可选）</label>
                         <input
                           type="text"
                           value={gopayMaxPrice}
                           onChange={(e) => setGopayMaxPrice(e.target.value.replace(/[^0-9.]/g, ''))}
-                          placeholder="0.011"
+                          placeholder={gopaySmsProvider === 'five_sim' ? '0.11' : '0.011'}
                           className="control-surface control-surface-compact w-full text-center font-mono"
                         />
                       </div>
                     </div>
+                    {gopaySmsProvider === 'five_sim' && (
+                      <label className="flex items-start gap-2 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-pane)]/45 px-3 py-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={gopayFiveSimReuse}
+                          onChange={(e) => setGopayFiveSimReuse(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 cursor-pointer accent-[var(--accent)]"
+                        />
+                        <span className="text-xs text-[var(--text-secondary)]">5sim 允许复用号码</span>
+                      </label>
+                    )}
                     <div>
-                      <label className="text-xs text-[var(--text-muted)] block mb-1">注册代理（可选）</label>
-                      <input
-                        type="text"
+                      <label className="text-xs text-[var(--text-muted)] block mb-1">注册代理池（可选，每行一个）</label>
+                      <textarea
                         value={gopayProxy}
                         onChange={(e) => setGopayProxy(e.target.value)}
-                        placeholder="http://user:pass@host:port"
-                        className="control-surface control-surface-compact w-full"
+                        onBlur={() => {
+                          if (!gopayProxy.trim()) return
+                          try { setGopayProxy(parseGopayProxyPool(gopayProxy).join('\n')) } catch {}
+                        }}
+                        rows={5}
+                        placeholder={'http://user_session-a:pass@host:port\nhttp://user_session-b:pass@host:port'}
+                        className="control-surface w-full resize-y font-mono text-xs"
                       />
+                      <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+                        已填写 {String(gopayProxy || '').split(/\r?\n/).filter(line => line.trim()).length} 条，当前任务需要 {Math.max(Number(regCount || 1), 1)} 条
+                      </div>
                     </div>
                     <div className="text-xs text-[var(--text-muted)]">
-                      平台切换后自动使用对应的 GoPay 服务码；API key、PIN、代理和价格上限会自动保存，下次打开继续使用。
+                      平台切换后自动使用对应的 GoPay 服务码；API key、PIN、代理和价格上限会自动保存，下次打开继续使用。5sim 价格单位为 USD，当前 GoPay 价格以 0.06 左右为参考。
                     </div>
                   </div>
                 )}
@@ -2310,6 +2624,11 @@ function RegisterModal({
           )}
         </div>
         <div className="shrink-0 px-6 py-3 border-t border-[var(--border)] bg-[var(--bg-base)]">
+          {startError && !taskId && (
+            <div className="mb-3 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-300">
+              {startError}
+            </div>
+          )}
           {!taskId ? (
             <div className="flex gap-3">
               <Button
@@ -3826,10 +4145,8 @@ export default function Accounts() {
   const totpRefreshInFlightRef = useRef(false)
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [invalidDeleting, setInvalidDeleting] = useState(false)
-  const [batchRefreshing, setBatchRefreshing] = useState(false)
   const [batchHealthChecking, setBatchHealthChecking] = useState(false)
   const [batchPlanRefreshing, setBatchPlanRefreshing] = useState(false)
-  const [agentsUploadBusy, setAgentsUploadBusy] = useState(false)
   const [rowActionBusy, setRowActionBusy] = useState('')
   const [copyingAccessTokenId, setCopyingAccessTokenId] = useState<number | null>(null)
   const [planRefreshDialog, setPlanRefreshDialog] = useState<PlanRefreshDialogState>({
@@ -3851,6 +4168,20 @@ export default function Accounts() {
   const [oauthTaskId, setOauthTaskId] = useState('')
   const [oauthBusy, setOauthBusy] = useState(false)
   const [oauthConfirmOpen, setOauthConfirmOpen] = useState(false)
+  const [trialProbeAccount, setTrialProbeAccount] = useState<{ id: number | string; email?: string } | null>(null)
+  const [trialProbeTaskTitle, setTrialProbeTaskTitle] = useState('批量检测试用资格')
+  const [trialProbeProxies, setTrialProbeProxies] = useState<Record<string, string>>(
+    () => readStoredTrialProbeForm().proxies,
+  )
+  const [trialProbeConcurrency, setTrialProbeConcurrency] = useState(
+    () => readStoredTrialProbeForm().concurrency,
+  )
+  useEffect(() => {
+    writeStoredTrialProbeForm({
+      proxies: trialProbeProxies,
+      concurrency: trialProbeConcurrency,
+    })
+  }, [trialProbeProxies, trialProbeConcurrency])
   const [getRtTaskId, setGetRtTaskId] = useState('')
   const [getRtBusy, setGetRtBusy] = useState(false)
   const [getRtConfirmOpen, setGetRtConfirmOpen] = useState(false)
@@ -4798,53 +5129,45 @@ export default function Accounts() {
     }
   }
 
-  const startAgentsUploadSub2Api = async () => {
+  const startTrialEligibilityProbe = async () => {
+    const proxies = Object.fromEntries(
+      TRIAL_PROBE_REGIONS
+        .map(region => [region.code, trialProbeProxies[region.code]?.trim() || ''])
+        .filter(([, proxy]) => Boolean(proxy)),
+    )
     setError('')
-    setAgentsUploadBusy(true)
+    if (Object.keys(proxies).length === 0) {
+      setError('请至少填写一个地区的检测代理地址')
+      return
+    }
+    setOauthBusy(true)
     try {
-      const ids = [...selectedIds].map(Number)
-      const data = await apiFetch('/tasks/agents-upload-sub2api', {
+      const ids = trialProbeAccount
+        ? [Number(trialProbeAccount.id)]
+        : selectedIds.size > 0
+          ? [...selectedIds].map(Number)
+          : []
+      const data = await apiFetch('/tasks/trial-eligibility-probe', {
         method: 'POST',
         body: JSON.stringify({
-          platform: 'chatgpt',
           ids,
-          batch_size: 10,
-          verify_task: true,
-          timeout: 30,
+          platform: 'chatgpt',
+          concurrency: trialProbeConcurrency,
+          proxies,
         }),
       })
       const taskId = String(data?.task_id || data?.id || '')
       if (taskId) {
-        setBatchTask({ taskId, title: 'Agents上传到Sub2Api' })
-        setBatchTaskStatus(null)
-      }
-    } catch (exc: any) {
-      setError(exc?.message || t('login.requestFailed'))
-    } finally {
-      setAgentsUploadBusy(false)
-    }
-  }
-
-  const startMomoTrialProbe = async () => {
-    setOauthBusy(true)
-    setError('')
-    try {
-      // 有勾选则检测勾选；无勾选则传空 ids，后端按 platform 检测全部
-      const ids = selectedIds.size > 0 ? [...selectedIds].map(Number) : []
-      const data = await apiFetch('/tasks/momo-trial-probe', {
-        method: 'POST',
-        body: JSON.stringify({
-          ids,
-          platform: tab || 'chatgpt',
-          concurrency: Math.max(1, Math.min(Number(actionConcurrency) || 3, 10)),
-        }),
-      })
-      if (data.task_id) {
-        setOauthTaskId(data.task_id)
+        setTrialProbeTaskTitle(
+          trialProbeAccount
+            ? '检测资格 - ' + String(trialProbeAccount.email || trialProbeAccount.id)
+            : '批量检测试用资格',
+        )
+        setOauthTaskId(taskId)
         setOauthConfirmOpen(false)
       }
-    } catch (e: any) {
-      setError(e.message)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : t('login.requestFailed'))
     } finally {
       setOauthBusy(false)
     }
@@ -5319,7 +5642,16 @@ export default function Accounts() {
         }}
         onOpenLogs={(task) => setPpLogTask(task)}
       />
-      {showRegister && <RegisterModal platform={tab} platformMeta={platformsMap[tab]} onClose={() => setShowRegister(false)} onDone={() => load()} />}
+      {showRegister && (
+        <RegisterModal
+          platform={tab}
+          platformMeta={platformsMap[tab]}
+          trialProbeProxies={trialProbeProxies}
+          onTrialProbeProxyChange={(code, value) => setTrialProbeProxies(current => ({ ...current, [code]: value }))}
+          onClose={() => setShowRegister(false)}
+          onDone={() => load()}
+        />
+      )}
       {actionResult && <ActionResultModal title={actionResult.title} payload={actionResult.payload} onClose={() => setActionResult(null)} />}
       {totpDialog && (
         <TotpCodeDialog
@@ -5356,17 +5688,13 @@ export default function Accounts() {
           onClose={() => {
             setBatchTask(null)
             setBatchTaskStatus(null)
-            setBatchRefreshing(false)
             setBatchHealthChecking(false)
-            setAgentsUploadBusy(false)
             setBatchSecurityBusy(false)
             load()
           }}
           onDone={(status) => {
             setBatchTaskStatus(status)
-            setBatchRefreshing(false)
             setBatchHealthChecking(false)
-            setAgentsUploadBusy(false)
             setBatchSecurityBusy(false)
             load()
           }}
@@ -5375,11 +5703,15 @@ export default function Accounts() {
       {oauthTaskId && (
         <SimpleTaskLogDialog
           open={Boolean(oauthTaskId)}
-          title="检测MOMO试用资格"
-          subtitle="后台批量检测 · 同时具备试用和 MoMo 时打标签「MOMO试用」"
+          title={trialProbeTaskTitle}
+          subtitle={trialProbeAccount
+            ? '当前账号检测所有已填写地区 · 合格地区全部添加标签'
+            : '每个账号检测所有已填写地区 · 合格地区全部添加标签'}
           taskId={oauthTaskId}
-          showMomoTrialStats
-          onClose={() => setOauthTaskId('')}
+          onClose={() => {
+            setOauthTaskId('')
+            setTrialProbeAccount(null)
+          }}
           onDone={handleOAuthTaskDone}
         />
       )}
@@ -5387,7 +5719,12 @@ export default function Accounts() {
         createPortal(
           <div
             className="dialog-backdrop"
-            onClick={() => !oauthBusy && setOauthConfirmOpen(false)}
+            onClick={() => {
+              if (!oauthBusy) {
+                setOauthConfirmOpen(false)
+                setTrialProbeAccount(null)
+              }
+            }}
           >
             <div
               className="dialog-panel dialog-panel-md flex flex-col overflow-hidden rounded-xl border-[var(--border-soft)] bg-[var(--bg-card)] shadow-[var(--shadow-hard)]"
@@ -5397,14 +5734,23 @@ export default function Accounts() {
               <div className="shrink-0 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">
-                    检测MOMO试用资格
+                    {trialProbeAccount ? '检测资格' : '批量检测试用资格'}
                   </h2>
                   <div className="mt-1 text-xs help-text">
-                    {selectedIds.size > 0 ? t('accounts.selected', { count: selectedIds.size }) : '未勾选：将检测当前平台全部账号'}
+                    {trialProbeAccount
+                      ? String(trialProbeAccount.email || trialProbeAccount.id)
+                      : selectedIds.size > 0
+                        ? t('accounts.selected', { count: selectedIds.size })
+                        : '未勾选：将检测当前平台全部账号'}
                   </div>
                 </div>
                 <button
-                  onClick={() => !oauthBusy && setOauthConfirmOpen(false)}
+                  onClick={() => {
+                    if (!oauthBusy) {
+                      setOauthConfirmOpen(false)
+                      setTrialProbeAccount(null)
+                    }
+                  }}
                   className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 >
                   <X className="h-4 w-4" />
@@ -5412,11 +5758,36 @@ export default function Accounts() {
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <p className="text-sm text-[var(--text-secondary)]">
-                  {selectedIds.size > 0
-                    ? `将检测已勾选的 ${selectedIds.size} 个账号。`
-                    : '未勾选账号，将检测当前平台全部账号。'}
-                  任务在后台运行；检测到同时具备试用资格和 MoMo 支付方式时自动打标签「MOMO试用」。
+                  {trialProbeAccount
+                    ? '将只检测当前账号。'
+                    : selectedIds.size > 0
+                      ? `将检测已勾选的 ${selectedIds.size} 个账号。`
+                      : '未勾选账号，将检测当前平台全部账号。'}
+                  每个账号会检测所有已填写代理的地区，符合资格的地区会全部添加标签。
                 </p>
+                <div>
+                  <label className="mb-2 block text-xs font-medium text-[var(--text-secondary)]">
+                    各地区检测代理
+                  </label>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {TRIAL_PROBE_REGIONS.map(region => (
+                      <label key={region.code} className="block">
+                        <span className="mb-1 block text-xs text-[var(--text-secondary)]">{region.label}（{region.code}）</span>
+                        <input
+                          type="text"
+                          value={trialProbeProxies[region.code] || ''}
+                          onChange={event => setTrialProbeProxies(current => ({
+                            ...current,
+                            [region.code]: event.target.value,
+                          }))}
+                          placeholder="http://user:pass@host:port"
+                          autoComplete="off"
+                          className="control-surface control-surface-compact w-full"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     并发线程数（1-10）
@@ -5425,9 +5796,9 @@ export default function Accounts() {
                     type="number"
                     min={1}
                     max={10}
-                    value={actionConcurrency}
+                    value={trialProbeConcurrency}
                     onChange={event =>
-                      setActionConcurrency(Math.max(1, Math.min(10, Number(event.target.value || 1))))
+                      setTrialProbeConcurrency(Math.max(1, Math.min(10, Number(event.target.value || 1))))
                     }
                     className="control-surface control-surface-compact w-full text-center"
                   />
@@ -5437,18 +5808,18 @@ export default function Accounts() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setOauthConfirmOpen(false)}
+                  onClick={() => {
+                    setOauthConfirmOpen(false)
+                    setTrialProbeAccount(null)
+                  }}
                   disabled={oauthBusy}
                 >
                   {t('common.close')}
                 </Button>
                 <Button
                   size="sm"
-                  onClick={async () => {
-                    setOauthConfirmOpen(false)
-                    await startMomoTrialProbe()
-                  }}
-                  disabled={oauthBusy}
+                  onClick={startTrialEligibilityProbe}
+                  disabled={oauthBusy || !TRIAL_PROBE_REGIONS.some(region => trialProbeProxies[region.code]?.trim())}
                 >
                   {oauthBusy ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -6085,24 +6456,24 @@ export default function Accounts() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || batchRefreshing || loading}
+                    disabled={oauthBusy || batchPlanRefreshing || batchHealthChecking || loading}
                     className="h-8 rounded-lg border-0 bg-blue-500/10 px-3 text-[12px] font-medium text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
-                    title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api` : '为所有状态正常的 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api'}
-                    onClick={startAgentsUploadSub2Api}
+                    title={selectedCount > 0 ? `检测已勾选的 ${selectedCount} 个账号` : '未勾选时检测当前平台全部账号'}
+                    onClick={() => {
+                      setError('')
+                      setTrialProbeAccount(null)
+                      setOauthConfirmOpen(true)
+                    }}
                   >
-                    {agentsUploadBusy ? (
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Upload className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    {agentsUploadBusy ? 'Agents上传中' : 'Agents上传到Sub2Api'}
+                    <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                    批量检测试用资格
                   </Button>
                 )}
                 {tab === 'chatgpt' && (
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={batchPlanRefreshing || agentsUploadBusy || batchHealthChecking || batchRefreshing || loading}
+                    disabled={batchPlanRefreshing || batchHealthChecking || loading}
                     className="h-8 rounded-lg border-0 bg-emerald-500/10 px-3 text-[12px] font-medium text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
                     title="全量刷新当前平台所有账号的订阅套餐类型"
                     onClick={refreshPlanForAllAccounts}
@@ -6119,7 +6490,7 @@ export default function Accounts() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={batchHealthChecking || batchPlanRefreshing || batchRefreshing || loading}
+                    disabled={batchHealthChecking || batchPlanRefreshing || loading}
                     className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
                     title={t('accounts.healthCheckTitle')}
                     onClick={startHealthCheck}
@@ -6128,29 +6499,6 @@ export default function Accounts() {
                     {batchHealthChecking ? t('accounts.healthChecking') : t('accounts.healthCheck')}
                   </Button>
                 )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={batchRefreshing || batchPlanRefreshing || batchHealthChecking || loading}
-                  className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
-                  title={t('accounts.refreshCreditsTitle')}
-                  onClick={async () => {
-                    setBatchRefreshing(true)
-                    try {
-                      const res = await apiFetch(`/accounts/check-all?platform=${tab}`, { method: 'POST' })
-                      if (res?.task_id) {
-                        setBatchTask({ taskId: res.task_id, title: t('accounts.refreshAllCreditsTask', { platform: platformLabel }) })
-                        setBatchTaskStatus(null)
-                      }
-                    } catch (e) {
-                      console.error(e)
-                      setBatchRefreshing(false)
-                    }
-                  }}
-                >
-                  <Zap className={cn("mr-1.5 h-3.5 w-3.5", batchRefreshing && "animate-pulse")} />
-                  {batchRefreshing ? t('accounts.refreshingCredits') : t('accounts.refreshCredits')}
-                </Button>
                 {tab === 'chatgpt' && selectedCount > 0 && (
                   <Button
                     size="sm"
@@ -6202,8 +6550,14 @@ export default function Accounts() {
                   <col className="w-[82px]" />
                   <col className="w-[112px]" />
                   <col className="w-[148px]" />
-                  <col className="w-[110px]" />
-                  <col className="w-[106px]" />
+                  {tab === 'gopay' ? (
+                    <col className="w-[118px]" />
+                  ) : (
+                    <>
+                      <col className="w-[110px]" />
+                      <col className="w-[106px]" />
+                    </>
+                  )}
                   {tab === 'chatgpt' ? <col className="w-[88px]" /> : null}
                   <col className="w-[150px]" />
                   <col className="w-[320px]" />
@@ -6222,8 +6576,14 @@ export default function Accounts() {
                     <th className="px-3 py-3 font-semibold">套餐</th>
                     <th className="px-3 py-3 font-semibold">账号状态</th>
                     <th className="px-3 py-3 font-semibold">标签</th>
-                    <th className="px-3 py-3 font-semibold">有效期</th>
-                    <th className="px-3 py-3 font-semibold">BA链任务</th>
+                    {tab === 'gopay' ? (
+                      <th className="px-3 py-3 font-semibold">GoPay余额</th>
+                    ) : (
+                      <>
+                        <th className="px-3 py-3 font-semibold">有效期</th>
+                        <th className="px-3 py-3 font-semibold">BA链任务</th>
+                      </>
+                    )}
                     {tab === 'chatgpt' && (
                       <th className="w-[88px] max-w-[88px] px-2 py-3 font-semibold">任务日志</th>
                     )}
@@ -6236,7 +6596,7 @@ export default function Accounts() {
                 <tbody className="divide-y divide-[var(--border-soft)]">
                   {accounts.length === 0 && (
                     <tr>
-                      <td colSpan={tab === 'chatgpt' ? 10 : 9} className="px-6 py-20 text-center">
+                      <td colSpan={tab === 'chatgpt' ? 10 : tab === 'gopay' ? 8 : 9} className="px-6 py-20 text-center">
                         <div className="mx-auto flex max-w-sm flex-col items-center gap-3">
                           <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--bg-pane)]">
                             <Mail className="h-5 w-5 text-[var(--text-muted)]" />
@@ -6271,7 +6631,8 @@ export default function Accounts() {
                         secondary: 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-secondary)]',
                         default: 'border-[var(--accent-edge)] bg-[var(--accent-soft)] text-[var(--accent)]',
                       } as Record<string, string>)[statusVariant]) || 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-secondary)]'
-                      const displayBadges = getDisplayBadges(acc)
+                      const displayBadges = getGopayAccountBadges(acc, getDisplayBadges(acc))
+                      const gopayBalance = getGopayBalanceMeta(acc)
                       const isBusy = (actionId: string) => rowActionBusy === `${acc.id}:${actionId}`
                       const baTask = resolveBaExtractTask(acc)
                       const baTaskActive = isBaExtractTaskActive(baTask)
@@ -6366,24 +6727,44 @@ export default function Accounts() {
                               </span>
                             )}
                           </td>
-                          <td className="px-3 py-3 align-middle">
-                            <span
-                              className={cn(
-                                'inline-flex min-w-[74px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm',
-                                validityLabel === '-' || validityLabel === '已过期'
-                                  ? 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]'
-                                  : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-                              )}
-                            >
-                              {validityLabel}
-                            </span>
-                          </td>
-                          <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
-                            <BaExtractTaskCell
-                              task={baTask}
-                              onViewLogs={() => openBaExtractLogs(Number(acc.id))}
-                            />
-                          </td>
+                          {tab === 'gopay' ? (
+                            <td className="px-3 py-3 align-middle">
+                              <span
+                                className={cn(
+                                  'inline-flex min-w-[82px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm',
+                                  gopayBalance.amount !== null && gopayBalance.amount > 0
+                                    ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                    : gopayBalance.amount === 0
+                                      ? 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                                      : 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]',
+                                )}
+                                title={gopayBalance.error || 'GoPay 钱包余额（IDR）'}
+                              >
+                                {gopayBalance.label}
+                              </span>
+                            </td>
+                          ) : (
+                            <>
+                              <td className="px-3 py-3 align-middle">
+                                <span
+                                  className={cn(
+                                    'inline-flex min-w-[74px] items-center justify-center rounded border px-2 py-1 text-[12px] font-bold shadow-sm',
+                                    validityLabel === '-' || validityLabel === '已过期'
+                                      ? 'border-[var(--border-soft)] bg-[var(--bg-pane)] text-[var(--text-muted)]'
+                                      : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+                                  )}
+                                >
+                                  {validityLabel}
+                                </span>
+                              </td>
+                              <td className="px-3 py-3 align-middle" onClick={e => e.stopPropagation()}>
+                                <BaExtractTaskCell
+                                  task={baTask}
+                                  onViewLogs={() => openBaExtractLogs(Number(acc.id))}
+                                />
+                              </td>
+                            </>
+                          )}
                           {tab === 'chatgpt' && (
                             <td className="w-[88px] max-w-[88px] px-2 py-3 align-middle" onClick={e => e.stopPropagation()}>
                               <PpTaskCell
@@ -6449,14 +6830,16 @@ export default function Accounts() {
                                   {isBusy('upload_sub2api') ? '上传中' : '上传SUB2API'}
                                 </button>
                               )}
-                              <button
-                                onClick={() => copyAccessToken(acc, primaryToken)}
-                                disabled={!primaryToken || copyingAccessTokenId === Number(acc.id)}
-                                className="table-action-btn border-emerald-500/25 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500/45 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
-                                title={primaryToken ? `复制 access_token，已复制 ${accessTokenCopyCount} 次` : '当前账号没有 AT'}
-                              >
-                                {copyingAccessTokenId === Number(acc.id) ? '保存中' : `复制 AT${accessTokenCopyCount > 0 ? ` · ${accessTokenCopyCount}` : ''}`}
-                              </button>
+                              {tab !== 'gopay' && (
+                                <button
+                                  onClick={() => copyAccessToken(acc, primaryToken)}
+                                  disabled={!primaryToken || copyingAccessTokenId === Number(acc.id)}
+                                  className="table-action-btn border-emerald-500/25 bg-emerald-500/10 text-emerald-700 hover:border-emerald-500/45 hover:bg-emerald-500/15 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
+                                  title={primaryToken ? `复制 access_token，已复制 ${accessTokenCopyCount} 次` : '当前账号没有 AT'}
+                                >
+                                  {copyingAccessTokenId === Number(acc.id) ? '保存中' : `复制 AT${accessTokenCopyCount > 0 ? ` · ${accessTokenCopyCount}` : ''}`}
+                                </button>
+                              )}
                               {tab === 'chatgpt' && (
                                 <button
                                   onClick={() => copyChatgptAtCookie(acc, atCookieText)}
@@ -6478,6 +6861,20 @@ export default function Accounts() {
                               )}
                               {tab === 'chatgpt' && (
                                 <button
+                                  onClick={() => {
+                                    setError('')
+                                    setTrialProbeAccount(acc)
+                                    setOauthConfirmOpen(true)
+                                  }}
+                                  disabled={oauthBusy}
+                                  className="table-action-btn"
+                                  title="单独检测当前账号的试用资格"
+                                >
+                                  检测资格
+                                </button>
+                              )}
+                              {tab === 'chatgpt' && (
+                                <button
                                   onClick={() => runInlineAccountAction(acc, 'refresh_token', `刷新 token - ${acc.email}`)}
                                   disabled={isBusy('refresh_token')}
                                   className="table-action-btn"
@@ -6485,13 +6882,24 @@ export default function Accounts() {
                                   {isBusy('refresh_token') ? '刷新中' : '刷新 token'}
                                 </button>
                               )}
-                              <button
-                                onClick={() => runInlineHealthCheck(acc)}
-                                disabled={isBusy('health_check')}
-                                className="table-action-btn"
-                              >
-                                {isBusy('health_check') ? '检测中' : '检测存活'}
-                              </button>
+                              {tab === 'gopay' ? (
+                                <button
+                                  onClick={() => runInlineAccountAction(acc, 'query_balance', `刷新余额 - ${acc.email || acc.id}`)}
+                                  disabled={isBusy('query_balance')}
+                                  className="table-action-btn border-amber-500/25 bg-amber-500/10 text-amber-700 hover:border-amber-500/45 hover:bg-amber-500/15 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
+                                  title="查询并保存当前 GoPay 钱包余额"
+                                >
+                                  {isBusy('query_balance') ? '刷新中' : '刷新余额'}
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => runInlineHealthCheck(acc)}
+                                  disabled={isBusy('health_check')}
+                                  className="table-action-btn"
+                                >
+                                  {isBusy('health_check') ? '检测中' : '检测存活'}
+                                </button>
+                              )}
                               <button
                                 onClick={() => {
                                   if (confirm(t('accounts.deleteConfirm', { email: acc.email }))) {
@@ -6734,7 +7142,7 @@ export default function Accounts() {
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={batchHealthChecking || batchRefreshing || loading}
+                disabled={batchHealthChecking || loading}
                 className="h-7 px-2.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                 title={t('accounts.healthCheckTitle')}
                 onClick={startHealthCheck}
@@ -6743,29 +7151,6 @@ export default function Accounts() {
                 {batchHealthChecking ? t('accounts.healthChecking') : t('accounts.healthCheck')}
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={batchRefreshing || batchHealthChecking || loading}
-              className="h-7 px-2.5 text-[var(--text-muted)] hover:text-amber-500 hover:bg-amber-500/10"
-              title={t('accounts.refreshCreditsTitle')}
-              onClick={async () => {
-                setBatchRefreshing(true)
-                try {
-                  const res = await apiFetch(`/accounts/check-all?platform=${tab}`, { method: 'POST' })
-                  if (res?.task_id) {
-                    setBatchTask({ taskId: res.task_id, title: t('accounts.refreshAllCreditsTask', { platform: platformLabel }) })
-                    setBatchTaskStatus(null)
-                  }
-                } catch (e) {
-                  console.error(e)
-                  setBatchRefreshing(false)
-                }
-              }}
-            >
-              <Zap className={`mr-1 h-3.5 w-3.5 ${batchRefreshing ? 'animate-pulse' : ''}`} />
-              {batchRefreshing ? t('accounts.refreshingCredits') : t('accounts.refreshCredits')}
-            </Button>
             <Button variant="ghost" size="sm" onClick={() => load()} disabled={loading} className="h-7 w-7 p-0 text-[var(--text-muted)] hover:text-[var(--text-primary)]">
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             </Button>

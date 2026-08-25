@@ -1948,7 +1948,7 @@ class FiveSimProvider(BaseSmsProvider):
             return {}
         price = _maybe_float(product_info.get("Price") or product_info.get("price") or product_info.get("cost"))
         count = _maybe_int(product_info.get("Qty") or product_info.get("qty") or product_info.get("count"))
-        result = {"price": price, "count": count, "currency": "RUB", "raw": product_info}
+        result = {"price": price, "count": count, "currency": "USD", "raw": product_info}
         result.update({"service": product, "country": country_slug})
         return result
 
@@ -1966,7 +1966,12 @@ class FiveSimProvider(BaseSmsProvider):
         activation_id = str(record.get("id") or record.get("activationId") or "").strip()
         phone_number = _remote_sms_normalize_phone(record.get("phone") or record.get("phoneNumber") or "")
         if not activation_id or not phone_number:
-            raise RuntimeError(f"5sim purchase returned unusable response: {_remote_sms_describe(payload)}")
+            detail = _remote_sms_describe(payload)
+            raise RuntimeError(
+                "5sim purchase returned unusable response: "
+                f"{detail}; country={country_slug}, operator={operator}, "
+                f"product={product}, maxPrice={self.max_price if self.max_price > 0 else 'unlimited'}"
+            )
         return SmsActivation(
             activation_id=activation_id,
             phone_number=phone_number,

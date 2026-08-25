@@ -53,6 +53,106 @@ logger = logging.getLogger(__name__)
 
 PAYMENT_CHECKOUT_URL = "https://chatgpt.com/backend-api/payments/checkout"
 TEAM_CHECKOUT_BASE_URL = "https://chatgpt.com/checkout/openai_llc/"
+CHECKOUT_WARMUP_URL = "https://chatgpt.com/api/auth/csrf"
+CHECKOUT_EXIT_TRACE_URL = "https://chatgpt.com/cdn-cgi/trace"
+DEFAULT_CHECKOUT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) "
+    "Gecko/20100101 Firefox/135.0"
+)
+DEFAULT_CHECKOUT_ACCEPT_LANGUAGE = "en-US,en;q=0.5"
+_CHECKOUT_TIMEZONE_BY_COUNTRY = {
+    "ID": ("Asia/Jakarta", -420),
+    "JP": ("Asia/Tokyo", -540),
+}
+
+
+class ChatGPTCheckoutError(RuntimeError):
+    """OpenAI checkout API error with a safe status and business detail."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        self.status_code = int(status_code or 0)
+        self.detail = str(detail or "checkout request failed")[:300]
+        super().__init__(f"OpenAI checkout HTTP {self.status_code}: {self.detail}")
+
+
+_CHECKOUT_SENSITIVE_RESPONSE_KEYS = {
+    "access_token",
+    "authorization",
+    "cashier_url",
+    "checkout_session_id",
+    "client_secret",
+    "cookie",
+    "cookies",
+    "cs_id",
+    "midtrans_url",
+    "payment_intent_client_secret",
+    "provider_url",
+    "refresh_token",
+    "session_token",
+    "token",
+    "url",
+}
+
+
+def _sanitize_checkout_response(response: object, limit: int = 4000) -> str:
+    """Preserve response structure while removing credentials and payment URLs."""
+    try:
+        parsed = response.json() if callable(getattr(response, "json", None)) else None
+    except Exception:
+        parsed = None
+
+    def sanitize(value, key: str = ""):
+        normalized_key = str(key or "").strip().lower()
+        if normalized_key in _CHECKOUT_SENSITIVE_RESPONSE_KEYS:
+            return "******"
+        if isinstance(value, dict):
+            return {str(k): sanitize(v, str(k)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        text = value
+        text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer ******", text)
+        text = re.sub(r"\bcs_(?:live|test)_[A-Za-z0-9]+", "cs_******", text)
+        text = re.sub(r"\bpi_[A-Za-z0-9]+_secret_[A-Za-z0-9]+", "pi_******_secret_******", text)
+        text = re.sub(
+            r"https?://[^\s\"'<>]+",
+            lambda match: match.group(0).split("/", 3)[0]
+            + "//"
+            + match.group(0).split("/", 3)[2]
+            + "/******",
+            text,
+        )
+        text = re.sub(r"(?<![A-Za-z0-9])[^@\s:]+:[^@\s]+@", "***:***@", text)
+        text = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "***@***", text)
+        text = re.sub(r"(?<!\d)\+?\d{8,15}(?!\d)", "***phone***", text)
+        return text
+
+    if parsed is not None:
+        rendered = json.dumps(sanitize(parsed), ensure_ascii=False, separators=(",", ":"))
+    else:
+        rendered = str(sanitize(str(getattr(response, "text", "") or "")))
+    max_length = max(int(limit or 0), 256)
+    if len(rendered) > max_length:
+        return rendered[:max_length] + "...[truncated]"
+    return rendered
+
+
+def _emit_checkout_response_log(
+    response: object, callback, label: str = "OpenAI checkout"
+) -> None:
+    if not callable(callback):
+        return
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+        callback(
+            f"{label} 原始响应（已脱敏，HTTP {status}）: "
+            f"{_sanitize_checkout_response(response)}"
+        )
+    except Exception:
+        pass
+
+
 WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
 # ── Stripe payment_pages init（accessToken → 完整 pay.openai.com 长链）────
@@ -554,12 +654,109 @@ _COUNTRY_CURRENCY_MAP = {
 
 
 def _extract_oai_did(cookies_str: str) -> Optional[str]:
-    """从 cookie 字符串中提取 oai-device-id"""
-    for part in cookies_str.split(";"):
-        part = part.strip()
-        if part.startswith("oai-did="):
-            return part[len("oai-did="):].strip()
-    return None
+    """从扁平 cookie 字符串中提取最后一个 oai-device-id。"""
+    device_id = ""
+    for part in str(cookies_str or "").split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name == "oai-did":
+            device_id = value.strip()
+    return device_id or None
+
+
+def _checkout_account_metadata(account) -> tuple[str, str, str]:
+    raw_extra = getattr(account, "extra", {}) or {}
+    extra = raw_extra if isinstance(raw_extra, dict) else {}
+    overview = extra.get("account_overview")
+    legacy = overview.get("legacy_extra") if isinstance(overview, dict) else {}
+    legacy = legacy if isinstance(legacy, dict) else {}
+    client_version = str(
+        getattr(account, "chatgpt_oai_client_version", "")
+        or extra.get("chatgpt_oai_client_version", "")
+        or legacy.get("chatgpt_oai_client_version", "")
+        or ""
+    ).strip()
+    build_number = str(
+        getattr(account, "chatgpt_oai_client_build_number", "")
+        or extra.get("chatgpt_oai_client_build_number", "")
+        or legacy.get("chatgpt_oai_client_build_number", "")
+        or ""
+    ).strip()
+    device_id = str(
+        _extract_oai_did(getattr(account, "cookies", "") or "")
+        or getattr(account, "chatgpt_oai_device_id", "")
+        or extra.get("chatgpt_oai_device_id", "")
+        or legacy.get("chatgpt_oai_device_id", "")
+        or uuid.uuid4()
+    ).strip()
+    return device_id, client_version, build_number
+
+
+def _create_checkout_session(proxy: Optional[str]):
+    session = cffi_requests.Session(
+        impersonate="firefox135",
+        **_build_proxy_request_kwargs(proxy),
+    )
+    try:
+        session.trust_env = False
+    except Exception:
+        pass
+    return session
+
+
+def _build_checkout_sentinel_headers(
+    session,
+    *,
+    device_id: str,
+    country: str,
+    client_version: str,
+    log: Callable[[str], None] | None,
+) -> dict[str, str]:
+    from .authflow_experimental.sentinel_quickjs import (
+        _is_retryable_network_error,
+        get_sentinel_tokens_via_quickjs,
+    )
+
+    timezone_name, timezone_offset = _CHECKOUT_TIMEZONE_BY_COUNTRY.get(
+        str(country or "").upper(),
+        ("UTC", 0),
+    )
+    bundle = None
+    for attempt in range(1, 4):
+        try:
+            bundle = get_sentinel_tokens_via_quickjs(
+                session,
+                device_id,
+                flow="chatgpt_checkout",
+                user_agent=DEFAULT_CHECKOUT_UA,
+                accept_language=DEFAULT_CHECKOUT_ACCEPT_LANGUAGE,
+                client_version=client_version,
+                timezone_name=timezone_name,
+                timezone_offset_min=timezone_offset,
+                timeout_ms=45000,
+                log=log,
+            )
+            break
+        except Exception as exc:
+            if not _is_retryable_network_error(exc):
+                raise
+            if attempt >= 3:
+                raise RuntimeError(
+                    "OpenAI checkout Sentinel 网络请求重试 3 次后仍失败，未发送 checkout 请求"
+                ) from exc
+            delay = 0.5 * (2 ** (attempt - 1))
+            if callable(log):
+                log(
+                    f"OpenAI checkout Sentinel 网络错误（第 {attempt}/3 次），"
+                    f"{delay:g}s 后重试: {exc}"
+                )
+            time.sleep(delay)
+    if not bundle or not str(bundle.get("token") or "").strip():
+        raise RuntimeError("OpenAI checkout Sentinel 生成失败，未发送 checkout 请求")
+    headers = {"openai-sentinel-token": str(bundle["token"])}
+    so_token = str(bundle.get("so_token") or "").strip()
+    if so_token:
+        headers["openai-sentinel-so-token"] = so_token
+    return headers
 
 
 def _resolve_currency(country: str, currency: str | None = None) -> str:
@@ -590,6 +787,7 @@ def _extract_chatgpt_account_id(account) -> str:
             [
                 extra.get("chatgpt_account_id", ""),
                 extra.get("chatgptAccountId", ""),
+                extra.get("account_id", ""),
             ]
         )
     for candidate in direct_candidates:
@@ -746,19 +944,143 @@ def _mask_proxy(proxy: str | None) -> str:
     return f"{scheme}{sep}***@{host}" if sep else f"***@{host}"
 
 
-def _probe_camoufox_proxy_exit(page, *, log: Callable[[str], None]) -> dict:
+def _parse_cloudflare_trace(text: str) -> dict:
+    values: dict[str, str] = {}
+    for raw_line in str(text or "").splitlines():
+        key, separator, value = raw_line.partition("=")
+        if separator and key.strip():
+            values[key.strip().lower()] = value.strip()
+    return {
+        "ip": str(values.get("ip") or "").strip(),
+        "country": str(values.get("loc") or "").strip().upper(),
+    }
+
+
+def _probe_checkout_session_exit(
+    checkout_session,
+    *,
+    expected_country: str,
+    proxy: Optional[str],
+    log: Callable[[str], None] | None,
+) -> dict:
+    expected_country = str(expected_country or "").strip().upper()
+    masked_proxy = _mask_proxy(proxy) or "直连"
+    try:
+        response = checkout_session.get(
+            CHECKOUT_EXIT_TRACE_URL,
+            headers={
+                "User-Agent": DEFAULT_CHECKOUT_UA,
+                "Accept-Language": DEFAULT_CHECKOUT_ACCEPT_LANGUAGE,
+                "Accept": "text/plain,*/*",
+            },
+            timeout=30,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"ChatGPT 提链出口检测失败：Cloudflare trace 访问失败，proxy={masked_proxy}"
+        ) from exc
+
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    exit_info = _parse_cloudflare_trace(str(getattr(response, "text", "") or ""))
+    exit_ip = str(exit_info.get("ip") or "").strip()
+    exit_country = str(exit_info.get("country") or "").strip().upper()
+    if status_code != 200 or not exit_ip or not exit_country:
+        raise RuntimeError(
+            "ChatGPT 提链出口检测失败："
+            f"trace HTTP {status_code}，ip={exit_ip or 'unknown'}，"
+            f"country={exit_country or 'unknown'}，proxy={masked_proxy}"
+        )
+    if expected_country and exit_country != expected_country:
+        raise RuntimeError(
+            "ChatGPT 提链出口国家校验失败："
+            f"要求 {expected_country}，实际 {exit_country}，ip={exit_ip}，"
+            f"proxy={masked_proxy}"
+        )
+    if callable(log):
+        log(
+            "ChatGPT 提链出口校验通过："
+            f"country={exit_country}, ip={exit_ip}, proxy={masked_proxy}"
+        )
+    return {
+        "ok": True,
+        "ip": exit_ip,
+        "country": exit_country,
+        "source": CHECKOUT_EXIT_TRACE_URL,
+    }
+
+
+def _probe_camoufox_proxy_exit(
+    page,
+    *,
+    log: Callable[[str], None],
+    expected_country: str = "",
+    expected_ip: str = "",
+    proxy: Optional[str] = None,
+) -> dict:
+    expected_country = str(expected_country or "").strip().upper()
+    expected_ip = str(expected_ip or "").strip()
+    masked_proxy = _mask_proxy(proxy) or "直连"
+    trace_info = {"ip": "", "country": ""}
+    try:
+        page.goto(CHECKOUT_EXIT_TRACE_URL, wait_until="domcontentloaded", timeout=15000)
+        trace_text = str(page.locator("body").inner_text(timeout=5000) or "").strip()
+        trace_info = _parse_cloudflare_trace(trace_text)
+    except Exception as exc:
+        log(f"支付页出口 trace 检测失败: {type(exc).__name__}")
+
+    exit_ip = str(trace_info.get("ip") or "").strip()
+    exit_country = str(trace_info.get("country") or "").strip().upper()
+    if exit_ip and exit_country:
+        if expected_country and exit_country != expected_country:
+            raise RuntimeError(
+                "支付页出口国家校验失败："
+                f"要求 {expected_country}，实际 {exit_country}，ip={exit_ip}，"
+                f"proxy={masked_proxy}"
+            )
+        if expected_ip and exit_ip != expected_ip:
+            raise RuntimeError(
+                "提链与支付页出口 IP 不一致："
+                f"提链={expected_ip}，支付页={exit_ip}，country={exit_country}，"
+                f"proxy={masked_proxy}"
+            )
+        log(
+            "支付页出口校验通过："
+            f"country={exit_country}, ip={exit_ip}, proxy={masked_proxy}"
+        )
+        return {
+            "ok": True,
+            "ip": exit_ip,
+            "country": exit_country,
+            "source": CHECKOUT_EXIT_TRACE_URL,
+        }
+
+    diagnostic_ip = exit_ip
+    diagnostic_source = CHECKOUT_EXIT_TRACE_URL if exit_ip else ""
     for url in ("https://api.ipify.org?format=json", "https://httpbin.org/ip"):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=15000)
             text = str(page.locator("body").inner_text(timeout=5000) or "").strip()
             data = json.loads(text)
-            ip = str(data.get("ip") or data.get("origin") or "").strip()
-            if ip:
-                log(f"Camoufox 代理出口检测: {ip} ({url})")
-                return {"ok": True, "ip": ip, "source": url}
+            diagnostic_ip = str(data.get("ip") or data.get("origin") or "").strip()
+            if diagnostic_ip:
+                diagnostic_source = url
+                log(f"支付页出口诊断 IP: {diagnostic_ip} ({url})")
+                break
         except Exception as exc:
-            log(f"Camoufox 代理出口检测失败: {url} {exc}")
-    return {"ok": False, "ip": "", "source": ""}
+            log(f"支付页出口诊断失败: {url} {type(exc).__name__}")
+
+    if expected_country or expected_ip:
+        raise RuntimeError(
+            "支付页出口校验失败：Cloudflare trace 未同时返回 IP 和国家，"
+            f"ip={diagnostic_ip or 'unknown'}，country={exit_country or 'unknown'}，"
+            f"proxy={masked_proxy}"
+        )
+    return {
+        "ok": bool(diagnostic_ip),
+        "ip": diagnostic_ip,
+        "country": exit_country,
+        "source": diagnostic_source,
+    }
 
 
 def _locator_ready(locator) -> bool:
@@ -902,55 +1224,65 @@ def _try_click_paypal(page) -> bool:
     raise RuntimeError("未找到 PayPal 支付方式")
 
 
+def _parse_checkout_amount_number(raw: str) -> Optional[float]:
+    text = re.sub(r"[^0-9,.-]", "", str(raw or "")).strip(".,")
+    if not text:
+        return None
+    last_comma = text.rfind(",")
+    last_dot = text.rfind(".")
+    if last_comma >= 0 and last_dot >= 0:
+        decimal_sep = "," if last_comma > last_dot else "."
+        thousands_sep = "." if decimal_sep == "," else ","
+        text = text.replace(thousands_sep, "").replace(decimal_sep, ".")
+    elif last_comma >= 0:
+        tail = text[last_comma + 1 :]
+        text = text.replace(",", "" if len(tail) == 3 else ".")
+    elif last_dot >= 0:
+        tail = text[last_dot + 1 :]
+        if text.count(".") > 1 or len(tail) == 3:
+            text = text.replace(".", "")
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value
+
+
 def _verify_checkout_amount_nonzero(page, *, log: Callable[[str], None]) -> None:
     """检查支付页显示的订阅金额是否 > 0。
 
-    实战痛点：偶尔 Stripe checkout 渲染出来的金额是 ``$0.00 / month`` 或
-    ``Total $0``——可能是券码错乱、计费配置失败、Stripe 后端瞬态异常。继续
-    走完流程也不会真扣 / 真升级 Plus，所以**直接判失败**让外层调度立刻
-    换 worker 重试。
-
-    实现：抠 ``[data-testid*=order-summary] / [data-testid*=total]`` 等常见
-    金额容器的文本，匹配 ``$X.XX`` 或 ``X 元`` / ``CN¥X.XX`` 等货币格式。
-    至少一个金额 > 0 视为 OK。**所有**金额都是 0 才 raise；抠不到任何金额
-    （DOM 变化）只 log warning，不阻塞——避免误杀。
-
-    **注意**：本函数语义跟字面相反——它检测的是"金额是否合法（非 0）"，
-    适用于 GoPay / Team / 一次性付款这类**正常应当付费**的场景。
-    Plus checkout（``promo_campaign_id=plus-1-month-free``）期望**今日应付
-    必须是 0**——这种场景请用 ``_verify_checkout_is_free_trial``。
+    Stripe hosted 长链当前使用 ``IDR 349,000.00`` 这类 ISO 币种前缀，
+    同时保留符号货币和后缀币种格式。至少一个金额 > 0 视为有效；全部为 0
+    时终止本轮。页面没有货币文本时只记录诊断，避免误判其它 checkout UI。
     """
-    try:
-        text = _page_body_text(page)
-    except Exception:
-        text = ""
+    text = _page_body_text(page)
     if not text:
         log("金额校验：页面正文为空，跳过校验（不阻塞）")
         return
-    # 抠出所有形如 $0.00 / $20.00 / US$ 0 / 0.00 USD / SGD 27 等的货币金额。
-    # 简化：只看 ``$`` / 货币符号 + 数字 这一种，覆盖 PayPal/Stripe checkout
-    # 主流场景；JPY 等无小数币种也命中（^\d+(\.\d{1,2})?）。
+
+    currency_token = (
+        r"(?:US\$|S\$|HK\$|CN¥|Rp|IDR|USD|SGD|HKD|JPY|EUR|GBP|AUD|CAD|"
+        r"INR|BRL|MXN|TRY|KRW|CNY|￥|\$|€|£|¥)"
+    )
     amount_pattern = re.compile(
-        r"(?:US\$|S\$|HK\$|CN¥|￥|\$|€|£|¥)\s*([0-9]+(?:[.,][0-9]{1,2})?)",
+        rf"(?:{currency_token}\s*([0-9][0-9.,]*)|([0-9][0-9.,]*)\s*{currency_token})",
         re.IGNORECASE,
     )
-    matches = amount_pattern.findall(text)
+    matches = [left or right for left, right in amount_pattern.findall(text)]
     if not matches:
         log("金额校验：未抠出任何货币金额（可能 DOM 结构变化），跳过校验（不阻塞）")
         return
-    parsed: list[float] = []
-    for raw in matches:
-        try:
-            parsed.append(float(str(raw).replace(",", ".")))
-        except ValueError:
-            continue
+    parsed = [
+        value
+        for value in (_parse_checkout_amount_number(raw) for raw in matches)
+        if value is not None
+    ]
     if not parsed:
         log(f"金额校验：抠出 {len(matches)} 条但都解析失败，跳过校验（不阻塞）")
         return
-    nonzero = [v for v in parsed if v > 0]
+    nonzero = [value for value in parsed if value > 0]
     if not nonzero:
-        # 全部 0 → 异常态
-        sample = ", ".join(f"{v:.2f}" for v in parsed[:5])
+        sample = ", ".join(f"{value:.2f}" for value in parsed[:5])
         raise RuntimeError(
             f"支付金额异常：页面所有金额都为 0（共 {len(parsed)} 条，样本 {sample}）"
             "—— 可能是券码错乱 / 计费失败，本轮判定失败，关闭浏览器重试"
@@ -2227,6 +2559,20 @@ def _click_subscribe_button(page) -> bool:
     raise RuntimeError("未找到订阅提交按钮")
 
 
+def _checkout_submit_processing(page) -> bool:
+    for selector in (
+        '[data-testid="submit-button-processing-label"][aria-hidden="false"]',
+        'button[data-testid="hosted-payment-submit-button"][aria-busy="true"]',
+        'button[data-testid="hosted-payment-submit-button"].SubmitButton--processing',
+    ):
+        try:
+            if _locator_visible(page.locator(selector).first):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _click_subscribe_button_burst(
     page,
     *,
@@ -2237,7 +2583,7 @@ def _click_subscribe_button_burst(
 ) -> bool:
     clicked = False
     for index in range(1, max(int(clicks), 1) + 1):
-        if _checkout_redirected(page, checkout_url):
+        if _checkout_redirected(page, checkout_url) or _checkout_submit_processing(page):
             break
         log(f"点击最终订阅按钮第 {index}/{clicks} 次")
         _click_subscribe_button(page)
@@ -2247,6 +2593,9 @@ def _click_subscribe_button_burst(
                 page.wait_for_timeout(delay_ms)
             except Exception:
                 time.sleep(max(delay_ms, 0) / 1000)
+            if _checkout_submit_processing(page):
+                log("Stripe 提交按钮已进入 Processing，停止重复点击")
+                break
     return clicked
 
 
@@ -8039,12 +8388,21 @@ def _grab_midtrans_from_ready_page(
     if not _click_gopay_payment_method(page, log=log):
         raise RuntimeError("Stripe checkout 页没有 GoPay 支付方式，无法继续")
 
-    # 账单自动填写已停用：ChatGPT 官方更新了账单页结构，旧的字段选择器/省份
-    # 下拉匹配已失效，自动填只会反复"未命中"拖时间。改成不填账单直接点订阅
-    # （GoPay 印尼渠道账单字段多数非必填；若页面强制要求，由人工在浏览器里补）。
-    # 如需恢复自动填写，取消下面这行注释：
-    # _fill_billing_until_complete(page, address, max_attempts=3, log=log)
-    log("账单自动填写已停用（官方页面更新），跳过填写直接点订阅")
+    # Stripe 长链在选中 GoPay 后动态展开 billingName / billingAddressLine1 /
+    # billingLocality / billingAdministrativeArea / billingPostalCode。页面按钮虽然
+    # 可点击，但这些字段为空时 React 会留在原页，不会创建 Midtrans 跳转。
+    billing_form_ready = _wait_checkout_billing_form_ready(
+        page, timeout_ms=min(browser_timeout_ms, 15_000), log=log
+    )
+    if billing_form_ready:
+        missing = _fill_billing_until_complete(page, address, max_attempts=3, log=log)
+        if missing:
+            raise RuntimeError(
+                "Stripe GoPay 账单字段填写后仍缺失：" + ",".join(missing)
+            )
+        log("Stripe GoPay 账单字段已按当前 DOM 填写完成")
+    else:
+        log("Stripe GoPay 页面未展示账单字段，继续提交")
 
     _accept_checkout_terms(page)
     # 点订阅按钮（最多 3 次，间隔 1s）。点完会跳转到 Midtrans。
@@ -8061,7 +8419,7 @@ def _grab_midtrans_from_ready_page(
         match = _MIDTRANS_URL_PATTERN.search(current)
         if match:
             url = match.group(0)
-            log(f"捕获到 midtrans_url = {url}")
+            log(f"捕获到 midtrans_url: ...{url[-12:]}")
             return url
         try:
             page.wait_for_timeout(1000)
@@ -8203,8 +8561,8 @@ def grab_midtrans_on_existing_page(
     并抓 midtrans_url。
 
     短链复用流程专用：注册浏览器没关，直接复用它的登录态打开短链
-    （chatgpt.com/checkout/openai_llc/<id>），选 GoPay → 点订阅 → 抓 midtrans。
-    账单自动填写已停用（官方页面更新），不再填账单。
+    （chatgpt.com/checkout/openai_llc/<id>），选 GoPay → 按当前 Stripe DOM 填账单 →
+    点订阅 → 抓 midtrans。
     """
     log(f"短链复用：在注册浏览器里打开 cashier_url 并抓 midtrans（{cashier_url[:60]}…）")
     last_nav_exc: Exception | None = None
@@ -8230,12 +8588,11 @@ def grab_midtrans_on_existing_page(
             time.sleep(1.5 * nav_attempt)
     if last_nav_exc is not None:
         raise last_nav_exc
-    # address 传空 dict —— 账单自动填写已停用，_grab_midtrans_from_ready_page
-    # 内部已不再填账单。
+    # Stripe 长链若动态展开印尼账单字段，需要与独立浏览器路径一样填写。
     return _grab_midtrans_from_ready_page(
         page,
         checkout_url=cashier_url,
-        address={},
+        address=fetch_billing_address("ID"),
         timeout_seconds=timeout_seconds,
         cancel_check=cancel_check,
         log=log,
@@ -8252,6 +8609,8 @@ def select_gopay_and_grab_midtrans(
     capture_dir: str = "",
     after_grab: Optional[Callable[[str], None]] = None,
     chatgpt_cookies: str = "",
+    expected_exit_country: str = "",
+    expected_exit_ip: str = "",
     log: Callable[[str], None] = print,
 ) -> str:
     """启动浏览器（camoufox/bitbrowser）打开 cashier_url，自动选 GoPay 渠道、
@@ -8370,6 +8729,14 @@ def select_gopay_and_grab_midtrans(
                 log(f"短链 cookie 注入失败（继续，可能需要在同一浏览器登录）: {exc}")
         elif chatgpt_cookies and backend_config.is_bitbrowser:
             log("短链模式 + BitBrowser：依赖 profile 自身登录态（不外部注入 cookie）")
+        if expected_exit_country or expected_exit_ip:
+            _probe_camoufox_proxy_exit(
+                page,
+                log=log,
+                expected_country=expected_exit_country,
+                expected_ip=expected_exit_ip,
+                proxy=proxy,
+            )
         # 并发启动 N 个 headed 浏览器时，profile 绑定的 SOCKS 代理会在同一
         # 瞬间一起握手，瞬时拥塞导致部分 goto 抛 ERR_SOCKS_CONNECTION_FAILED
         # / ERR_TIMED_OUT。对这类瞬时网络错误重试（代理真挂了重试几次照样
@@ -8780,6 +9147,7 @@ def _stripe_init_long_url(
     payment_locale: str = "en",
     user_agent: str = "",
     proxy: Optional[str] = None,
+    response_log: Callable[[str], None] | None = None,
 ) -> str:
     """用 Stripe ``payment_pages/{cs}/init`` 把 checkout_session 实体化成长链。
 
@@ -8817,8 +9185,11 @@ def _stripe_init_long_url(
         impersonate="chrome110",
         **_build_proxy_request_kwargs(proxy),
     )
+    _emit_checkout_response_log(resp, response_log, "Stripe init")
     if resp.status_code != 200:
-        raise ValueError(f"Stripe init 失败 HTTP {resp.status_code}: {resp.text[:300]}")
+        raise ValueError(
+            f"Stripe init 失败 HTTP {resp.status_code}: {_sanitize_checkout_response(resp, 600)}"
+        )
     data = resp.json() if callable(getattr(resp, "json", None)) else {}
     if not isinstance(data, dict):
         data = {}
@@ -8842,42 +9213,56 @@ def generate_plus_link(
     currency: str | None = None,
     use_stripe_init: bool = False,
     use_short_link: bool = False,
+    response_log: Callable[[str], None] | None = None,
+    expected_exit_country: str = "",
+    checkout_context: Optional[dict] = None,
 ) -> str:
-    """生成 Plus 支付链接（后端携带账号 cookie 发请求）。
+    """生成 Plus 支付链接。
 
-    三种模式（互斥，优先级 short_link > stripe_init > 默认）：
-      - ``use_short_link=True``：走"短链"书签脚本那套——payload 用
-        ``checkout_ui_mode: "custom"`` + ``entry_point: "all_plans_pricing_modal"``
-        且**不带 promo_campaign**，拿 ``checkout_session_id`` 拼成
-        ``chatgpt.com/checkout/openai_llc/<cs_id>`` 短链返回。
-      - ``use_stripe_init=True``：oaipayy 协议，调 Stripe ``payment_pages/{cs}/init``
-        实体化成完整 ``pay.openai.com`` 长链。
-      - 默认：直接用 OpenAI 响应里的 url。
+    checkout 请求使用独立 Firefox 会话预热并生成 ``chatgpt_checkout``
+    Sentinel，避免把注册阶段的整包跨域 Cookie 和旧浏览器指纹直接复用到
+    当前支付代理。三种返回模式互斥，优先级 short_link > stripe_init > 默认。
     """
     if not account.access_token:
         raise ValueError("账号缺少 access_token")
 
     country = str(country or "ID").strip().upper()
     currency = _resolve_currency(country, currency)
+    device_id, client_version, build_number = _checkout_account_metadata(account)
+    target_path = urlparse(PAYMENT_CHECKOUT_URL).path
     headers = {
         "Authorization": f"Bearer {account.access_token}",
         "Content-Type": "application/json",
-        "oai-language": "zh-CN",
+        "Accept": "*/*",
+        "Accept-Language": DEFAULT_CHECKOUT_ACCEPT_LANGUAGE,
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "User-Agent": DEFAULT_CHECKOUT_UA,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "oai-language": "en-US",
+        "oai-device-id": device_id,
+        "oai-session-id": str(uuid.uuid4()),
+        "x-openai-target-path": target_path,
+        "x-openai-target-route": target_path,
     }
-    if account.cookies:
-        headers["cookie"] = account.cookies
-        oai_did = _extract_oai_did(account.cookies)
-        if oai_did:
-            headers["oai-device-id"] = oai_did
+    chatgpt_account_id = _extract_chatgpt_account_id(account)
+    if chatgpt_account_id:
+        headers["Chatgpt-Account-Id"] = chatgpt_account_id
+    if client_version:
+        headers["oai-client-version"] = client_version
+    if build_number:
+        headers["oai-client-build-number"] = build_number
 
     if use_short_link:
-        # 短链书签脚本的 payload：custom UI mode + all_plans_pricing_modal 入口，
-        # 不带 promo。返回 checkout_session_id 拼 chatgpt.com/checkout 短链。
         payload = {
             "entry_point": "all_plans_pricing_modal",
             "plan_name": "chatgptplusplan",
             "billing_details": {"country": country, "currency": currency},
+            "cancel_url": "https://chatgpt.com/",
             "checkout_ui_mode": "custom",
+            "check_card_proxy": True,
         }
     else:
         payload = {
@@ -8891,17 +9276,79 @@ def generate_plus_link(
             "checkout_ui_mode": "hosted",
         }
 
-    resp = cffi_requests.post(
-        PAYMENT_CHECKOUT_URL,
-        headers=headers,
-        json=payload,
-        timeout=30,
-        impersonate="chrome110",
-        **_build_proxy_request_kwargs(proxy),
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    data = data if isinstance(data, dict) else {}
+    if checkout_context is not None:
+        checkout_context.pop("exit_ip", None)
+        checkout_context.pop("exit_country", None)
+        checkout_context.pop("exit_source", None)
+
+    checkout_session = _create_checkout_session(proxy)
+    try:
+        checkout_session.cookies.set(
+            "oai-did", device_id, domain="chatgpt.com", path="/"
+        )
+        if expected_exit_country:
+            exit_info = _probe_checkout_session_exit(
+                checkout_session,
+                expected_country=expected_exit_country,
+                proxy=proxy,
+                log=response_log,
+            )
+            if checkout_context is not None:
+                checkout_context["exit_ip"] = exit_info["ip"]
+                checkout_context["exit_country"] = exit_info["country"]
+                checkout_context["exit_source"] = exit_info["source"]
+        try:
+            warmup = checkout_session.get(
+                CHECKOUT_WARMUP_URL,
+                headers={
+                    "User-Agent": DEFAULT_CHECKOUT_UA,
+                    "Accept-Language": DEFAULT_CHECKOUT_ACCEPT_LANGUAGE,
+                    "Accept": "application/json,text/plain,*/*",
+                },
+                timeout=30,
+            )
+            if (
+                int(getattr(warmup, "status_code", 0) or 0) >= 400
+                and callable(response_log)
+            ):
+                response_log(
+                    f"ChatGPT checkout 预热返回 HTTP {warmup.status_code}，继续生成 Sentinel"
+                )
+        except Exception as exc:
+            if callable(response_log):
+                response_log(
+                    "ChatGPT checkout 预热瞬时失败，继续生成 Sentinel: "
+                    f"{type(exc).__name__}"
+                )
+        headers.update(
+            _build_checkout_sentinel_headers(
+                checkout_session,
+                device_id=device_id,
+                country=country,
+                client_version=client_version,
+                log=response_log,
+            )
+        )
+        resp = checkout_session.post(
+            PAYMENT_CHECKOUT_URL,
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        safe_response = _sanitize_checkout_response(resp)
+        _emit_checkout_response_log(resp, response_log)
+        if int(getattr(resp, "status_code", 0) or 0) != 200:
+            raise ChatGPTCheckoutError(
+                int(getattr(resp, "status_code", 0) or 0),
+                safe_response or "checkout request failed",
+            )
+        data = resp.json()
+        data = data if isinstance(data, dict) else {}
+    finally:
+        try:
+            checkout_session.close()
+        except Exception:
+            pass
 
     if use_short_link:
         cs_id = (
@@ -8909,9 +9356,14 @@ def generate_plus_link(
             or str(data.get("cs_id") or "").strip()
         )
         if not cs_id:
-            raise ValueError(f"短链提取失败：OpenAI 响应没 checkout_session_id: {data.get('detail') or str(data)[:300]}")
-        logger.info("generate_plus_link: 短链 cs_id=%s", cs_id)
-        return TEAM_CHECKOUT_BASE_URL + cs_id
+            raise ValueError(
+                f"短链提取失败：OpenAI 响应没 checkout_session_id: {safe_response[:600]}"
+            )
+        processor_entity = str(data.get("processor_entity") or "openai_llc").strip()
+        if not re.fullmatch(r"openai_[a-z0-9_]+", processor_entity):
+            processor_entity = "openai_llc"
+        logger.info("generate_plus_link: 短链 cs_id=***%s", cs_id[-6:])
+        return f"https://chatgpt.com/checkout/{processor_entity}/{cs_id}"
 
     if use_stripe_init:
         cs_id = (
@@ -8919,10 +9371,14 @@ def generate_plus_link(
             or str(data.get("cs_id") or "").strip()
         )
         if not cs_id:
-            raise ValueError(f"OpenAI 响应没 checkout_session_id（无法 Stripe init）: {str(data)[:300]}")
+            raise ValueError(
+                f"OpenAI 响应没 checkout_session_id（无法 Stripe init）: {safe_response[:600]}"
+            )
         pk = str(data.get("publishable_key") or "").strip()
-        logger.info("generate_plus_link: 走 Stripe init 协议长链 cs_id=%s", cs_id)
-        return _stripe_init_long_url(cs_id, pk, proxy=proxy)
+        logger.info("generate_plus_link: 走 Stripe init 协议长链 cs_id=***%s", cs_id[-6:])
+        return _stripe_init_long_url(
+            cs_id, pk, proxy=proxy, response_log=response_log
+        )
 
     url = _extract_checkout_url(data)
     if url:

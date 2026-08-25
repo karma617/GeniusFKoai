@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from core.base_platform import (
@@ -56,6 +59,21 @@ def _resolve_proxy(extra: dict, config_proxy: Optional[str]) -> str:
     return str(os.environ.get("OPAI_GOPAY_REGISTER_PROXY", "") or "").strip()
 
 
+def _resolve_proxy_country_code(proxy: str) -> str:
+    """从代理用户名/参数中的地区标记提取两位国家代码。"""
+    value = str(proxy or "").strip()
+    for pattern in (
+        r"(?:^|[^A-Za-z])area[-_=]?([A-Za-z]{2})(?:[^A-Za-z]|$)",
+        r"(?:^|[^A-Za-z])region[-_=]?([A-Za-z]{2})(?:[^A-Za-z]|$)",
+        r"(?:^|[^A-Za-z])country[-_=]?([A-Za-z]{2})(?:[^A-Za-z]|$)",
+        r"(?:^|[^A-Za-z])loc[-_=]?([A-Za-z]{2})(?:[^A-Za-z]|$)",
+    ):
+        match = re.search(pattern, value, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+    return ""
+
+
 def _resolve_max_price_usd(extra: dict) -> float:
     """Hero-SMS 拿号成本上限（美元）。优先级：extra > env > 默认 0.11。
 
@@ -82,6 +100,27 @@ def _format_max_price(usd: float) -> str:
     return s or "0"
 
 
+def _mask_proxy(value: str) -> str:
+    proxy = str(value or "").strip()
+    if not proxy:
+        return "直连"
+    if "@" in proxy:
+        prefix, host = proxy.rsplit("@", 1)
+        scheme = prefix.split("://", 1)[0] if "://" in prefix else ""
+        return f"{scheme}://***@{host}" if scheme else f"***@{host}"
+    return proxy
+
+
+def _sms_lifetime_metadata(provider: str, extra: dict) -> dict:
+    acquired = datetime.now(timezone.utc)
+    provider = str(provider or "").strip().lower()
+    metadata = {"sms_acquired_at": acquired.isoformat(), "sms_expires_at": ""}
+    if provider not in {"smsapi", "api_sms"}:
+        ttl = max(int((extra or {}).get("sms_ttl_seconds") or 1200), 60)
+        metadata["sms_expires_at"] = (acquired + timedelta(seconds=ttl)).isoformat()
+    return metadata
+
+
 def _patch_sms_get_number_with_max_price(max_price_usd: float) -> None:
     """覆盖 ``opai.core.gopay_protocol_worker`` 命名空间里的 ``sms_get_number``，
     给 Hero-SMS ``getNumber`` 调用注入 ``maxPrice`` 参数。
@@ -91,8 +130,8 @@ def _patch_sms_get_number_with_max_price(max_price_usd: float) -> None:
     worker 模块本地 namespace，所以 patch 必须打在 worker 模块上。
     幂等：第二次调用时只更新闭包里的 ``max_price_usd``，不会重复封装。
     """
-    from opai.core import gopay_protocol_worker as _worker
-    from opai.core.sms_helpers import sms_api
+    from opai.core import sms_helpers
+    from platforms.gopay.sms_channel import bind_worker_sms_callbacks
     import logging
 
     _log = logging.getLogger("opai.core.sms_helpers")
@@ -101,15 +140,21 @@ def _patch_sms_get_number_with_max_price(max_price_usd: float) -> None:
         params = {"service": "ni", "country": "6"}
         if max_price_usd > 0:
             params["maxPrice"] = _format_max_price(max_price_usd)
-        resp = sms_api(api_key, "getNumber", params)
-        _log.info("getNumber: %s (maxPrice=%s USD)", resp, params.get("maxPrice", "-"))
+        resp = sms_helpers.sms_api(api_key, "getNumber", params)
+        _log.info("Hero-SMS getNumber completed (maxPrice=%s USD)", params.get("maxPrice", "-"))
         if resp.startswith("ACCESS_NUMBER:"):
             parts = resp.split(":")
             return f"+{parts[2]}", parts[1]
         _log.warning("getNumber failed: %s", resp)
         return None, None
 
-    _worker.sms_get_number = patched_sms_get_number
+    bind_worker_sms_callbacks(
+        get_number=patched_sms_get_number,
+        wait_code=sms_helpers.sms_wait_code,
+        request_another=sms_helpers.sms_request_another,
+        cancel=sms_helpers.sms_cancel,
+        done=sms_helpers.sms_done,
+    )
 
 
 class _WorkerLogBridge(logging.Handler):
@@ -135,6 +180,9 @@ class _WorkerLogBridge(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = record.getMessage()
+            from opai.core.log_redaction import redact_sensitive_log
+
+            msg = redact_sensitive_log(msg)
         except Exception:
             return
         if record.levelno >= logging.WARNING:
@@ -202,7 +250,7 @@ class GoPayPlatform(BasePlatform):
             )
             api_key = smspool_key
             self.log(
-                f"GoPay 协议{action}启动（接码=SMSPool, PIN={pin[:2]}**, proxy={proxy or '直连'}）"
+                f"GoPay 协议{action}启动（接码=SMSPool, PIN=******, proxy={_mask_proxy(proxy)}）"
             )
         elif sms_provider == "smsbower":
             from platforms.gopay.sms_channel import (
@@ -222,9 +270,42 @@ class GoPayPlatform(BasePlatform):
             )
             api_key = smsbower_key
             self.log(
-                f"GoPay 协议{action}启动（接码=SMSBower, PIN={pin[:2]}**, proxy={proxy or '直连'}）"
+                f"GoPay 协议{action}启动（接码=SMSBower, PIN=******, proxy={_mask_proxy(proxy)}）"
             )
-        elif sms_provider == "smsapi":
+        elif sms_provider == "five_sim":
+            from platforms.gopay.sms_channel import patch_worker_with_fivesim
+
+            five_sim_key = (
+                str(extra.get("five_sim_api_key") or "").strip()
+                or os.environ.get("OPAI_5SIM_API_KEY", "").strip()
+            )
+            if not five_sim_key:
+                raise RuntimeError(
+                    "GoPay 注册需要 5sim API key —— 请在注册任务 extra 里填 five_sim_api_key，"
+                    "或设置环境变量 OPAI_5SIM_API_KEY"
+                )
+            five_sim_country = str(extra.get("five_sim_country") or "indonesia").strip()
+            five_sim_product = str(extra.get("five_sim_product") or "gojek").strip()
+            five_sim_operator = str(extra.get("five_sim_operator") or "any").strip()
+            five_sim_max_price = str(extra.get("five_sim_max_price") or "").strip()
+            five_sim_base_url = str(extra.get("five_sim_base_url") or "").strip()
+            five_sim_reuse = bool(extra.get("five_sim_reuse", True))
+            patch_worker_with_fivesim(
+                api_key=five_sim_key,
+                country=five_sim_country,
+                product=five_sim_product,
+                operator=five_sim_operator,
+                max_price=five_sim_max_price,
+                base_url=five_sim_base_url,
+                proxy=proxy,
+                reuse=five_sim_reuse,
+            )
+            api_key = five_sim_key
+            self.log(
+                f"GoPay 协议{action}启动（接码=5sim {five_sim_country}/{five_sim_product}, "
+                f"PIN=******, proxy={_mask_proxy(proxy)}）"
+            )
+        elif sms_provider in {"smsapi", "api_sms"}:
             from platforms.gopay.sms_channel import (
                 patch_worker_with_smsapi,
                 SMSAPI_DEFAULT_URL,
@@ -243,15 +324,16 @@ class GoPayPlatform(BasePlatform):
             )
             if not smsapi_url or not smsapi_phone:
                 raise RuntimeError(
-                    "GoPay 注册接码=smsapi 需要 smsapi_phone（固定手机号）和 "
+                    f"GoPay {action}接码={sms_provider} 需要 smsapi_phone（固定手机号）和 "
                     "smsapi_url（查最新短信的 API URL）—— 在注册任务 extra 里填，"
                     "或设环境变量 OPAI_SMSAPI_PHONE / OPAI_SMSAPI_URL"
                 )
             patch_worker_with_smsapi(url=smsapi_url, phone=smsapi_phone)
-            api_key = "smsapi"
+            api_key = sms_provider
+            provider_label = "API接码" if sms_provider == "api_sms" else "SmsApi 固定号"
             self.log(
-                f"GoPay 协议{action}启动（接码=SmsApi 固定号 {smsapi_phone}, "
-                f"PIN={pin[:2]}**, proxy={proxy or '直连'}）"
+                f"GoPay 协议{action}启动（接码={provider_label} ***{smsapi_phone[-4:]}, "
+                f"PIN=******, proxy={_mask_proxy(proxy)}）"
             )
         else:
             api_key = _resolve_api_key(extra)
@@ -264,8 +346,8 @@ class GoPayPlatform(BasePlatform):
             max_price_usd = _resolve_max_price_usd(extra)
             _patch_sms_get_number_with_max_price(max_price_usd)
             self.log(
-                f"GoPay 协议{action}启动（接码=Hero-SMS, PIN={pin[:2]}**, "
-                f"proxy={proxy or '直连'}, maxPrice={_format_max_price(max_price_usd)} USD）"
+                f"GoPay 协议{action}启动（接码=Hero-SMS, PIN=******, "
+                f"proxy={_mask_proxy(proxy)}, maxPrice={_format_max_price(max_price_usd)} USD）"
             )
         return api_key
 
@@ -321,9 +403,13 @@ class GoPayPlatform(BasePlatform):
         if not phone:
             raise RuntimeError("换绑获号返回了空手机号，状态异常")
 
-        balance_rp = self._safe_initial_balance(result.get("client"))
+        balance_info = self._safe_initial_balance(result.get("client"))
+        balance_rp = int(balance_info.get("balance_rp") or 0)
+        registration_ip_country_code = _resolve_proxy_country_code(proxy)
+        sms_lifetime = _sms_lifetime_metadata(sms_provider, extra)
         self.log(
-            f"换绑获号成功: {phone}（aid={aid} 保留给付款 OTP, balance={balance_rp} IDR）"
+            f"换绑获号成功: ***{phone[-4:]}（activation=***{aid[-4:]} 保留给付款 OTP, balance={balance_rp} IDR, "
+            f"balance_status={balance_info.get('balance_query_status')}）"
         )
         return Account(
             platform=self.name,
@@ -338,17 +424,26 @@ class GoPayPlatform(BasePlatform):
                 "phone_local": local,
                 "country_code": "+62",
                 "pin": acct_pin,
+                "pin_set": True,
                 "herosms_activation_id": aid,
                 "sms_provider": sms_provider,
                 "register_proxy": proxy,
                 "balance_rp": balance_rp,
+                "balance_query_status": balance_info.get("balance_query_status"),
+                "balance_check_error": balance_info.get("balance_check_error"),
+                "registration_ip_country_code": registration_ip_country_code,
                 "acquired_via": "mature_rebind",
+                **sms_lifetime,
                 "account_overview": {
                     "balance_rp": balance_rp,
+                    "balance_query_status": balance_info.get("balance_query_status"),
+                    "balance_check_error": balance_info.get("balance_check_error"),
+                    "registration_ip_country_code": registration_ip_country_code,
                     "phone": phone,
                     "phone_local": local,
-                    "pin": acct_pin,
+                    "pin_set": True,
                     "herosms_activation_id": aid,
+                    **sms_lifetime,
                     "sms_provider": sms_provider,
                     "acquired_via": "mature_rebind",
                 },
@@ -408,7 +503,7 @@ class GoPayPlatform(BasePlatform):
         # 拿到的号在 GoPay 已被注册时，worker 会跳过并返回 None；这种情况
         # 自动换新号重试（SMSPool/Hero-SMS 出号库经常有前人用过的号）。
         # 其它失败原因（WAF / OTP 超时 / 风控）不重试避免烧钱。
-        max_retries_on_existing = 5
+        max_retries_on_existing = 1 if sms_provider in {"smsapi", "api_sms"} else 5
         result = None
         last_bridge: _WorkerLogBridge | None = None
         for attempt in range(1, max_retries_on_existing + 1):
@@ -453,6 +548,7 @@ class GoPayPlatform(BasePlatform):
         phone = str(result.get("phone") or "").strip()
         local = str(result.get("local") or "").strip()
         aid = str(result.get("aid") or "").strip()
+        country_code = str(result.get("country_code") or "+62").strip()
         if not phone:
             raise RuntimeError("GoPay 注册返回了空手机号，状态异常")
 
@@ -465,9 +561,18 @@ class GoPayPlatform(BasePlatform):
         if rebind_provider_used:
             eff_sms_provider = rebind_provider_used
             self.log(
-                f"该号已注册→已登录换绑到新印尼号 {phone}；付款将用换绑渠道"
-                f"（{eff_sms_provider}）接新号 OTP（aid={aid}）"
+                f"该号已注册→已登录换绑到新印尼号 ***{phone[-4:]}；付款将用换绑渠道"
+                f"（{eff_sms_provider}）接新号 OTP（activation=***{aid[-4:]}）"
             )
+        sms_lifetime = _sms_lifetime_metadata(eff_sms_provider, extra)
+        smsapi_phone = (
+            str(extra.get("smsapi_phone") or "").strip()
+            if eff_sms_provider in {"smsapi", "api_sms"} else ""
+        )
+        smsapi_url = (
+            str(extra.get("smsapi_url") or "").strip()
+            if eff_sms_provider in {"smsapi", "api_sms"} else ""
+        )
 
         # **重要**：不要调 sms_done(aid)！
         # GoPay 整个生命周期需要 3 次 OTP（注册 / PIN / 付款），全部
@@ -478,13 +583,16 @@ class GoPayPlatform(BasePlatform):
         # 会把 aid 关闭，付款 OTP 拿不到。
         # （Hero-SMS 默认 20 分钟号租期，付款必须在窗口内完成。）
 
-        # 注册成功立即查一次余额（红包可能已到账）。失败/异常都视作 0，
-        # 让下游 ``pick_available_gopay_account`` 默认不挑这个号；后续
-        # check_valid 任务会再轮询刷新。
-        balance_rp = self._safe_initial_balance(result.get("client"))
+        # 注册成功立即查一次余额（赠送余额可能尚未到账）。余额值与查询状态
+        # 分开保存，避免把网络/token/响应异常误显示成真实 Rp 0；后续可通过
+        # 列表的“刷新额度”任务重新查询。
+        balance_info = self._safe_initial_balance(result.get("client"))
+        balance_rp = int(balance_info.get("balance_rp") or 0)
+        registration_ip_country_code = _resolve_proxy_country_code(proxy)
 
         self.log(
-            f"GoPay 注册成功: {phone}（aid={aid} 保留给付款 OTP, balance={balance_rp} IDR）"
+            f"GoPay 注册成功: ***{phone[-4:]}（activation=***{aid[-4:]} 保留给付款 OTP, balance={balance_rp} IDR, "
+            f"balance_status={balance_info.get('balance_query_status')}）"
         )
         return Account(
             platform=self.name,
@@ -497,8 +605,11 @@ class GoPayPlatform(BasePlatform):
             extra={
                 "phone": phone,
                 "phone_local": local,
-                "country_code": "+62",
+                "country_code": country_code,
                 "pin": pin,
+                "pin_set": True,
+                "smsapi_phone": smsapi_phone,
+                "smsapi_url": smsapi_url,
                 "herosms_activation_id": aid,
                 # 注册用的接码渠道。付款阶段（步骤 ③）必须用**同一个渠道**
                 # 接 OTP——aid 对 SMSPool 来说是 order_id，拿去 Hero-SMS 查
@@ -506,13 +617,17 @@ class GoPayPlatform(BasePlatform):
                 "sms_provider": eff_sms_provider,
                 "register_proxy": proxy,
                 "balance_rp": balance_rp,
+                "balance_query_status": balance_info.get("balance_query_status"),
+                "balance_check_error": balance_info.get("balance_check_error"),
+                "registration_ip_country_code": registration_ip_country_code,
                 # 换绑获号场景：付款接码用的 key（换绑渠道独立 key，可空回退 env）。
                 # 不放 overview（避免前端泄漏全局 key）。
                 "rebind_sms_key": rebind_sms_key_used,
+                **sms_lifetime,
                 # ``save_account`` -> ``sync_platform_account_graph`` 只把
                 # ``account_overview`` 这层映射进 AccountOverviewModel.summary，
                 # 顶层字段不会同步。所以再把和"号本身状态"相关的字段
-                # （余额、手机号、PIN、aid）也镜像放一份，让下游
+                # （余额、手机号、PIN 是否已设、aid）也镜像放一份，让下游
                 # ``pick_available_gopay_account`` 通过 ``build_platform_extra``
                 # 能读到。**敏感凭证**（herosms_api_key / register_proxy）
                 # **不放 overview**——前端 /accounts API 会把 overview 整段
@@ -520,32 +635,92 @@ class GoPayPlatform(BasePlatform):
                 # 改成从 task payload 或环境变量读。
                 "account_overview": {
                     "balance_rp": balance_rp,
+                    "balance_query_status": balance_info.get("balance_query_status"),
+                    "balance_check_error": balance_info.get("balance_check_error"),
+                    "registration_ip_country_code": registration_ip_country_code,
                     "phone": phone,
                     "phone_local": local,
-                    "pin": pin,
+                    "country_code": country_code,
+                    "pin_set": True,
+                    "smsapi_phone": smsapi_phone,
                     "herosms_activation_id": aid,
                     "sms_provider": eff_sms_provider,
+                    **sms_lifetime,
                 },
             },
         )
 
     @staticmethod
-    def _safe_initial_balance(client) -> int:
-        """注册完立即查余额。读取失败 / 异常 / 负值 都归零。
-
-        ``opai.core.gopay_protocol_worker._check_balance(client)`` 在网络抖动或
-        token 还没生效时会返回 ``-1``；我们这里把负值统一归零，避免下游
-        ``pick_available_gopay_account`` 比较 ``>= 1`` 把死号挑出来。
-        """
+    def _query_balance_info(client, attempts: int = 3) -> dict:
+        """查询钱包余额，并区分真实 0、瞬时网络错误与业务失败。"""
         if client is None:
-            return 0
-        try:
-            from opai.core.gopay_protocol_worker import _check_balance
+            return {
+                "balance_rp": 0,
+                "balance_query_status": "error",
+                "balance_check_error": "注册结果未返回 GoPay client",
+                "balance_query_attempts": 0,
+            }
+        total = max(int(attempts or 0), 1)
+        for attempt in range(1, total + 1):
+            try:
+                response = client.get_balance()
+                if not isinstance(response, dict):
+                    raise RuntimeError("余额接口返回格式无效")
+                status = int(response.get("status") or 0)
+                body = response.get("body") if isinstance(response.get("body"), dict) else {}
+                if status != 200:
+                    detail = str(body.get("message") or body.get("error") or body)[:240]
+                    raise RuntimeError(f"余额接口 HTTP {status}: {detail}")
+                rows = body.get("data")
+                if not isinstance(rows, list) or not rows:
+                    raise RuntimeError("余额接口未返回 data 列表")
+                balance_data = rows[0].get("balance") if isinstance(rows[0], dict) else {}
+                raw_value = balance_data.get("value") if isinstance(balance_data, dict) else None
+                if raw_value is None:
+                    raise RuntimeError("余额接口缺少 balance.value")
+                return {
+                    "balance_rp": max(int(raw_value), 0),
+                    "balance_query_status": "ok",
+                    "balance_check_error": "",
+                    "balance_query_attempts": attempt,
+                }
+            except Exception as exc:
+                error = str(exc)
+                normalized = f"{type(exc).__name__}: {error}".lower()
+                transient = any(
+                    marker in normalized
+                    for marker in (
+                        "server disconnected",
+                        "remote disconnected",
+                        "connection reset",
+                        "connection aborted",
+                        "unexpected_eof",
+                        "ssl",
+                        "timed out",
+                        "timeout",
+                        "temporarily unavailable",
+                        "http 429",
+                        "http 502",
+                        "http 503",
+                        "http 504",
+                    )
+                )
+                if transient and attempt < total:
+                    time.sleep(attempt)
+                    continue
+                return {
+                    "balance_rp": 0,
+                    "balance_query_status": "error",
+                    "balance_check_error": error,
+                    "balance_query_attempts": attempt,
+                }
+        raise RuntimeError("余额查询重试状态异常")  # pragma: no cover
 
-            value = int(_check_balance(client) or 0)
-            return max(value, 0)
-        except Exception:
-            return 0
+    def _safe_initial_balance(self, client) -> dict:
+        info = self._query_balance_info(client)
+        if info.get("balance_query_status") == "error":
+            self.log(f"GoPay 注册后余额查询失败: {info.get('balance_check_error') or 'unknown'}")
+        return info
 
     # ------------------------------------------------------------------
     # 状态查询：拉余额（懒加载 client，避免每次 import 都 ensure 路径）
@@ -553,28 +728,62 @@ class GoPayPlatform(BasePlatform):
     def check_valid(self, account: Account) -> bool:
         try:
             ensure_opai_on_path()
-            from opai.core.gopay_protocol_worker import (
-                _check_balance,
-                _resume_account,
-            )
-        except Exception:
+            from opai.core.gopay_protocol_worker import _resume_account
+        except Exception as exc:
+            self._last_check_overview = {
+                "balance_query_status": "error",
+                "balance_check_error": f"加载 GoPay 查询模块失败: {exc}",
+            }
             return False
         try:
             phone = str(account.user_id or account.email or "").strip()
             if not phone:
+                self._last_check_overview = {
+                    "balance_query_status": "error",
+                    "balance_check_error": "账号缺少手机号",
+                }
                 return False
-            resumed = _resume_account(phone, proxy=str((account.extra or {}).get("register_proxy") or ""))
+            account_extra = account.extra or {}
+            account_overview = account_extra.get("account_overview") if isinstance(account_extra.get("account_overview"), dict) else {}
+            legacy_extra = account_overview.get("legacy_extra") if isinstance(account_overview.get("legacy_extra"), dict) else {}
+            register_proxy = str(
+                account_extra.get("register_proxy")
+                or account_overview.get("register_proxy")
+                or legacy_extra.get("register_proxy")
+                or ""
+            )
+            registration_ip_country_code = str(
+                account_overview.get("registration_ip_country_code")
+                or legacy_extra.get("registration_ip_country_code")
+                or _resolve_proxy_country_code(register_proxy)
+                or ""
+            ).strip().upper()
+            resumed = _resume_account(phone, proxy=register_proxy)
             if not resumed:
+                self._last_check_overview = {
+                    "balance_query_status": "error",
+                    "balance_check_error": "无法恢复 GoPay 登录会话",
+                }
                 return False
-            balance = int(_check_balance(resumed["client"]) or 0)
+            balance_info = self._query_balance_info(resumed.get("client"))
+            if balance_info.get("balance_query_status") != "ok":
+                self._last_check_overview = balance_info
+                self.log(f"GoPay 余额查询失败: {balance_info.get('balance_check_error') or 'unknown'}")
+                return False
+            balance = int(balance_info.get("balance_rp") or 0)
             self._last_check_overview = {
                 "plan": "free" if balance < 1 else "active",
                 "plan_name": "GoPay",
                 "plan_state": "active" if balance > 0 else "registered",
-                "balance_rp": balance,
+                "registration_ip_country_code": registration_ip_country_code,
+                **balance_info,
             }
             return True
         except Exception as exc:
+            self._last_check_overview = {
+                "balance_query_status": "error",
+                "balance_check_error": str(exc),
+            }
             self.log(f"GoPay check_valid 失败: {exc}")
             return False
 
@@ -589,8 +798,12 @@ class GoPayPlatform(BasePlatform):
     def execute_action(self, action_id: str, account: Account, params: dict) -> dict:
         if action_id == "query_balance":
             ok = self.check_valid(account)
+            overview = self.get_last_check_overview()
             return {
                 "ok": ok,
-                "data": self.get_last_check_overview(),
+                "data": overview,
+                "error": "" if ok else str(overview.get("balance_check_error") or "GoPay 余额查询失败"),
+                "error_type": "" if ok else "balance_query_failed",
+                "summary_updates": {} if ok else overview,
             }
         return super().execute_action(action_id, account, params)

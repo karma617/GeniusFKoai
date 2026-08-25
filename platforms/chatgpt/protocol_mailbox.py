@@ -209,7 +209,7 @@ class _MailboxEmailService:
 
             code = self._mailbox.wait_for_code(acct, **wait_kwargs)
 
-            self._log(f"[Mailbox:{mailbox_type}] 轮询成功，获取到验证码: {code}")
+            self._log(f"[Mailbox:{mailbox_type}] 轮询成功，已获取验证码")
 
             return code
 

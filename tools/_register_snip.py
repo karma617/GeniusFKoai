@@ -3789,7 +3789,7 @@ class RegistrationEngine:
 
                 if code:
 
-                    self._log(f"成功获取验证码: {code}")
+                    self._log("成功获取验证码")
 
                     return code
 
@@ -5830,7 +5830,7 @@ class RegistrationEngine:
 
             if code:
 
-                self._log(f"成功获取验证码: {code}")
+                self._log("成功获取验证码")
 
                 return code
 
@@ -7988,7 +7988,7 @@ class RegistrationEngine:
 
                         raise RuntimeError("Codex OTP 获取失败")
 
-                    self._log(f"Codex OTP: {code}")
+                    self._log("Codex OTP 已获取")
 
 
 

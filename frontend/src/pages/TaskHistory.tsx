@@ -44,6 +44,7 @@ const TASK_TYPE_OPTIONS = [
   { value: 'phone_bind', zh: '绑定手机号', en: 'Bind Phone' },
   { value: 'codex_oauth', zh: 'Codex OAuth', en: 'Codex OAuth' },
   { value: 'momo_trial_probe', zh: 'MOMO试用检测', en: 'MoMo Trial Probe' },
+  { value: 'trial_eligibility_probe', zh: '批量检测试用资格', en: 'Trial Eligibility Probe' },
   { value: 'get_rt', zh: '批量获取RT', en: 'Batch Get RT' },
   { value: 'get_rt_bypass', zh: '批量获取RT(绕过)', en: 'Batch Get RT (Bypass)' },
   { value: 'refresh_session', zh: '重登验证', en: 'Refresh Session' },

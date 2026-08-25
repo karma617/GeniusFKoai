@@ -49,13 +49,30 @@ def _extract_cookie_value(cookies: str, name: str) -> str:
 
 
 def _cookie_header(cookies: str = "", session_token: str = "") -> str:
-    value = _text(cookies)
-    if value:
-        return value
+    """仅恢复 MFA API 所需的 ChatGPT 登录态 Cookie。"""
+    parsed: dict[str, str] = {}
+    for part in str(cookies or "").split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if name and value:
+            parsed[name] = value
     token = _text(session_token)
     if token:
-        return f"__Secure-next-auth.session-token={token}"
-    return ""
+        parsed["__Secure-next-auth.session-token"] = token
+    allowed_names = (
+        "__Secure-next-auth.session-token",
+        "__Secure-oai-is",
+        "_account",
+        "oai-did",
+    )
+    return "; ".join(
+        f"{name}={parsed[name]}"
+        for name in allowed_names
+        if _text(parsed.get(name))
+    )
 
 
 def _primary_language(accept_language: str) -> str:

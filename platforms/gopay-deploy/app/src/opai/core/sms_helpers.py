@@ -12,7 +12,10 @@ import time
 
 import tls_client
 
+from .log_redaction import install_sensitive_log_filter
+
 log = logging.getLogger(__name__)
+install_sensitive_log_filter(log)
 
 HEROSMS_API = "https://hero-sms.com"
 SMS_TIMEOUT = 120

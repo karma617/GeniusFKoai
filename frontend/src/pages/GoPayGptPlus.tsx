@@ -51,6 +51,38 @@ function getPlanState(acc: AccountRow): string {
   );
 }
 
+const GOPAY_TRIAL_TAGS = new Set([
+  "日本试用",
+  "菲律宾试用",
+  "英国试用",
+  "印度尼西亚试用",
+  "荷兰试用",
+  "印度试用",
+]);
+
+function hasGopayTrialTag(acc: AccountRow): boolean {
+  const badges: unknown[] = Array.isArray(acc.display_summary?.badges)
+    ? acc.display_summary.badges
+    : [];
+  const chips: unknown[] = Array.isArray(acc.overview?.chips) ? acc.overview.chips : [];
+  return [...badges, ...chips].some((tag) => {
+    const label = typeof tag === "object" && tag !== null && "label" in tag
+      ? tag.label
+      : tag;
+    return GOPAY_TRIAL_TAGS.has(String(label ?? "").trim());
+  });
+}
+
+function isEligibleChatGptAccount(acc: AccountRow): boolean {
+  const lifecycle = String(getLifecycleStatus(acc)).trim().toLowerCase();
+  const planState = String(getPlanState(acc)).trim().toLowerCase();
+  return (
+    planState === "free" &&
+    hasGopayTrialTag(acc) &&
+    (lifecycle === "registered" || lifecycle === "rt_uploaded")
+  );
+}
+
 function getBalanceRp(acc: AccountRow): number {
   const candidates = [
     acc.overview?.balance_rp,
@@ -73,14 +105,39 @@ function getPhone(acc: AccountRow): string {
   );
 }
 
+function isGopayPinSet(acc: AccountRow): boolean {
+  return acc.overview?.pin_set === true || Boolean(String(acc.password || "").trim());
+}
+
+function nonEmptyLines(value: string): string[] {
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function parseApiSmsPool(value: string): Array<{ phone: string; url: string }> {
+  return nonEmptyLines(value).map((line, index) => {
+    const separator = line.indexOf("----");
+    if (separator < 0) throw new Error(`API 接码第 ${index + 1} 行格式错误，请使用 手机号----接码地址`);
+    const phone = line.slice(0, separator).trim();
+    const url = line.slice(separator + 4).trim();
+    if (!/^\+[1-9]\d{7,14}$/.test(phone)) throw new Error(`API 接码第 ${index + 1} 行手机号无效`);
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
+    } catch {
+      throw new Error(`API 接码第 ${index + 1} 行接码地址无效`);
+    }
+    return { phone, url };
+  });
+}
+
 export default function GoPayGptPlus() {
   const [chatgptAccounts, setChatgptAccounts] = useState<AccountRow[]>([]);
   const [gopayAccounts, setGopayAccounts] = useState<AccountRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedChatgpt, setSelectedChatgpt] = useState<Set<number>>(new Set());
   const [selectedGopayId, setSelectedGopayId] = useState<number | null>(null);
-  const [country, setCountry] = useState("ID");
-  const [currency, setCurrency] = useState("IDR");
+  const country = "ID";
+  const currency = "IDR";
   const [grabTimeout, setGrabTimeout] = useState(300);
   const [midtransOverride, setMidtransOverride] = useState("");
   // 浏览器模式（同 CtfGptPlus），bitbrowser_* 需要 profile id
@@ -102,6 +159,7 @@ export default function GoPayGptPlus() {
   // 拿号价格上限（USD）。herosms / smspool 都按 USD 计价，默认 0.11。
   // 留空 = 用后端默认值。
   const [maxPrice, setMaxPrice] = useState("0.11");
+  const [maxPaymentAmountRp, setMaxPaymentAmountRp] = useState(0);
   // smspool 默认 api key
   const [smspoolApiKey, setSmspoolApiKey] = useState(
     "",
@@ -110,6 +168,9 @@ export default function GoPayGptPlus() {
   const [smsbowerApiKey, setSmsbowerApiKey] = useState(
     "",
   );
+  const [fiveSimApiKey, setFiveSimApiKey] = useState("");
+  const [apiSmsPool, setApiSmsPool] = useState("");
+  const [proxyPool, setProxyPool] = useState("");
   // smsapi（固定手机号 + 查最新短信 API）：用户自己的实体卡/长期号
   const [smsapiPhone, setSmsapiPhone] = useState("");
   const [smsapiUrl, setSmsapiUrl] = useState("");
@@ -133,6 +194,59 @@ export default function GoPayGptPlus() {
   const [rebindCountry, setRebindCountry] = useState("");
   const [rebindService, setRebindService] = useState("");
 
+  const [formLoaded, setFormLoaded] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("gopay-gptplus-form-v2") || "{}");
+      if (Number.isFinite(saved.grabTimeout)) setGrabTimeout(saved.grabTimeout);
+      if (typeof saved.checkoutMode === "string") setCheckoutMode(saved.checkoutMode);
+      if (typeof saved.envelopeUrl === "string") setEnvelopeUrl(saved.envelopeUrl);
+      if (Number.isFinite(saved.concurrency)) setConcurrency(saved.concurrency);
+      if (Number.isFinite(saved.registerCount)) setRegisterCount(saved.registerCount);
+      if (["auto", "pool", "register"].includes(saved.gopaySource)) setGopaySource(saved.gopaySource);
+      if (typeof saved.gopayPin === "string") setGopayPin(saved.gopayPin);
+      if (typeof saved.smsProvider === "string") setSmsProvider(saved.smsProvider);
+      if (typeof saved.maxPrice === "string") setMaxPrice(saved.maxPrice);
+      if (typeof saved.smspoolApiKey === "string") setSmspoolApiKey(saved.smspoolApiKey);
+      if (typeof saved.smsbowerApiKey === "string") setSmsbowerApiKey(saved.smsbowerApiKey);
+      if (typeof saved.fiveSimApiKey === "string") setFiveSimApiKey(saved.fiveSimApiKey);
+      if (typeof saved.apiSmsPool === "string") setApiSmsPool(saved.apiSmsPool);
+      if (typeof saved.proxyPool === "string") setProxyPool(saved.proxyPool);
+      if (typeof saved.smsapiPhone === "string") setSmsapiPhone(saved.smsapiPhone);
+      if (typeof saved.smsapiUrl === "string") setSmsapiUrl(saved.smsapiUrl);
+      if (typeof saved.herosmsApiKey === "string") setHerosmsApiKey(saved.herosmsApiKey);
+      if (typeof saved.useStripeInit === "boolean") setUseStripeInit(saved.useStripeInit);
+      if (typeof saved.useShortLink === "boolean") setUseShortLink(saved.useShortLink);
+      if (typeof saved.autoRebind === "boolean") setAutoRebind(saved.autoRebind);
+      if (typeof saved.rebindProvider === "string") setRebindProvider(saved.rebindProvider);
+      if (typeof saved.rebindSmsKey === "string") setRebindSmsKey(saved.rebindSmsKey);
+      if (typeof saved.rebindCountry === "string") setRebindCountry(saved.rebindCountry);
+      if (typeof saved.rebindService === "string") setRebindService(saved.rebindService);
+    } catch {
+      localStorage.removeItem("gopay-gptplus-form-v2");
+    } finally {
+      setFormLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!formLoaded) return;
+    localStorage.setItem("gopay-gptplus-form-v2", JSON.stringify({
+      grabTimeout, checkoutMode, envelopeUrl, concurrency, registerCount,
+      gopaySource, gopayPin, smsProvider, maxPrice, smspoolApiKey,
+      smsbowerApiKey, fiveSimApiKey, apiSmsPool, proxyPool, smsapiPhone, smsapiUrl,
+      herosmsApiKey, useStripeInit, useShortLink, autoRebind,
+      rebindProvider, rebindSmsKey, rebindCountry, rebindService,
+    }));
+  }, [
+    formLoaded, grabTimeout, checkoutMode, envelopeUrl, concurrency,
+    registerCount, gopaySource, gopayPin, smsProvider, maxPrice,
+    smspoolApiKey, smsbowerApiKey, fiveSimApiKey, apiSmsPool, proxyPool, smsapiPhone,
+    smsapiUrl, herosmsApiKey, useStripeInit, useShortLink, autoRebind,
+    rebindProvider, rebindSmsKey, rebindCountry, rebindService,
+  ]);
+
   const BROWSER_MODE_OPTIONS = [
     { value: "camoufox_headed", label: "Camoufox 前台" },
     { value: "camoufox_headless", label: "Camoufox 后台" },
@@ -148,19 +262,50 @@ export default function GoPayGptPlus() {
   const reload = async () => {
     setLoading(true);
     try {
-      // ChatGPT 账号：只列 plan_state != subscribed 的（已订阅没必要再付一遍）
-      const chatgptParams = new URLSearchParams({
-        platform: "chatgpt",
-        page: "1",
-        page_size: "100",
-      });
-      if (chatgptSearch) chatgptParams.set("email", chatgptSearch);
-      const chatgptRes = await apiFetch(`/accounts?${chatgptParams}`);
-      setChatgptAccounts(chatgptRes.items || []);
-
-      // GoPay 账号
-      const gopayRes = await apiFetch(
-        `/accounts?platform=gopay&page=1&page_size=100`,
+      const fetchChatgptAccounts = async (
+        status: "registered" | "rt_uploaded",
+      ): Promise<AccountRow[]> => {
+        const pageSize = 100;
+        const buildParams = (page: number) => {
+          const params = new URLSearchParams({
+            platform: "chatgpt",
+            status,
+            tag: "试用",
+            page: String(page),
+            page_size: String(pageSize),
+          });
+          if (chatgptSearch) params.set("email", chatgptSearch);
+          return params;
+        };
+        const first = await apiFetch(`/accounts?${buildParams(1)}`);
+        const items: AccountRow[] = [...(first.items || [])];
+        const totalPages = Math.ceil(Number(first.total || items.length) / pageSize);
+        if (totalPages > 1) {
+          const remaining = await Promise.all(
+            Array.from({ length: totalPages - 1 }, (_, index) =>
+              apiFetch(`/accounts?${buildParams(index + 2)}`),
+            ),
+          );
+          for (const response of remaining) items.push(...(response.items || []));
+        }
+        return items;
+      };
+      const [registeredAccounts, rtUploadedAccounts, gopayRes] = await Promise.all([
+        fetchChatgptAccounts("registered"),
+        fetchChatgptAccounts("rt_uploaded"),
+        apiFetch(`/accounts?platform=gopay&page=1&page_size=100`),
+      ]);
+      const eligibleById = new Map<number, AccountRow>();
+      for (const account of [...registeredAccounts, ...rtUploadedAccounts]) {
+        if (account.id && isEligibleChatGptAccount(account)) {
+          eligibleById.set(account.id, account);
+        }
+      }
+      const eligibleAccounts = Array.from(eligibleById.values());
+      const eligibleIds = new Set(eligibleById.keys());
+      setChatgptAccounts(eligibleAccounts);
+      setSelectedChatgpt((current) =>
+        new Set(Array.from(current).filter((id) => eligibleIds.has(id))),
       );
       setGopayAccounts(gopayRes.items || []);
     } catch (err) {
@@ -204,6 +349,32 @@ export default function GoPayGptPlus() {
       alert("「仅用号池」模式请在下方点选一个 GoPay 账号");
       return;
     }
+    const taskAccountCount = Math.max(selectedChatgpt.size || registerCount, 1);
+    if (selectedGopayId && taskAccountCount > 1) {
+      alert("指定单个 GoPay 账号时只能处理 1 个 ChatGPT 账号");
+      return;
+    }
+    const proxies = nonEmptyLines(proxyPool);
+    if (proxies.length < taskAccountCount) {
+      alert(`代理池只有 ${proxies.length} 条，任务有 ${taskAccountCount} 个账号`);
+      return;
+    }
+    if (new Set(proxies).size !== proxies.length) {
+      alert("代理池存在重复代理，每个账号必须使用不同代理");
+      return;
+    }
+    if (smsProvider === "api_sms" && gopaySource !== "pool") {
+      try {
+        const entries = parseApiSmsPool(apiSmsPool);
+        if (entries.length < taskAccountCount) {
+          alert(`API 接码号码池只有 ${entries.length} 条，任务有 ${taskAccountCount} 个账号`);
+          return;
+        }
+      } catch (err: any) {
+        alert(err?.message || String(err));
+        return;
+      }
+    }
     setStarting(true);
     try {
       const body: any = {
@@ -224,9 +395,13 @@ export default function GoPayGptPlus() {
         sms_provider: smsProvider,
         smspool_api_key: smspoolApiKey.trim(),
         smsbower_api_key: smsbowerApiKey.trim(),
+        five_sim_api_key: fiveSimApiKey.trim(),
+        api_sms_pool: apiSmsPool.trim(),
+        proxy_pool: proxyPool.trim(),
         smsapi_url: smsapiUrl.trim(),
         smsapi_phone: smsapiPhone.trim(),
         max_price: maxPrice.trim(),
+        max_payment_amount_rp: maxPaymentAmountRp,
         capture_payment: capturePayment,
         use_stripe_init: useStripeInit,
         use_short_link: useShortLink,
@@ -240,7 +415,6 @@ export default function GoPayGptPlus() {
       if (selectedChatgpt.size === 0) {
         body.register_count = registerCount;
       }
-      console.log("[gopay-pay-chatgpt] submit payload:", body);
       const res = await apiFetch("/tasks/gopay-pay-chatgpt", {
         method: "POST",
         body: JSON.stringify(body),
@@ -259,9 +433,24 @@ export default function GoPayGptPlus() {
       alert("GoPay PIN 必须是 6 位数字");
       return;
     }
+    if (nonEmptyLines(proxyPool).length < 1) {
+      alert("注册 GoPay 账号至少需要 1 条固定代理");
+      return;
+    }
     if (smsProvider === "smsapi" && (!smsapiPhone.trim() || !smsapiUrl.trim())) {
       alert("SmsApi 渠道需要填写固定手机号和查最新短信 API URL");
       return;
+    }
+    if (smsProvider === "api_sms") {
+      try {
+        if (parseApiSmsPool(apiSmsPool).length < 1) {
+          alert("API 接码号码池至少需要 1 条记录");
+          return;
+        }
+      } catch (err: any) {
+        alert(err?.message || String(err));
+        return;
+      }
     }
 
     setRegisteringGopay(true);
@@ -272,6 +461,9 @@ export default function GoPayGptPlus() {
         sms_provider: smsProvider,
         smspool_api_key: smspoolApiKey.trim(),
         smsbower_api_key: smsbowerApiKey.trim(),
+        five_sim_api_key: fiveSimApiKey.trim(),
+        api_sms_pool: apiSmsPool.trim(),
+        proxy_pool: proxyPool.trim(),
         smsapi_url: smsapiUrl.trim(),
         smsapi_phone: smsapiPhone.trim(),
         herosms_api_key: herosmsApiKey.trim(),
@@ -282,7 +474,6 @@ export default function GoPayGptPlus() {
         rebind_country: rebindCountry.trim(),
         rebind_service: rebindService.trim(),
       };
-      console.log("[gopay-register-account] submit payload:", body);
       const res = await apiFetch("/tasks/gopay-register-account", {
         method: "POST",
         body: JSON.stringify(body),
@@ -301,10 +492,10 @@ export default function GoPayGptPlus() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto lg:overflow-hidden">
       <Card className="shrink-0 bg-[var(--bg-pane)]/40 border border-[var(--border)] shadow-sm">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)]/50">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-3 px-5 py-4 border-b border-[var(--border)]/50 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Sparkles className="h-5 w-5 text-[var(--accent)]" />
             <h1 className="text-lg font-semibold tracking-tight text-[var(--text-primary)]">
               GoPay 生成 GPTPlus
@@ -313,7 +504,7 @@ export default function GoPayGptPlus() {
               印尼 GoPay 协议付款
             </Badge>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -357,7 +548,7 @@ export default function GoPayGptPlus() {
             </Button>
           </div>
         </div>
-        <div className="px-5 py-3 text-xs text-[var(--text-muted)] grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="px-5 py-3 text-xs text-[var(--text-muted)] grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           <div>
             <label className="block mb-1">浏览器模式</label>
             <select
@@ -374,24 +565,14 @@ export default function GoPayGptPlus() {
           </div>
           <div>
             <label className="block mb-1">国家</label>
-            <select
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              className="control-surface control-surface-compact w-full"
-            >
+            <select value={country} disabled className="control-surface control-surface-compact w-full">
               <option value="ID">印尼 (ID)</option>
-              <option value="US">美国 (US)</option>
             </select>
           </div>
           <div>
             <label className="block mb-1">货币</label>
-            <select
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value)}
-              className="control-surface control-surface-compact w-full"
-            >
+            <select value={currency} disabled className="control-surface control-surface-compact w-full">
               <option value="IDR">IDR</option>
-              <option value="USD">USD</option>
             </select>
           </div>
           <div>
@@ -499,7 +680,7 @@ export default function GoPayGptPlus() {
               </span>
             </label>
             {autoRebind && (
-              <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
                 <div>
                   <label className="block mb-1 text-[var(--text-muted)]">换绑接码渠道</label>
                   <select
@@ -588,6 +769,21 @@ export default function GoPayGptPlus() {
               className="control-surface control-surface-compact w-full"
             />
           </div>
+          <div className="md:col-span-2">
+            <label className="block mb-1 text-[var(--text-muted)]">
+              任务代理池（每个账号一行）
+            </label>
+            <textarea
+              rows={4}
+              value={proxyPool}
+              onChange={(e) => setProxyPool(e.target.value)}
+              placeholder={"http://user:pass@host:port\nhttp://user:pass@host:port"}
+              className="control-surface w-full resize-y font-mono text-xs"
+            />
+            <div className="mt-1 text-xs text-[var(--text-muted)]">
+              已填写 {nonEmptyLines(proxyPool).length} 条；同一账号的注册、cashier、浏览器和 GoPay 付款固定使用同一条代理。
+            </div>
+          </div>
           <div>
             <label className="block mb-1 text-[var(--text-muted)]">
               GoPay 号来源
@@ -628,9 +824,11 @@ export default function GoPayGptPlus() {
               className="control-surface control-surface-compact w-full"
             >
               <option value="herosms">Hero-SMS</option>
-              <option value="smspool">SMSPool</option>
               <option value="smsbower">SMSBower</option>
-              <option value="smsapi">SmsApi（自有固定号）</option>
+              <option value="smspool">SMSPool</option>
+              <option value="five_sim">5sim</option>
+              <option value="smsapi">SmsApi（单个固定号）</option>
+              <option value="api_sms">API接码（号码池）</option>
             </select>
           </div>
           <div>
@@ -648,6 +846,20 @@ export default function GoPayGptPlus() {
             />
             <div className="mt-1 text-xs text-[var(--text-muted)]">
               Hero-SMS / SMSPool 都按 USD 计价。留空或 0 = 不限价。
+            </div>
+          </div>
+          <div>
+            <label className="block mb-1 text-[var(--text-muted)]">最高支付金额（IDR）</label>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={maxPaymentAmountRp}
+              onChange={(e) => setMaxPaymentAmountRp(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+              className="control-surface control-surface-compact w-full text-center font-mono"
+            />
+            <div className="mt-1 text-xs text-[var(--text-muted)]">
+              0 = 允许免费订单和 GoPay 绑定所需的 1 IDR 验证；其他付费必须显式填写上限。
             </div>
           </div>
           {smsProvider === "smspool" && (
@@ -676,6 +888,37 @@ export default function GoPayGptPlus() {
                 placeholder="SMSBower API key"
                 className="control-surface control-surface-compact w-full"
               />
+            </div>
+          )}
+          {smsProvider === "five_sim" && (
+            <div>
+              <label className="block mb-1 text-[var(--text-muted)]">
+                5sim API Key
+              </label>
+              <input
+                type="password"
+                value={fiveSimApiKey}
+                onChange={(e) => setFiveSimApiKey(e.target.value)}
+                placeholder="5sim API key"
+                className="control-surface control-surface-compact w-full"
+              />
+            </div>
+          )}
+          {smsProvider === "api_sms" && (
+            <div className="md:col-span-2">
+              <label className="block mb-1 text-[var(--text-muted)]">
+                API 接码号码池（每个任务账号一行）
+              </label>
+              <textarea
+                rows={4}
+                value={apiSmsPool}
+                onChange={(e) => setApiSmsPool(e.target.value)}
+                placeholder={"+447476554147----https://example.com/api/record?token=xxx"}
+                className="control-surface w-full resize-y font-mono text-xs"
+              />
+              <div className="mt-1 text-xs text-[var(--text-muted)]">
+                已填写 {nonEmptyLines(apiSmsPool).length} 条，按任务账号顺序一一分配。
+              </div>
             </div>
           )}
           {smsProvider === "smsapi" && (
@@ -847,6 +1090,7 @@ export default function GoPayGptPlus() {
                   const balance = getBalanceRp(acc);
                   const usable = balance >= 1;
                   const phone = getPhone(acc);
+                  const pinSet = isGopayPinSet(acc);
                   const lifecycleStatus = getLifecycleStatus(acc);
                   const selected =
                     gopaySource === "pool" && selectedGopayId === acc.id;
@@ -879,17 +1123,20 @@ export default function GoPayGptPlus() {
                         {balance.toLocaleString()}
                       </td>
                       <td className="px-3 py-1.5">
-                        <Badge
-                          variant={
-                            usable
-                              ? "success"
-                              : lifecycleStatus === "invalid"
-                                ? "danger"
-                                : "secondary"
-                          }
-                        >
-                          {usable ? "可用" : "无余额"}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Badge
+                            variant={
+                              usable
+                                ? "success"
+                                : lifecycleStatus === "invalid"
+                                  ? "danger"
+                                  : "secondary"
+                            }
+                          >
+                            {usable ? "可用" : "无余额"}
+                          </Badge>
+                          {pinSet && <Badge variant="success">PIN已设</Badge>}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -913,14 +1160,13 @@ export default function GoPayGptPlus() {
       {/* 任务执行日志弹窗 */}
       {taskId && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-4"
           onClick={(e) => e.target === e.currentTarget && closeTask()}
         >
           <div
-            className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col w-[60vw]"
-            style={{ maxHeight: "85vh" }}
+            className="flex h-[calc(100dvh-1.5rem)] max-h-[85dvh] min-h-0 w-full max-w-[1200px] flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl sm:h-[85dvh] sm:w-[min(92vw,1200px)]"
           >
-            <div className="px-5 py-3 border-b border-[var(--border)] flex items-center justify-between">
+            <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-5 py-3">
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                 GoPay 任务执行日志
               </h3>
@@ -931,10 +1177,10 @@ export default function GoPayGptPlus() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="flex-1 overflow-hidden p-4">
+            <div className="min-h-0 flex-1 overflow-hidden p-3 sm:p-4">
               <TaskLogPanel taskId={taskId} onDone={() => reload()} />
             </div>
-            <div className="px-5 py-3 border-t border-[var(--border)] flex justify-end">
+            <div className="flex shrink-0 justify-end border-t border-[var(--border)] px-5 py-3">
               <Button variant="outline" size="sm" onClick={closeTask}>
                 关闭
               </Button>

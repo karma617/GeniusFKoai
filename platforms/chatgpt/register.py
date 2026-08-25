@@ -8,6 +8,7 @@
 
 
 
+import os
 import re
 
 import json
@@ -1189,21 +1190,32 @@ class RegistrationEngine:
 
     def _read_oai_did_cookie(self) -> str:
 
-        """读取 OpenAI 设备标识 cookie，兼容多域 CookieJar 冲突场景。"""
+        """确定性读取 OpenAI 设备标识，优先采用 chatgpt.com 服务端 Cookie。"""
 
         if not self.session:
-
             return ""
 
+        records = [
+            record
+            for record in (_iter_cookie_records(self.session.cookies) or [])
+            if str(record.get("name") or "") == "oai-did"
+            and str(record.get("value") or "").strip()
+        ]
+        for preferred_domain in (
+            "chatgpt.com",
+            ".chatgpt.com",
+            "auth.openai.com",
+            ".auth.openai.com",
+            "",
+        ):
+            for record in reversed(records):
+                if str(record.get("domain") or "").strip().lower() == preferred_domain:
+                    return str(record.get("value") or "").strip()
+
         try:
-
-            return str(self.session.cookies.get("oai-did") or "")
-
+            return str(self.session.cookies.get("oai-did") or "").strip()
         except Exception:
-
-            return _cookie_value(self.session.cookies, "oai-did")
-
-        return ""
+            return ""
 
 
     def _seed_oai_did_cookie(self, device_id: str) -> str:
@@ -1260,22 +1272,23 @@ class RegistrationEngine:
 
     def _ensure_protocol_device_identity(self, stage: str) -> str:
 
-        """保持 fingerprint、会话字段、oai-did Cookie 使用同一个设备 ID。"""
+        """采用服务端 oai-did，并在当前注册会话内保持设备标识一致。"""
 
         fingerprint_did = self._protocol_device_id()
         cookie_did = self._read_oai_did_cookie()
+        did = cookie_did or fingerprint_did
         if cookie_did and cookie_did != fingerprint_did:
             self._log(
                 "[REG-DIAG][protocol] device identity mismatch "
                 f"stage={stage} fingerprint={self._diag_shape(fingerprint_did)} "
-                f"cookie={self._diag_shape(cookie_did)}; normalize_to=fingerprint",
-                "warning",
+                f"cookie={self._diag_shape(cookie_did)}; normalize_to=server_cookie"
             )
-        did = self._seed_oai_did_cookie(fingerprint_did)
+            self.protocol_fingerprint.device_id = cookie_did
+        did = self._seed_oai_did_cookie(did)
         self._device_id = did
         self._log(
             "[REG-DIAG][protocol] device identity "
-            f"stage={stage} fingerprint={self._diag_shape(fingerprint_did)} "
+            f"stage={stage} fingerprint={self._diag_shape(self._protocol_device_id())} "
             f"session={self._diag_shape(self._device_id)} "
             f"cookie={self._diag_shape(self._read_oai_did_cookie())}"
         )
@@ -1294,41 +1307,84 @@ class RegistrationEngine:
 
     def _clear_auth_openai_cookies(self) -> int:
 
-        """清理 auth.openai.com 会话 cookie；用于 invalid_state 后重建授权状态。"""
+        """清理 auth.openai.com 会话 cookie；用于重建独立授权状态。"""
 
         if not self.session:
 
             return 0
 
-        removed = 0
+        records = list(_iter_cookie_records(self.session.cookies) or [])
 
-        try:
+        targets: dict[tuple[str, str], int] = {}
 
-            cookies = list(self.session.cookies)
+        for cookie in records:
 
-        except Exception:
-
-            cookies = []
-
-        for cookie in cookies:
-
-            domain = str(getattr(cookie, "domain", "") or "")
+            domain = str(cookie.get("domain") or "")
 
             if "auth.openai.com" not in domain:
 
                 continue
 
+            path = str(cookie.get("path") or "/")
+
+            key = (domain, path)
+
+            targets[key] = targets.get(key, 0) + 1
+
+        removed = 0
+
+        for (domain, path), count in targets.items():
+
             try:
 
-                self.session.cookies.clear(
+                self.session.cookies.clear(domain=domain, path=path)
 
-                    domain=domain,
+                removed += count
 
-                    path=getattr(cookie, "path", "/") or "/",
+            except Exception:
 
-                    name=getattr(cookie, "name", ""),
+                continue
 
-                )
+        return removed
+
+
+    def _clear_completed_auth_step_cookies(self) -> int:
+
+        """清理已结束登录步骤的瞬时 cookie，保留 unified session 连续性。"""
+
+        if not self.session:
+
+            return 0
+
+        transient_names = {
+
+            "auth_provider",
+
+            "login_session",
+
+            "auth-session-minimized",
+
+            "auth-session-minimized-client-checksum",
+
+        }
+
+        removed = 0
+
+        for cookie in list(_iter_cookie_records(self.session.cookies) or []):
+
+            name = str(cookie.get("name") or "")
+
+            domain = str(cookie.get("domain") or "")
+
+            if name not in transient_names or "auth.openai.com" not in domain:
+
+                continue
+
+            path = str(cookie.get("path") or "/")
+
+            try:
+
+                self.session.cookies.delete(name, domain=domain, path=path)
 
                 removed += 1
 
@@ -1337,7 +1393,6 @@ class RegistrationEngine:
                 continue
 
         return removed
-
 
 
     def _has_cookie(self, name: str) -> bool:
@@ -2156,6 +2211,18 @@ class RegistrationEngine:
                 break
 
             final_url = str(getattr(page_resp, "url", "") or current_url or "")
+            initial_page_status = int(getattr(page_resp, "status_code", 0) or 0)
+            if initial_page_status >= 400:
+                self._post_register_password_error = (
+                    f"reauth_page_http_{initial_page_status}: "
+                    f"{self._short_response_excerpt(page_resp) or '(empty)'}"
+                )
+                self._log(
+                    f"设置帐号密码: reauth 页面请求失败，停止验证码流程: "
+                    f"{self._post_register_password_error}",
+                    "warning",
+                )
+                return False
             if LATEST_CHATGPT_ADD_PASSWORD_PAGE_URL not in final_url and (
                 "/email-verification" in final_url or "/email-otp" in final_url
             ):
@@ -2904,10 +2971,18 @@ class RegistrationEngine:
             self._log(f"chatgpt_register callback 浏览器兜底失败: {exc}", "warning")
             return None
 
+    @staticmethod
+    def _protocol_extended_warmup_enabled() -> bool:
+        value = str(os.environ.get("OPENAI_PROTOCOL_EXTENDED_WARMUP") or "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
     def _latest_chatgpt_warmup_chatgpt_anon_session(self, device_id: str) -> None:
-        """Replay headed-browser pre-auth warmup: accounts/check + prepare/finalize + cf_clearance."""
+        """Run optional diagnostic pre-auth warmups outside the required OAuth chain."""
         from .constants import CHATGPT_APP
 
+        if not self._protocol_extended_warmup_enabled():
+            self._log("chatgpt_register 扩展匿名预热未启用，跳过")
+            return
         if not self.session or not device_id:
             return
         try:
@@ -3455,6 +3530,10 @@ class RegistrationEngine:
                 if ca_sentinel:
                     retry_headers = dict(headers)
                     retry_headers["openai-sentinel-token"] = self._sentinel_payload_header(ca_sentinel, self._device_id)
+                    if ca_sentinel.so_token:
+                        retry_headers["openai-sentinel-so-token"] = ca_sentinel.so_token
+                    else:
+                        retry_headers.pop("openai-sentinel-so-token", None)
                     self._log("chatgpt_register OTP validate 首次失败，补 email_otp_validate Sentinel 后重试", "warning")
                     self._log(
                         "[REG-DIAG][protocol] otp_validate retry request "
@@ -3971,7 +4050,7 @@ class RegistrationEngine:
 
 
     def _latest_chatgpt_open_about_you(self, url: str) -> bool:
-        """保持 OTP 响应中的 SPA 状态，不额外请求 /about-you 页面。"""
+        """访问 OTP 响应中的 about-you continue_url，建立页面阶段状态。"""
         self._last_about_you_error = ""
         if not url:
             self._last_about_you_error = "missing_continue_url"
@@ -3982,8 +4061,54 @@ class RegistrationEngine:
             self._last_about_you_error = f"unexpected_continue_url:{target}"
             self._log(f"chatgpt_register OTP 后页面不是 about-you: {target}", "warning")
             return False
-        self._email_otp_continue_url = target
-        self._log("chatgpt_register OTP 后沿用前端 about-you 状态，跳过额外页面 GET")
+
+        headers = self._latest_chatgpt_nav_headers(
+            referer="https://auth.openai.com/email-verification",
+            sec_fetch_site="same-origin",
+        )
+        self._log(
+            "[REG-DIAG][protocol] about_you request "
+            f"url=({self._diag_url_summary(target)}) "
+            f"headers=({self._diag_header_summary(headers)}) "
+            f"cookies={self._diag_cookie_names_text()}"
+        )
+        try:
+            response = self.session.get(
+                target,
+                headers=headers,
+                allow_redirects=True,
+                timeout=30,
+            )
+        except Exception as exc:
+            self._last_about_you_error = f"request_failed:{exc}"
+            self._log(f"chatgpt_register about-you 页面请求失败: {exc}", "warning")
+            return False
+
+        status = int(getattr(response, "status_code", 0) or 0)
+        final_url = str(getattr(response, "url", "") or target)
+        payload = self._response_json_dict(response)
+        body = str(getattr(response, "text", "") or "")
+        self._log(
+            "[REG-DIAG][protocol] about_you response "
+            f"status={status} final_url=({self._diag_url_summary(final_url)}) "
+            f"{self._diag_payload_keys(payload)} body_len={len(body)} "
+            f"cookies={self._diag_cookie_names_text()}"
+        )
+        if is_cloudflare_managed_challenge_html(body):
+            self._last_about_you_error = "cloudflare_managed_challenge"
+            self._log("chatgpt_register about-you 页面触发 Cloudflare challenge", "warning")
+            return False
+        if status >= 400 or payload.get("error"):
+            detail = self._openai_error_code_from_payload(payload) or self._short_response_excerpt(response) or "unknown"
+            self._last_about_you_error = f"http_{status}:{detail}"
+            self._log(
+                f"chatgpt_register about-you 页面请求失败: status={status} detail={detail}",
+                "warning",
+            )
+            return False
+
+        self._email_otp_continue_url = final_url
+        self._log(f"chatgpt_register about-you 页面已访问: {final_url}")
         return True
 
 
@@ -4136,6 +4261,9 @@ class RegistrationEngine:
     def _latest_chatgpt_warmup_authenticated_session(self, access_token: str) -> bool:
         from .constants import CHATGPT_APP
 
+        if not self._protocol_extended_warmup_enabled():
+            self._log("chatgpt_register 扩展认证后预热未启用，跳过")
+            return True
         token = str(access_token or "").strip()
         if not token or not self.session or not self._device_id:
             return False
@@ -5132,6 +5260,44 @@ class RegistrationEngine:
         )
 
 
+    @staticmethod
+    def _sentinel_so_header(
+        value: object,
+        *,
+        challenge: str,
+        device_id: str,
+        flow: str,
+    ) -> str:
+        """Normalize SDK observer results to the HAR-shaped SO header JSON."""
+        if not value:
+            return ""
+        parsed = value if isinstance(value, dict) else None
+        if parsed is None and isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return ""
+            try:
+                candidate = json.loads(text)
+                parsed = candidate if isinstance(candidate, dict) else None
+            except Exception:
+                parsed = None
+        if isinstance(parsed, dict):
+            so_value = str(parsed.get("so") or "").strip()
+        else:
+            so_value = str(value or "").strip()
+        if not so_value:
+            return ""
+        return json.dumps(
+            {
+                "so": so_value,
+                "c": str(challenge or "").strip(),
+                "id": str(device_id or "").strip(),
+                "flow": str(flow or "").strip(),
+            },
+            separators=(",", ":"),
+        )
+
+
     def _parse_sentinel_header_payload(
         self,
         token: str,
@@ -5312,10 +5478,10 @@ class RegistrationEngine:
                 log=lambda message: self._log(f"{label} {message}"),
             )
             token = str((token_bundle or {}).get("token") or "")
-            so_token = str((token_bundle or {}).get("so_token") or "")
+            so_result = (token_bundle or {}).get("so_token") or ""
             self._log(
                 f"[REG-DIAG][sentinel][protocol] quickjs bundle "
-                f"label={label} token={self._diag_shape(token)} so={self._diag_shape(so_token)} "
+                f"label={label} token={self._diag_shape(token)} so={self._diag_shape(so_result)} "
                 f"ua={user_agent or '-'} accept_language={accept_language or '-'} "
                 f"sdk={(token_bundle or {}).get('sdk_url') or '-'} "
                 f"sdk_source={(token_bundle or {}).get('sdk_source') or '-'} "
@@ -5336,7 +5502,12 @@ class RegistrationEngine:
 
             return None
 
-        payload.so_token = so_token
+        payload.so_token = self._sentinel_so_header(
+            so_result,
+            challenge=payload.c,
+            device_id=device_id,
+            flow=payload.flow,
+        )
 
         self._log(
             f"{label} QuickJS Sentinel 已生成: "
@@ -6047,7 +6218,7 @@ class RegistrationEngine:
 
                 if code:
 
-                    self._log(f"成功获取验证码: {code}")
+                    self._log("成功获取验证码")
 
                     return code
 
@@ -7512,7 +7683,7 @@ class RegistrationEngine:
 
             if code:
 
-                self._log(f"Platform 登录获取验证码: {code}")
+                self._log("Platform 登录已获取验证码")
 
                 return code
 
@@ -8113,7 +8284,7 @@ class RegistrationEngine:
 
             if code:
 
-                self._log(f"成功获取验证码: {code}")
+                self._log("成功获取验证码")
 
                 return code
 
@@ -8138,7 +8309,7 @@ class RegistrationEngine:
 
         """按 openai_register.py 校验邮箱验证码；首次失败补 authorize_continue Sentinel。"""
 
-        self._log(f"开始校验验证码 {code}")
+        self._log("开始校验验证码")
 
         resp = self._validate_platform_login_otp(client, device_id, code)
 
@@ -10282,7 +10453,7 @@ class RegistrationEngine:
 
                         raise RuntimeError("Codex OTP 获取失败")
 
-                    self._log(f"Codex OTP: {code}")
+                    self._log("Codex OTP 已获取")
 
 
 

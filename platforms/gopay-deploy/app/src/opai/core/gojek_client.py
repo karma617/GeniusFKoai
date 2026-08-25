@@ -51,7 +51,10 @@ import tls_client
 
 from .gopay_signer_v2 import sign_v2
 
+from .log_redaction import install_sensitive_log_filter
+
 log = logging.getLogger(__name__)
+install_sensitive_log_filter(log)
 
 CLIENT_ID = "gojek:consumer:app"
 CLIENT_SECRET = "pGwQ7oi8bKqqwvid09UrjqpkMEHklb"

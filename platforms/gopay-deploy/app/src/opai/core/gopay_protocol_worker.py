@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import random
+import re
 import string
 import threading
 import time
@@ -61,7 +62,10 @@ from .gopay_app_protocol import (
 from .envelope_manager import EnvelopeManager
 from .gopay_payment_protocol import GoPayPayment, GoPayFraudDenyError
 
+from .log_redaction import install_sensitive_log_filter
+
 log = logging.getLogger(__name__)
+install_sensitive_log_filter(log)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -350,6 +354,28 @@ def _signup_with_variants(gp, local, full_name, country_code, verification_token
     return access_token, refresh_token, account_id, created_without_token, last_error
 
 
+_SUPPORTED_E164_CALLING_CODES = (
+    "852", "44", "61", "62", "81", "86", "65", "49", "33", "91", "1",
+)
+
+
+def _split_e164_phone(phone: str) -> tuple[str, str, str]:
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        raise ValueError("手机号为空")
+    if not raw.startswith("+"):
+        if digits.startswith("0"):
+            digits = "62" + digits[1:]
+        elif not digits.startswith("62"):
+            digits = "62" + digits
+    for calling_code in sorted(_SUPPORTED_E164_CALLING_CODES, key=len, reverse=True):
+        if digits.startswith(calling_code) and len(digits) > len(calling_code) + 5:
+            local = digits[len(calling_code):]
+            return f"+{calling_code}", local, f"+{calling_code}{local}"
+    raise ValueError(f"暂不支持该手机号国家区号: {raw}")
+
+
 class _PhoneAlreadyRegistered(RuntimeError):
     pass
 
@@ -357,6 +383,38 @@ class _PhoneAlreadyRegistered(RuntimeError):
 class _RebindFailed(RuntimeError):
     """号已注册、auto_rebind 换绑释放失败：不换号重试，直接判任务失败。"""
     pass
+
+
+_TRANSIENT_NETWORK_MARKERS = (
+    "ssl", "eof", "timed out", "timeout", "connection reset",
+    "connection aborted", "remote disconnected", "temporarily unavailable",
+)
+
+
+def _call_with_transient_network_retry(label: str, callback, attempts: int = 3):
+    """Retry only idempotent protocol reads after transient transport failures."""
+    total = max(int(attempts or 0), 1)
+    for attempt in range(1, total + 1):
+        try:
+            return callback()
+        except Exception as exc:
+            transient = any(
+                marker in f"{type(exc).__name__}: {exc}".lower()
+                for marker in _TRANSIENT_NETWORK_MARKERS
+            )
+            if not transient or attempt >= total:
+                raise
+            delay = attempt * 2
+            log.warning(
+                "%s transient network failure (%s), retry %d/%d in %ds",
+                label,
+                type(exc).__name__,
+                attempt + 1,
+                total,
+                delay,
+            )
+            time.sleep(delay)
+    raise RuntimeError(f"{label} retry exhausted")  # pragma: no cover
 
 
 def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
@@ -380,9 +438,7 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
         return None
 
     rented_at = time.time()
-    country_code, local = "+62", phone.lstrip("+")
-    if local.startswith("62"):
-        local = local[2:]
+    country_code, local, phone = _split_e164_phone(phone)
 
     log.info("[%s] Proxy: %s", phone, proxy.split("@")[-1] if "@" in proxy else "direct")
 
@@ -415,7 +471,7 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
             # 已注册号**上（smsapi 固定号能收、herosms 一次性号也在手里能收），
             # 所以 2fa 用注册渠道的 api_key/aid 接。
             if auto_rebind and callable(rebind_acquire):
-                log.info("[%s] auto_rebind 开启：用 PIN=%s 登录已注册号，准备换绑到新号…", phone, pin)
+                log.info("[%s] auto_rebind 开启：用已保存 PIN 登录，准备换绑到新号…", phone)
                 acquired = _login_rebind_to_new_phone(
                     phone, pin, proxy,
                     rebind_acquire=rebind_acquire,
@@ -453,10 +509,8 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
             return None
 
         verification_id = _pick_first(data, ["verification_id", "challenge_id"])
+        # 当前所有接码渠道都只能读取 SMS，不能接收 GoPay 默认的 WhatsApp OTP。
         method = "otp_sms"
-        methods = _pick_first(data, ["methods"])
-        if isinstance(methods, list) and "otp_sms" not in methods and methods:
-            method = str(_pick_first(data, ["default_method"]) or methods[0])
         if not verification_id:
             log.error("[%s] no verification_id from cvs_methods", phone)
             return None
@@ -470,12 +524,31 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
                 log.error("[%s] cvs_initiate failed: HTTP %d %s", phone, sc, data)
             return None
         otp_token = _pick_first(data, ["otp_token", "otpToken"])
+        fixed_sms_channel = str(api_key or "").strip().lower() in {"smsapi", "api_sms"}
+        log.info("[%s] Signup OTP requested via %s", phone, method)
 
-        otp = sms_wait_code(api_key, aid, timeout=180)
+        first_wait = 60 if fixed_sms_channel and otp_token else 180
+        otp = sms_wait_code(api_key, aid, timeout=first_wait)
+        if not otp and fixed_sms_channel and otp_token:
+            log.info("[%s] Signup OTP not received; forcing otp_sms resend", phone)
+            retry_status, retry_data, _ = gp.cvs_retry(
+                str(otp_token), method="otp_sms", flow="signup"
+            )
+            if is_success_response(retry_status, retry_data, allow=(200, 201, 202, 204)):
+                method = "otp_sms"
+                otp_token = _pick_first(retry_data, ["otp_token", "otpToken"]) or otp_token
+                log.info("[%s] Signup OTP SMS resend accepted", phone)
+            else:
+                log.warning(
+                    "[%s] Signup OTP SMS resend rejected: HTTP %s",
+                    phone,
+                    retry_status,
+                )
+            otp = sms_wait_code(api_key, aid, timeout=120)
         if not otp:
             log.error("[%s] Signup OTP timeout", phone)
             return None
-        log.info("[%s] Signup OTP: %s", phone, otp)
+        log.info("[%s] Signup OTP received", phone)
 
         # === Phase 3: cvs_verify ===
         time.sleep(2)
@@ -542,22 +615,26 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
 
         # === Phase 6: 设 PIN（goto_pin_wa_sms 二次 CVS OTP）===
         log.info("[%s] 进入设 PIN 阶段（pin_allowed）", phone)
-        sc, data, _ = gp.pin_allowed(str(access_token), pin)
+        sc, data, _ = _call_with_transient_network_retry(
+            "pin_allowed",
+            lambda: gp.pin_allowed(str(access_token), pin),
+        )
         if not is_success_response(sc, data):
             log.error("[%s] pin_allowed failed: HTTP %d %s", phone, sc, data)
             return None
 
         # PIN 是另一段独立 CVS 流程（goto_pin_wa_sms），开新的会话 transaction-id。
         gp.new_cvs_session()
-        sc, data, _ = gp.cvs_methods_pin(str(access_token))
+        sc, data, _ = _call_with_transient_network_retry(
+            "pin_cvs_methods",
+            lambda: gp.cvs_methods_pin(str(access_token)),
+        )
         if not is_success_response(sc, data):
             log.error("[%s] pin_cvs_methods failed: HTTP %d %s", phone, sc, data)
             return None
         pin_vid = _pick_first(data, ["verification_id", "challenge_id"])
+        # 接码渠道只支持 SMS，不能回退到 GoPay 默认的 WhatsApp OTP。
         pin_method = "otp_sms"
-        pin_methods = _pick_first(data, ["methods"])
-        if isinstance(pin_methods, list) and "otp_sms" not in pin_methods and pin_methods:
-            pin_method = str(_pick_first(data, ["default_method"]) or pin_methods[0])
         if not pin_vid:
             log.error("[%s] pin_cvs_methods no verification_id", phone)
             return None
@@ -597,7 +674,7 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
         if not pin_code:
             log.error("[%s] PIN OTP not received", phone)
             return None
-        log.info("[%s] PIN OTP: %s", phone, pin_code)
+        log.info("[%s] PIN OTP received", phone)
 
         time.sleep(2)
         sc, data, _ = gp.cvs_verify_pin(str(access_token), str(pin_vid), str(pin_code), str(pin_otp_token), method=pin_method)
@@ -617,7 +694,10 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
             return None
 
         # 非破坏性完成校验：profile.is_pin_setup 明确为 False 才算失败
-        sc, data_prof, _ = gp.user_profile(str(access_token))
+        sc, data_prof, _ = _call_with_transient_network_retry(
+            "pin_profile_verify",
+            lambda: gp.user_profile(str(access_token)),
+        )
         is_pin_setup = _pick_first(data_prof, ["is_pin_setup", "isPinSetup"])
         if is_pin_setup is False:
             log.error("[%s] profile says PIN not set: %s", phone, data_prof)
@@ -636,7 +716,10 @@ def _register_one(api_key: str, pin: str, proxy: str, envelope_did: str,
         _save_account(phone, local, pin, aid, client)
 
         success = True
-        return {"phone": phone, "aid": aid, "pin": pin, "client": client, "local": local}
+        return {
+            "phone": phone, "aid": aid, "pin": pin, "client": client,
+            "local": local, "country_code": country_code,
+        }
 
     except _RebindFailed:
         # 换绑释放失败：不吞，向上抛让 plugin 直接判任务失败（不换号重试）。
@@ -668,10 +751,7 @@ def _login_one(phone: str, pin: str, proxy: str, *, use_pin: bool = False, api_k
 
     返回与 _register_one 相同契约：``{phone, aid, pin, client, local}``，失败 None。
     """
-    country_code, local = "+62", str(phone or "").lstrip("+")
-    if local.startswith("62"):
-        local = local[2:]
-    phone_e164 = f"+62{local}"
+    country_code, local, phone_e164 = _split_e164_phone(phone)
     sms_id = str(sms_id or "").strip() or phone_e164
 
     device = build_device_profile(phone_e164)
@@ -872,7 +952,7 @@ def _login_rebind_to_new_phone(phone: str, pin: str, proxy: str, *, rebind_acqui
     logged = _login_one(phone, pin, proxy, use_pin=True,
                         api_key=login_api_key, sms_id=login_sms_id)
     if not logged or not logged.get("client"):
-        log.warning("[%s] 已注册号 PIN 登录失败（PIN=%s 可能不对，或 2fa 没接到）", phone, pin)
+        log.warning("[%s] 已注册号 PIN 登录失败（PIN 可能不对，或 2fa 没接到）", phone)
         return None
     client = logged["client"]
 
@@ -1648,7 +1728,7 @@ def main():
         envelope_did = _get_envelope_did()
         result = _register_one(api_key, args.pin, proxy, envelope_did)
         if result:
-            log.info("SUCCESS: %s pin=%s", result["phone"], args.pin)
+            log.info("SUCCESS: %s", result["phone"])
             sms_done(api_key, result["aid"])
         else:
             log.error("FAILED")

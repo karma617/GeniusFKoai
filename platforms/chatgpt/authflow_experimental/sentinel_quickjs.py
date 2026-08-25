@@ -54,6 +54,26 @@ logger = logging.getLogger(__name__)
 
 SENTINEL_REQ_URL = "https://sentinel.openai.com/backend-api/sentinel/req"
 
+_RETRYABLE_NETWORK_ERROR_MARKERS = (
+    "tls connect error",
+    "invalid library",
+    "curl: (28)",
+    "curl: (35)",
+    "curl: (56)",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "failed to perform",
+    "network is unreachable",
+    "operation timed out",
+    "read timed out",
+)
+
+
+def _is_retryable_network_error(error: object) -> bool:
+    message = str(error or "").strip().lower()
+    return any(marker in message for marker in _RETRYABLE_NETWORK_ERROR_MARKERS)
+
 
 def _resolve_node_binary() -> str:
     return (os.getenv("OPENAI_SENTINEL_NODE_PATH", "") or "").strip() or "node"
@@ -905,6 +925,8 @@ def get_sentinel_tokens_via_quickjs(
         }
     except Exception as exc:
         log(f"Sentinel QuickJS 异常: {exc}")
+        if _is_retryable_network_error(exc):
+            raise
         return None
     finally:
         if not persistent_state:

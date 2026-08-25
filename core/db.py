@@ -319,6 +319,42 @@ class TaskEventModel(SQLModel, table=True):
         self.detail_json = json.dumps(data or {}, ensure_ascii=False)
 
 
+class GoPayPaymentAttemptModel(SQLModel, table=True):
+    """Durable idempotency state for one ChatGPT/GoPay payment attempt."""
+
+    __tablename__ = "gopay_payment_attempts"
+
+    key: str = Field(primary_key=True)
+    chatgpt_account_id: int = Field(default=0, index=True)
+    task_id: str = Field(default="", index=True)
+    gopay_account_id: int = Field(default=0, index=True)
+    status: str = Field(default="claimed", index=True)
+    snap_id: str = Field(default="", index=True)
+    midtrans_url: str = ""
+    proxy: str = ""
+    transaction_status: str = ""
+    amount: Optional[int] = None
+    currency: str = ""
+    uncertain: bool = False
+    error: str = ""
+    lease_expires_at: datetime = Field(default_factory=_utcnow, index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class GoPayAccountLeaseModel(SQLModel, table=True):
+    """Exclusive, expiring lease for a GoPay account used by a payment worker."""
+
+    __tablename__ = "gopay_account_leases"
+
+    account_id: int = Field(primary_key=True, foreign_key="accounts.id")
+    owner_key: str = Field(default="", index=True)
+    task_id: str = Field(default="", index=True)
+    expires_at: datetime = Field(default_factory=_utcnow, index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class ProxyModel(SQLModel, table=True):
     __tablename__ = "proxies"
 

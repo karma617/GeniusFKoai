@@ -46,11 +46,11 @@ PERSISTED_ACTION_DATA_KEYS = {
     "cookie_header",
 }
 
-STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "switch_desktop"}
+STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "query_balance", "switch_desktop"}
 OAUTH_RESULT_ACTION_IDS = {"get_rt"}
 SESSION_RESULT_ACTION_IDS = {"refresh_session"}
 UPLOAD_RESULT_ACTION_IDS = {"upload_sub2api", "k12_join_upload"}
-FAILED_ACTION_PERSISTED_ERROR_TYPES = {"account_banned", "session_stale_refreshed"}
+FAILED_ACTION_PERSISTED_ERROR_TYPES = {"account_banned", "session_stale_refreshed", "balance_query_failed"}
 CASHIER_URL_ACTION_IDS = {
     "payment_link",
     "payment_link_browser",
@@ -129,6 +129,9 @@ def _build_account_overview(platform: str, data: dict[str, Any]) -> dict[str, An
         "remaining_credits",
         "usage_total",
         "plan_credits",
+        "balance_rp",
+        "balance_query_status",
+        "registration_ip_country_code",
         "next_reset_at",
         "days_until_reset",
         "prompt_credits_limit",
@@ -138,6 +141,8 @@ def _build_account_overview(platform: str, data: dict[str, Any]) -> dict[str, An
     ):
         if data.get(key) not in (None, ""):
             overview[key] = data.get(key)
+    if "balance_check_error" in data:
+        overview["balance_check_error"] = str(data.get("balance_check_error") or "")
     if isinstance(data.get("usage_breakdowns"), list):
         overview["usage_breakdowns"] = data.get("usage_breakdowns")
         for item in data.get("usage_breakdowns") or []:

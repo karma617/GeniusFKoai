@@ -670,7 +670,7 @@ class GmailApiCodeMailbox(BaseMailbox):
 
         if code_pattern:
             pattern = re.compile(code_pattern)
-            match = pattern.search(cleaned_text)
+            match = pattern.search(plain)
             if not match:
                 return ""
             return match.group(1) if match.groups() else match.group(0)
@@ -678,11 +678,6 @@ class GmailApiCodeMailbox(BaseMailbox):
         pattern = re.compile(r"(?<!#)(?<!\d)(\d{6})(?!\d)")
         for match in pattern.finditer(plain):
             window = plain[max(0, match.start() - 12): match.end() + 12]
-            if re.search(r"\d{4}[-/]\d{2}[-/]\d{2}", window) or re.search(r"\d{2}:\d{2}:\d{2}", window):
-                continue
-            return match.group(1)
-        for match in pattern.finditer(cleaned_text):
-            window = cleaned_text[max(0, match.start() - 12): match.end() + 12]
             if re.search(r"\d{4}[-/]\d{2}[-/]\d{2}", window) or re.search(r"\d{2}:\d{2}:\d{2}", window):
                 continue
             return match.group(1)

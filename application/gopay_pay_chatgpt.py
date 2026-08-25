@@ -2,19 +2,19 @@
 
 整条流水线：
 
-  ① **协议**：调 ``platforms.chatgpt.payment.generate_plus_link(country=ID, currency=IDR)``
+  ① **准备**：租用/注册 GoPay 号，校验接码 TTL，并刷新真实余额
+
+  ② **协议**：调 ``platforms.chatgpt.payment.generate_plus_link(country=ID, currency=IDR)``
       拿到 ChatGPT 的 cashier_url（Stripe hosted checkout）
 
-  ② **浏览器**：打开 cashier_url，等用户/自动化把页面跳到 Midtrans 域，
-      抓 ``page.url`` 即 ``midtrans_url``，关闭浏览器
+  ③ **浏览器**：打开 cashier_url 并抓取唯一的 ``midtrans_url``
 
-  ③ **协议**：用预先注册好的 GoPay 号 + Hero-SMS aid，调
-      ``opai.core.gopay_payment_protocol.GoPayPayment.pay`` 完成付款（14 步 Midtrans API）
+  ④ **协议**：校验金额和币种后执行 GoPay 付款，再查询 OpenAI 订阅状态
 
 设计原则：
 - **不依赖** ``platforms/gopay-deploy`` 的 Payment Inbox 服务（Inbox 只是 worker 的 job 队列源）
 - 复用 ``GoPayPayment`` 协议类（已经被 ``ensure_opai_on_path`` 加到 sys.path）
-- 三步串行，整段失败任意一步就标 FAILED；中间产物（cashier_url / midtrans_url）写进 task result 方便排查
+- 四阶段串行，整段失败任意一步就标 FAILED；中间产物（cashier_url / midtrans_url）写进 task result 方便排查
 - 单条 ChatGPT × 单条 GoPay 号一一配对（concurrency=1 时）
 """
 
@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from sqlmodel import Session, select
@@ -80,6 +81,10 @@ class PhoneTTLGuard:
     def elapsed(self) -> float:
         return time.monotonic() - self._start
 
+    def reset_remaining(self, remaining_seconds: float) -> None:
+        self.ttl_seconds = max(int(remaining_seconds), 0)
+        self._start = time.monotonic()
+
     def check(self) -> None:
         if self.ttl_seconds <= 0:
             return
@@ -109,114 +114,40 @@ def claim_envelope_for_account(client, envelope_url: str, *, log: Callable[[str]
         mgr.add_url(url)
         result = mgr.claim_one(client)
         ok = bool(result)
-        log(f"红包领取{'成功' if ok else '失败/无可用红包'}: {url}")
+        log(f"红包领取{'成功' if ok else '失败/无可用红包'}: ...{url[-8:]}")
         return ok
     except Exception as exc:
         log(f"红包领取异常（忽略）: {exc}")
         return False
 
 
-def _latest_gopay_account() -> AccountModel | None:
-    """取最新注册的一条 gopay 号（不看余额）。"""
-    with Session(engine) as session:
-        latest = session.exec(
-            select(AccountModel)
-            .where(AccountModel.platform == "gopay")
-            .order_by(AccountModel.created_at.desc())
-            .limit(1)
-        ).first()
-        if not latest:
-            return None
-        latest_id = int(latest.id)
-    with Session(engine) as session:
-        return session.get(AccountModel, latest_id)
-
-
-def _resolve_gopay_client(phone: str, proxy: str, *, log: Callable[[str], None] = print):
-    """resume 一个 GoPay client（用于轮询余额 / 领红包）。失败返回 None。"""
-    phone = str(phone or "").strip()
-    if not phone:
-        return None
+def _resolve_gopay_client(
+    phone: str,
+    proxy: str,
+    *,
+    log: Callable[[str], None] = print,
+):
+    """Resume a persisted GoPay protocol account and return its authenticated client."""
     try:
         from platforms.gopay._opai_loader import ensure_opai_on_path
 
         ensure_opai_on_path()
         from opai.core.gopay_protocol_worker import _resume_account
 
-        resumed = _resume_account(phone, proxy=_normalize_proxy_url(proxy))
-        if resumed and resumed.get("client") is not None:
-            return resumed["client"]
+        resumed = _resume_account(
+            str(phone or "").strip(),
+            proxy=_normalize_proxy_url(proxy),
+        )
+        client = resumed.get("client") if isinstance(resumed, dict) else None
+        if client is None:
+            log(f"GoPay 账号 ***{str(phone or '')[-4:]} 恢复登录失败")
+        return client
     except Exception as exc:
-        log(f"resume GoPay client 失败: {exc}")
-    return None
-
-
-def _maybe_topup_with_envelope(envelope_url: str, *, log: Callable[[str], None] = print) -> AccountModel | None:
-    """没有余额够的号时，给最新注册的 GoPay 号领红包补余额后再挑。
-
-    没有 envelope_url 直接返回 None。领完红包重查余额，把新余额写回 graph，
-    然后返回该号（若余额 ≥ 1）。
-    """
-    url = str(envelope_url or "").strip()
-    if not url:
+        log(
+            f"GoPay 账号 ***{str(phone or '')[-4:]} 恢复登录异常: "
+            f"{type(exc).__name__}"
+        )
         return None
-
-    # 挑一条最新注册的 gopay 号（不看余额，可能是余额=0 等红包的号）
-    with Session(engine) as session:
-        latest = session.exec(
-            select(AccountModel)
-            .where(AccountModel.platform == "gopay")
-            .order_by(AccountModel.created_at.desc())
-            .limit(1)
-        ).first()
-        if not latest:
-            return None
-        latest_id = int(latest.id)
-
-    with Session(engine) as session:
-        model = session.get(AccountModel, latest_id)
-        extra = _account_extra(model)
-    phone = str(extra.get("phone") or model.email or "").strip()
-    register_proxy = str(extra.get("register_proxy") or "")
-
-    try:
-        from platforms.gopay._opai_loader import ensure_opai_on_path
-
-        ensure_opai_on_path()
-        from opai.core.gopay_protocol_worker import _resume_account, _check_balance
-    except Exception as exc:
-        log(f"领红包前 resume 模块加载失败: {exc}")
-        return None
-
-    resumed = _resume_account(phone, proxy=_normalize_proxy_url(register_proxy))
-    if not resumed:
-        log(f"领红包前 resume 账号失败: {phone}")
-        return None
-    client = resumed["client"]
-
-    if not claim_envelope_for_account(client, url, log=log):
-        return None
-
-    new_balance = 0
-    try:
-        new_balance = max(int(_check_balance(client) or 0), 0)
-    except Exception:
-        new_balance = 0
-    log(f"领红包后余额 = {new_balance} IDR")
-
-    # 写回 graph
-    from core.account_graph import patch_account_graph
-
-    with Session(engine) as session:
-        model = session.get(AccountModel, latest_id)
-        if model:
-            patch_account_graph(session, model, summary_updates={"balance_rp": new_balance})
-            session.commit()
-
-    if new_balance >= 1:
-        with Session(engine) as session:
-            return session.get(AccountModel, latest_id)
-    return None
 
 
 def register_gopay_account(
@@ -228,6 +159,7 @@ def register_gopay_account(
     sms_provider: str = "herosms",
     smspool_api_key: str = "",
     smsbower_api_key: str = "",
+    five_sim_api_key: str = "",
     smsapi_url: str = "",
     smsapi_phone: str = "",
     herosms_max_price_usd: str = "",
@@ -292,6 +224,11 @@ def register_gopay_account(
             "sms_provider": provider,
             "smspool_api_key": str(smspool_api_key or ""),
             "smsbower_api_key": str(smsbower_api_key or ""),
+            "five_sim_api_key": str(five_sim_api_key or ""),
+            "five_sim_country": "indonesia",
+            "five_sim_product": "gojek",
+            # 5sim 不复用 Hero/SMSPool 默认 0.11 美元上限，避免误判无号。
+            "five_sim_max_price": "",
             "smsapi_url": str(smsapi_url or ""),
             "smsapi_phone": str(smsapi_phone or ""),
             "herosms_max_price_usd": str(herosms_max_price_usd or ""),
@@ -329,7 +266,7 @@ def register_gopay_account(
             log("GoPay 自动注册入库后查不到记录，异常")
             return None
         model_id = int(fresh.id)
-    log(f"GoPay 自动注册成功并入库: #{model_id} {account.email}")
+    log(f"GoPay 自动注册成功并入库: #{model_id} ***{str(account.email)[-4:]}")
 
     # 余额 0 + 有红包链接 → 领红包补余额
     extra = dict(getattr(account, "extra", {}) or {})
@@ -389,7 +326,7 @@ def acquire_gopay_via_rebind(
     from core.registry import get as get_platform
 
     provider = str(sms_provider or "herosms").strip().lower()
-    if provider == "smsapi":
+    if provider in {"smsapi", "api_sms"}:
         log("换绑获号不支持 smsapi 固定号渠道（新号必须能独立接码），请改用 herosms/smspool/smsbower")
         return None
 
@@ -447,7 +384,7 @@ def acquire_gopay_via_rebind(
             log("换绑获号入库后查不到记录，异常")
             return None
         model_id = int(fresh.id)
-    log(f"换绑获号成功并入库: #{model_id} {account.email}")
+    log(f"换绑获号成功并入库: #{model_id} ***{str(account.email)[-4:]}")
 
     with Session(engine) as session:
         return session.get(AccountModel, model_id)
@@ -508,7 +445,7 @@ def _build_rebind_otp_callback(
     if not new_phone or not aid:
         log(f"换绑失败：{provider} 没买到换绑新号")
         return None, None, None, None, None
-    log(f"换绑新印尼号已购（{provider}）：{new_phone}（aid={aid}）")
+    log(f"换绑新印尼号已购（{provider}）：***{new_phone[-4:]}（activation=***{aid[-4:]}）")
 
     def _wait_otp(_phone_arg: str = "", timeout: int = 180) -> Optional[str]:
         try:
@@ -607,7 +544,7 @@ def login_and_rebind_release(
         except Exception:
             pass
 
-    log(f"换绑流程：登录已注册号 {phone}…")
+    log(f"换绑流程：登录已注册号 ***{phone[-4:]}…")
     logged = _login_one(phone, pin, eff_proxy, use_pin=use_pin, api_key=login_sms_key)
     if not logged or not logged.get("client"):
         return {"success": False, "detail": f"登录 {phone} 失败，无法换绑", "released_phone": ""}
@@ -627,6 +564,7 @@ def wait_for_balance(
     envelope_url: str,
     ttl_guard: "PhoneTTLGuard",
     poll_interval: float = 15.0,
+    cancel_check: Optional[Callable[[], bool]] = None,
     log: Callable[[str], None] = print,
 ) -> int:
     """轮询 GoPay 余额直到 ≥ 1 IDR，否则一直等到 ``ttl_guard`` 超时抛错。
@@ -648,6 +586,8 @@ def wait_for_balance(
     env_url = str(envelope_url or "").strip()
     round_no = 0
     while True:
+        if cancel_check and cancel_check():
+            raise RuntimeError("任务已取消")
         # 先检查 TTL——超时抛错（任务判失败重开）
         ttl_guard.check()
         round_no += 1
@@ -663,7 +603,13 @@ def wait_for_balance(
         log(f"余额轮询第 {round_no} 轮：{balance} IDR")
         if balance >= 1:
             return balance
-        time.sleep(max(float(poll_interval or 0), 0))
+        sleep_left = max(float(poll_interval or 0), 0)
+        while sleep_left > 0:
+            if cancel_check and cancel_check():
+                raise RuntimeError("任务已取消")
+            chunk = min(sleep_left, 0.5)
+            time.sleep(chunk)
+            sleep_left -= chunk
 
 
 def _account_extra(account_model: AccountModel) -> dict:
@@ -698,6 +644,31 @@ def _account_extra(account_model: AccountModel) -> dict:
     return merged_extra
 
 
+def _remaining_sms_lifetime_seconds(
+    account: AccountModel,
+    extra: dict[str, Any],
+    default_ttl_seconds: int,
+) -> float | None:
+    """Return remaining activation lifetime; fixed API numbers have no expiry."""
+    provider = str(extra.get("sms_provider") or "herosms").strip().lower()
+    if provider in {"smsapi", "api_sms"}:
+        return None
+    expires_raw = str(extra.get("sms_expires_at") or "").strip()
+    try:
+        if expires_raw:
+            expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = account.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            expires_at = created_at + timedelta(seconds=max(int(default_ttl_seconds), 0))
+        return (expires_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+    except Exception as exc:
+        raise RuntimeError(f"GoPay 账号短信激活有效期无效: {exc}") from exc
+
+
 def find_chatgpt_account(account_id: int) -> AccountModel | None:
     with Session(engine) as session:
         m = session.get(AccountModel, int(account_id))
@@ -706,12 +677,15 @@ def find_chatgpt_account(account_id: int) -> AccountModel | None:
         return m
 
 
-def pick_available_gopay_account(min_balance_rp: int = 1) -> AccountModel | None:
-    """从主项目数据库挑一条**可用**的 GoPay 号：注册成功 + 余额 ≥ 阈值。
+def pick_available_gopay_account(
+    min_balance_rp: int = 1,
+    *,
+    owner_key: str = "",
+    task_id: str = "",
+) -> AccountModel | None:
+    """Lease the newest resumable GoPay account without trusting cached balance.
 
-    仅做最小可用筛选；如果你想要更复杂的策略（最早注册、按 Hero-SMS aid
-    新鲜度排序）再扩展。这里按 created_at 倒序挑最新的，避免取到接码已
-    过期（Hero-SMS 默认 20min）的旧号。
+    The selected account is checked against the live balance endpoint before checkout.
     """
     with Session(engine) as session:
         rows = session.exec(
@@ -722,10 +696,74 @@ def pick_available_gopay_account(min_balance_rp: int = 1) -> AccountModel | None
         ).all()
         for m in rows:
             extra = _account_extra(m)
-            balance = int(extra.get("balance_rp") or 0)
-            if balance >= int(min_balance_rp or 1):
-                return m
+            phone = str(extra.get("phone") or m.email or "").strip()
+            pin = str(extra.get("pin") or m.password or "").strip()
+            if not phone or not pin:
+                continue
+            if owner_key:
+                from application.gopay_payment_state import acquire_gopay_lease
+
+                if not acquire_gopay_lease(
+                    account_id=int(m.id), owner_key=owner_key, task_id=task_id
+                ):
+                    continue
+            return m
     return None
+
+
+def _refresh_chatgpt_checkout_auth(account, *, proxy: str | None, log: Callable[[str], None]):
+    """用已保存的 session/refresh token 刷新失效 AT，并同步账号图凭证。"""
+    from platforms.chatgpt.token_refresh import TokenRefreshManager
+
+    extra = dict(getattr(account, "extra", {}) or {})
+
+    class _RefreshTarget:
+        pass
+
+    target = _RefreshTarget()
+    target.email = account.email
+    target.access_token = str(extra.get("access_token") or getattr(account, "token", "") or "")
+    target.refresh_token = str(extra.get("refresh_token") or "")
+    target.session_token = str(extra.get("session_token") or "")
+    target.cookies = str(extra.get("cookies") or "")
+    target.client_id = str(extra.get("client_id") or extra.get("clientId") or "")
+
+    if not target.session_token and not target.refresh_token:
+        raise RuntimeError("ChatGPT 鉴权已失效，账号没有可用于自动刷新的 session_token/refresh_token，请重新登录")
+
+    result = TokenRefreshManager(proxy_url=proxy).refresh_account(target)
+    if not result.success or not result.access_token:
+        detail = str(result.error_message or "刷新服务未返回 access_token").strip()
+        raise RuntimeError(f"ChatGPT 鉴权已失效且自动刷新失败：{detail}；请重新登录该账号")
+
+    account.token = result.access_token
+    extra["access_token"] = result.access_token
+    if result.refresh_token:
+        extra["refresh_token"] = result.refresh_token
+    account.extra = extra
+    save_account(account)
+    log("ChatGPT access_token 已自动刷新并保存，重新生成 cashier_url")
+    return account
+
+
+def _checkout_error_status(exc: Exception) -> int:
+    response = getattr(exc, "response", None)
+    try:
+        return int(
+            getattr(exc, "status_code", 0)
+            or getattr(exc, "status", 0)
+            or getattr(response, "status_code", 0)
+            or 0
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_checkout_unusual_activity(exc: Exception) -> bool:
+    return (
+        _checkout_error_status(exc) == 400
+        and "unusual activity" in str(exc).lower()
+    )
 
 
 def step_generate_cashier_url(
@@ -736,9 +774,15 @@ def step_generate_cashier_url(
     proxy: Optional[str] = None,
     use_stripe_init: bool = False,
     use_short_link: bool = False,
+    expected_exit_country: str = "ID",
+    checkout_context: Optional[dict] = None,
     log: Callable[[str], None] = print,
 ) -> str:
     """步骤 ①：协议拿 ChatGPT Plus cashier URL。"""
+    expected_exit_country = str(expected_exit_country or "").strip().upper()
+    if expected_exit_country and not str(proxy or "").strip():
+        raise RuntimeError("GoPay GPTPlus 提链必须使用任务代理池中的固定代理")
+
     from platforms.chatgpt import payment as chatgpt_payment
 
     with Session(engine) as session:
@@ -756,39 +800,71 @@ def step_generate_cashier_url(
     a = _AccountAdapter()
     a.access_token = str(extra.get("access_token") or getattr(account, "token", "") or "")
     a.cookies = str(extra.get("cookies", "") or "")
+    a.chatgpt_account_id = str(extra.get("account_id") or "")
+    a.extra = extra
     if not a.access_token:
         raise RuntimeError(
             f"ChatGPT 账号 {account.email} 缺少 access_token，无法生成支付链接"
         )
 
-    log(f"协议生成 cashier_url（country={country}, currency={currency}，不使用代理）")
+    log(
+        f"协议生成 cashier_url（country={country}, currency={currency}, "
+        f"proxy={_mask_proxy(proxy) or '直连'}）"
+    )
     if use_short_link:
         log("cashier_url 走短链模式（checkout_ui_mode=custom → chatgpt.com/checkout/openai_llc 短链）")
     elif use_stripe_init:
         log("cashier_url 走 Stripe init 协议长链（accessToken → pay.openai.com，纯协议）")
-    # 生成支付链接强制直连：ChatGPT cashier API 不需要代理，走代理反而可能
-    # 因为出口 IP 与账号注册地不一致触发风控。忽略传入的 proxy。
-    #
+    # 同一任务账号的 checkout、浏览器和 GoPay 流程必须使用同一个代理，
+    # 避免出口 IP 在流水线中切换。
     # 并发场景下 curl_cffi 首次在多线程里初始化 SSL 库会偶发
     # ``curl: (35) TLS connect error ... invalid library`` 竞态——10 个 worker
     # 同时打 cashier API 时极易命中。这里加轻量重试（指数退避）兜底，区分
     # 瞬时 TLS/连接错误（重试）和业务错误（直接抛）。
     last_exc: Exception | None = None
+    auth_refresh_attempted = False
     url = ""
     for attempt in range(1, 4):
         try:
             url = chatgpt_payment.generate_plus_link(
                 a,
-                proxy=None,
+                proxy=proxy,
                 country=country,
                 currency=currency,
                 use_stripe_init=use_stripe_init,
                 use_short_link=use_short_link,
+                response_log=log,
+                expected_exit_country=expected_exit_country,
+                checkout_context=checkout_context,
             )
             break
         except Exception as exc:  # noqa: BLE001 - 需按错误内容判断是否重试
             last_exc = exc
             msg = str(exc).lower()
+            unauthorized = _checkout_error_status(exc) == 401 or "http 401" in msg
+            unusual_activity = _is_checkout_unusual_activity(exc)
+            if (unauthorized or unusual_activity) and not auth_refresh_attempted:
+                auth_refresh_attempted = True
+                try:
+                    account = _refresh_chatgpt_checkout_auth(account, proxy=proxy, log=log)
+                except Exception as refresh_exc:
+                    if unusual_activity:
+                        raise RuntimeError(
+                            "OpenAI checkout 检测到异常活动，当前账号或固定代理被风控；"
+                            "自动刷新会话失败，请更换可用固定代理或账号后重试"
+                        ) from refresh_exc
+                    raise
+                extra = dict(getattr(account, "extra", {}) or {})
+                a.access_token = str(extra.get("access_token") or getattr(account, "token", "") or "")
+                a.cookies = str(extra.get("cookies") or "")
+                continue
+            if unauthorized:
+                raise RuntimeError("ChatGPT 鉴权仍返回 401，请重新登录该账号后重试") from exc
+            if unusual_activity:
+                raise RuntimeError(
+                    "OpenAI checkout 检测到异常活动，当前账号或固定代理仍被风控；"
+                    "未创建付款交易，请更换可用固定代理或账号后重试"
+                ) from exc
             transient = (
                 "tls connect error" in msg
                 or "invalid library" in msg
@@ -806,8 +882,54 @@ def step_generate_cashier_url(
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("ChatGPT API 未返回 cashier URL")
-    log(f"cashier_url = {url}")
+    log(f"cashier_url 已生成: ...{url[-12:]}")
     return url
+
+
+def _verify_chatgpt_subscription(
+    chatgpt_account_model: AccountModel,
+    *,
+    proxy: str | None,
+    cancel_check: Callable[[], bool] | None,
+    timeout_seconds: int = 90,
+    log: Callable[[str], None] = print,
+) -> str:
+    """Poll OpenAI until the paid plan is visible; never infer it from Midtrans alone."""
+    from platforms.chatgpt import payment as chatgpt_payment
+
+    with Session(engine) as session:
+        account = build_platform_account(session, chatgpt_account_model)
+    extra = dict(getattr(account, "extra", {}) or {})
+
+    class _AccountAdapter:
+        pass
+
+    adapted = _AccountAdapter()
+    adapted.access_token = str(extra.get("access_token") or getattr(account, "token", "") or "")
+    adapted.cookies = str(extra.get("cookies") or "")
+    adapted.email = str(getattr(account, "email", "") or "")
+    if not adapted.access_token:
+        raise RuntimeError("付款已结算，但 ChatGPT 账号缺少 access_token，无法确认订阅状态")
+
+    deadline = time.monotonic() + max(int(timeout_seconds or 0), 1)
+    last_status = "unknown"
+    while time.monotonic() < deadline:
+        if cancel_check and cancel_check():
+            raise RuntimeError("任务已取消")
+        try:
+            last_status = str(
+                chatgpt_payment.check_subscription_status(adapted, proxy=proxy) or "unknown"
+            ).strip().lower()
+            if last_status in {"plus", "team", "enterprise", "business", "pro"}:
+                log(f"OpenAI 订阅状态已确认: {last_status}")
+                return last_status
+        except Exception as exc:
+            log(f"OpenAI 订阅状态暂未确认: {str(exc)[:160]}")
+        for _ in range(5):
+            if cancel_check and cancel_check():
+                raise RuntimeError("任务已取消")
+            time.sleep(1)
+    raise RuntimeError(f"付款已结算，但 OpenAI 订阅在确认窗口内仍为 {last_status}；请稍后执行状态恢复，禁止重复付款")
 
 
 def step_grab_midtrans_url(
@@ -823,6 +945,8 @@ def step_grab_midtrans_url(
     after_grab: Optional[Callable[[str], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     chatgpt_cookies: str = "",
+    expected_exit_country: str = "ID",
+    expected_exit_ip: str = "",
     log: Callable[[str], None] = print,
 ) -> str:
     """步骤 ②：浏览器打开 cashier_url，自动选 GoPay 渠道、点订阅，抓跳转后的
@@ -841,6 +965,10 @@ def step_grab_midtrans_url(
     付款页让人工手动付款，录 HAR + dump 每页 HTML。``after_grab`` 在抓到 url
     后、进入人工付款等待前调用（用于浏览器开着时准备 GoPay 账号）。
     """
+    expected_exit_country = str(expected_exit_country or "").strip().upper()
+    if expected_exit_country and not str(proxy or "").strip():
+        raise RuntimeError("GoPay GPTPlus 支付页必须使用任务代理池中的固定代理")
+
     from platforms.chatgpt import payment as chatgpt_payment
     from platforms._browser_backend import parse_checkout_mode, DEFAULT_BIT_API_URL
 
@@ -863,6 +991,8 @@ def step_grab_midtrans_url(
         after_grab=after_grab,
         cancel_check=cancel_check,
         chatgpt_cookies=chatgpt_cookies,
+        expected_exit_country=expected_exit_country,
+        expected_exit_ip=expected_exit_ip,
         log=log,
     )
 
@@ -871,11 +1001,17 @@ def step_pay_with_gopay(
     midtrans_url: str,
     gopay_account_model: AccountModel,
     *,
+    proxy_override: str = "",
     herosms_api_key_override: str = "",
     smspool_api_key_override: str = "",
     smsbower_api_key_override: str = "",
+    five_sim_api_key_override: str = "",
     smsapi_url_override: str = "",
     sms_provider_override: str = "",
+    cancel_check: Optional[Callable[[], bool]] = None,
+    expected_currency: str = "IDR",
+    max_payment_amount_rp: int = 0,
+    raise_on_failure: bool = True,
     log: Callable[[str], None] = print,
 ) -> dict:
     """步骤 ③：用 GoPay 号协议完成 Midtrans 付款（14 步）。
@@ -897,26 +1033,19 @@ def step_pay_with_gopay(
     from platforms.gopay._opai_loader import ensure_opai_on_path
 
     ensure_opai_on_path()
-    from opai.core.gopay_payment_protocol import GoPayPayment, GoPayFraudDenyError
+    from opai.core.gopay_payment_protocol import (
+        GoPayPayment,
+        GoPayFraudDenyError,
+        GoPayPaymentError,
+    )
 
     extra = _account_extra(gopay_account_model)
     phone_local = str(extra.get("phone_local") or "").strip()
     pin = str(extra.get("pin") or gopay_account_model.password or "").strip()
     aid = str(extra.get("herosms_activation_id") or "").strip()
-    register_proxy = _normalize_proxy_url(extra.get("register_proxy"))
-    # register_proxy 为空（注册时直连 / 老号没存代理）时从代理池补一个，
-    # GoPay/Midtrans 对外国直连出口 IP 可能返回 407（CDN 把它当代理拦住），
-    # 走代理池能用相同出口跑完付款流程。
+    register_proxy = _normalize_proxy_url(proxy_override or extra.get("register_proxy"))
     if not register_proxy:
-        try:
-            from core.proxy_pool import proxy_pool
-
-            picked = proxy_pool.get_next(region="ID") or ""
-            if picked:
-                register_proxy = _normalize_proxy_url(picked)
-                log(f"代理池分配：{_mask_proxy(register_proxy)}（GoPay 付款用）")
-        except Exception as exc:
-            log(f"代理池调用异常，GoPay 付款回退直连：{exc}")
+        raise RuntimeError("GoPay 付款缺少该账号固定代理，禁止回退直连或临时换代理")
     provider = (
         str(extra.get("sms_provider") or "").strip().lower()
         or str(sms_provider_override or "").strip().lower()
@@ -951,8 +1080,10 @@ def step_pay_with_gopay(
         herosms_api_key=herosms_api_key_override,
         smspool_api_key=smspool_api_key_override,
         smsbower_api_key=smsbower_api_key_override,
-        smsapi_url=smsapi_url_override,
-        smsapi_phone=str(extra.get("phone") or phone_local or ""),
+        five_sim_api_key=five_sim_api_key_override,
+        proxy=register_proxy,
+        smsapi_url=(smsapi_url_override or str(extra.get("smsapi_url") or "").strip()),
+        smsapi_phone=str(extra.get("smsapi_phone") or extra.get("phone") or phone_local or ""),
         log=log,
     )
 
@@ -961,26 +1092,46 @@ def step_pay_with_gopay(
         result = payment.pay(
             midtrans_url=midtrans_url,
             phone=phone_local,
-            country_code="62",
+            country_code=str(extra.get("country_code") or "+62").strip().lstrip("+"),
             pin=pin,
             wait_otp=wait_otp,
             otp_total_timeout=120,
             otp_resend_after=60,
+            cancel_check=cancel_check,
+            expected_currency=expected_currency,
+            max_amount=max_payment_amount_rp,
+            require_zero_amount=max_payment_amount_rp == 0,
+            # Midtrans 的 GoPay 强制绑定会创建 1 IDR 验证交易；仅在 0 元
+            # 安全模式且交易元数据完整命中 tokenization 证据时放行。
+            allow_one_idr_tokenization_verification=max_payment_amount_rp == 0,
         )
     except GoPayFraudDenyError as exc:
         raise RuntimeError(f"GoPay 风控拒付（号被烧）: {exc}")
+    except GoPayPaymentError as exc:
+        if "cancelled" not in str(exc).lower():
+            raise
+        charge_attempted = bool(getattr(payment, "_charge_attempted", False))
+        result = {
+            "success": False,
+            "cancelled": True,
+            "uncertain": charge_attempted,
+            "charge_attempted": charge_attempted,
+            "detail": "payment cancelled",
+        }
+    finally:
+        try:
+            sms_done()
+        except Exception as exc:
+            log(f"接码订单收尾失败（忽略）: {exc}")
 
-    if not result.get("success"):
+    if not result.get("success") and raise_on_failure:
         detail = str(result.get("detail") or "unknown")
         raise RuntimeError(f"GoPay 付款失败: {detail}")
 
-    # 付款成功——归还/结束号
-    try:
-        sms_done()
-    except Exception as exc:
-        log(f"sms_done 失败（忽略）: {exc}")
-
-    log(f"GoPay 付款成功: {result}")
+    log(
+        f"GoPay 付款结果: status={result.get('transaction_status') or 'unknown'} "
+        f"success={bool(result.get('success'))}"
+    )
     return result
 
 
@@ -991,6 +1142,8 @@ def _build_payment_sms_callbacks(
     herosms_api_key: str = "",
     smspool_api_key: str = "",
     smsbower_api_key: str = "",
+    five_sim_api_key: str = "",
+    proxy: str = "",
     smsapi_url: str = "",
     smsapi_phone: str = "",
     log: Callable[[str], None] = print,
@@ -1006,7 +1159,7 @@ def _build_payment_sms_callbacks(
     """
     provider = (provider or "herosms").strip().lower()
 
-    if provider == "smsapi":
+    if provider in {"smsapi", "api_sms"}:
         from platforms.gopay.sms_channel import SmsApiChannel
         import os as _os
 
@@ -1036,6 +1189,46 @@ def _build_payment_sms_callbacks(
 
         def _sms_done() -> None:
             return None
+
+        return _wait_otp, _sms_done
+
+    if provider == "five_sim":
+        from core.base_sms import FiveSimProvider
+
+        key = str(five_sim_api_key or "").strip() or os.environ.get("OPAI_5SIM_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError("缺少 5sim API key（task payload 和 OPAI_5SIM_API_KEY 都为空）")
+        channel = FiveSimProvider(api_key=key, country="indonesia", product="gojek", proxy=proxy or None)
+
+        def _current_codes() -> list[str]:
+            payload = channel._request(f"/v1/user/check/{aid}")
+            rows = payload.get("sms") if isinstance(payload, dict) else []
+            return [
+                str(row.get("code") or "").strip()
+                for row in rows or []
+                if isinstance(row, dict) and str(row.get("code") or "").strip()
+            ]
+
+        try:
+            seen_codes = set(_current_codes())
+        except Exception:
+            seen_codes = set()
+
+        def _wait_otp(_phone_arg: str = "", timeout: int = 120) -> Optional[str]:
+            deadline = time.time() + max(int(timeout or 120), 1)
+            while time.time() < deadline:
+                try:
+                    for code in _current_codes():
+                        if code not in seen_codes:
+                            seen_codes.add(code)
+                            return code
+                except Exception:
+                    pass
+                time.sleep(3)
+            return None
+
+        def _sms_done() -> None:
+            channel.report_success(aid)
 
         return _wait_otp, _sms_done
 
@@ -1154,6 +1347,7 @@ def execute_gopay_pay_chatgpt(
     sms_provider: str = "herosms",
     smspool_api_key: str = "",
     smsbower_api_key: str = "",
+    five_sim_api_key: str = "",
     smsapi_url: str = "",
     smsapi_phone: str = "",
     max_price: str = "",
@@ -1169,6 +1363,10 @@ def execute_gopay_pay_chatgpt(
     use_short_link: bool = False,
     log: Callable[[str], None] = print,
     cancel_check: Optional[Callable[[], bool]] = None,
+    payment_attempt_key: str = "",
+    payment_attempt_action: str = "start",
+    task_id: str = "",
+    max_payment_amount_rp: int = 0,
 ) -> dict:
     """整条流水线（同步）。
 
@@ -1195,6 +1393,15 @@ def execute_gopay_pay_chatgpt(
         ``{"chatgpt_account_id", "gopay_account_id", "cashier_url",
            "midtrans_url", "payment": <pay 返回>}``
     """
+    country = str(country or "ID").strip().upper()
+    currency = str(currency or "IDR").strip().upper()
+    proxy = str(proxy or "").strip() or None
+    if not midtrans_url_override:
+        if country != "ID" or currency != "IDR":
+            raise RuntimeError("GoPay GPTPlus 付款仅允许 country=ID、currency=IDR")
+        if not proxy:
+            raise RuntimeError("GoPay GPTPlus 提链和支付页必须使用任务代理池中的固定代理")
+
     ttl_guard = PhoneTTLGuard(ttl_seconds=phone_ttl_seconds)
     out: dict[str, Any] = {
         "chatgpt_account_id": int(chatgpt_account_id),
@@ -1244,6 +1451,7 @@ def execute_gopay_pay_chatgpt(
             sms_provider=sms_provider,
             smspool_api_key=smspool_api_key,
             smsbower_api_key=smsbower_api_key,
+            five_sim_api_key=five_sim_api_key,
             smsapi_url=smsapi_url,
             smsapi_phone=smsapi_phone,
             herosms_max_price_usd=max_price,
@@ -1256,72 +1464,113 @@ def execute_gopay_pay_chatgpt(
             log=log,
         )
 
-    def _prepare_gopay_account(_midtrans_url: str = "", _page=None):
-        """选/注册 GoPay 号 + 查余额（含红包补余额），返回可用的 AccountModel。
-
-        注册/设 PIN 走纯协议（不依赖浏览器）。抓包模式下由 after_grab 触发
-        （带 midtrans_url + page 参数）；普通模式下抓完 midtrans 直接调。
-        准备好账号后，如果传了 page（抓包模式），直接用浏览器脚本驱动付款。
-        """
+    def _prepare_gopay_account(
+        _midtrans_url: str = "",
+        _page=None,
+        *,
+        _prepared_acc: AccountModel | None = None,
+        _prepare_only: bool = False,
+    ):
+        """Atomically lease and prepare one GoPay account before checkout creation."""
         ttl_guard.check()
-        if source == "register":
-            log("GoPay 号来源=强制注册：现注册一个新号（忽略号池/指定号）")
-            acc = _do_register()
-            if not acc:
-                raise RuntimeError("强制注册 GoPay 号失败，详见上方日志")
-        elif gopay_account_id:
-            with Session(engine) as session:
-                acc = session.get(AccountModel, int(gopay_account_id))
-                if not acc or acc.platform != "gopay":
-                    raise RuntimeError(
-                        f"GoPay 账号 #{gopay_account_id} 不存在或不是 gopay 平台"
-                    )
-        else:
-            acc = None
-            if source == "pool":
-                acc = pick_available_gopay_account(min_balance_rp=1) or _latest_gopay_account()
+        owner_key = payment_attempt_key or f"adhoc:{chatgpt_account_id}:{threading.get_ident()}"
+        acc = _prepared_acc
+        if acc is None:
+            if source == "register":
+                log("GoPay 号来源=强制注册：现注册一个新号（忽略号池/指定号）")
+                acc = _do_register()
                 if not acc:
-                    raise RuntimeError("GoPay 号来源=号池：池里没有可用号（且不允许注册）")
-                log("GoPay 号来源=号池：复用已有号")
+                    raise RuntimeError("强制注册 GoPay 号失败，详见上方日志")
+            elif gopay_account_id:
+                with Session(engine) as session:
+                    acc = session.get(AccountModel, int(gopay_account_id))
+                    if not acc or acc.platform != "gopay":
+                        raise RuntimeError(
+                            f"GoPay 账号 #{gopay_account_id} 不存在或不是 gopay 平台"
+                        )
             else:
-                acc = pick_available_gopay_account(min_balance_rp=1)
-                if not acc and auto_register_gopay:
+                acc = pick_available_gopay_account(
+                    min_balance_rp=1,
+                    owner_key=owner_key,
+                    task_id=task_id,
+                )
+                if not acc and source != "pool" and auto_register_gopay:
                     acc = _do_register()
                 if not acc:
-                    acc = _latest_gopay_account()
-                if not acc:
-                    raise RuntimeError("没有可用的 GoPay 账号，且无法自动注册")
-        out["gopay_account_id"] = int(acc.id)
-        log(f"使用 GoPay 账号 #{acc.id}（{acc.email}）")
+                    detail = "号池里没有未占用且有效的账号" if source == "pool" else "没有可用的 GoPay 账号，且无法自动注册"
+                    raise RuntimeError(detail)
 
-        # 余额不足轮询【领红包→查余额】直到 ≥ 1 或号码有效期超时。
-        current_balance = int((_account_extra(acc).get("balance_rp")) or 0)
-        if current_balance < 1:
-            log(f"GoPay 号 #{acc.id} 当前余额 {current_balance} IDR，开始轮询等红包/充值到账…")
-            gopay_extra = _account_extra(acc)
-            phone = str(gopay_extra.get("phone") or acc.email or "").strip()
-            register_proxy = _normalize_proxy_url(
-                str(gopay_extra.get("register_proxy") or proxy or "").strip()
+            from application.gopay_payment_state import (
+                acquire_gopay_lease,
+                update_payment_attempt,
             )
-            client = _resolve_gopay_client(phone, register_proxy, log=log)
-            if client is None:
-                raise RuntimeError(f"GoPay 号 #{acc.id} 无法 resume（拿不到 client），无法轮询余额")
-            final_balance = wait_for_balance(
+
+            if not acquire_gopay_lease(
+                account_id=int(acc.id), owner_key=owner_key, task_id=task_id
+            ):
+                raise RuntimeError(f"GoPay 账号 #{acc.id} 正被其它付款任务使用")
+            if payment_attempt_key:
+                update_payment_attempt(
+                    payment_attempt_key,
+                    task_id=task_id,
+                    gopay_account_id=int(acc.id),
+                    status="preparing",
+                )
+
+        out["gopay_account_id"] = int(acc.id)
+        log(f"使用 GoPay 账号 #{acc.id}（{str(acc.email)[:4]}***）")
+
+        gopay_extra = _account_extra(acc)
+        remaining_lifetime = _remaining_sms_lifetime_seconds(
+            acc, gopay_extra, phone_ttl_seconds
+        )
+        if remaining_lifetime is not None:
+            if remaining_lifetime <= 180:
+                raise RuntimeError(
+                    f"GoPay 号 #{acc.id} 的接码激活只剩 {max(int(remaining_lifetime), 0)} 秒，禁止开始付款"
+                )
+            ttl_guard.reset_remaining(remaining_lifetime)
+            log(f"GoPay 接码激活剩余约 {int(remaining_lifetime)} 秒")
+        else:
+            ttl_guard.reset_remaining(0)
+
+        phone = str(gopay_extra.get("phone") or acc.email or "").strip()
+        register_proxy = _normalize_proxy_url(
+            str(proxy or gopay_extra.get("register_proxy") or "").strip()
+        )
+        client = _resolve_gopay_client(phone, register_proxy, log=log)
+        if client is None:
+            raise RuntimeError(f"GoPay 号 #{acc.id} 无法恢复登录，禁止使用缓存余额付款")
+
+        from platforms.gopay._opai_loader import ensure_opai_on_path
+
+        ensure_opai_on_path()
+        from opai.core.gopay_protocol_worker import _check_balance
+
+        try:
+            current_balance = max(int(_check_balance(client) or 0), 0)
+        except Exception as exc:
+            raise RuntimeError(f"GoPay 号 #{acc.id} 实时余额查询失败: {exc}") from exc
+        if current_balance < 1:
+            log(f"GoPay 号 #{acc.id} 实时余额 {current_balance} IDR，开始轮询等红包/充值到账")
+            current_balance = wait_for_balance(
                 client=client,
                 envelope_url=envelope_url,
                 ttl_guard=ttl_guard,
+                cancel_check=cancel_check,
                 log=log,
             )
-            from core.account_graph import patch_account_graph
 
-            with Session(engine) as session:
-                m = session.get(AccountModel, int(acc.id))
-                if m:
-                    patch_account_graph(session, m, summary_updates={"balance_rp": final_balance})
-                    session.commit()
+        from core.account_graph import patch_account_graph
 
-        # 抓包模式：把账号信息打印出来，并用浏览器脚本驱动 GoPay 网页付款。
-        if capture_payment:
+        with Session(engine) as session:
+            m = session.get(AccountModel, int(acc.id))
+            if m:
+                patch_account_graph(session, m, summary_updates={"balance_rp": current_balance})
+                session.commit()
+
+        # 抓包模式只在 Midtrans 页面已经打开后执行浏览器付款。
+        if capture_payment and not _prepare_only:
             _ex = _account_extra(acc)
             _phone = str(_ex.get("phone") or acc.email or "")
             _pin = str(_ex.get("pin") or acc.password or "")
@@ -1330,8 +1579,8 @@ def execute_gopay_pay_chatgpt(
             _provider = str(_ex.get("sms_provider") or sms_provider or "smspool")
             log(
                 "==================== 浏览器付款用的 GoPay 账号 ====================\n"
-                f"[capture]   GoPay 手机号 : {_phone}\n"
-                f"[capture]   GoPay PIN    : {_pin}\n"
+                f"[capture]   GoPay 手机号 : ***{_phone[-4:]}\n"
+                "[capture]   GoPay PIN    : ******\n"
                 f"[capture]   当前余额     : {_bal} IDR\n"
                 f"[capture]   账号 #{acc.id}（已注册+设PIN+查余额完成）\n"
                 "==============================================================="
@@ -1347,6 +1596,8 @@ def execute_gopay_pay_chatgpt(
                         herosms_api_key=herosms_api_key_override,
                         smspool_api_key=smspool_api_key,
                         smsbower_api_key=smsbower_api_key,
+                        five_sim_api_key=five_sim_api_key,
+                        proxy=proxy or "",
                         smsapi_url=smsapi_url,
                         smsapi_phone=smsapi_phone,
                         log=log,
@@ -1361,17 +1612,29 @@ def execute_gopay_pay_chatgpt(
                         log=log,
                     )
                     out["payment"] = pay_res
-                    log(f"[capture] 浏览器付款结果: {pay_res}")
+                    log(
+                        f"[capture] 浏览器付款结果: success={bool(pay_res.get('success'))}"
+                        if isinstance(pay_res, dict)
+                        else "[capture] 浏览器付款未返回结构化结果"
+                    )
+                except Exception as exc:
+                    log(f"[capture] 浏览器付款异常: {exc}")
+                    raise
+                finally:
                     try:
                         _sms_done()
                     except Exception:
                         pass
-                except Exception as exc:
-                    log(f"[capture] 浏览器付款异常: {exc}")
             else:
                 log("[capture] 未拿到浏览器 page，跳过自动付款（可手动操作）")
         return acc
 
+    # GoPay 必须先准备完成，再创建短时有效的 cashier/Midtrans 会话。
+    gopay = None
+    if payment_attempt_action != "reconcile":
+        gopay = _prepare_gopay_account(_prepare_only=True)
+
+    checkout_context: dict[str, str] = {}
     if not midtrans_url_override:
         ttl_guard.check()
         if not cashier_url_override:
@@ -1382,30 +1645,17 @@ def execute_gopay_pay_chatgpt(
                 proxy=proxy,
                 use_stripe_init=use_stripe_init,
                 use_short_link=use_short_link,
+                expected_exit_country="ID",
+                checkout_context=checkout_context,
                 log=log,
             )
         cashier_url = out["cashier_url"]
 
         # ② 浏览器抓 midtrans_url（自动选 GoPay + 填表 + 点订阅）
         ttl_guard.check()
-        # 浏览器出口代理：显式 proxy 优先，否则从代理池取一个印尼代理。
-        # camoufox 走 Playwright/Chromium——**必须用 http/https 代理**（带认证
-        # 的 socks5 Chromium 不支持），所以代理池里请放 http/https 的印尼代理。
-        # 有代理时 select_gopay_and_grab_midtrans 会自动开 geoip + 印尼时区/语言，
-        # 让指纹和地理对齐（直连 + 默认 en-US 时区会被 GoPay 风控判异常）。
+        # 提链和支付页必须复用任务层分配给该账号的同一条固定代理；不在此处
+        # 重新从全局池取代理，避免两阶段出口发生漂移。
         browser_proxy = proxy
-        if not browser_proxy:
-            try:
-                from core.proxy_pool import proxy_pool
-
-                picked = proxy_pool.get_next(region="ID") or ""
-                if picked:
-                    browser_proxy = _normalize_proxy_url(picked)
-                    log(f"代理池分配：{_mask_proxy(browser_proxy)}（GoPay 抓 midtrans 浏览器用）")
-                else:
-                    log("代理池没有可用代理，浏览器抓 midtrans 回退直连（指纹可能过不了 GoPay 风控）")
-            except Exception as exc:
-                log(f"代理池调用异常，浏览器抓 midtrans 回退直连：{exc}")
         # 短链模式：抓 midtrans 的浏览器要带 ChatGPT 登录 cookie（短链是
         # ChatGPT 托管页，URL 无 token）。从 chatgpt 账号读 cookies 透传。
         chatgpt_cookies = ""
@@ -1429,38 +1679,167 @@ def execute_gopay_pay_chatgpt(
             proxy=browser_proxy,
             timeout_seconds=grab_timeout,
             capture_dir=effective_capture_dir,
-            # 抓包模式：浏览器抓到 midtrans 后保持打开，用 after_grab 在浏览器
-            # 开着的同时跑 GoPay 注册/设PIN/查余额，把账号准备好给人工手动付款。
-            after_grab=(_prepare_gopay_account if capture_payment else None),
+            # 抓包模式只在页面打开后用已经准备好的账号执行浏览器付款。
+            after_grab=(
+                (lambda url, page: _prepare_gopay_account(
+                    url, page, _prepared_acc=gopay
+                ))
+                if capture_payment else None
+            ),
             cancel_check=cancel_check,
             chatgpt_cookies=chatgpt_cookies,
+            expected_exit_country="ID",
+            expected_exit_ip=str(checkout_context.get("exit_ip") or ""),
             log=log,
         )
     midtrans_url = out["midtrans_url"]
+    if not _MIDTRANS_URL_RE.fullmatch(str(midtrans_url or "").strip()):
+        raise RuntimeError("未获得有效的 Midtrans Snap URL")
 
-    # 抓包模式：到这里 after_grab 已经在浏览器开着时跑完注册/设PIN/查余额，
-    # 人工也已在 midtrans 付款页手动付完款。不跑协议付款，直接返回。
+    from application.gopay_payment_state import (
+        extract_snap_id,
+        get_payment_attempt,
+        update_payment_attempt,
+    )
+
+    if payment_attempt_key and payment_attempt_action != "reconcile":
+        update_payment_attempt(
+            payment_attempt_key,
+            task_id=task_id,
+            status="checkout_ready",
+            midtrans_url=midtrans_url,
+            snap_id=extract_snap_id(midtrans_url),
+        )
+
+    if payment_attempt_action == "reconcile":
+        from platforms.gopay._opai_loader import ensure_opai_on_path
+
+        ensure_opai_on_path()
+        from opai.core.gopay_payment_protocol import GoPayPayment
+
+        attempt_state = get_payment_attempt(payment_attempt_key) or {}
+        out["gopay_account_id"] = int(attempt_state.get("gopay_account_id") or 0) or None
+        if str(attempt_state.get("status") or "") == "settled":
+            inspected = {
+                "success": True,
+                "uncertain": False,
+                "transaction_status": str(
+                    attempt_state.get("transaction_status") or "settlement"
+                ),
+                "amount": attempt_state.get("amount"),
+                "currency": str(attempt_state.get("currency") or currency),
+            }
+        else:
+            inspected = GoPayPayment(proxy=_normalize_proxy_url(proxy)).inspect_transaction(
+                midtrans_url,
+                cancel_check=cancel_check,
+            )
+        out["payment"] = inspected
+        if inspected.get("success"):
+            update_payment_attempt(
+                payment_attempt_key,
+                task_id=task_id,
+                status="settled",
+                uncertain=False,
+                transaction_status=str(inspected.get("transaction_status") or "settlement"),
+                amount=inspected.get("amount"),
+                currency=str(inspected.get("currency") or currency),
+                error="",
+            )
+        elif inspected.get("uncertain"):
+            update_payment_attempt(
+                payment_attempt_key,
+                task_id=task_id,
+                status="payment_pending",
+                uncertain=True,
+                transaction_status=str(inspected.get("transaction_status") or "unknown"),
+                error=str(inspected.get("detail") or "payment pending"),
+            )
+            raise RuntimeError("原付款交易仍处于待确认状态，已禁止创建或扣取第二笔交易")
+        else:
+            update_payment_attempt(
+                payment_attempt_key,
+                task_id=task_id,
+                status="failed_terminal",
+                uncertain=False,
+                transaction_status=str(inspected.get("transaction_status") or "failed"),
+                error=str(inspected.get("detail") or "payment failed"),
+            )
+            raise RuntimeError(f"原付款交易已终止: {inspected.get('transaction_status') or 'failed'}")
+
     if capture_payment:
-        log("[capture] 抓包完成（GoPay 账号已注册+设PIN+查余额；协议付款已跳过，由人工手动付款）")
         out["captured"] = True
         out["capture_dir"] = effective_capture_dir
-        return out
+        payment_result = out.get("payment") if isinstance(out.get("payment"), dict) else {}
+        if not payment_result.get("success"):
+            if payment_attempt_key:
+                update_payment_attempt(
+                    payment_attempt_key,
+                    task_id=task_id,
+                    status="uncertain",
+                    uncertain=True,
+                    error=str(payment_result.get("detail") or "抓包浏览器未确认付款成功"),
+                )
+            raise RuntimeError("抓包完成，但浏览器付款未确认成功；任务不会标记 Plus")
+    elif payment_attempt_action != "reconcile":
+        ttl_guard.check()
+        if gopay is None:
+            raise RuntimeError("GoPay 账号准备状态丢失")
+        if payment_attempt_key:
+            update_payment_attempt(
+                payment_attempt_key,
+                task_id=task_id,
+                status="charging",
+                uncertain=True,
+            )
+        payment_result = step_pay_with_gopay(
+            midtrans_url,
+            gopay,
+            proxy_override=proxy or "",
+            herosms_api_key_override=herosms_api_key_override,
+            smspool_api_key_override=smspool_api_key,
+            smsbower_api_key_override=smsbower_api_key,
+            five_sim_api_key_override=five_sim_api_key,
+            smsapi_url_override=smsapi_url,
+            sms_provider_override=sms_provider,
+            cancel_check=cancel_check,
+            expected_currency=currency,
+            max_payment_amount_rp=max_payment_amount_rp,
+            raise_on_failure=False,
+            log=log,
+        )
+        out["payment"] = payment_result
+        if not payment_result.get("success"):
+            uncertain = bool(
+                payment_result.get("uncertain") or payment_result.get("charge_attempted")
+            )
+            if payment_attempt_key:
+                update_payment_attempt(
+                    payment_attempt_key,
+                    task_id=task_id,
+                    status="payment_pending" if uncertain else "failed_precharge",
+                    uncertain=uncertain,
+                    transaction_status=str(payment_result.get("transaction_status") or "unknown"),
+                    amount=payment_result.get("amount"),
+                    currency=str(payment_result.get("currency") or currency),
+                    error=str(payment_result.get("detail") or "payment failed"),
+                )
+            if uncertain:
+                raise RuntimeError("付款结果不确定，已保存原交易用于状态恢复，禁止重新扣款")
+            raise RuntimeError(f"GoPay 付款失败: {payment_result.get('detail') or 'unknown'}")
 
-    # ③ 选/注册 GoPay 号 + 查余额 + 协议付款
-    ttl_guard.check()
-    gopay = _prepare_gopay_account()
-
-    ttl_guard.check()
-    out["payment"] = step_pay_with_gopay(
-        midtrans_url,
-        gopay,
-        herosms_api_key_override=herosms_api_key_override,
-        smspool_api_key_override=smspool_api_key,
-        smsbower_api_key_override=smsbower_api_key,
-        smsapi_url_override=smsapi_url,
-        sms_provider_override=sms_provider,
-        log=log,
-    )
+    if payment_attempt_key:
+        settled_result = out.get("payment") if isinstance(out.get("payment"), dict) else {}
+        update_payment_attempt(
+            payment_attempt_key,
+            task_id=task_id,
+            status="settled",
+            uncertain=False,
+            transaction_status=str(settled_result.get("transaction_status") or "settlement"),
+            amount=settled_result.get("amount"),
+            currency=str(settled_result.get("currency") or currency),
+            error="",
+        )
 
     # #2：付款成功后自动换绑，把当前 GoPay 号占用的（印尼）号释放出来。
     if (
@@ -1472,8 +1851,8 @@ def execute_gopay_pay_chatgpt(
             g_extra = _account_extra(gopay)
             g_phone = str(g_extra.get("phone") or gopay.email or "").strip()
             g_pin = str(g_extra.get("pin") or gopay.password or "").strip()
-            g_proxy = _normalize_proxy_url(str(g_extra.get("register_proxy") or proxy or ""))
-            log(f"付款成功，开始自动换绑释放号 {g_phone}…")
+            g_proxy = _normalize_proxy_url(str(proxy or g_extra.get("register_proxy") or ""))
+            log(f"付款成功，开始自动换绑释放号 ***{g_phone[-4:]}…")
             client = _resolve_gopay_client(g_phone, g_proxy, log=log)
             if client is None:
                 log("自动换绑跳过：无法 resume GoPay client")
@@ -1487,14 +1866,27 @@ def execute_gopay_pay_chatgpt(
                     log=log,
                 )
                 out["rebind"] = rb
-                log(f"自动换绑结果: {rb}")
+                log(f"自动换绑结果: success={bool(rb.get('success'))}")
         except Exception as exc:
             log(f"自动换绑异常（忽略，不影响付款结果）: {exc}")
             out["rebind"] = {"success": False, "detail": str(exc)}
 
-    # 把 ChatGPT 账号标 SUBSCRIBED 并存 cashier_url / midtrans_url
-    # （chatgpt_account_id=0 占位场景跳过——没有关联的 ChatGPT 账号）
+    # 付款结算只代表资金侧完成；必须等 OpenAI 套餐状态可见后才能标 subscribed。
     if int(chatgpt_account_id) > 0:
+        confirmed_plan = _verify_chatgpt_subscription(
+            chatgpt,
+            proxy=proxy,
+            cancel_check=cancel_check,
+            log=log,
+        )
+        if payment_attempt_key:
+            update_payment_attempt(
+                payment_attempt_key,
+                task_id=task_id,
+                status="subscribed",
+                uncertain=False,
+                error="",
+            )
         from core.account_graph import patch_account_graph
 
         with Session(engine) as session:
@@ -1510,7 +1902,7 @@ def execute_gopay_pay_chatgpt(
                         "paid_via": "gopay",
                         "paid_via_gopay_account_id": out["gopay_account_id"],
                         "plan_state": "subscribed",
-                        "plan_name": "Plus",
+                        "plan_name": confirmed_plan.title(),
                     },
                 )
                 session.commit()

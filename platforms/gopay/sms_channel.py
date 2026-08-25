@@ -9,10 +9,9 @@ SMSBower 协议跟 Hero-SMS 完全一样（SMS-Activate 风格），只是 base 
 所以这里抽一个 ``SmsActivateStyleChannel``，SMSBower 是它的具体实例；以后
 再接同协议的接码平台只要换 base URL 即可。
 
-为了不改第三方 ``gopay-deploy`` 源码，这里用和 maxPrice patch 相同的思路：
-``patch_worker_with_smspool`` / ``patch_worker_with_smsbower`` 直接覆盖
-``gopay_protocol_worker`` 命名空间里的 ``sms_get_number/sms_wait_code/...``，
-让注册流程（``_register_one``）无感切到对应渠道。
+为了不改第三方 ``gopay-deploy`` 的注册流程，worker 命名空间只安装一组
+稳定分发函数；每个注册线程把自己的渠道回调绑定到 ``threading.local``。
+这样 ``_register_one`` 无感使用各渠道，并发任务也不会互相覆盖或串号。
 
 SMSPool API 文档：https://www.smspool.net/article/how-to-use-the-smspool-api
 - POST /purchase/sms  key,country,service[,pool] -> {success, number, order_id, cc}
@@ -36,6 +35,7 @@ SMSBower API 文档：https://smsbower.app/cn/api
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -916,6 +916,65 @@ class SmsPoolChannel:
             return False
 
 
+# Stable worker entry points. Each registration thread binds its own callbacks;
+# the worker module is patched only to these immutable dispatch functions.
+_worker_sms_local = threading.local()
+_worker_sms_install_lock = threading.Lock()
+
+
+def bind_worker_sms_callbacks(
+    *,
+    get_number,
+    wait_code,
+    request_another,
+    cancel,
+    done,
+) -> None:
+    from opai.core import gopay_protocol_worker as worker
+
+    _worker_sms_local.callbacks = {
+        "get_number": get_number,
+        "wait_code": wait_code,
+        "request_another": request_another,
+        "cancel": cancel,
+        "done": done,
+    }
+    with _worker_sms_install_lock:
+        worker.sms_get_number = _dispatch_sms_get_number
+        worker.sms_wait_code = _dispatch_sms_wait_code
+        worker.sms_request_another = _dispatch_sms_request_another
+        worker.sms_cancel = _dispatch_sms_cancel
+        worker.sms_done = _dispatch_sms_done
+
+
+def _current_sms_callback(name: str):
+    callbacks = getattr(_worker_sms_local, "callbacks", None)
+    callback = callbacks.get(name) if isinstance(callbacks, dict) else None
+    if not callable(callback):
+        raise RuntimeError("当前 GoPay worker 线程未绑定接码通道")
+    return callback
+
+
+def _dispatch_sms_get_number(*args, **kwargs):
+    return _current_sms_callback("get_number")(*args, **kwargs)
+
+
+def _dispatch_sms_wait_code(*args, **kwargs):
+    return _current_sms_callback("wait_code")(*args, **kwargs)
+
+
+def _dispatch_sms_request_another(*args, **kwargs):
+    return _current_sms_callback("request_another")(*args, **kwargs)
+
+
+def _dispatch_sms_cancel(*args, **kwargs):
+    return _current_sms_callback("cancel")(*args, **kwargs)
+
+
+def _dispatch_sms_done(*args, **kwargs):
+    return _current_sms_callback("done")(*args, **kwargs)
+
+
 def patch_worker_with_smspool(
     *,
     api_key: str,
@@ -939,8 +998,6 @@ def patch_worker_with_smspool(
       sms_done(api_key, id) -> None
     第一个 ``api_key`` 参数被忽略（channel 自带 key），保持签名兼容。
     """
-    from opai.core import gopay_protocol_worker as _worker
-
     channel = SmsPoolChannel(
         api_key=api_key, country=country, service=service, pool=pool,
         max_price=max_price, pricing_option=pricing_option,
@@ -963,12 +1020,14 @@ def patch_worker_with_smspool(
         # 这里 no-op。
         return None
 
-    _worker.sms_get_number = _get_number
-    _worker.sms_wait_code = _wait_code
-    _worker.sms_request_another = _request_another
-    _worker.sms_cancel = _cancel
-    _worker.sms_done = _done
-    log.info("gopay worker sms 函数已切换到 SMSPool 渠道")
+    bind_worker_sms_callbacks(
+        get_number=_get_number,
+        wait_code=_wait_code,
+        request_another=_request_another,
+        cancel=_cancel,
+        done=_done,
+    )
+    log.info("当前 worker 线程已绑定 SMSPool 渠道")
 
 
 # ---------------------------------------------------------------------------
@@ -1035,7 +1094,7 @@ class SmsActivateStyleChannel:
 
     def get_number(self) -> tuple[str | None, str | None]:
         resp = self._request("getNumber", {"service": self.service, "country": self.country})
-        log.info("getNumber: %s", resp)
+        log.info("%s getNumber completed", self.provider_name)
         if resp.startswith("ACCESS_NUMBER:"):
             parts = resp.split(":")
             phone = f"+{parts[2]}"
@@ -1059,7 +1118,7 @@ class SmsActivateStyleChannel:
                 m = re.search(r"\b(\d{4,6})\b", code)
                 return m.group(1) if m else code
             if resp == "STATUS_CANCEL":
-                log.warning("SMS activation %s cancelled", aid)
+                log.warning("SMS activation ***%s cancelled", str(aid)[-4:])
                 return None
             time.sleep(5)
         return None
@@ -1132,6 +1191,94 @@ def make_smsbower_channel(api_key: str = "", *, service: str = "", country: str 
     return ch
 
 
+def patch_worker_with_fivesim(
+    *,
+    api_key: str = "",
+    country: str = "indonesia",
+    product: str = "gojek",
+    operator: str = "any",
+    max_price: str = "",
+    base_url: str = "",
+    proxy: str = "",
+    reuse: bool = True,
+) -> None:
+    """将 GoPay worker 的短信函数切换到 5sim 原生 API。"""
+    from core.base_sms import FiveSimProvider
+    try:
+        price = float(max_price) if str(max_price or "").strip() else -1
+    except (TypeError, ValueError):
+        price = -1
+    channel = FiveSimProvider(
+        api_key=api_key,
+        country=country or "indonesia",
+        operator=operator or "any",
+        product=product or "gojek",
+        base_url=base_url or "https://5sim.net",
+        max_price=price,
+        proxy=proxy or None,
+        reuse=bool(reuse),
+    )
+
+    seen_codes: set[str] = set()
+
+    def _get_number(_api_key):
+        activation = channel.get_number(service=product or "gojek", country=country or "indonesia")
+        return activation.phone_number, activation.activation_id
+
+    def _wait_code(_api_key, activation_id, timeout: int = SMS_TIMEOUT, ignore_code: str | None = None):
+        # 5sim 的 check 返回整个短信列表，按 activation 去重后等待下一条 OTP。
+        from core.base_sms import _remote_sms_code
+
+        ignored = str(ignore_code or '').strip()
+        deadline = time.time() + max(1, int(timeout or SMS_TIMEOUT))
+        while time.time() < deadline:
+            payload = channel._request(f"/v1/user/check/{activation_id}")
+            candidates: list[str] = []
+            rows = payload.get("sms") if isinstance(payload, dict) else []
+            if isinstance(rows, list):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    direct = str(row.get("code") or "").strip()
+                    if direct and re.fullmatch(r"\d{4,8}", direct):
+                        candidates.append(direct)
+                    for key in ("text", "message", "content"):
+                        candidates.extend(re.findall(r"\b\d{4,8}\b", str(row.get(key) or "")))
+            if not candidates:
+                fallback = _remote_sms_code(payload)
+                if fallback:
+                    candidates.append(fallback)
+            for code in reversed(candidates):
+                if code and code != ignored and code not in seen_codes:
+                    seen_codes.add(code)
+                    return code
+            status = str(payload.get("status") or "").upper() if isinstance(payload, dict) else ""
+            if status in {"CANCELED", "BANNED", "FINISHED", "TIMEOUT"}:
+                return ""
+            time.sleep(channel.poll_interval)
+        channel.cancel(activation_id)
+        return ""
+
+    def _request_another(_api_key, activation_id):
+        # 5sim keeps the activation open and exposes subsequent SMS via check.
+        return bool(activation_id)
+
+    def _cancel(_api_key, activation_id):
+        channel.cancel(activation_id)
+
+    def _done(_api_key, activation_id):
+        channel.report_success(activation_id)
+
+    bind_worker_sms_callbacks(
+        get_number=_get_number,
+        wait_code=_wait_code,
+        request_another=_request_another,
+        cancel=_cancel,
+        done=_done,
+    )
+    log.info("当前 worker 线程已绑定 5sim 渠道")
+
+
 def patch_worker_with_smsbower(
     *,
     api_key: str = "",
@@ -1146,8 +1293,6 @@ def patch_worker_with_smsbower(
 
     幂等：重复调用只是用最新参数重新封装。
     """
-    from opai.core import gopay_protocol_worker as _worker
-
     channel = make_smsbower_channel(api_key=api_key, service=service, country=country)
 
     def _get_number(_api_key):
@@ -1165,12 +1310,14 @@ def patch_worker_with_smsbower(
     def _done(_api_key, aid):
         channel.done(aid)
 
-    _worker.sms_get_number = _get_number
-    _worker.sms_wait_code = _wait_code
-    _worker.sms_request_another = _request_another
-    _worker.sms_cancel = _cancel
-    _worker.sms_done = _done
-    log.info("gopay worker sms 函数已切换到 SMSBower 渠道")
+    bind_worker_sms_callbacks(
+        get_number=_get_number,
+        wait_code=_wait_code,
+        request_another=_request_another,
+        cancel=_cancel,
+        done=_done,
+    )
+    log.info("当前 worker 线程已绑定 SMSBower 渠道")
 
 
 # ---------------------------------------------------------------------------
@@ -1194,11 +1341,16 @@ SMSAPI_DEFAULT_PHONE = os.environ.get("OPAI_SMSAPI_PHONE", "")
 
 
 def _smsapi_normalize_phone(phone: str) -> str:
-    """统一成 ``+62xxxxxxxxxx`` 形态。"""
-    digits = re.sub(r"\D", "", str(phone or ""))
+    """保留 E.164 国际号码；无国际区号的旧输入仍按印尼号码处理。"""
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if raw.startswith("+"):
+        return "+" + digits
+    if digits.startswith("00"):
+        return "+" + digits[2:]
     if digits.startswith("0"):
         digits = "62" + digits[1:]
-    if not digits.startswith("62"):
+    elif not digits.startswith("62"):
         digits = "62" + digits
     return "+" + digits
 
@@ -1217,6 +1369,7 @@ class SmsApiChannel:
         # 记录"已经见过的最新短信时间"，用于区分新旧 OTP。初始化为基线，
         # 这样首次 wait 只认本次请求之后到达的新短信。
         self._last_seen_time: str = ""
+        self._last_seen_fingerprint: str = ""
 
     def _fetch(self) -> dict:
         """请求 record API，返回 ``data`` dict（失败返回 {}）。"""
@@ -1229,14 +1382,24 @@ class SmsApiChannel:
                 return {}
             if not isinstance(j, dict):
                 return {}
-            if int(j.get("code") or 0) != 1:
-                log.debug("smsapi non-ok resp: %s", str(j)[:200])
-                return {}
             data = j.get("data")
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                log.debug("smsapi response data type=%s", type(data).__name__)
+                return {}
+            api_ok = str(j.get("code") or "").strip() == "1"
+            has_message = bool(str(data.get("code") or "").strip())
+            if not api_ok and not has_message:
+                log.debug("smsapi no message available (api_code=%s)", str(j.get("code") or "")[:16])
+                return {}
+            return data
         except Exception as exc:
-            log.debug("smsapi fetch failed: %s", exc)
+            log.debug("smsapi fetch failed: %s", type(exc).__name__)
             return {}
+
+    @staticmethod
+    def _message_fingerprint(code_time: str, body: str) -> str:
+        value = f"{code_time}\0{body}".encode("utf-8", errors="replace")
+        return hashlib.sha256(value).hexdigest()
 
     @staticmethod
     def _extract_code(text: str) -> str | None:
@@ -1248,7 +1411,11 @@ class SmsApiChannel:
         """快照当前最新短信时间作为基线（拿号后、等码前调一次）。"""
         data = self._fetch()
         self._last_seen_time = str(data.get("code_time") or "")
-        log.info("smsapi 基线短信时间=%s", self._last_seen_time or "(空)")
+        body = str(data.get("code") or "")
+        self._last_seen_fingerprint = (
+            self._message_fingerprint(self._last_seen_time, body) if body else ""
+        )
+        log.info("smsapi 基线已建立（已有短信=%s）", bool(body))
 
     def get_number(self) -> tuple[str | None, str | None]:
         """固定号，无需租。返回 (phone, phone) —— id 用号占位。"""
@@ -1257,31 +1424,43 @@ class SmsApiChannel:
             return None, None
         # 拿号即把当前短信时间设为基线，避免把注册前的旧码当 OTP。
         self.prime()
-        log.info("smsapi 使用固定号 %s", self.phone)
+        log.info("smsapi 使用固定号尾号 %s", self.phone[-4:])
         return self.phone, self.phone
 
-    def wait_code(self, _id: str, timeout: int = SMS_TIMEOUT) -> str | None:
-        """轮询 record API，拿到比基线更新的那条短信里的 OTP。"""
+    def wait_code(
+        self, _id: str, timeout: int = SMS_TIMEOUT, ignore_code: str | None = None
+    ) -> str | None:
+        """轮询 record API，拿到比基线更新且不是旧验证码的 OTP。"""
         deadline = time.monotonic() + max(int(timeout or 0), 0)
         while time.monotonic() < deadline:
             data = self._fetch()
             code_time = str(data.get("code_time") or "")
             body = str(data.get("code") or "")
-            if body and code_time and code_time != self._last_seen_time:
+            fingerprint = self._message_fingerprint(code_time, body) if body else ""
+            if body and fingerprint != self._last_seen_fingerprint:
                 code = self._extract_code(body)
                 if code:
                     self._last_seen_time = code_time
-                    log.info("smsapi 新短信 time=%s code=%s", code_time, code)
-                    return code
+                    self._last_seen_fingerprint = fingerprint
+                    if ignore_code and code == str(ignore_code):
+                        log.info("smsapi 忽略已使用的验证码")
+                    else:
+                        log.info("smsapi 收到新验证码短信")
+                        return code
             time.sleep(5)
-        log.warning("smsapi 等码超时（last_seen=%s）", self._last_seen_time)
+        log.warning("smsapi 等码超时（已建立基线=%s）", bool(self._last_seen_fingerprint))
         return None
 
     def request_another(self, _id: str) -> bool:
         """这套 API 没有"重发"概念——发码由 GoPay 触发，这里只重置基线，
         让下一次 wait_code 只认更新的短信。"""
         data = self._fetch()
-        self._last_seen_time = str(data.get("code_time") or self._last_seen_time)
+        body = str(data.get("code") or "")
+        if body:
+            self._last_seen_time = str(data.get("code_time") or "")
+            self._last_seen_fingerprint = self._message_fingerprint(
+                self._last_seen_time, body
+            )
         return True
 
     def cancel(self, _id: str) -> None:
@@ -1291,37 +1470,43 @@ class SmsApiChannel:
         return None
 
 
+_smsapi_channel_local = threading.local()
+
+
 def patch_worker_with_smsapi(*, url: str, phone: str) -> None:
-    """覆盖 ``gopay_protocol_worker`` 的 5 个 sms 函数走 SmsApi（固定号）。
-
-    与 ``patch_worker_with_smspool`` 同一思路。固定号 + 查最新短信 API，
-    靠 code_time 区分新旧 OTP，一个号跨注册/PIN/付款多次 OTP 都能用。
-    """
-    from opai.core import gopay_protocol_worker as _worker
-
+    """按 worker 线程绑定固定号，避免并发注册串用手机号和查询 URL。"""
     channel = SmsApiChannel(url=url, phone=phone)
+    _smsapi_channel_local.channel = channel
+
+    def _channel() -> SmsApiChannel:
+        current = getattr(_smsapi_channel_local, "channel", None)
+        if not isinstance(current, SmsApiChannel):
+            raise RuntimeError("当前 GoPay worker 未绑定 SmsApi 接码通道")
+        return current
 
     def _get_number(_api_key):
-        return channel.get_number()
+        return _channel().get_number()
 
-    def _wait_code(_api_key, _id, timeout: int = SMS_TIMEOUT):
-        return channel.wait_code(_id, timeout=timeout)
+    def _wait_code(_api_key, _id, timeout: int = SMS_TIMEOUT, ignore_code: str | None = None):
+        return _channel().wait_code(_id, timeout=timeout, ignore_code=ignore_code)
 
     def _request_another(_api_key, _id):
-        return channel.request_another(_id)
+        return _channel().request_another(_id)
 
     def _cancel(_api_key, _id):
-        channel.cancel(_id)
+        _channel().cancel(_id)
 
     def _done(_api_key, _id):
-        channel.done(_id)
+        _channel().done(_id)
 
-    _worker.sms_get_number = _get_number
-    _worker.sms_wait_code = _wait_code
-    _worker.sms_request_another = _request_another
-    _worker.sms_cancel = _cancel
-    _worker.sms_done = _done
-    log.info("gopay worker sms 函数已切换到 SmsApi 渠道（固定号 %s）", channel.phone)
+    bind_worker_sms_callbacks(
+        get_number=_get_number,
+        wait_code=_wait_code,
+        request_another=_request_another,
+        cancel=_cancel,
+        done=_done,
+    )
+    log.info("当前 worker 线程已绑定 SmsApi 固定号渠道（尾号 %s）", channel.phone[-4:])
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,7 @@ PLATFORM_CREDENTIAL_TYPES: dict[str, str] = {
     "cookie": "cookie",
     "cookie_header": "cookie",
     "api_key": "secret",
+    "smsapi_url": "secret",
     "wos_session": "token",
     "sso": "cookie",
     "sso_rw": "cookie",

@@ -726,7 +726,7 @@ class GetRtPhoneCallback:
                 remaining = max(1, int(deadline - _time.monotonic()))
                 code = self._channel.wait_code(self._aid, timeout=min(30, remaining))
                 if code:
-                    self.log(f"  [phone-cb] 收到验证码: {code}")
+                    self.log("  [phone-cb] 已收到验证码")
                     return code
             except Exception as exc:
                 self.log(f"  [phone-cb] wait_code 异常: {exc}")

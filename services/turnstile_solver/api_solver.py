@@ -648,7 +648,8 @@ class TurnstileAPIServer:
                 proxy = random.choice(proxies) if proxies else None
                 
                 if self.debug and proxy:
-                    logger.debug(f"Browser {index}: Selected proxy: {proxy}")
+                    proxy_log_value = f"***@{proxy.rsplit('@', 1)[1]}" if '@' in proxy else proxy
+                    logger.debug(f"Browser {index}: Selected proxy: {proxy_log_value}")
                 elif self.debug and not proxy:
                     logger.debug(f"Browser {index}: No proxies available")
                     

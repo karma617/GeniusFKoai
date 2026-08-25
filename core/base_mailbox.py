@@ -1021,7 +1021,7 @@ class TempMailWebMailbox(BaseMailbox):
                         continue
                     code = self._extract_code(item, code_pattern=code_pattern)
                     if code:
-                        print(f"[TempMailWeb] 收到验证码: {code}")
+                        print("[TempMailWeb] 已收到验证码")
                         return code
             except Exception:
                 pass
@@ -2488,7 +2488,7 @@ class DDGEmailMailbox(BaseMailbox):
                     m = re.search(pattern, combined)
                     if m:
                         code = m.group(1) if m.groups() else m.group(0)
-                        print(f"[DDG Email] IMAP 获取验证码: {code}")
+                        print("[DDG Email] IMAP 已获取验证码")
                         return code
 
                 conn.logout()

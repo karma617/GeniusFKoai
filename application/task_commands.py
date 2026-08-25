@@ -13,6 +13,7 @@ from application.tasks import (
     create_phone_bind_task,
     create_codex_oauth_task,
     create_momo_trial_probe_task,
+    create_trial_eligibility_probe_task,
     create_get_rt_task,
     create_get_rt_bypass_task,
     create_refresh_session_task,
@@ -47,6 +48,11 @@ class TaskCommandsService:
 
     def create_momo_trial_probe_task(self, payload: dict) -> dict:
         task = create_momo_trial_probe_task(payload)
+        task_runtime.wake_up()
+        return {"ok": True, "task_id": task["id"], "task": task}
+
+    def create_trial_eligibility_probe_task(self, payload: dict) -> dict:
+        task = create_trial_eligibility_probe_task(payload)
         task_runtime.wake_up()
         return {"ok": True, "task_id": task["id"], "task": task}
 

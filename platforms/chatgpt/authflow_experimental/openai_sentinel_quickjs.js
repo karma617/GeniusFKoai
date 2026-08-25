@@ -939,12 +939,25 @@ async function run(payload, sdkSource) {
     let soToken = "";
     try {
       const flow = String(payload.flow || "authorize_continue");
+      const soRequired = Boolean(challenge && challenge.so && challenge.so.required);
       if (
+        soRequired &&
         typeof sentinelSdkApi.__debug_setSessionObserver === "function" &&
         typeof sentinelSdkApi.sessionObserverToken === "function"
       ) {
         sentinelSdkApi.__debug_setSessionObserver(flow, challenge);
-        soToken = await sentinelSdkApi.sessionObserverToken(flow) || "";
+        const observerResult = await sentinelSdkApi.sessionObserverToken(flow);
+        if (typeof observerResult === "string") {
+          const trimmed = observerResult.trim();
+          try {
+            const parsed = JSON.parse(trimmed);
+            soToken = parsed && typeof parsed === "object" ? String(parsed.so || "") : trimmed;
+          } catch {
+            soToken = trimmed;
+          }
+        } else if (observerResult && typeof observerResult === "object") {
+          soToken = String(observerResult.so || "");
+        }
       }
     } catch {
       soToken = "";
