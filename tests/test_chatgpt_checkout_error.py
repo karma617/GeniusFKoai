@@ -122,7 +122,10 @@ def test_checkout_sentinel_retries_tls_error_before_single_post(monkeypatch):
     assert url.endswith("cs_live_retryvalue")
     assert len(calls) == 2
     assert sleeps == [0.5]
-    assert len(session.posts) == 1
+    assert [item[0] for item in session.posts] == [
+        payment.PAYMENT_CHECKOUT_URL,
+        "https://chatgpt.com/backend-api/payments/checkout/taxes",
+    ]
     assert any("Sentinel 网络错误（第 1/3 次）" in item for item in logs)
 
 
@@ -243,6 +246,114 @@ def test_generate_plus_link_uses_sentinel_and_response_processor_entity(monkeypa
     assert request["json"]["checkout_ui_mode"] == "custom"
     assert request["json"]["check_card_proxy"] is True
     assert request["json"]["cancel_url"] == "https://chatgpt.com/"
+    assert request["json"]["price_interval"] == "month"
+    assert request["json"]["seat_quantity"] == 1
+    assert request["json"]["promo_campaign"] == {
+        "promo_campaign_id": "plus-1-month-free",
+        "is_coupon_from_query_param": False,
+    }
+    taxes_request = session.posts[1][1]
+    assert taxes_request["json"]["billing_country"] == "ID"
+    assert taxes_request["json"]["currency"] == "IDR"
+    assert "openai-sentinel-token" not in taxes_request["headers"]
+
+
+def test_short_link_fallback_processor_entity_uses_indonesia_entity():
+    assert payment._extract_checkout_url(
+        {"checkout_session_id": "oaics_testvalue"}, country="ID"
+    ) == "https://chatgpt.com/checkout/openai_ie/oaics_testvalue"
+
+
+def test_short_link_reads_nested_checkout_and_skips_taxes_when_gopay_present(monkeypatch):
+    response = SimpleNamespace(
+        status_code=200,
+        text="",
+        json=lambda: {
+            "checkout_session": {
+                "checkout_session_id": "oaics_nestedvalue",
+                "processor_entity": "openai_ie",
+                "payment_method_types": ["card", "gopay"],
+            }
+        },
+    )
+    session = _install_checkout_session(monkeypatch, response)
+
+    url = payment.generate_plus_link(
+        SimpleNamespace(access_token="access-token", cookies="", extra={}),
+        country="ID",
+        currency="IDR",
+        use_short_link=True,
+    )
+
+    assert url == "https://chatgpt.com/checkout/openai_ie/oaics_nestedvalue"
+    assert [item[0] for item in session.posts] == [payment.PAYMENT_CHECKOUT_URL]
+
+
+def test_stripe_long_link_prefers_hosted_url_from_checkout_response(monkeypatch):
+    hosted = "https://pay.openai.com/c/pay/cs_live_directvalue"
+    response = SimpleNamespace(
+        status_code=200,
+        text="",
+        json=lambda: {
+            "checkout_session_id": "cs_live_directvalue",
+            "processor_entity": "openai_ie",
+            "url": hosted,
+        },
+    )
+    session = _install_checkout_session(monkeypatch, response)
+    monkeypatch.setattr(
+        payment,
+        "_stripe_init_long_url",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("checkout 已返回长链时不应重复 Stripe init")
+        ),
+    )
+
+    url = payment.generate_plus_link(
+        SimpleNamespace(access_token="access-token", cookies="", extra={}),
+        country="ID",
+        currency="IDR",
+        use_stripe_init=True,
+    )
+
+    assert url == hosted
+    assert session.posts[0][1]["json"]["checkout_ui_mode"] == "hosted"
+    assert session.posts[0][1]["json"]["promo_campaign"]["promo_campaign_id"] == "plus-1-month-free"
+
+
+def test_stripe_long_link_falls_back_to_indonesia_stripe_init(monkeypatch):
+    response = SimpleNamespace(
+        status_code=200,
+        text="",
+        json=lambda: {
+            "checkout_session_id": "cs_live_initvalue",
+            "publishable_key": "pk_live_testvalue",
+        },
+    )
+    _install_checkout_session(monkeypatch, response)
+    captured = {}
+
+    def stripe_init(cs_id, publishable_key, **kwargs):
+        captured.update(
+            cs_id=cs_id,
+            publishable_key=publishable_key,
+            **kwargs,
+        )
+        return "https://pay.openai.com/c/pay/cs_live_initvalue"
+
+    monkeypatch.setattr(payment, "_stripe_init_long_url", stripe_init)
+
+    url = payment.generate_plus_link(
+        SimpleNamespace(access_token="access-token", cookies="", extra={}),
+        country="ID",
+        currency="IDR",
+        use_stripe_init=True,
+    )
+
+    assert url.endswith("cs_live_initvalue")
+    assert captured["cs_id"] == "cs_live_initvalue"
+    assert captured["payment_locale"] == "id-ID"
+    assert captured["browser_timezone"] == "Asia/Jakarta"
 
 
 def test_checkout_response_log_redacts_sensitive_values():

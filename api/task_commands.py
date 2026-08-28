@@ -117,13 +117,15 @@ class GoPayPayChatGptTaskRequest(BaseModel):
     capture_payment: bool = False
     # 抓包产物目录（可选）；留空则用工作目录下 _gopay_capture/<时间戳>/。
     capture_dir: str = ""
-    # 用 Stripe payment_pages/init 协议生成 cashier_url（accessToken →
-    # pay.openai.com 长链，纯协议、不开浏览器拿 cashier 链）。默认 False 沿用
-    # 原有 generate_plus_link 行为。
+    # Hosted 长链：优先采用 checkout 响应 url，缺失时再用 Stripe
+    # payment_pages/init 生成 cashier_url；不开浏览器拿 cashier 链。
     use_stripe_init: bool = False
-    # 短链：checkout_ui_mode=custom + all_plans_pricing_modal 入口，无 promo，
-    # 返回 chatgpt.com/checkout/openai_llc/<cs_id> 短链。
+    # 短链：checkout_ui_mode=custom + Plus promo + taxes 同步，使用响应中的
+    # processor_entity 返回 chatgpt.com/checkout/<entity>/<cs_id>。
     use_short_link: bool = False
+    # protocol=直接纯协议拿 Midtrans；browser=先生成选定的长/短 cashier 链，
+    # 再由浏览器选择 GoPay。空值由后端根据两个链接开关自动选择。
+    link_mode: str = ""
 
 
 class GoPayRegisterAccountTaskRequest(BaseModel):

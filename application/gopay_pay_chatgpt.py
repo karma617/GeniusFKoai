@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
@@ -64,6 +65,35 @@ def _normalize_proxy_url(proxy: str | None) -> str:
     if "://" in value:
         return value
     return f"http://{value}"
+
+
+_CHECKOUT_URL_SESSION_RE = re.compile(r"^(?:oaics_|cs_)[A-Za-z0-9_]+$")
+
+
+def _parse_short_link_id(cashier_url: str) -> tuple[str, str]:
+    """解析短链 https://chatgpt.com/checkout/{entity}/{session_id}。
+
+    返回 (processor_entity, checkout_session_id)；URL 非法时给清晰报错。
+    """
+    from urllib.parse import urlsplit
+
+    url = str(cashier_url or "").strip()
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "chatgpt.com":
+        raise RuntimeError(
+            f"cashier URL 非法（需要 https://chatgpt.com/checkout/<entity>/<session_id>）：{url[:100]}"
+        )
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) != 2 or parts[0] != "checkout":
+        raise RuntimeError(
+            f"cashier URL 路径非法（需要 /checkout/<entity>/<session_id>）：{url[:100]}"
+        )
+    entity, session_id = parts[1], parts[2]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", entity):
+        raise RuntimeError(f"cashier URL 中 processor_entity 非法：{entity}")
+    if not _CHECKOUT_URL_SESSION_RE.fullmatch(session_id):
+        raise RuntimeError(f"cashier URL 中 checkout_session_id 非法：{session_id}")
+    return entity, session_id
 
 
 class PhoneTTLGuard:
@@ -812,9 +842,9 @@ def step_generate_cashier_url(
         f"proxy={_mask_proxy(proxy) or '直连'}）"
     )
     if use_short_link:
-        log("cashier_url 走短链模式（checkout_ui_mode=custom → chatgpt.com/checkout/openai_llc 短链）")
+        log("cashier_url 走短链模式（custom + Plus 优惠 + taxes，同步 processor_entity）")
     elif use_stripe_init:
-        log("cashier_url 走 Stripe init 协议长链（accessToken → pay.openai.com，纯协议）")
+        log("cashier_url 走 Hosted 长链模式（优先响应 URL，缺失时 Stripe init 补链）")
     # 同一任务账号的 checkout、浏览器和 GoPay 流程必须使用同一个代理，
     # 避免出口 IP 在流水线中切换。
     # 并发场景下 curl_cffi 首次在多线程里初始化 SSL 库会偶发
@@ -930,6 +960,230 @@ def _verify_chatgpt_subscription(
                 raise RuntimeError("任务已取消")
             time.sleep(1)
     raise RuntimeError(f"付款已结算，但 OpenAI 订阅在确认窗口内仍为 {last_status}；请稍后执行状态恢复，禁止重复付款")
+
+
+def _build_checkout_protocol_context(
+    chatgpt_account_model: AccountModel,
+    *,
+    country: str = "ID",
+    currency: str = "IDR",
+    proxy: Optional[str] = None,
+    log: Callable[[str], None] = print,
+) -> tuple[Any, dict, dict]:
+    """共享的账号适配 + 账单地址 + Transport 构造参数（供协议提链两个入口复用）。"""
+    from platforms.chatgpt import payment as chatgpt_payment
+
+    with Session(engine) as session:
+        account = build_platform_account(session, chatgpt_account_model)
+
+    extra = dict(getattr(account, "extra", {}) or {})
+
+    class _AccountAdapter:
+        pass
+
+    a = _AccountAdapter()
+    a.access_token = str(extra.get("access_token") or getattr(account, "token", "") or "")
+    a.cookies = str(extra.get("cookies") or "")
+    a.chatgpt_account_id = str(extra.get("account_id") or "")
+    a.extra = extra
+    a.email = str(getattr(account, "email", "") or "")
+    if not a.access_token:
+        raise RuntimeError(
+            f"ChatGPT 账号 {getattr(account, 'email', '')} 缺少 access_token，"
+            "无法提取 GoPay 链接"
+        )
+
+    device_id, client_version, build_number = chatgpt_payment._checkout_account_metadata(a)
+    chatgpt_account_id = chatgpt_payment._extract_chatgpt_account_id(a)
+
+    address = chatgpt_payment.fetch_billing_address("ID")
+    # meiguodizhi.com 的 /id-address 数据源可能返回非印尼占位地址（实测返回过
+    # 英国 Newry / CH3O 3OF 之类），Stripe 会对非 5 位数字邮编报
+    # invalid_postal_code。印尼邮编必须是 5 位数字；不满足则用项目内置的印尼
+    # 地址 seed 覆盖地理字段（DKI Jakarta + 10310 已由浏览器流程验证可通过
+    # Stripe 校验），email/name/phone 仍保留外部地址服务的值。
+    if not re.fullmatch(r"\d{5}", str(address.get("postal_code") or "").strip()):
+        _seed = dict(
+            chatgpt_payment._LOCAL_BILLING_ADDRESS_SEEDS.get("ID", ({},))[0] or {}
+        )
+        address["line1"] = str(_seed.get("line1") or "Jalan M.H. Thamrin No. 1")
+        address["city"] = str(_seed.get("city") or "Jakarta")
+        address["state"] = str(_seed.get("state") or "DKI Jakarta")
+        address["postal_code"] = str(_seed.get("postal_code") or "10310")
+        address["country"] = "ID"
+    billing = {
+        "name": str(address.get("name") or ""),
+        "email": str(address.get("email") or a.email or "buyer@example.com"),
+        "line1": str(address.get("line1") or ""),
+        "line2": str(address.get("line2") or ""),
+        "city": str(address.get("city") or ""),
+        "state": str(address.get("state") or ""),
+        "postal_code": str(address.get("postal_code") or ""),
+        "phone": str(address.get("phone") or ""),
+    }
+
+    transport_kwargs = {
+        "access_token": a.access_token,
+        "cookies": a.cookies,
+        "device_id": device_id,
+        "client_version": client_version,
+        "build_number": build_number,
+        "chatgpt_account_id": chatgpt_account_id,
+        "proxy": proxy,
+        "country": country,
+    }
+    return a, billing, transport_kwargs
+
+
+
+def step_extract_gopay_link_protocol(
+    chatgpt_account_model: AccountModel,
+    *,
+    country: str = "ID",
+    currency: str = "IDR",
+    proxy: Optional[str] = None,
+    plan_name: str = "chatgptplusplan",
+    coupon_id: str = "none",
+    expected_amount: str = "",
+    log: Callable[[str], None] = print,
+) -> dict:
+    """步骤 ①② 合并（纯协议提链）：create → fetch → Stripe Elements 映射
+    GoPay → taxes → confirm → custom payment method start，直接拿到 Midtrans
+    支付链接，全程不开浏览器。
+
+    返回 {"cashier_url": ..., "midtrans_url": ...}。
+    """
+    if not str(proxy or "").strip():
+        raise RuntimeError("GoPay GPTPlus 提链必须使用任务代理池中的固定代理")
+
+    from platforms.chatgpt.gopay_link_protocol import (
+        checkout_url as _protocol_checkout_url,
+        extract_gopay_payment_link as _protocol_extract,
+    )
+    from platforms.chatgpt.gopay_link_transport import CurlCffiTransport
+
+    _a, billing, transport_kwargs = _build_checkout_protocol_context(
+        chatgpt_account_model, country=country, currency=currency, proxy=proxy, log=log
+    )
+
+    log(
+        f"纯协议提取 GoPay 链接（country={country}, currency={currency}, "
+        f"proxy={_mask_proxy(proxy) or '直连'}）"
+    )
+    transport = CurlCffiTransport(**transport_kwargs)
+    try:
+        exit_info = transport.probe_checkout_exit(str(country or "ID"))
+        log(
+            "纯协议提链出口校验通过："
+            f"country={exit_info['country']}, ip={exit_info['ip']}，"
+            f"proxy={_mask_proxy(proxy) or '直连'}"
+        )
+        result = _protocol_extract(
+            transport,
+            plan_name=plan_name,
+            billing=billing,
+            coupon_id=coupon_id,
+            expected_amount=expected_amount,
+            stripe_js_id=str(uuid.uuid4()),
+            trace=log,
+        )
+    finally:
+        transport.close()
+
+    midtrans_url = str(result.get("provider_redirect_url") or "").strip()
+    if not _MIDTRANS_URL_RE.fullmatch(midtrans_url):
+        # 失败时透出候选 URL 与链路信息，便于下一轮诊断真实支付链接字段。
+        _candidates = result.get("candidate_urls") or []
+        raise RuntimeError(
+            "纯协议提链未得到有效的 Midtrans Snap URL: "
+            f"{midtrans_url[:120] or 'missing'} | "
+            f"payment_link_type={result.get('payment_link_type') or 'unknown'} | "
+            f"session={result.get('checkout_session_id') or ''} | "
+            f"candidate_urls={[str(u)[:80] for u in _candidates][:5]}"
+        )
+
+    try:
+        cashier_url = _protocol_checkout_url(result)
+    except Exception:
+        entity = str(result.get("processor_entity") or "openai_llc")
+        sid = str(result.get("checkout_session_id") or "")
+        cashier_url = f"https://chatgpt.com/checkout/{entity}/{sid}" if sid else ""
+
+    log(f"纯协议提链完成: midtrans=...{midtrans_url[-40:]}")
+    return {"cashier_url": cashier_url, "midtrans_url": midtrans_url}
+
+
+
+def step_extract_gopay_link_from_cashier(
+    cashier_url: str,
+    chatgpt_account_model: AccountModel,
+    *,
+    country: str = "ID",
+    currency: str = "IDR",
+    proxy: Optional[str] = None,
+    plan_name: str = "chatgptplusplan",
+    coupon_id: str = "none",
+    expected_amount: str = "",
+    log: Callable[[str], None] = print,
+) -> dict:
+    """步骤 ②（纯协议）：解析既有 cashier_url → fetch 权威 checkout → 路由
+    oaics_/cs_ 尾部直接拿到 Midtrans 链接，全程不开浏览器。
+
+    返回 {"cashier_url": ..., "midtrans_url": ...}。
+    """
+    if not str(proxy or "").strip():
+        raise RuntimeError("GoPay GPTPlus 提链必须使用任务代理池中的固定代理")
+
+    entity, session_id = _parse_short_link_id(cashier_url)
+
+    from platforms.chatgpt.gopay_link_protocol import (
+        extract_gopay_payment_link_from_checkout as _protocol_extract_from_checkout,
+    )
+    from platforms.chatgpt.gopay_link_transport import CurlCffiTransport
+
+    _a, billing, transport_kwargs = _build_checkout_protocol_context(
+        chatgpt_account_model, country=country, currency=currency, proxy=proxy, log=log
+    )
+
+    log(
+        f"纯协议从既有 cashier 提取 GoPay 链接（country={country}, currency={currency}, "
+        f"proxy={_mask_proxy(proxy) or '直连'}）"
+    )
+    transport = CurlCffiTransport(**transport_kwargs)
+    try:
+        exit_info = transport.probe_checkout_exit(str(country or "ID"))
+        log(
+            "纯协议提链出口校验通过："
+            f"country={exit_info['country']}, ip={exit_info['ip']}，"
+            f"proxy={_mask_proxy(proxy) or '直连'}"
+        )
+        result = _protocol_extract_from_checkout(
+            transport,
+            checkout_session_id=session_id,
+            processor_entity=entity,
+            plan_name=plan_name,
+            billing=billing,
+            coupon_id=coupon_id,
+            expected_amount=expected_amount,
+            stripe_js_id=str(uuid.uuid4()),
+            trace=log,
+        )
+    finally:
+        transport.close()
+
+    midtrans_url = str(result.get("provider_redirect_url") or "").strip()
+    if not _MIDTRANS_URL_RE.fullmatch(midtrans_url):
+        _candidates = result.get("candidate_urls") or []
+        raise RuntimeError(
+            "纯协议从既有 cashier 提取未得到有效的 Midtrans Snap URL: "
+            f"{midtrans_url[:120] or 'missing'} | "
+            f"payment_link_type={result.get('payment_link_type') or 'unknown'} | "
+            f"session={result.get('checkout_session_id') or ''} | "
+            f"candidate_urls={[str(u)[:80] for u in _candidates][:5]}"
+        )
+
+    log(f"纯协议从既有 cashier 提取完成: midtrans=...{midtrans_url[-40:]}")
+    return {"cashier_url": cashier_url, "midtrans_url": midtrans_url}
 
 
 def step_grab_midtrans_url(
@@ -1361,6 +1615,7 @@ def execute_gopay_pay_chatgpt(
     capture_dir: str = "",
     use_stripe_init: bool = False,
     use_short_link: bool = False,
+    link_mode: str = "protocol",
     log: Callable[[str], None] = print,
     cancel_check: Optional[Callable[[], bool]] = None,
     payment_attempt_key: str = "",
@@ -1381,6 +1636,9 @@ def execute_gopay_pay_chatgpt(
         bit_profile_id: bitbrowser_* 模式必填
         envelope_url: GoPay 红包链接，选号后余额不足时领取补余额
         grab_timeout: 步骤 ② 等跳到 Midtrans 的最长秒数
+        link_mode: 提链方式——``protocol``（默认）走纯协议 create→Elements→
+            taxes→confirm→start 直接拿 Midtrans 链接，不开浏览器；``browser``
+            保留旧的 ① 协议拿 cashier_url + ② 浏览器抓 midtrans 流程
         phone_ttl_seconds: Hero-SMS 号码有效期（默认 1200=20min），整条
             流水线超时即判失败
         gopay_source: GoPay 号来源开关——
@@ -1637,61 +1895,103 @@ def execute_gopay_pay_chatgpt(
     checkout_context: dict[str, str] = {}
     if not midtrans_url_override:
         ttl_guard.check()
-        if not cashier_url_override:
-            out["cashier_url"] = step_generate_cashier_url(
+        if use_short_link or cashier_url_override:
+            # 短链 / 既有 cashier：协议生成短链（或直接用 override），再协议抓
+            # midtrans，全程不开浏览器。
+            if not cashier_url_override:
+                out["cashier_url"] = step_generate_cashier_url(
+                    chatgpt,
+                    country=country,
+                    currency=currency,
+                    proxy=proxy,
+                    use_stripe_init=False,
+                    use_short_link=True,
+                    expected_exit_country="ID",
+                    checkout_context=checkout_context,
+                    log=log,
+                )
+            cashier_url = out["cashier_url"]
+            # ② 纯协议从既有 cashier 抓 midtrans（fetch 权威 checkout → 路由
+            # oaics_/cs_ 尾部），不再打开浏览器。
+            ttl_guard.check()
+            extracted = step_extract_gopay_link_from_cashier(
+                cashier_url,
                 chatgpt,
                 country=country,
                 currency=currency,
                 proxy=proxy,
-                use_stripe_init=use_stripe_init,
-                use_short_link=use_short_link,
-                expected_exit_country="ID",
-                checkout_context=checkout_context,
                 log=log,
             )
-        cashier_url = out["cashier_url"]
+            out["midtrans_url"] = extracted.get("midtrans_url") or ""
+        elif link_mode == "protocol" and not cashier_url_override:
+            # 纯协议提链：create → Elements → taxes → confirm → start，一次拿到
+            # cashier_url + midtrans_url，不开浏览器。
+            extracted = step_extract_gopay_link_protocol(
+                chatgpt,
+                country=country,
+                currency=currency,
+                proxy=proxy,
+                log=log,
+            )
+            out["cashier_url"] = extracted.get("cashier_url") or ""
+            out["midtrans_url"] = extracted.get("midtrans_url") or ""
+        else:
+            # use_stripe_init（hosted 长链）或显式 browser：保持浏览器抓取。
+            if not cashier_url_override:
+                out["cashier_url"] = step_generate_cashier_url(
+                    chatgpt,
+                    country=country,
+                    currency=currency,
+                    proxy=proxy,
+                    use_stripe_init=use_stripe_init,
+                    use_short_link=use_short_link,
+                    expected_exit_country="ID",
+                    checkout_context=checkout_context,
+                    log=log,
+                )
+            cashier_url = out["cashier_url"]
 
-        # ② 浏览器抓 midtrans_url（自动选 GoPay + 填表 + 点订阅）
-        ttl_guard.check()
-        # 提链和支付页必须复用任务层分配给该账号的同一条固定代理；不在此处
-        # 重新从全局池取代理，避免两阶段出口发生漂移。
-        browser_proxy = proxy
-        # 短链模式：抓 midtrans 的浏览器要带 ChatGPT 登录 cookie（短链是
-        # ChatGPT 托管页，URL 无 token）。从 chatgpt 账号读 cookies 透传。
-        chatgpt_cookies = ""
-        if use_short_link and chatgpt is not None:
-            try:
-                with Session(engine) as session:
-                    _acc = build_platform_account(session, chatgpt)
-                _ex = dict(getattr(_acc, "extra", {}) or {})
-                chatgpt_cookies = str(_ex.get("cookies", "") or "")
-                if chatgpt_cookies:
-                    log("短链模式：已取到 ChatGPT 登录 cookie，将注入抓 midtrans 浏览器")
-                else:
-                    log("短链模式警告：ChatGPT 账号没存 cookie，短链可能打不开（会跳登录页）")
-            except Exception as exc:
-                log(f"短链模式：读取 ChatGPT cookie 失败（继续）：{exc}")
+            # ② 浏览器抓 midtrans_url（自动选 GoPay + 填表 + 点订阅）
+            ttl_guard.check()
+            # 提链和支付页必须复用任务层分配给该账号的同一条固定代理；不在此处
+            # 重新从全局池取代理，避免两阶段出口发生漂移。
+            browser_proxy = proxy
+            # 短链模式：抓 midtrans 的浏览器要带 ChatGPT 登录 cookie（短链是
+            # ChatGPT 托管页，URL 无 token）。从 chatgpt 账号读 cookies 透传。
+            chatgpt_cookies = ""
+            if use_short_link and chatgpt is not None:
+                try:
+                    with Session(engine) as session:
+                        _acc = build_platform_account(session, chatgpt)
+                    _ex = dict(getattr(_acc, "extra", {}) or {})
+                    chatgpt_cookies = str(_ex.get("cookies", "") or "")
+                    if chatgpt_cookies:
+                        log("短链模式：已取到 ChatGPT 登录 cookie，将注入抓 midtrans 浏览器")
+                    else:
+                        log("短链模式警告：ChatGPT 账号没存 cookie，短链可能打不开（会跳登录页）")
+                except Exception as exc:
+                    log(f"短链模式：读取 ChatGPT cookie 失败（继续）：{exc}")
 
-        out["midtrans_url"] = step_grab_midtrans_url(
-            cashier_url,
-            checkout_mode=checkout_mode,
-            bit_profile_id=bit_profile_id,
-            proxy=browser_proxy,
-            timeout_seconds=grab_timeout,
-            capture_dir=effective_capture_dir,
-            # 抓包模式只在页面打开后用已经准备好的账号执行浏览器付款。
-            after_grab=(
-                (lambda url, page: _prepare_gopay_account(
-                    url, page, _prepared_acc=gopay
-                ))
-                if capture_payment else None
-            ),
-            cancel_check=cancel_check,
-            chatgpt_cookies=chatgpt_cookies,
-            expected_exit_country="ID",
-            expected_exit_ip=str(checkout_context.get("exit_ip") or ""),
-            log=log,
-        )
+            out["midtrans_url"] = step_grab_midtrans_url(
+                cashier_url,
+                checkout_mode=checkout_mode,
+                bit_profile_id=bit_profile_id,
+                proxy=browser_proxy,
+                timeout_seconds=grab_timeout,
+                capture_dir=effective_capture_dir,
+                # 抓包模式只在页面打开后用已经准备好的账号执行浏览器付款。
+                after_grab=(
+                    (lambda url, page: _prepare_gopay_account(
+                        url, page, _prepared_acc=gopay
+                    ))
+                    if capture_payment else None
+                ),
+                cancel_check=cancel_check,
+                chatgpt_cookies=chatgpt_cookies,
+                expected_exit_country="ID",
+                expected_exit_ip=str(checkout_context.get("exit_ip") or ""),
+                log=log,
+            )
     midtrans_url = out["midtrans_url"]
     if not _MIDTRANS_URL_RE.fullmatch(str(midtrans_url or "").strip()):
         raise RuntimeError("未获得有效的 Midtrans Snap URL")

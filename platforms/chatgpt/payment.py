@@ -766,14 +766,54 @@ def _resolve_currency(country: str, currency: str | None = None) -> str:
     return _COUNTRY_CURRENCY_MAP.get(str(country or "").strip().upper(), "USD")
 
 
-def _extract_checkout_url(data: dict) -> str:
-    for key in ("url", "stripe_hosted_url", "checkout_url"):
-        value = str(data.get(key) or "").strip()
-        if value:
-            return value
-    session_id = str(data.get("checkout_session_id") or "").strip()
+def _find_checkout_value(data: object, keys: tuple[str, ...]) -> str:
+    if isinstance(data, dict):
+        for key in keys:
+            value = str(data.get(key) or "").strip()
+            if value:
+                return value
+        for key in (
+            "checkout_session",
+            "checkoutSession",
+            "session",
+            "checkout",
+            "data",
+            "result",
+            "payload",
+            "response",
+        ):
+            value = _find_checkout_value(data.get(key), keys)
+            if value:
+                return value
+    return ""
+
+
+def _extract_direct_checkout_url(data: dict) -> str:
+    return _find_checkout_value(data, ("url", "stripe_hosted_url", "checkout_url"))
+
+
+def _extract_checkout_session_id(data: dict) -> str:
+    return _find_checkout_value(
+        data,
+        ("checkout_session_id", "checkoutSessionId", "session_id", "cs_id", "id"),
+    )
+
+
+def _checkout_processor_entity(data: dict, country: str) -> str:
+    value = _find_checkout_value(data, ("processor_entity", "processorEntity"))
+    if re.fullmatch(r"openai_[a-z0-9_]+", value):
+        return value
+    return "openai_llc" if str(country or "").strip().upper() == "US" else "openai_ie"
+
+
+def _extract_checkout_url(data: dict, *, country: str = "US") -> str:
+    direct = _extract_direct_checkout_url(data)
+    if direct:
+        return direct
+    session_id = _extract_checkout_session_id(data)
     if session_id:
-        return TEAM_CHECKOUT_BASE_URL + session_id
+        entity = _checkout_processor_entity(data, country)
+        return f"https://chatgpt.com/checkout/{entity}/{session_id}"
     return ""
 
 
@@ -9145,6 +9185,7 @@ def _stripe_init_long_url(
     publishable_key: str,
     *,
     payment_locale: str = "en",
+    browser_timezone: str = "Asia/Shanghai",
     user_agent: str = "",
     proxy: Optional[str] = None,
     response_log: Callable[[str], None] | None = None,
@@ -9159,7 +9200,7 @@ def _stripe_init_long_url(
     stripe_js_id = str(uuid.uuid4())
     body = {
         "browser_locale": "en-US",
-        "browser_timezone": "Asia/Shanghai",
+        "browser_timezone": str(browser_timezone or "Asia/Shanghai"),
         "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
         "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
         "elements_session_client[elements_init_source]": "custom_checkout",
@@ -9204,6 +9245,79 @@ def _stripe_init_long_url(
         # host 不是预期的 checkout.stripe.com，不重写，原样返回（仍可用）
         return hosted
     return hosted.replace("checkout.stripe.com", "pay.openai.com")
+
+
+def _extract_checkout_payment_method_types(payload: object) -> list[str]:
+    found: list[str] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            methods = value.get("payment_method_types")
+            if isinstance(methods, list):
+                for item in methods:
+                    name = str(item or "").strip().lower()
+                    if name and name not in found:
+                        found.append(name)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return found
+
+
+def _sync_short_checkout_taxes(
+    checkout_session,
+    checkout_data: dict,
+    request_headers: dict[str, str],
+    *,
+    country: str,
+    currency: str,
+    response_log: Callable[[str], None] | None,
+) -> dict:
+    """对 custom checkout 同步一次 taxes，让服务端补齐地区金额和支付方式。"""
+    session_id = _extract_checkout_session_id(checkout_data)
+    if not session_id:
+        return {}
+    processor_entity = _checkout_processor_entity(checkout_data, country)
+    route = "/backend-api/payments/checkout/taxes"
+    headers = dict(request_headers)
+    headers.pop("openai-sentinel-token", None)
+    headers.pop("openai-sentinel-so-token", None)
+    headers.update(
+        {
+            "Referer": f"https://chatgpt.com/checkout/{processor_entity}/{session_id}",
+            "x-openai-target-path": route,
+            "x-openai-target-route": route,
+        }
+    )
+    response = checkout_session.post(
+        f"https://chatgpt.com{route}",
+        headers=headers,
+        json={
+            "checkout_session_id": session_id,
+            "checkout_email": None,
+            "billing_country": country,
+            "billing_name": None,
+            "currency": currency,
+            "tax_id": None,
+            "processor_entity": processor_entity,
+            "billing_address": {"country": country},
+        },
+        timeout=60,
+    )
+    _emit_checkout_response_log(response, response_log, "OpenAI checkout taxes")
+    if not (200 <= int(getattr(response, "status_code", 0) or 0) < 300):
+        if callable(response_log):
+            response_log("短链 taxes 同步失败，保留已创建的 checkout 继续返回短链")
+        return {}
+    try:
+        payload = response.json()
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def generate_plus_link(
@@ -9262,7 +9376,13 @@ def generate_plus_link(
             "billing_details": {"country": country, "currency": currency},
             "cancel_url": "https://chatgpt.com/",
             "checkout_ui_mode": "custom",
+            "price_interval": "month",
+            "seat_quantity": 1,
             "check_card_proxy": True,
+            "promo_campaign": {
+                "promo_campaign_id": "plus-1-month-free",
+                "is_coupon_from_query_param": False,
+            },
         }
     else:
         payload = {
@@ -9344,6 +9464,21 @@ def generate_plus_link(
             )
         data = resp.json()
         data = data if isinstance(data, dict) else {}
+        if use_short_link and "gopay" not in _extract_checkout_payment_method_types(data):
+            taxes_data = _sync_short_checkout_taxes(
+                checkout_session,
+                data,
+                headers,
+                country=country,
+                currency=currency,
+                response_log=response_log,
+            )
+            methods = _extract_checkout_payment_method_types(taxes_data)
+            if callable(response_log):
+                response_log(
+                    "短链 taxes 同步完成："
+                    f"payment_method_types={methods or ['unknown']}"
+                )
     finally:
         try:
             checkout_session.close()
@@ -9351,36 +9486,45 @@ def generate_plus_link(
             pass
 
     if use_short_link:
-        cs_id = (
-            str(data.get("checkout_session_id") or "").strip()
-            or str(data.get("cs_id") or "").strip()
-        )
+        cs_id = _extract_checkout_session_id(data)
         if not cs_id:
             raise ValueError(
                 f"短链提取失败：OpenAI 响应没 checkout_session_id: {safe_response[:600]}"
             )
-        processor_entity = str(data.get("processor_entity") or "openai_llc").strip()
-        if not re.fullmatch(r"openai_[a-z0-9_]+", processor_entity):
-            processor_entity = "openai_llc"
+        processor_entity = _checkout_processor_entity(data, country)
         logger.info("generate_plus_link: 短链 cs_id=***%s", cs_id[-6:])
         return f"https://chatgpt.com/checkout/{processor_entity}/{cs_id}"
 
     if use_stripe_init:
-        cs_id = (
-            str(data.get("checkout_session_id") or "").strip()
-            or str(data.get("cs_id") or "").strip()
-        )
+        direct_url = _extract_direct_checkout_url(data)
+        if direct_url:
+            logger.info("generate_plus_link: hosted checkout 已直接返回长链")
+            return direct_url
+        cs_id = _extract_checkout_session_id(data)
         if not cs_id:
             raise ValueError(
                 f"OpenAI 响应没 checkout_session_id（无法 Stripe init）: {safe_response[:600]}"
             )
-        pk = str(data.get("publishable_key") or "").strip()
+        pk = _find_checkout_value(
+            data,
+            (
+                "publishable_key",
+                "publishableKey",
+                "stripe_publishable_key",
+                "stripePublishableKey",
+            ),
+        )
         logger.info("generate_plus_link: 走 Stripe init 协议长链 cs_id=***%s", cs_id[-6:])
         return _stripe_init_long_url(
-            cs_id, pk, proxy=proxy, response_log=response_log
+            cs_id,
+            pk,
+            payment_locale="id-ID" if country == "ID" else "en",
+            browser_timezone="Asia/Jakarta" if country == "ID" else "Asia/Shanghai",
+            proxy=proxy,
+            response_log=response_log,
         )
 
-    url = _extract_checkout_url(data)
+    url = _extract_checkout_url(data, country=country)
     if url:
         return url
     raise ValueError(data.get("detail", "API 未返回 checkout URL"))
@@ -9438,7 +9582,7 @@ def generate_team_link(
     )
     resp.raise_for_status()
     data = resp.json()
-    url = _extract_checkout_url(data if isinstance(data, dict) else {})
+    url = _extract_checkout_url(data if isinstance(data, dict) else {}, country=country)
     if url:
         return url
     raise ValueError((data if isinstance(data, dict) else {}).get("detail", "API 未返回 checkout URL"))

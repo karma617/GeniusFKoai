@@ -8826,3 +8826,144 @@ egister.py` 通过。
 - `static/index.html`、`static/assets/index-CFX1WKcj.js`、`static/assets/index-k0l5ZR3v.css`：前端构建产物更新。
 - `progress.md`：追加本轮实现、验证与回滚记录。
 - 回滚方式：执行 `powershell -ExecutionPolicy Bypass -File D:\work\ai\GeniusFKoai\.tmp\rollback-chatgpt-register-trial-regions-20260824\restore.ps1`。
+
+## 2026-08-26 - Task: 恢复账号列表批量生成 Agent Identity 按钮
+### What was done
+- 在 ChatGPT 账号列表筛选栏重新展示“批量生成Agent Identity”按钮，恢复调用现有 `/tasks/agents-upload-sub2api` 后台任务入口。
+- 有勾选账号时只提交勾选 ID；没有勾选时提交空 ID 列表，继续由后端筛选当前平台状态正常的账号。
+- 恢复批量任务忙碌状态、加载提示和任务日志弹窗标题，并避免与试用资格检测、套餐刷新同时启动。
+- 保留账号行内已有的单账号“生成AI-auth.json”按钮和处理逻辑，没有改动 Agent Identity 后端生成/上传协议。
+
+### Testing
+- `npx tsc -b --pretty false`（`frontend`）：通过。
+- 静态核对：按钮只在 `tab === 'chatgpt'` 时展示；请求参数为 `platform=chatgpt`、`batch_size=10`、`verify_task=true`、`timeout=30`，选中账号 ID 按当前列表选择透传。
+- `git diff --check -- frontend/src/pages/Accounts.tsx progress.md`：通过；忽略目录中的 `docs/account-actions.md` 使用回滚副本执行定点 diff 检查。
+
+### Notes
+- `frontend/src/pages/Accounts.tsx`：恢复批量生成 Agent Identity 的状态、请求处理函数和列表按钮。
+- `docs/account-actions.md`：同步按钮名称、位置和选中/未选中账号处理规则。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：执行 `powershell -ExecutionPolicy Bypass -File D:\work\ai\GeniusFKoai\.tmp\rollback-accounts-agent-identity-button-20260826\restore.ps1`。
+
+## 2026-08-26 - Task: 增加 AI已生成标签及账号筛选
+### What was done
+- Agent Identity 上传成功后，账号图谱状态和已有 `agent_identity_upload_status=uploaded` 都会在账号展示中生成“AI已生成”徽章。
+- 批量 Agent Identity 上传任务在单项 `created/updated` 或整批成功返回时，自动把对应账号标记为 `agent_identity_uploaded` 并记录上传状态，确保标签可持续显示。
+- 账号列表标签筛选新增“AI已生成”，后端按生命周期状态或上传状态执行筛选；桌面和窄屏两处标签下拉共用该选项。
+- 失败或跳过的 Agent Identity 上传不会增加“AI已生成”标签。
+
+### Testing
+- `.\.venv\Scripts\python.exe -m py_compile core\account_display.py infrastructure\accounts_repository.py application\tasks.py tests\test_agent_identity_tag.py`：通过。
+- `.\.venv\Scripts\python.exe -m pytest -q tests\test_agent_identity_tag.py tests\test_gopay_payment_protocol_safety.py tests\test_chatgpt_checkout_error.py --disable-warnings --tb=short`：25 passed。
+- `.\.venv\Scripts\python.exe -m pytest -q --disable-warnings --tb=short`：86 passed。
+- `npx tsc -b --pretty false`（`frontend`）：通过。
+- 前端静态核对：标签选项出现 1 次并被两个筛选下拉复用；批量按钮仍调用 `startAgentsUploadSub2Api`。
+- `git diff --check -- frontend/src/pages/Accounts.tsx core/account_display.py infrastructure/accounts_repository.py application/tasks.py tests/test_agent_identity_tag.py progress.md`：通过；忽略目录中的 `docs/account-actions.md` 使用回滚副本执行定点 diff 检查。
+
+### Notes
+- `core/account_display.py`：为已上传 Agent Identity 账号增加“AI已生成”展示徽章。
+- `infrastructure/accounts_repository.py`：增加“AI已生成”标签的后端匹配规则。
+- `application/tasks.py`：批量上传成功后写回账号 Agent Identity 上传状态。
+- `frontend/src/pages/Accounts.tsx`：增加“AI已生成”筛选选项。
+- `tests/test_agent_identity_tag.py`：新增成功、历史上传状态和失败状态的标签/筛选回归测试。
+- `docs/account-actions.md`：补充标签生成和筛选说明。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：执行 `powershell -ExecutionPolicy Bypass -File D:\work\ai\GeniusFKoai\.tmp\rollback-agent-identity-tag-20260826\restore.ps1`。
+
+## 2026-08-26 - Task: 修复 GoPay 纯协议短链提取兼容性
+### What was done
+- 参考 `D:\work\ai\gopay\go提链要自己修一下就能用.py` 和现有 GoPay 提链实现，补齐标准 `cs_` 会话在 confirm/payment-page 阶段的跳转地址解析。
+- 跳转提取现在兼容嵌套 `redirect_to_url`、URL 编码、JSON 字符串及 Stripe CAMO/CloudFront 包装，并明确排除 `openai.com`、Stripe/ChatGPT 资源和业务回跳地址。
+- 标准 Stripe 分支补充候选 provider URL 诊断信息，并识别 `requires_action` 等待态后继续 payment-page/approve 流程；所有请求仍复用同一任务代理。
+### Testing
+- `..\\.venv\\Scripts\\python.exe -m pytest -q tests\\test_gopay_link_protocol.py tests\\test_gopay_link_transport.py tests\\test_gopay_pay_protocol_link.py --disable-warnings --tb=short`：28 passed。
+- `python -m py_compile platforms\\chatgpt\\gopay_link_protocol.py tests\\test_gopay_link_protocol.py`：通过。
+- `git diff --check -- platforms/chatgpt/gopay_link_protocol.py tests/test_gopay_link_protocol.py`：通过。
+### Notes
+- `platforms/chatgpt/gopay_link_protocol.py`：增强短链/provider URL 解析、状态判断和标准分支诊断。
+- `tests/test_gopay_link_protocol.py`：增加 openai 回跳排除、JSON/URL 编码和 payment-page provider redirect 回归测试。
+- `docs/pp-plus-ba.md`：记录 OAICS/标准 `cs_` 双分支和跳转地址兼容规则。
+- `progress.md`：追加本轮实现与验证记录。
+- 回滚方式：保留当前工作树中的本轮文件副本；如需撤销本轮修改，可将 `gopay_link_protocol.py` 恢复到本轮开始前版本，并同步删除新增的 3 个回归测试及本文档段落，随后重新运行上述定向测试。
+
+## 2026-08-26 - Task: 补齐纯协议提链出口校验
+### What was done
+- 纯协议提链在发送 checkout 业务请求前，复用同一个 `CurlCffiTransport` 会话访问 Cloudflare trace，校验真实出口国家为 `ID`，并记录出口 IP。
+- OAICS 与标准 `cs_` 分支继续复用同一个会话和任务代理，避免提链阶段因会话/代理切换产生出口漂移。
+### Testing
+- `..\\.venv\\Scripts\\python.exe -m pytest -q --disable-warnings --tb=short`：115 passed。
+- 定向 GoPay 提链测试：29 passed。
+- 相关 Python 文件 `py_compile`：通过。
+- `git diff --check`：通过。
+### Notes
+- `platforms/chatgpt/gopay_link_transport.py`：增加同会话 checkout 出口校验入口。
+- `application/gopay_pay_chatgpt.py`：纯协议提链调用出口国家/IP校验。
+- `tests/test_gopay_link_transport.py`、`tests/test_gopay_pay_protocol_link.py`：增加同会话出口校验回归覆盖。
+- 回滚点：本轮改动集中在上述 4 个文件；撤销 `probe_checkout_exit`/`probe_checkout_exit` 调用及对应测试，即可回到本轮前的纯协议提链逻辑；不要恢复或重置工作树中的其他历史改动。
+
+## 2026-08-26 - Task: 增加 GoPay 纯协议提链阶段诊断
+### What was done
+- 参考第三方 HAR 的异步阶段划分，为纯协议提链统一增加脱敏响应摘要，覆盖 checkout、Stripe Elements、税费、确认、provider 启动、标准 Stripe payment-page 和 approve 阶段。
+- 诊断摘要记录阶段、状态、权威金额来源、动态支付方式数量、provider 候选数量及候选域名；异常日志仅保留错误类型和截断后的脱敏信息，不输出完整会话 ID、支付 URL、Cookie 或 access token。
+- 任务提链入口已接入该诊断回调，便于区分 promotion/金额、GoPay 映射、confirm 状态和 provider redirect 缺失等失败阶段；未改变请求顺序、代理选择或支付协议行为。
+
+### Testing
+- `.\\.venv\\Scripts\\python.exe -m pytest -q tests\\test_gopay_link_protocol.py tests\\test_gopay_link_transport.py tests\\test_gopay_pay_protocol_link.py --disable-warnings --tb=short`：30 passed。
+- `.\\.venv\\Scripts\\python.exe -m pytest -q --disable-warnings --tb=short`：116 passed。
+- `.\\.venv\\Scripts\\python.exe -m py_compile platforms\\chatgpt\\gopay_link_protocol.py application\\gopay_pay_chatgpt.py tests\\test_gopay_link_protocol.py`：通过。
+- `git diff --check`（本轮涉及文件）：通过。
+
+### Notes
+- `platforms/chatgpt/gopay_link_protocol.py`：增加统一请求响应摘要、异常脱敏和 trace 回调，并接入 OAICS/标准 `cs_` 两条提链分支。
+- `application/gopay_pay_chatgpt.py`：将任务日志回调传入纯协议提链诊断。
+- `tests/test_gopay_link_protocol.py`：增加阶段、状态、金额、provider 域名和敏感值不泄漏回归测试。
+- `docs/pp-plus-ba.md`：记录诊断日志字段和失败阶段定位方式。
+- 回滚方式：本轮只新增诊断调用和测试/文档内容；保留当前工作树作为恢复点，回滚时定点移除 `Trace`、`_send`、`_trace_response`、`_redact_diagnostic_text` 及各提链函数的 `trace` 参数/调用，并删除本轮测试与文档段落；不要重置工作树，以免覆盖此前未提交的 GoPay、Agent Identity 和前端改动。
+
+## 2026-08-27 - Task: 修正 Android 协议邮箱验证页误判为已有账号
+### What was done
+- 调整 Android 注册 worker 的 authorize 分流：`/email-verification` 和 `/email-otp` 视为正常注册验证码状态，继续等待 authorize 已触发的验证码，不再提前标记邮箱或跳过注册。
+- 仅当 authorize 最终进入 `/log-in` 时，才按已有账号处理、执行邮箱打标并跳过注册触发请求。
+- 将邮箱消息基线读取提前到 authorize 请求之前，避免 authorize 已触发的验证码被基线快照吞掉。
+
+### Testing
+- `.\\.venv\\Scripts\\python.exe -m pytest -q tests\\test_chatgpt_protocol_android.py tests\\test_chatgpt_batch_security_setup.py --disable-warnings --tb=short`：14 passed。
+- `.\\.venv\\Scripts\\python.exe -m pytest -q --disable-warnings --tb=short`：118 passed。
+- `.\\.venv\\Scripts\\python.exe -m py_compile platforms\\chatgpt\\protocol_android.py tests\\test_chatgpt_protocol_android.py`：通过。
+- `git diff --check`（本轮涉及文件）：通过。
+
+### Notes
+- `platforms/chatgpt/protocol_android.py`：修正 authorize 最终页面分流和验证码基线时序。
+- `tests/test_chatgpt_protocol_android.py`：增加新注册进入邮箱验证码页继续注册、登录页仍识别已有账号的回归测试。
+- `docs/chatgpt-register-flow.md`：同步 Android authorize 页面判定规则；该目录当前被仓库 `.gitignore` 忽略。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：定点撤销 `protocol_android.py` 中 authorize 分流和基线时序改动，删除本轮新增的 Android 回归测试，并移除本节 progress 记录；不要重置工作树，以免覆盖其他未提交改动。
+
+## 2026-08-27 - Task: 修复 GoPay 生成 GPTPlus 长短链提取
+### What was done
+- 对照 `D:\work\ai\gopay\news` 中 hosted 长链控制台脚本与 custom 短链探测脚本，修正 GoPay GPTPlus 两种 cashier 链的建单参数和返回策略。
+- Hosted 长链使用 `hosted + ID/IDR + plus-1-month-free` 建单，优先采用 OpenAI 响应中的长链；响应缺链时才调用 Stripe init，并使用 `id-ID`、`Asia/Jakarta` 上下文。
+- Custom 短链补齐月付单席位、Plus 优惠和 taxes 同步；checkout session、长链和 processor entity 支持嵌套响应结构，ID 地区缺少 processor entity 时回退 `openai_ie`，不再固定 `openai_llc`。
+- 修正任务编排：前端选择长链或短链时显式进入 cashier 浏览器流程，不再被默认纯协议直取 Midtrans 分支绕过；长短链开关改为互斥。
+- taxes 请求复用原 checkout 会话和固定代理，但不复用只属于 checkout create 的 Sentinel 头；日志继续使用脱敏响应摘要。
+
+### Testing
+- `.\\.venv\\Scripts\\python.exe -m pytest -q tests\\test_chatgpt_checkout_error.py tests\\test_gopay_pay_protocol_link.py tests\\test_gopay_link_protocol.py tests\\test_gopay_link_transport.py tests\\test_gopay_proxy_rotation.py --disable-warnings --tb=short`：56 passed。
+- `.\\.venv\\Scripts\\python.exe -m pytest -q --disable-warnings --tb=short`：124 passed。
+- `npx tsc -b --pretty false`（`frontend`）：通过。
+- 相关 Python 文件 `py_compile`：通过。
+- GoPay API 请求模型 `link_mode=browser` 透传检查：通过。
+- `git diff --check`（本轮涉及文件）：通过，仅有仓库现有 LF/CRLF 提示。
+- 未执行真实 OpenAI/Stripe/GoPay 建单或扣款；当前结论限于源码对照、模拟响应和本地回归测试。
+
+### Notes
+- `platforms/chatgpt/payment.py`：修正 hosted/custom 建单、响应字段提取、processor entity 回退、短链 taxes 同步和印尼 Stripe init 上下文。
+- `application/gopay_pay_chatgpt.py`：更新长短链实际执行路径的任务日志。
+- `application/tasks.py`：增加链接模式解析并确保长短链开关进入 cashier 浏览器流程。
+- `api/task_commands.py`：同步长短链参数说明并允许 `link_mode` 透传。
+- `frontend/src/pages/GoPayGptPlus.tsx`：长短链选项互斥、显式提交 link_mode，并更新业务说明。
+- `tests/test_chatgpt_checkout_error.py`：增加 hosted 直链、Stripe init 回退、custom promo/taxes、嵌套响应和 ID processor entity 回归测试。
+- `tests/test_gopay_proxy_rotation.py`：增加链接模式解析回归测试。
+- `docs/pp-plus-ba.md`：记录新的长短链建单与 fallback 规则；该目录当前被 `.gitignore` 忽略。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚方式：定点撤销上述文件中本节对应的 hosted/custom checkout、`_resolve_gopay_link_mode`、前端互斥开关和新增测试；不要重置整个工作树，以免覆盖此前未提交的 GoPay、Android 注册、Agent Identity 和账号列表改动。

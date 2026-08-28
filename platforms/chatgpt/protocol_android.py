@@ -217,6 +217,12 @@ class ChatGPTAndroidProtocolWorker:
         if requested_email.lower() != self.email.lower():
             raise ValueError("ANDROID协议只能使用当前 mailbox provider 分配的邮箱")
 
+        try:
+            before_ids = set(self.mailbox.get_current_ids(self.mailbox_account) or set())
+        except Exception as exc:
+            before_ids = set()
+            self._log(f"ANDROID协议 邮箱基线读取失败，继续等待新邮件: {exc}")
+
         self._log(f"ANDROID协议 authorize: email={requested_email}")
         authorize_response = self.session.get(
             self._authorize_url(),
@@ -235,25 +241,23 @@ class ChatGPTAndroidProtocolWorker:
             )
 
         final_url = str(authorize_response.url or "").strip().lower()
-        if "/email-verification" in final_url or "/log-in" in final_url:
+        if "/log-in" in final_url:
             applied = self._mark_existing_email()
             tag_detail = f"，已打标: {', '.join(applied)}" if applied else ""
             raise RuntimeError(
-                "ANDROID协议初始化进入登录/邮箱验证码页面，当前邮箱已被识别为已有账号；"
+                "ANDROID协议初始化进入登录页面，当前邮箱已被识别为已有账号；"
                 f"已跳过注册触发请求{tag_detail}"
             )
 
-        try:
-            before_ids = set(self.mailbox.get_current_ids(self.mailbox_account) or set())
-        except Exception as exc:
-            before_ids = set()
-            self._log(f"ANDROID协议 邮箱基线读取失败，继续等待新邮件: {exc}")
-
-        trigger = self._post_first_party(
-            "create_account_password",
-            {"intent": "passwordless_signup_send_otp"},
-            "发送邮箱验证码",
-        )
+        if "/email-verification" in final_url or "/email-otp" in final_url:
+            self._log("ANDROID协议 authorize 已进入邮箱验证码页面，按新账号正常发码状态继续")
+            trigger = {"type": "email_otp_verification"}
+        else:
+            trigger = self._post_first_party(
+                "create_account_password",
+                {"intent": "passwordless_signup_send_otp"},
+                "发送邮箱验证码",
+            )
         if trigger.get("type") != "email_otp_verification":
             raise RuntimeError(
                 f"ANDROID协议发送验证码流程异常: type={trigger.get('type')} "

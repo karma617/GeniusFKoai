@@ -38,6 +38,7 @@ from typing import Optional, Callable
 
 import tls_client
 
+from .payment_fingerprint import normalize_payment_fingerprint, payment_fingerprint_headers
 from .log_redaction import install_sensitive_log_filter
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ CUSTOMER_BASE = "https://customer.gopayapi.com"
 PIN_CLIENT_LINKING = "51b5f09a-3813-11ee-be56-0242ac120002-MGUPA"
 PIN_CLIENT_PAYMENT = "47180a8e-f56e-11ed-a05b-0242ac120003-GWC"
 GOPAY_TOKENIZATION_VERIFICATION_AMOUNT_IDR = 1
+LINK_RETRY_LIMIT = 2
+LINK_RETRY_SLEEP_S = 12.0
 
 # X-Snap-Signature（Midtrans Snap 请求签名）。来自抓包文档 2026-06-02：
 #   Signing Key : 1feab063-bf3f-4025-90bf-3be6fa4f4cc2
@@ -114,7 +117,7 @@ class GoPayFraudDenyError(GoPayPaymentError):
 class GoPayPayment:
     """纯协议 GoPay 支付。"""
 
-    def __init__(self, proxy: str = ""):
+    def __init__(self, proxy: str = "", payment_fingerprint: Optional[dict] = None):
         self._session = tls_client.Session(client_identifier="chrome_120")
         if proxy:
             # tls_client（Go 后端）只认 ``socks5://``，不认 ``socks5h://``
@@ -123,11 +126,39 @@ class GoPayPayment:
             # socks5 在 tls_client 下默认也走远程 DNS，等价可用。
             proxy = _tls_proxy(proxy)
             self._session.proxies = {"http": proxy, "https": proxy}
-        self._headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
+        # 稳定浏览器式支付指纹：请求头注入 + 漂移校验。不传则自动派生一个。
+        self.payment_fingerprint = normalize_payment_fingerprint(payment_fingerprint)
+        self._headers = payment_fingerprint_headers(self.payment_fingerprint)
+        self._fingerprint_expectations = {
+            key: self._headers.get(key, "")
+            for key in (
+                "User-Agent",
+                "Accept-Language",
+                "Sec-CH-UA",
+                "Sec-CH-UA-Mobile",
+                "Sec-CH-UA-Platform",
+                "X-Timezone",
+                "Viewport-Width",
+            )
         }
+
+    @property
+    def profile_id(self) -> str:
+        return str(self.payment_fingerprint.get("profile_id") or "")
+
+    def _request_headers(self, extra: Optional[dict] = None) -> dict:
+        headers = {**self._headers}
+        if extra:
+            headers.update(extra)
+        self._assert_fingerprint_headers(headers)
+        return headers
+
+    def _assert_fingerprint_headers(self, headers: dict) -> None:
+        for key, expected in self._fingerprint_expectations.items():
+            if expected and headers.get(key) != expected:
+                raise GoPayPaymentError(
+                    f"payment fingerprint drift: {key} expected={expected!r} got={headers.get(key)!r}"
+                )
 
     @staticmethod
     def _extract_challenge_id(body: dict) -> str:
@@ -169,6 +200,7 @@ class GoPayPayment:
             log.warning("X-Snap-Signature 生成失败（继续不带签名）: %s", exc)
         if extra_headers:
             h.update(extra_headers)
+        self._assert_fingerprint_headers(h)
         return h
 
     def _midtrans_get(self, path: str, extra_headers: dict = None, timeout: int = 15) -> dict:
@@ -204,7 +236,7 @@ class GoPayPayment:
 
     def _gwa_post(self, path: str, body: dict, timeout: int = 15) -> dict:
         url = f"{GWA_BASE}{path}"
-        headers = {**self._headers, "Origin": "https://merchants-gws-app.gopayapi.com"}
+        headers = self._request_headers({"Origin": "https://merchants-gws-app.gopayapi.com", "Referer": "https://merchants-gws-app.gopayapi.com/"})
         r = self._session.post(url, headers=headers, data=json.dumps(body), timeout_seconds=timeout)
         log.debug("[GWA POST] %s → %d", path, r.status_code)
         try:
@@ -214,7 +246,7 @@ class GoPayPayment:
 
     def _gwa_get(self, path: str, timeout: int = 15) -> dict:
         url = f"{GWA_BASE}{path}"
-        headers = {**self._headers, "Origin": "https://merchants-gws-app.gopayapi.com"}
+        headers = self._request_headers({"Origin": "https://merchants-gws-app.gopayapi.com", "Referer": "https://merchants-gws-app.gopayapi.com/"})
         r = self._session.get(url, headers=headers, timeout_seconds=timeout)
         log.debug("[GWA GET] %s → %d", path, r.status_code)
         try:
@@ -226,7 +258,7 @@ class GoPayPayment:
         """POST /api/v1/users/pin/tokens/nb → 返回 pin_token (JWT)。"""
         url = f"{CUSTOMER_BASE}/api/v1/users/pin/tokens/nb"
         body = {"challenge_id": challenge_id, "client_id": client_id, "pin": pin}
-        headers = {**self._headers, "Origin": "https://pin-web-client.gopayapi.com"}
+        headers = self._request_headers({"Origin": "https://pin-web-client.gopayapi.com", "Referer": "https://pin-web-client.gopayapi.com/"})
         r = self._session.post(url, headers=headers, data=json.dumps(body), timeout_seconds=15)
         log.debug("[PIN] challenge=%s client=%s → %d", challenge_id[:12], client_id[-6:], r.status_code)
         if r.status_code != 200:
@@ -366,6 +398,8 @@ class GoPayPayment:
         allow_one_idr_tokenization_verification: bool = False,
         status_timeout: int = 45,
         status_poll_interval: float = 2.0,
+        progress: Optional[Callable[[str], None]] = None,
+        midtrans_client_key: str = "",
     ) -> dict:
         """
         执行完整的 GoPay 支付流程。
@@ -385,6 +419,14 @@ class GoPayPayment:
         Returns:
             {"success": bool, "detail": str, "transaction_status": str}
         """
+        def note(message: str) -> None:
+            log.info("[pay] %s", message)
+            if progress:
+                try:
+                    progress(message)
+                except Exception:
+                    log.debug("[pay] progress callback failed", exc_info=True)
+
         # 提取 snap token
         m = re.search(r"/snap/v[34]/redirection/([0-9a-f-]{36})", midtrans_url)
         if not m:
@@ -392,16 +434,17 @@ class GoPayPayment:
         snap = m.group(1)
         self._charge_attempted = False
         self._check_cancel(cancel_check)
-        log.info("[pay] snap=%s phone=***%s", snap[:12], str(phone)[-4:])
+        _fp = getattr(self, "payment_fingerprint", None) or {}
+        log.info("[pay] snap=%s phone=***%s profile_id=%s", snap[:12], str(phone)[-4:], str(_fp.get("profile_id") or ""))
 
         # === Phase A: Linking ===
 
         # 先拉交易详情，取商户 client_key（linking 的 Basic Authorization 用）。
         log.info("[pay] 拉交易详情取 client_key…")
         tx_r = self._midtrans_get(f"/snap/v1/transactions/{snap}")
-        client_key = ""
+        client_key = str(midtrans_client_key or "")
         tx_body = tx_r.get("body") if isinstance(tx_r.get("body"), dict) else {}
-        if tx_r["status"] == 200:
+        if not client_key and tx_r["status"] == 200:
             client_key = tx_body.get("merchant", {}).get("client_key", "")
         amount, detected_currency = self._extract_transaction_amount(tx_body)
         is_tokenization_verification = bool(
@@ -467,26 +510,54 @@ class GoPayPayment:
             log.info("[pay] merchant client key resolved")
 
         # Step 1: linking
-        log.info("[pay] Step 1: linking")
-        link_r = self._midtrans_post(f"/snap/v3/accounts/{snap}/linking", {
+        # 有限重试：LINK_RETRY_LIMIT 次（每次间隔 LINK_RETRY_SLEEP_S）。
+        #  - 429：sleep 后重试，耗尽后明确中文报错（参考版）。
+        #  - 406：先做当前 unlink-relink 策略，仍 406 则 sleep 重试，耗尽后参考版中文报错。
+        note("Step 1: linking")
+        link_body = {
             "type": "gopay",
             "country_code": country_code,
             "phone_number": phone,
-        }, extra_headers=link_extra)
-        if link_r["status"] == 429:
-            return {"success": False, "detail": "linking 429 rate limited"}
-        if link_r["status"] == 406:
-            log.info("[pay] Already linked, unlinking first...")
-            ul = self._midtrans_delete(f"/snap/v3/accounts/{snap}/gopay")
-            log.info("[pay] Unlink response: %d", ul["status"])
-            self._sleep(1, cancel_check)
-            link_r = self._midtrans_post(f"/snap/v3/accounts/{snap}/linking", {
-                "type": "gopay",
-                "country_code": country_code,
-                "phone_number": phone,
-            }, extra_headers=link_extra)
+        }
+        link_r = {}
+        unlink_done = False
+        for attempt in range(1, LINK_RETRY_LIMIT + 2):
+            self._check_cancel(cancel_check)
+            link_r = self._midtrans_post(
+                f"/snap/v3/accounts/{snap}/linking",
+                link_body,
+                extra_headers=link_extra,
+            )
+            if link_r["status"] in (200, 201):
+                break
+            if link_r["status"] == 429:
+                if attempt <= LINK_RETRY_LIMIT:
+                    log.info("[pay] linking 429 rate limited, sleep %.0fs retry %d/%d",
+                             LINK_RETRY_SLEEP_S, attempt, LINK_RETRY_LIMIT)
+                    self._sleep(LINK_RETRY_SLEEP_S, cancel_check)
+                    continue
+                return {"success": False, "detail": "linking 429 rate limited，请换新 Midtrans 链接或稍后重试"}
             if link_r["status"] == 406:
-                return {"success": False, "detail": "still linked after unlink attempt"}
+                body_text = json.dumps(link_r.get("body", {}), ensure_ascii=False)[:300]
+                if not unlink_done:
+                    log.info("[pay] Already linked, unlinking first...")
+                    ul = self._midtrans_delete(f"/snap/v3/accounts/{snap}/gopay")
+                    log.info("[pay] Unlink response: %d", ul["status"])
+                    self._sleep(1, cancel_check)
+                    unlink_done = True
+                if attempt <= LINK_RETRY_LIMIT:
+                    log.info("[pay] linking 406/pending linked state (%s), sleep %.0fs retry %d/%d",
+                             body_text, LINK_RETRY_SLEEP_S, attempt, LINK_RETRY_LIMIT)
+                    self._sleep(LINK_RETRY_SLEEP_S, cancel_check)
+                    continue
+                return {
+                    "success": False,
+                    "detail": (
+                        "Midtrans 链接已有未完成的 GoPay 绑定状态，不能重复绑定；"
+                        "请重新用 AT 生成一条新的 Midtrans 链接后再支付"
+                    ),
+                }
+            break
         if link_r["status"] not in (200, 201):
             log.warning("[pay] linking failed: %d", link_r["status"])
             return {"success": False, "detail": f"linking failed: {link_r['status']}"}
@@ -503,7 +574,7 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 2: validate-reference
-        log.info("[pay] Step 2: validate-reference")
+        note("Step 2: validate-reference")
         vr = self._gwa_post("/v1/linking/validate-reference", {"reference_id": reference})
         if vr["status"] != 200:
             return {"success": False, "detail": f"validate-reference failed: {vr['status']}"}
@@ -511,7 +582,7 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 3: user-consent
-        log.info("[pay] Step 3: user-consent")
+        note("Step 3: user-consent")
         uc = self._gwa_post("/v1/linking/user-consent", {"reference_id": reference})
         if uc["status"] != 200:
             return {"success": False, "detail": f"user-consent failed: {uc['status']}"}
@@ -519,7 +590,7 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 4: resend-otp (强制 SMS)
-        log.info("[pay] Step 4: resend-otp (force SMS)")
+        note("Step 4: resend-otp (force SMS)")
         resend = self._gwa_post("/v1/linking/resend-otp", {
             "reference_id": reference,
             "otp_channel": "SMS",
@@ -567,7 +638,7 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 5: validate-otp
-        log.info("[pay] Step 5: validate-otp")
+        note("Step 5: validate-otp")
         vo = self._gwa_post("/v1/linking/validate-otp", {
             "reference_id": reference,
             "otp": otp_code,
@@ -606,14 +677,14 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 6: PIN verify (linking)
-        log.info("[pay] Step 6: PIN verify (MGUPA)")
+        note("Step 6: PIN verify (MGUPA)")
         pin_token = self._pin_verify(challenge_id, pin, PIN_CLIENT_LINKING)
         log.info("[pay] linking PIN token received")
 
         self._sleep(1, cancel_check)
 
         # Step 7: validate-pin
-        log.info("[pay] Step 7: validate-pin")
+        note("Step 7: validate-pin")
         vp = self._gwa_post("/v1/linking/validate-pin", {
             "reference_id": reference,
             "token": pin_token,
@@ -625,7 +696,7 @@ class GoPayPayment:
         # === Phase B: Charge ===
 
         # Step 8: poll gopay status
-        log.info("[pay] Step 8: poll gopay linked status")
+        note("Step 8: poll gopay linked status")
         for _ in range(10):
             self._sleep(2, cancel_check)
             gs = self._midtrans_get(f"/snap/v3/accounts/{snap}/gopay")
@@ -640,7 +711,7 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 9: charge
-        log.info("[pay] Step 9: charge")
+        note("Step 9: charge")
         self._check_cancel(cancel_check)
         self._charge_attempted = True
         try:
@@ -713,10 +784,9 @@ class GoPayPayment:
         if verification_url:
             log.info("[pay] GET challenge page")
             try:
-                vr = self._session.get(verification_url, headers={
-                    **self._headers,
+                vr = self._session.get(verification_url, headers=self._request_headers({
                     "Referer": "https://app.midtrans.com/",
-                }, timeout_seconds=15)
+                }), timeout_seconds=15)
                 log.info("[pay] challenge page: %d (%d bytes)", vr.status_code, len(vr.text))
             except Exception as e:
                 log.warning("[pay] challenge page fetch failed: %s", e)
@@ -724,7 +794,7 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 10: payment validate
-        log.info("[pay] Step 10: payment validate")
+        note("Step 10: payment validate")
         pv = self._gwa_get(f"/v1/payment/validate?reference_id={challenge_ref}")
         log.info("[pay] validate response: %d", pv["status"])
         if pv["status"] != 200:
@@ -737,7 +807,7 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 11: payment confirm
-        log.info("[pay] Step 11: payment confirm")
+        note("Step 11: payment confirm")
         pc = self._gwa_post(f"/v1/payment/confirm?reference_id={challenge_ref}", {
             "payment_instructions": [],
         })
@@ -756,13 +826,13 @@ class GoPayPayment:
         self._sleep(1, cancel_check)
 
         # Step 12: PIN verify (payment)
-        log.info("[pay] Step 12: PIN verify (GWC)")
+        note("Step 12: PIN verify (GWC)")
         pay_pin_token = self._pin_verify(pay_challenge_id, pin, PIN_CLIENT_PAYMENT)
 
         self._sleep(1, cancel_check)
 
         # Step 13: payment process
-        log.info("[pay] Step 13: payment process")
+        note("Step 13: payment process")
         pp = self._gwa_post(f"/v1/payment/process?reference_id={challenge_ref}", {
             "challenge": {
                 "type": "GOPAY_PIN_CHALLENGE",
@@ -778,7 +848,7 @@ class GoPayPayment:
         txn_status = "unknown"
         while time.monotonic() < deadline:
             self._sleep(status_poll_interval, cancel_check)
-            log.info("[pay] Step 14: check transaction status")
+            note("Step 14: check transaction status")
             inspected = self.inspect_transaction(midtrans_url, cancel_check=cancel_check)
             txn_status = str(inspected.get("transaction_status") or "unknown").lower()
             log.info("[pay] Transaction status: %s", txn_status)

@@ -342,6 +342,11 @@ def build_account_display_summary(
         badges.insert(0, {"label": "试用", "tone": "success"})
     if bool(overview.get("mfa_enabled")) and not any(_text(badge.get("label")) == "2FA已绑" for badge in badges):
         badges.append({"label": "2FA已绑", "tone": "success"})
+    if (
+        lifecycle_status == "agent_identity_uploaded"
+        or _text(overview.get("agent_identity_upload_status")).lower() == "uploaded"
+    ) and not any(_text(badge.get("label")) == "AI已生成" for badge in badges):
+        badges.append({"label": "AI已生成", "tone": "success"})
     for resource in provider_resources or []:
         if isinstance(resource, dict) and resource.get("resource_type") == "mailbox" and (resource.get("handle") or resource.get("display_name")):
             badges.append({"label": "邮箱验证", "tone": "muted"})

@@ -182,9 +182,9 @@ export default function GoPayGptPlus() {
   // 调试抓包开关：开启后抓到 midtrans_url 不关浏览器，停在付款页让人工手动
   // 走完 GoPay 网页付款，全程录 HAR + dump 每页 HTML，不跑协议付款。
   const [capturePayment, setCapturePayment] = useState(false);
-  // Stripe 协议长链：用 accessToken 直接生成 pay.openai.com cashier_url（纯协议）
+  // Hosted 长链：优先使用 checkout 响应 URL，缺失时再走 Stripe init 补链。
   const [useStripeInit, setUseStripeInit] = useState(false);
-  // 短链：checkout_ui_mode=custom → chatgpt.com/checkout/openai_llc 短链
+  // Custom 短链：按响应 processor_entity 拼接 ChatGPT checkout URL。
   const [useShortLink, setUseShortLink] = useState(false);
   // 付款成功后自动换绑：买一个新印尼号把账号换绑过去，老号弃用，之后一直用新号付款
   const [autoRebind, setAutoRebind] = useState(false);
@@ -216,8 +216,10 @@ export default function GoPayGptPlus() {
       if (typeof saved.smsapiPhone === "string") setSmsapiPhone(saved.smsapiPhone);
       if (typeof saved.smsapiUrl === "string") setSmsapiUrl(saved.smsapiUrl);
       if (typeof saved.herosmsApiKey === "string") setHerosmsApiKey(saved.herosmsApiKey);
-      if (typeof saved.useStripeInit === "boolean") setUseStripeInit(saved.useStripeInit);
       if (typeof saved.useShortLink === "boolean") setUseShortLink(saved.useShortLink);
+      if (typeof saved.useStripeInit === "boolean") {
+        setUseStripeInit(saved.useStripeInit && saved.useShortLink !== true);
+      }
       if (typeof saved.autoRebind === "boolean") setAutoRebind(saved.autoRebind);
       if (typeof saved.rebindProvider === "string") setRebindProvider(saved.rebindProvider);
       if (typeof saved.rebindSmsKey === "string") setRebindSmsKey(saved.rebindSmsKey);
@@ -405,6 +407,7 @@ export default function GoPayGptPlus() {
         capture_payment: capturePayment,
         use_stripe_init: useStripeInit,
         use_short_link: useShortLink,
+        link_mode: useStripeInit || useShortLink ? "browser" : "protocol",
         auto_rebind: autoRebind,
         rebind_provider: rebindProvider,
         rebind_sms_key: rebindSmsKey.trim(),
@@ -609,18 +612,21 @@ export default function GoPayGptPlus() {
               <input
                 type="checkbox"
                 checked={useStripeInit}
-                onChange={(e) => setUseStripeInit(e.target.checked)}
+                onChange={(e) => {
+                  setUseStripeInit(e.target.checked);
+                  if (e.target.checked) setUseShortLink(false);
+                }}
                 className="h-4 w-4"
               />
               <span className="text-[var(--text)]">
-                Stripe 协议长链（用 accessToken 直接生成 cashier_url，纯协议、不靠浏览器拿链）
+                Stripe Hosted 长链（用 accessToken 直接生成 cashier_url）
               </span>
             </label>
             {useStripeInit && (
               <p className="mt-1 text-[11px] text-[var(--text-muted)] leading-tight">
-                开启后步骤①不再依赖默认接口返回的 url，而是显式调 Stripe
-                <code>payment_pages/init</code> 把 checkout 实体化成完整
-                <code>pay.openai.com</code> 长链。后续仍需浏览器把长链跳到 Midtrans 抓 midtrans_url。
+                使用 hosted checkout + 印尼地区/币种 + Plus 免费优惠创建长链；优先采用 OpenAI 响应中的
+                <code>url</code>，缺失时再调用 Stripe <code>payment_pages/init</code> 补成长链。
+                后续仍由浏览器选择 GoPay 并抓取 Midtrans URL。
               </p>
             )}
           </div>
@@ -629,17 +635,20 @@ export default function GoPayGptPlus() {
               <input
                 type="checkbox"
                 checked={useShortLink}
-                onChange={(e) => setUseShortLink(e.target.checked)}
+                onChange={(e) => {
+                  setUseShortLink(e.target.checked);
+                  if (e.target.checked) setUseStripeInit(false);
+                }}
                 className="h-4 w-4"
               />
               <span className="text-[var(--text)]">
-                短链模式（checkout_ui_mode=custom，返回 chatgpt.com/checkout/openai_llc 短链）
+                ChatGPT Custom 短链（自动使用响应中的 processor_entity）
               </span>
             </label>
             {useShortLink && (
               <p className="mt-1 text-[11px] text-[var(--text-muted)] leading-tight">
-                用 accessToken 调 checkout API（custom 模式、无优惠券），拿 checkout_session_id 拼成
-                <code>chatgpt.com/checkout/openai_llc/&lt;id&gt;</code> 短链。和 Stripe 长链二选一，短链优先。
+                用 custom checkout + 印尼地区/币种 + Plus 免费优惠建单，并同步 taxes 获取支付方式；
+                再使用响应中的 <code>processor_entity</code> 和 checkout session 拼成短链。与长链模式二选一。
                 <strong>短链是 ChatGPT 托管页、URL 里没有 token，打开时必须带账号登录 cookie</strong>，
                 所以会把该 ChatGPT 账号的 cookie 注入抓 midtrans 的浏览器；
                 <strong>请用 Camoufox 模式</strong>（BitBrowser 的 Chromium 注入 cookie 会被拒，需 profile 已登录）。

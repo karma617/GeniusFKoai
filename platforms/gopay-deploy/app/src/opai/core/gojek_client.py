@@ -50,20 +50,27 @@ from typing import Optional
 import tls_client
 
 from .gopay_signer_v2 import sign_v2
+from .gopay_support_sdk import get_support_body_provider, support_body_lengths
 
 from .log_redaction import install_sensitive_log_filter
 
 log = logging.getLogger(__name__)
 install_sensitive_log_filter(log)
 
-CLIENT_ID = "gojek:consumer:app"
-CLIENT_SECRET = "pGwQ7oi8bKqqwvid09UrjqpkMEHklb"
+CLIENT_ID = os.environ.get("OPAI_GOPAY_CLIENT_ID", "gojek:consumer:app")
+CLIENT_SECRET = os.environ.get("OPAI_GOPAY_CLIENT_SECRET", "pGwQ7oi8bKqqwvid09UrjqpkMEHklb")
 # Original APK signing cert D1 (same for all installs of this APK version)
 ORIGINAL_D1 = "CF:43:60:94:46:9C:A0:8F:CB:5C:95:05:97:E9:03:51:40:0A:C7:33:EC:BA:40:71:F1:94:DC:CE:BA:AE:4C:A8"
 
 SSO_BASE = "https://accounts.goto-products.com"
 GOPAY_BASE = "https://customer.gopayapi.com"
 GOJEK_API_BASE = "https://api.gojekapi.com"
+
+# Standalone GoPay SDK identity used for the unauthenticated support endpoints.
+SUPPORT_APP_ID = os.environ.get("OPAI_GOPAY_SUPPORT_APP_ID", "com.gojek.gopay")
+SUPPORT_APP_VERSION = os.environ.get("OPAI_GOPAY_SUPPORT_APP_VERSION", "2.8.0")
+SUPPORT_APP_BUILD = os.environ.get("OPAI_GOPAY_SUPPORT_APP_BUILD", "2080")
+SUPPORT_SDK_VERSION = os.environ.get("OPAI_GOPAY_SUPPORT_SDK_VERSION", "0.44.0")
 
 # Indonesian phone device profiles for randomization
 _DEVICE_PROFILES = [
@@ -581,6 +588,109 @@ class GojekClient:
 
     def _gopay_delete(self, path: str) -> dict:
         return self._gopay_request("DELETE", path)
+
+    def _support_signed_headers(
+        self,
+        path: str,
+        method: str,
+        body: str,
+        support_request_id: str,
+        extra: Optional[dict] = None,
+    ) -> dict:
+        """Headers for unauthenticated support SDK calls.
+
+        Latest capture sends these through the standalone GoPay SDK surface:
+        GoPay/2.8.0, support-sdk-version 0.44.0, no Authorization header.
+        """
+        xm1 = self._build_xm1()
+        ts = str(int(time.time() * 1000))
+        sig = sign_v2(
+            token="",
+            timestamp_ms=ts,
+            url=f"customer.gopayapi.com{path}",
+            method=method,
+            body=body,
+            d1=self.d1,
+            model=self.model,
+            xm1=xm1,
+            uniqueid=self.uniqueid,
+            os_info=self.os_info,
+            appid=SUPPORT_APP_ID,
+            version=SUPPORT_APP_VERSION,
+            phone_make=self.phone_make,
+        )
+        h = {
+            "User-Agent": f"GoPay/{SUPPORT_APP_VERSION} ({SUPPORT_APP_ID}; build:{SUPPORT_APP_BUILD}; {self.os_info})",
+            "D1": self.d1,
+            "X-Session-ID": self.session_id,
+            "X-Platform": "Android",
+            "X-UniqueId": self.uniqueid,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-AppVersion": SUPPORT_APP_VERSION,
+            "X-AppId": SUPPORT_APP_ID,
+            "X-User-Type": "customer",
+            "X-AppType": "GOPAY",
+            "X-DeviceOS": self.os_info,
+            "User-uuid": self.user_uuid,
+            "X-DeviceToken": self.device_token,
+            "X-PhoneMake": self.phone_make,
+            "X-PushTokenType": "FCM",
+            "X-PhoneModel": self.model,
+            "Accept-Language": "id-ID",
+            "X-User-Locale": "id_ID",
+            "X-Location": "-6.2088,106.8456",
+            "X-Location-Accuracy": "5.0",
+            "Gojek-Country-Code": "ID",
+            "Country-Code": "ID",
+            "Gojek-Service-Area": "1",
+            "Gojek-Timezone": "Asia/Jakarta",
+            "Accept-Encoding": "br,gzip",
+            "X-Dark-Mode": "false",
+            "X-M1": xm1,
+            "X-E1": sig["X-E1"],
+            "X-E2": sig["X-E2"],
+            "support-request-id": support_request_id,
+            "support-sdk-version": SUPPORT_SDK_VERSION,
+        }
+        if extra:
+            h.update(extra)
+        h.pop("Authorization", None)
+        return h
+
+    def _support_post(self, path: str, *, prefer_shortest: bool = False) -> dict:
+        body = get_support_body_provider().next_body(path, prefer_shortest=prefer_shortest)
+        body_str = json.dumps(body, separators=(",", ":"))
+        support_request_id = str(uuid.uuid1())
+        headers = self._support_signed_headers(path, "POST", body_str, support_request_id)
+        resp = self._session.post(
+            f"{GOPAY_BASE}{path}",
+            headers=headers,
+            data=body_str,
+            timeout_seconds=15,
+        )
+        log.debug("Support SDK POST %s → %d body_lengths=%s", path, resp.status_code, support_body_lengths(body))
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw": resp.text}
+        return {"status": resp.status_code, "body": data}
+
+    def support_customer_initiate(self, *, prefer_shortest: bool = False) -> dict:
+        """POST /v1/support/customer/initiate with captured SDK encrypted body."""
+        return self._support_post("/v1/support/customer/initiate", prefer_shortest=prefer_shortest)
+
+    def support_customer_actions(self) -> dict:
+        """POST /v1/support/customer/actions with captured SDK encrypted body."""
+        return self._support_post("/v1/support/customer/actions")
+
+    def support_customer_session(self) -> dict:
+        """POST /v1/support/customer/session with captured SDK encrypted body."""
+        return self._support_post("/v1/support/customer/session")
+
+    def support_customer_activity(self) -> dict:
+        """POST /v1/support/customer/activity with captured SDK encrypted body."""
+        return self._support_post("/v1/support/customer/activity")
 
     # ========================================================================
     # Phase 0: Signup — Legacy registration (api.gojekapi.com)

@@ -61,6 +61,7 @@ from .gopay_app_protocol import (
 
 from .envelope_manager import EnvelopeManager
 from .gopay_payment_protocol import GoPayPayment, GoPayFraudDenyError
+from .payment_fingerprint import ensure_account_payment_fingerprint
 
 from .log_redaction import install_sensitive_log_filter
 
@@ -256,6 +257,80 @@ def _check_balance(client) -> int:
         return -1
     except Exception:
         return -1
+
+
+def _phone_digits(value: str) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _load_account_payment_fingerprint(phone: str) -> Optional[dict]:
+    """Load and persist the saved payment fingerprint for an account."""
+    if not os.path.exists(ACCOUNTS_FILE):
+        return None
+    target = _phone_digits(phone)
+    with _accounts_lock:
+        try:
+            accounts = json.loads(open(ACCOUNTS_FILE, encoding="utf-8").read())
+        except Exception:
+            return None
+        if not isinstance(accounts, list):
+            return None
+        for idx, account in enumerate(accounts):
+            if not isinstance(account, dict):
+                continue
+            item_phone = _phone_digits(account.get("phone", ""))
+            item_local = _phone_digits(account.get("local", ""))
+            if target and (
+                target == item_phone
+                or (item_local and target == item_local)
+                or (item_phone and item_phone.endswith(target))
+                or (item_local and target.endswith(item_local))
+            ):
+                profile = ensure_account_payment_fingerprint(account)
+                accounts[idx] = account
+                open(ACCOUNTS_FILE, "w", encoding="utf-8").write(json.dumps(accounts, indent=2, ensure_ascii=False))
+                return profile
+    return None
+
+
+def migrate_account_payment_fingerprints() -> dict:
+    """Ensure every saved account has a stable payment fingerprint."""
+    path = Path(ACCOUNTS_FILE)
+    if not path.exists():
+        return {"path": str(path), "total": 0, "updated": 0, "accounts": []}
+
+    with _accounts_lock:
+        try:
+            accounts = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"read accounts failed: {exc}") from exc
+        if not isinstance(accounts, list):
+            raise RuntimeError("accounts file must contain a JSON list")
+
+        updated = 0
+        public_accounts = []
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            before = account.get("payment_fingerprint")
+            profile = ensure_account_payment_fingerprint(account)
+            if before != profile:
+                updated += 1
+            public_accounts.append({
+                "phone": account.get("phone", ""),
+                "local": account.get("local", ""),
+                "profile_id": profile.get("profile_id", ""),
+            })
+
+        if updated:
+            path.write_text(json.dumps(accounts, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    return {
+        "path": str(path),
+        "total": len(public_accounts),
+        "updated": updated,
+        "accounts": public_accounts,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1342,7 +1417,9 @@ def _pay_job(job: dict, account: dict, inbox_client, api_key: str, pin: str, pro
     log.info("[job:%s] Paying with %s (protocol)", job_id[:8], account["phone"])
 
     try:
-        payment = GoPayPayment(proxy=proxy)
+        payment_profile = ensure_account_payment_fingerprint(account)
+        log.info("[job:%s] payment profile_id=%s", job_id[:8], payment_profile.get("profile_id", ""))
+        payment = GoPayPayment(proxy=proxy, payment_fingerprint=payment_profile)
 
         def wait_otp(ph: str, timeout: int = 120) -> Optional[str]:
             try:
@@ -1498,12 +1575,26 @@ def _resume_account(phone: str, proxy: str = "") -> Optional[dict]:
     except Exception as e:
         log.warning("[resume] Token refresh failed: %s, trying with existing token", e)
 
+    # 为账号持久化/装载稳定支付指纹（同号同指纹）。
+    payment_profile = ensure_account_payment_fingerprint(entry)
+    with _accounts_lock:
+        try:
+            accounts = json.loads(open(ACCOUNTS_FILE, encoding="utf-8").read())
+            for idx, a in enumerate(accounts):
+                if isinstance(a, dict) and (str(a.get("phone", "")).strip().lstrip("+") == digits or str(a.get("local", "")).strip() == digits):
+                    accounts[idx] = entry
+                    break
+            open(ACCOUNTS_FILE, "w", encoding="utf-8").write(json.dumps(accounts, ensure_ascii=False, indent=2))
+        except Exception as exc:
+            log.warning("[resume] persist payment_fingerprint failed: %s", exc)
+
     return {
         "phone": entry["phone"],
         "client": client,
         "aid": entry.get("activation_id", ""),
         "pin": entry.get("pin", DEFAULT_PIN),
         "local": entry.get("local", ""),
+        "payment_fingerprint": payment_profile,
         "resumed": True,
     }
 

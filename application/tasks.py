@@ -10180,11 +10180,22 @@ def _execute_agents_upload_sub2api_task(payload: dict[str, Any], logger: TaskLog
                 action = str(item.get("action") or "").strip().lower()
                 item_message = str(item.get("message") or message or action or "unknown")
                 if action in {"created", "updated"}:
+                    _mark_agent_identity_auth_json_upload_status(
+                        int(entry["account_id"]),
+                        uploaded=True,
+                        upload_message=action,
+                    )
                     _finish_one(entry["email"], True, action)
                 else:
                     _finish_one(entry["email"], False, item_message)
             return
         for entry in batch:
+            if ok:
+                _mark_agent_identity_auth_json_upload_status(
+                    int(entry["account_id"]),
+                    uploaded=True,
+                    upload_message=message,
+                )
             _finish_one(entry["email"], ok, message)
 
     for index, account_id in enumerate(account_ids, start=1):
@@ -10210,7 +10221,11 @@ def _execute_agents_upload_sub2api_task(payload: dict[str, Any], logger: TaskLog
                 verify_task=verify_task,
                 timeout=timeout,
             )
-            pending_batch.append({"email": email, "auth_json": auth_json})
+            pending_batch.append({
+                "account_id": account_id,
+                "email": email,
+                "auth_json": auth_json,
+            })
             if len(pending_batch) >= batch_size:
                 _flush_batch()
         except Exception as exc:
@@ -10614,6 +10629,14 @@ def _execute_gopay_register_account_task(payload: dict[str, Any], logger: TaskLo
 
 
 
+def _resolve_gopay_link_mode(
+    payload: dict[str, Any], *, use_stripe_init: bool, use_short_link: bool
+) -> str:
+    raw = str(payload.get("link_mode") or "").strip().lower()
+    mode = raw or ("browser" if use_stripe_init else "protocol")
+    return mode if mode in ("protocol", "browser") else "protocol"
+
+
 def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     """GoPay 协议付款 ChatGPT Plus 任务执行入口。
@@ -10983,6 +11006,14 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
     )
 
+    # 显式选择长链时保持浏览器路径；短链改成纯协议抓 midtrans，不再开浏览器。
+    # 否则 use_stripe_init 会被纯协议直取 Midtrans 分支绕过，前端开关失效。
+    link_mode = _resolve_gopay_link_mode(
+        payload,
+        use_stripe_init=use_stripe_init,
+        use_short_link=use_short_link,
+    )
+
 
 
     total = len(chatgpt_ids)
@@ -11026,7 +11057,9 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
 
         f"checkout_mode={checkout_mode}, country={country}, currency={currency}, "
 
-        f"grab_timeout={grab_timeout}s, phone_ttl={phone_ttl_seconds}s"
+        f"grab_timeout={grab_timeout}s, phone_ttl={phone_ttl_seconds}s, "
+        f"link_mode={link_mode}, link_type="
+        f"{'short' if use_short_link else 'long' if use_stripe_init else 'protocol'}"
 
     )
 
@@ -11236,6 +11269,8 @@ def _execute_gopay_pay_chatgpt_task(payload: dict[str, Any], logger: TaskLogger)
                 use_stripe_init=use_stripe_init,
 
                 use_short_link=use_short_link,
+
+                link_mode=link_mode,
 
                 log=logger.log,
 

@@ -78,3 +78,25 @@ def test_proxy_switch_is_blocked_after_checkout_or_uncertain_charge():
             "uncertain": True,
         }
     )
+
+
+def test_long_link_defaults_to_browser_and_short_link_defaults_to_protocol():
+    assert tasks._resolve_gopay_link_mode(
+        {}, use_stripe_init=True, use_short_link=False
+    ) == "browser"
+    # 短链默认改走纯协议提链（不开浏览器）；显式 link_mode 仍可覆盖。
+    assert tasks._resolve_gopay_link_mode(
+        {}, use_stripe_init=False, use_short_link=True
+    ) == "protocol"
+
+
+def test_default_and_explicit_gopay_link_mode_are_preserved():
+    assert tasks._resolve_gopay_link_mode(
+        {}, use_stripe_init=False, use_short_link=False
+    ) == "protocol"
+    assert tasks._resolve_gopay_link_mode(
+        {"link_mode": "protocol"}, use_stripe_init=True, use_short_link=True
+    ) == "protocol"
+    assert tasks._resolve_gopay_link_mode(
+        {"link_mode": "browser"}, use_stripe_init=False, use_short_link=False
+    ) == "browser"

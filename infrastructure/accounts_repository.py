@@ -115,6 +115,11 @@ def _record_tag_values(item: AccountRecord) -> set[str]:
         values.add("试用")
     if bool(overview.get("mfa_enabled")):
         values.add("2fa已绑")
+    if (
+        item.lifecycle_status == "agent_identity_uploaded"
+        or _tag_text(overview.get("agent_identity_upload_status")) == "uploaded"
+    ):
+        values.add("ai已生成")
     for credential in item.credentials or []:
         if _tag_text(credential.get("key")) == "plan_type" and _tag_text(credential.get("value")) == "k12":
             values.add("k12")

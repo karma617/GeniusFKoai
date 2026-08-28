@@ -157,7 +157,7 @@ function writeStoredTrialProbeForm(form: TrialProbeForm) {
   }
 }
 
-const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', ...TRIAL_PROBE_REGIONS.map(region => `${region.label}试用`), 'MOMO试用', '2FA已绑', 'WEB协议', '安卓协议', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
+const ACCOUNT_TAG_FILTER_OPTIONS = ['试用', ...TRIAL_PROBE_REGIONS.map(region => `${region.label}试用`), 'MOMO试用', '2FA已绑', 'AI已生成', 'WEB协议', '安卓协议', '无头浏览器', '有头浏览器', 'BUGFREE', 'FREE', 'K12', 'PLUS']
 const CHATGPT_BATCH_STATUS_OPTIONS = [
   'registered',
   'rt_pending_upload',
@@ -4147,6 +4147,7 @@ export default function Accounts() {
   const [invalidDeleting, setInvalidDeleting] = useState(false)
   const [batchHealthChecking, setBatchHealthChecking] = useState(false)
   const [batchPlanRefreshing, setBatchPlanRefreshing] = useState(false)
+  const [agentsUploadBusy, setAgentsUploadBusy] = useState(false)
   const [rowActionBusy, setRowActionBusy] = useState('')
   const [copyingAccessTokenId, setCopyingAccessTokenId] = useState<number | null>(null)
   const [planRefreshDialog, setPlanRefreshDialog] = useState<PlanRefreshDialogState>({
@@ -5003,6 +5004,65 @@ export default function Accounts() {
         return
       }
       throw new Error(resp?.error || t('accounts.operationFailed'))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setRowActionBusy(current => current === busyKey ? '' : current)
+    }
+  }
+
+  const startAgentsUploadSub2Api = async () => {
+    setError('')
+    setAgentsUploadBusy(true)
+    try {
+      const ids = [...selectedIds].map(Number)
+      const data = await apiFetch('/tasks/agents-upload-sub2api', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: 'chatgpt',
+          ids,
+          batch_size: 10,
+          verify_task: true,
+          timeout: 30,
+        }),
+      })
+      const taskId = String(data?.task_id || data?.id || '')
+      if (taskId) {
+        setBatchTask({ taskId, title: '批量生成 Agent Identity' })
+        setBatchTaskStatus(null)
+        return
+      }
+      throw new Error(data?.error || t('accounts.operationFailed'))
+    } catch (exc: any) {
+      setError(exc?.message || t('login.requestFailed'))
+    } finally {
+      setAgentsUploadBusy(false)
+    }
+  }
+
+  const runInlineAgentIdentityUpload = async (acc: any) => {
+    const actionId = 'generate_ai_auth'
+    const busyKey = `${acc.id}:${actionId}`
+    setError('')
+    setRowActionBusy(busyKey)
+    try {
+      const res = await apiFetch('/tasks/agents-upload-sub2api', {
+        method: 'POST',
+        body: JSON.stringify({
+          platform: acc.platform || 'chatgpt',
+          ids: [Number(acc.id)],
+          batch_size: 1,
+          verify_task: false,
+          timeout: 30,
+        }),
+      })
+      const taskId = String(res?.task_id || res?.id || '')
+      if (taskId) {
+        setBatchTask({ taskId, title: `生成 AI-auth.json - ${acc.email || acc.id}` })
+        setBatchTaskStatus(null)
+        return
+      }
+      throw new Error(res?.error || t('accounts.operationFailed'))
     } catch (exc: any) {
       setError(exc?.message || t('login.requestFailed'))
     } finally {
@@ -6456,7 +6516,24 @@ export default function Accounts() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={oauthBusy || batchPlanRefreshing || batchHealthChecking || loading}
+                    disabled={agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || loading}
+                    className="h-8 rounded-lg border-0 bg-violet-500/10 px-3 text-[12px] font-medium text-violet-700 hover:bg-violet-500/15 dark:text-violet-300"
+                    title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api` : '为所有状态正常的 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api'}
+                    onClick={startAgentsUploadSub2Api}
+                  >
+                    {agentsUploadBusy ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {agentsUploadBusy ? '批量生成中' : '批量生成Agent Identity'}
+                  </Button>
+                )}
+                {tab === 'chatgpt' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={oauthBusy || agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || loading}
                     className="h-8 rounded-lg border-0 bg-blue-500/10 px-3 text-[12px] font-medium text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
                     title={selectedCount > 0 ? `检测已勾选的 ${selectedCount} 个账号` : '未勾选时检测当前平台全部账号'}
                     onClick={() => {
@@ -6473,7 +6550,7 @@ export default function Accounts() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={batchPlanRefreshing || batchHealthChecking || loading}
+                    disabled={batchPlanRefreshing || agentsUploadBusy || batchHealthChecking || loading}
                     className="h-8 rounded-lg border-0 bg-emerald-500/10 px-3 text-[12px] font-medium text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
                     title="全量刷新当前平台所有账号的订阅套餐类型"
                     onClick={refreshPlanForAllAccounts}
@@ -6819,6 +6896,16 @@ export default function Accounts() {
                                   title={getChatgptTotpSecret(acc) ? '查看并复制当前 6 位 2FA 验证码' : '当前账号未保存 2FA 密钥'}
                                 >
                                   查看2FA验证码
+                                </button>
+                              )}
+                              {tab === 'chatgpt' && (
+                                <button
+                                  onClick={() => runInlineAgentIdentityUpload(acc)}
+                                  disabled={isBusy('generate_ai_auth')}
+                                  className="table-action-btn"
+                                  title="按注册流程生成 Agent Identity auth.json，并在成功后上传到 Sub2Api"
+                                >
+                                  {isBusy('generate_ai_auth') ? '生成上传中' : '生成AI-auth.json'}
                                 </button>
                               )}
                               {tab === 'chatgpt' && (
