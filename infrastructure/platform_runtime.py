@@ -50,6 +50,7 @@ STATEFUL_ACTION_IDS = {"get_account_state", "switch_account", "query_state", "qu
 OAUTH_RESULT_ACTION_IDS = {"get_rt"}
 SESSION_RESULT_ACTION_IDS = {"refresh_session"}
 UPLOAD_RESULT_ACTION_IDS = {"upload_sub2api", "k12_join_upload"}
+ANDROID_TOKEN_REFRESH_RESULT_ACTION_IDS = {"refresh_token"}
 FAILED_ACTION_PERSISTED_ERROR_TYPES = {"account_banned", "session_stale_refreshed", "balance_query_failed"}
 CASHIER_URL_ACTION_IDS = {
     "payment_link",
@@ -307,6 +308,35 @@ def _build_session_refresh_overview(platform: str, data: dict[str, Any]) -> dict
     }
 
 
+def _build_android_token_refresh_overview(platform: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    """仅记录安卓协议 refresh_token 成功后的刷新元数据。
+
+    不创建 oauth/codex_oauth、rt_acquired_at、rt_upload_status，
+    也不改写 lifecycle_status/display_status（这些仍归 get_rt/上传链路管理）。
+    """
+    if platform != "chatgpt" or not isinstance(data, dict):
+        return None
+    if str(data.get("token_refresh_source") or "").strip() != "android_protocol":
+        return None
+    now = _utcnow_iso()
+    overview: dict[str, Any] = {
+        "platform": platform,
+        "checked_at": now,
+        "android_token_refreshed_at": now,
+        "android_token_refresh_status": "refreshed",
+    }
+    for summary_key, source_key in (
+        ("android_token_expires_at", "expires_at"),
+        ("android_token_expires_in", "expires_in"),
+        ("android_token_type", "token_type"),
+        ("android_token_scope", "scope"),
+    ):
+        value = data.get(source_key)
+        if value not in (None, ""):
+            overview[summary_key] = value
+    return overview
+
+
 def _build_upload_result_overview(platform: str, action_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
     if platform != "chatgpt" or not isinstance(data, dict):
         return None
@@ -497,6 +527,11 @@ class PlatformRuntime:
                         needs_save = True
                 if action_ok and command.action_id in UPLOAD_RESULT_ACTION_IDS:
                     overview = _build_upload_result_overview(command.platform, command.action_id, data)
+                    if overview:
+                        summary_updates.update(overview)
+                        needs_save = True
+                if action_ok and command.action_id in ANDROID_TOKEN_REFRESH_RESULT_ACTION_IDS:
+                    overview = _build_android_token_refresh_overview(command.platform, data)
                     if overview:
                         summary_updates.update(overview)
                         needs_save = True

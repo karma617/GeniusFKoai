@@ -8967,3 +8967,51 @@ egister.py` 通过。
 - `docs/pp-plus-ba.md`：记录新的长短链建单与 fallback 规则；该目录当前被 `.gitignore` 忽略。
 - `progress.md`：追加本轮实现、验证和回滚记录。
 - 回滚方式：定点撤销上述文件中本节对应的 hosted/custom checkout、`_resolve_gopay_link_mode`、前端互斥开关和新增测试；不要重置整个工作树，以免覆盖此前未提交的 GoPay、Android 注册、Agent Identity 和账号列表改动。
+
+## 2026-08-29 - Task: 空地区代理时使用本机系统代理检测试用资格
+### What was done
+- 账号列表“检测资格”在全部地区代理输入框为空时仍可启动，后端改为使用代理策略中的本机默认代理执行一次不区分地区的资格检测，并继续沿用通用“试用”标签。
+- 自动注册后的试用资格检查同步支持同一回退规则；填写地区代理时保持原有逐地区出口校验和地区标签逻辑。
+- 更新检测弹窗、注册弹窗说明及对应回归测试。
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest -q tests\test_chatgpt_trial_eligibility.py --disable-warnings --tb=short`：7 passed。
+- `python -m py_compile application\tasks.py tests\test_chatgpt_trial_eligibility.py`：通过。
+- `npx vite build`（`frontend`）：通过；仅有现有 Vite 配置和 chunk size 警告。
+- `npx tsc -b --pretty false`（`frontend`）：未通过，工作树已有的 `startMomoTrialProbe` 在 `frontend/src/pages/Accounts.tsx:5232` 未被使用；该问题不属于本轮改动。
+- `git diff --check`：通过，仅有仓库现有 LF/CRLF 提示。
+### Notes
+- `application/tasks.py`：增加空地区代理时的本机默认代理检测目标和通用标签处理。
+- `frontend/src/pages/Accounts.tsx`：允许全部地区为空时启动检测，并同步界面提示。
+- `tests/test_chatgpt_trial_eligibility.py`：增加空配置回退、任务创建和自动检测回退测试。
+- `docs/account-actions.md`：更新多地区试用资格检测说明。
+- `docs/chatgpt-register-flow.md`：更新注册后权益检查的空配置回退说明。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚点：仅反向撤销本轮在上述代码、测试和说明文件中的“本机系统代理”相关新增/修改；保留 `frontend/src/pages/Accounts.tsx` 中本轮前已存在的 `startMomoTrialProbe` 改动，以及其他未提交工作树内容。
+## 2026-08-28 - Task: 增加越南资格检测地区并复用注册代理链路
+### What was done
+- 检测资格的地区列表新增越南（VN），注册后检测、单账号检测和批量检测共用该地区配置，并自动生成“越南试用”筛选标签。
+- 资格检测请求改用 ChatGPT 注册同款 `OpenAIHTTPClient`：地区代理配置本地中转时通过 `PRE_PROXY` 先连接本地中转，再请求目标代理；目标代理支持 `http://`、`https://` 和 `socks5://`，其中 SOCKS5 按远程 DNS 方式请求。
+- 更新界面输入提示、检测说明和回归测试；附件图片仅作为界面参考，未当作额外执行指令。
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest -q tests\test_chatgpt_trial_eligibility.py --disable-warnings --tb=short`：9 passed。
+- `python -m py_compile application\tasks.py tests\test_chatgpt_trial_eligibility.py`：通过。
+- `npx tsc -b --pretty false`（`frontend`）：通过。
+- `npx vite build`（`frontend`）：通过；仅有现有 Vite 配置和 chunk size 警告。
+- `git diff --check`：通过，仅有仓库现有 LF/CRLF 提示。
+- 未执行真实 ChatGPT、代理中转或 SOCKS5 在线请求；当前结论基于本地代码路径和模拟回归测试。
+### Notes
+- `application/tasks.py`：增加 VN 地区，并让资格查询复用注册 HTTP 客户端及本地中转代理链路。
+- `frontend/src/pages/Accounts.tsx`：增加 VN 输入框并更新 SOCKS5 输入提示。
+- `tests/test_chatgpt_trial_eligibility.py`：增加 VN、SOCKS5 和注册代理链路回归覆盖。
+- `docs/account-actions.md`：同步七个资格检测地区及越南标签说明。
+- `docs/chatgpt-register-flow.md`：同步目标代理、本地中转和 SOCKS5 处理说明。
+- `progress.md`：追加本轮实现、验证和回滚记录。
+- 回滚点：定点撤销上述文件中本轮 VN、资格请求客户端和 SOCKS5 相关改动；保留此前已有的空地区代理回退、MOMO 相关改动及其他未提交工作树内容。
+## 2026-08-28 - Task: 越南资格检测补充全量验证
+### What was done
+- 在完成 VN、注册同款代理中转和 SOCKS5 支持后，补跑仓库 Python 全量回归，确认本轮改动未破坏现有测试集。
+### Testing
+- `.\.venv\Scripts\python.exe -m pytest -q --disable-warnings --tb=short`：144 passed。
+### Notes
+- `progress.md`：追加本轮全量验证结果。
+- 回滚点：无需新增代码回滚点；如需撤销本轮变更，按上一条 2026-08-28 任务记录中的定点回滚方式执行。

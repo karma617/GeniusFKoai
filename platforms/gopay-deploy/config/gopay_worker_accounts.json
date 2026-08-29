@@ -173,7 +173,22 @@
     "access_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..MUtbBAHD8SPDa3Qo.ieXUAwTt-cFIL3tDMKgNW9za7JuRDdjjn-5NGu5eQN39RP6mxCq6n6B5_BVk53XxIHQ-L2zXBiS3g113va6Tq70UwNj8U6h5SE5EPAhjk213uW-GVupiG6A-XfcVFura1JJoYLjAVj_W6WhyMfrGhT7akX5-qGs7DXlBrd1iJ55X0UNNuLREHadKuxiACWsDKbYVJC9xb-JM9bqYB3QR98SpGG4mkbbcGMH8HcDBECzcNh3dFVy7azSUWP4eZx1H8qlzL3Q3730GDDSJl8tIhKa3VtqDMI4-dIRgSFCreV9RJlCTm2niF68swcXk92ssidJ3BGW-U2cpDac9xnD9jAThhAwRKFZhFAMocQIY89925knyXkOro4vGzMJYxh7Uk0mcjyOxAxeH1kgWuaJyZbLCMSiIFnNzQ2oH4TO2WzI-WUyKb2WQAeYs-Mjf3kByQ6-0C92mZHI8W2UZsGh5FIc6ydMqEMtD2Xq8lAMnDArEClMMV-tCFK1D6so_-XieYHVJdhE9ScnD7Rlj-YdJ4FpHKfE56iy_mvw3FCAv73BoQvu8mQzX-75yEPqcMS_iixYeeeP8fKr5ATWXY7IG47-sBcmewUN3SUdpb4TkTLGyJEC3MKc-ACodKOoYssf4HpqvNyjWVfSYlQYLgv0O6QOULaVsvsXJXF_qw_EeOzSDDG0iYY6JX9PW69raA5bTxKTOHzRwyR0IyhxIw9LtqIKRpEZhRRQL2n8ed3aQsxvCWqqb8bmkJyPFOFm-jBOsOSOTFlMBJzZdBxZTcakrY_Pqx8CkqSJ8BcsQ79ZcJUxVP2GB6n8F8aI9FIh8HpqJZzJMQJhbCh-Jc3r1Aa85nwPCbviXqaJ637EGc0W32fW5ACkRYfC1vlLrN7YY299XaeslqHmPKskCu0rU1FRppFDbWBMABfwBd4KTiRq-wHLlKa0Xmk0-4-ItLua72NisNopq-0ycgG_UyPIhCcHkFSh-S2PT8MlyPd-sc0th94ZDZelAPBFxggKPp662kOnLbN2a0R4SwxtX24250IjOckLtCmbC-TmymfvOYdMgbQk6n0eiLL1l8MNfGw2auc5YGGuF5Ft8eVx7VhLEJSEfYcUfOAHBJ1pO0AUcMAUYoQaK4Kd-ZWJMl245O1RQnzo-IAweNf9ZHnORJur4UB3NgUJ7wqlFPtoJno-1DnpCsXYByCTSe9iJFxfYSlLJJvag267fNwruwxsxou1wqpnKWl636sjZqxHnNixideoHg4aEUD1JcnS-vh-DZu9XaWePJWUGXYQUh_ZWd_Ft8fQ3R8tig0QoiPhn2ic.MdW72XGh3KmqxC8FcxuL_g",
     "refresh_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..q7OHYWsuABodnF9W.4eXTbH6wap78M8j5yQJtrwys6YRmvtSpj7aQOxOrjEiFfHB9g6GmLmphVJZin8Co_gtcR4Bcx-zb8NQIzoAG1ah4vp4g8V07nalKat1QLjEi6cZa9zLc8iMoXm4s_RxjVGXNafDXXBzD7G4CB8qzEIdbatrzf9Tn1qoh__Qkk3SR1OoXdeAQXFqsKmFAbxY_2t-5T6Kvlg_PH1RWZJiaiuAaFg4kqXQHDX2tqkX84Sm0K61FYA_15h2_G4foqcbi9IbPUwcG6reJjInVxxSUtOypAS88E_tSQUhQShXEO4xnQf8N-7hLIr_1IOy5VVZLCTo4nql7Wbp0pOEv7R4dIUsyqzuBgHivddvJT3R0FfS0iC3SrLzJmc4b5aw6f5jBf6dn0ymyx7UUM3_POHefgWoVYMxvpeO0NTngSHzpsQbABYBKr-bFg_-c4GyvRKJwu7A8wctvB1jqnaB3MZjkM6fEQBBIpNgBvyzPwt411Zl3yVaOdknW3Cr-wp5zhx1VmeSqQpOX2tdB0EB2zBZj0C8iLA1gT8JLYuR4h7NApmNsa57lzwZNx-JQ7yhdyKtB1AJylrw-BYKwdpH-KAjV5-ry52PZ0hlwnXPrejdIVeDuh2naQwLDubNJfS-kmgAfD9X1qT6KPyF4J1d2dWusQS2LV7KxaQ.evHHaYG-a2OtWy5ZGFrmMw",
     "registered_at": "2026-08-23T15:28:18Z",
-    "balance": 0
+    "balance": 0,
+    "payment_fingerprint": {
+      "version": 1,
+      "profile_id": "1f1d4267b3b70452",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+      "locale": "id-ID",
+      "timezone": "Asia/Jakarta",
+      "viewport": {
+        "width": 1366,
+        "height": 768,
+        "device_scale_factor": 1
+      },
+      "sec_ch_ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"123\", \"Google Chrome\";v=\"123\"",
+      "sec_ch_ua_mobile": "?0",
+      "sec_ch_ua_platform": "\"Windows\""
+    }
   },
   {
     "phone": "+6285812289425",
@@ -239,7 +254,22 @@
     "access_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..-Ui13p4eR0L1tvcb.0rNdTWbDLoUj-4hrhI-4nEhWvvfhjavrmnFvardtvvjE2F-s6cfU70Dg3Zh7juMeEaO2ep6qfnBRkOOSP3VeF3ZgY3hqdDygY4ZGx6s-1TCviROchRMe_VayxLsBmkyikqPULVL-hPlfNVOJAdwfM6QWnC31eEGerXYwjAwGG-z-R4QjDr9GwwpHFTK3X4bmsKvZ1Xl8ycd_wilUbBcVgRE8H0iaYfzzvgIKn57Sie-WYKA8Yj_4o93fp08jymObU9VkiGwr8ERTW8JjaUl4EgLxyBHgU8Jf07qUN_k9r0cB3CslKVHlNRfjELj16Lnc6KpqcQJ4FIjvZ5wHM0YLX6nj_iJP9YNHZNvr-fsmEb9s0kGkg2KTilROwtgwUtOlntY9KBSp7VBhmRnGdXebJLIHv93gT0bzfKuMx_UoLHj-vUMxg4hTevSzJZVIHiYo-XR1xNBgWaDA5huSRzVUwXBw89hANIFN0pHBZ7drtbBwJQl7uh_lkSduZpUh3xBHetJEdONnM8K1ZQFR050P2tweJqRVkkf0ooHTtV8iKbaQF9-rS0OqnbruovdPtkbqa1CXZPVaIuOtNMO-gF8NCZNK3K6sMGY4KrQZKfvhoiJ-dFtd6v9PPIEnd0_pDAMSb4QhfbD26_c8KCbPG2WimgHtP9cAvp1Zf69LvjDXLvkNd-GvdP8vOi4DenuwUQCoWvts_u_MfxBNYiMeKEO-_3Id5zRiDGtzJsIkVs983LyVAbp-YjzdaBZe5xauJ9SKF0H4lqzVyBro5FRcT2mBbH8-hxhuDaqibIzlReyBwjs6W2kZY_axNEiM45zf9qa6YzcEKQImqquNJf6Hcal6s9ft868SgK3nfBc87qBNa3bAOiosrsHfU95AgMKbojuWuGRF7mJw0zQGaBNwovecVefAKZexXm2FlgtvYW2pjNekmeslNyNCsrLpHs5fVmZH_linLZZkKjQ2wx7mNueiHGfFLUYHg6C5D8pgg43Snrjc6kSKNsmfxgRd0G9aCowAkNAd2WHtljSR_YeMfgA1-enyNbpQNLigV2VSFgYEoLHKw8oA1vfYeq85oRVMM5YOJ8pwDR2x8evNNg45ThPI-avqG14nS6NZ83w0hmAWsR2yAzjjGSpO4L1NRx6SXUV-RO4SKl8CHGKpXX2KVCf8sPJoxNNsiglsnM_OF9CnK4fWaeRbXU4PQcN277vnoLL9gJnZ3n0kwAKKmxgBNYwYppBlSrf-S9QEQRQXCirceanVP6kI3lHVnaQ9fohf4LNCL_E5TYdolQaRhd1RsmBkOmRG_F_Q3sau.QNI6OVObX20q_MaZ60YcQQ",
     "refresh_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..YOi9m4H6IfuAjdtA.XIsEC6IEfcW1fKlWesmXnPTV2-AQLszsqEViB6y3ewLCgTfJxpglmgl49gfQORxlZhClwFJ39f0mJKRNAJplGfAwFJU7hOMlPgMbIra0wXLEg1t6N0SKOja0o-6AR2j2LdnD7S-i1kMxT7Rta6uWNeleN9kg0fiEqumPepulPYH5738dofK4gqZgdnP8luTTBOXaGA-YNDmaFGn3CVoPC-4Q4OZ1aIz33u0odQVqPNfik-9cd4Gh5imgcwFVKZwdghJrvmo95Tw2D9PF-76mpnttwfifz5ynkvDbn2v9l_Nun_WsifvusE9bxINkQLcgS2ozjkN_fY94DdX1Foax-WUHcBIrlElaqm7UP3TmH57v8_AOfnHJz041ECWgPy0CDst3Hxc9eNgXOBL03P8Ix7t8rr-lxkO0nmxAOtxMfHL6-1XcqcZ-HRuqYsFWdIRGUqN7FEtl5Bt9wmHgNPWhmKm8cmRpzJRqSmrEjEMnpNPjeRX58OvJydoIkBt8WjKoSVAGnqLJLG573fqU9P8zkneNR1Hh-aASlCh8q-SuVAopXyrj3tsMuXXSF38fJda2F10iV5GRDhe4DQPp9j8DaA8X7FWSejs10RMI4mxawzaEjc6jZ5hTsUUlauOBU_A5cOVKe_o7D7I9G6S-NJiyNkFfhKHgA6MO4i8T_AKFvPg9wHShoa497CvO.KLESldEPPkArRdkCVIqEwQ",
     "registered_at": "2026-08-23T15:56:32Z",
-    "balance": 0
+    "balance": 0,
+    "payment_fingerprint": {
+      "version": 1,
+      "profile_id": "9658eb1c677303ff",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+      "locale": "id-ID",
+      "timezone": "Asia/Jakarta",
+      "viewport": {
+        "width": 1366,
+        "height": 768,
+        "device_scale_factor": 1
+      },
+      "sec_ch_ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"123\", \"Google Chrome\";v=\"123\"",
+      "sec_ch_ua_mobile": "?0",
+      "sec_ch_ua_platform": "\"Windows\""
+    }
   },
   {
     "phone": "+6285196489289",
@@ -250,7 +280,22 @@
     "access_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..SwUos0neLylxcPpk.-Xw3uV6F4ytpV0Xf4fgkHxlwgwPDSU65eMuPvU0dwAU6bRggnFlbArQZERovGK3vehnA2CqEgsSirGc5zHp3zYinbOuWcLeVoKf7fWBdVzfujP0pin_hnQVpVsqdvEgdIBxc3vL94xfOSiGd-AbRxD5H4qhSQbrnTuMUDUTThPr7t5d_39UK__4leG-jjCI6JLmOk8JN-qNV1OT5Z3xUQ7n-Lzeb1ufMZBvjmE2CC8sldo8HkJQesFpocGc0FcKhXtoBOSVTtsBvDIF9bRVAK8_XVqXevJrGSKyTQOyf49OllgZC5lJs7Dc1tRymR0PALOzNMu648zWRgRYX0sEN3-Kx8cxJaPwbiThdNyPU7j6BBuyfnZ3-S7GIfonS4HIr-dAguztzzXIRh7xeoRiBMDYG0BBLTJpYLFrbgZisyAv6t2blQYGX-7iMPDzaIhLrNjg3C9ib-dB3nZsPjatNtCDDmh_xWm6Y3436LYyflS76VmGq7e4e_Y4R5rJKesxx6IqanyvuWq4V1WbPlkYq9WgajhvNh6rz9VNYBd_zM8W_1frc2YtmuCJKj1cJfjwwhK2sG3ZgXSNDytB0Zq7sR3YnZZA72tWwXlvykpf0gfzc4_g6OMD4k0MN2XMuBKxL8A5W5uVFfGsfU4GJ0YPC0W7KbntZoscFsOXQGGPfyIcmAeviTseUlrbxyM_DuOGFOW6XQVtivwqMrWgP0BY41ZfbRaM1PqxeXmISZhcdONpcHDy8UImweOZAkZpeTOLTLTPk5xgct54PD195di073orn6dRs3Ot7KJFW4xOV0L77OwOiXo-ApIoqgOIyYLbvTN1irvna_8t7DUTgyKRRkAu0_Lh94X1jU2k-4qzYFdIHzyuvE1iMNmJH3UBqaxYQ5N26DZz0SrfaE2SayDwn0ZH0Td98x2DAYh4QrWW3FWFYyvsUsGIxXElUWm5OVLjX82nPhnI1PpAPlZot-8z7qWSauhw5ajlO2aOdMx3BRdRsYGwOZ9xK-zdAHCsoUKs1is4jlY4APsRGybRbmt5VIOICL7eEkPlM-ANGNGMxs0cpbqivrQZVqGgyjCuOisbvppMnagmrwhwE2ld52PZThPoJCeF9IvyVvGMGTNroYamQKRXmh_sSZnUUT3gcF5imAjlb7qtqN_EfK55_SArhVlAVKfzYx_sIL7y95q70qNVBa6XWnuJnZM71Hyll-PMfNrNS3Tsvrz5IrLWGiulJ4043dsET5gPqb8CZdGxaBIjWravIgoH5FdPMoIR0LMMQHUDZfuxWU9O2Sh770rbQVY_Ynli00ESZ.46OcJIGCj14ocBI8Cio_jw",
     "refresh_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..cytWegzgkH6cglzj.ct1bi1S7keFk2TnsYWFnAcvhdLW0ALNAYChZhbQrxnxBgGnGfQYuFV6n7Xyw3X3tjytnMR4T_jTir63g2doSeYCeicQ9H8St3ppLPlSkpdNJCC9S9yqAsMsqIv6wDEkMC23SdBypKFE9cPk3h9Jfr-cyM8BUYlMIXUSmemwAvKNMElSKQDrvRC9qAVjuUP4BoSGm6tUVRFGuBl475dvDIgkh-hfFKYb4sbdvop4gSmndC3scCXIQ3RcGRqSXcCr9EmwL8V5nlxKuI8rom33KWbRwR1ycIgdPqpkuBPFjAfSETXrBsvC1N5WAE5ijcyzCMB4HVJnI4Lg20Tl6TAGW6hUuDGfGZ2ygFamJuLkq6d39NI4y59705HKxv8pZX-xPYXGL3gBd-Hhu4OQyVbeDigHRTAT8BFtHglz5bp92WWZRJu-lhWAmMyFU49nOoXPjtrrzkc1askddfJ_GYXCPI_jtiaabLzWstbLz3zAsfIBUAN1ux3gMXjyrerIDsHY9zi7IlvmIqK0bSezXN5roC8F7fiyQll8WRihkjYx9SKNM1h4W1_PJhLt99Lyab6ACW19A8HpO5qHRD2pnfzQUf8M5jPpiC_h79jExtkuFXlKIFyf1IjWNZeWqrUJiCrgwIMnDNKtP2pGqRXxfndPD5ET0zp9puJQ5gWomX2lTmEB0p04tjSyd_me7.e0m2ekXckKaSIR8m0TGtBw",
     "registered_at": "2026-08-23T15:57:42Z",
-    "balance": 0
+    "balance": 0,
+    "payment_fingerprint": {
+      "version": 1,
+      "profile_id": "537a3b2e096c7172",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+      "locale": "id-ID",
+      "timezone": "Asia/Jakarta",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "device_scale_factor": 1
+      },
+      "sec_ch_ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"123\", \"Google Chrome\";v=\"123\"",
+      "sec_ch_ua_mobile": "?0",
+      "sec_ch_ua_platform": "\"Windows\""
+    }
   },
   {
     "phone": "+6283821946323",
@@ -261,7 +306,22 @@
     "access_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..9jN7tDX4PfREVNgM.U8BFXuGH-149Uqkm7vuZvuGXAKNZDJCveACDrZ1_bE5S-Z63DCci5t7cjcVliu-Y7JA4aysmkg4ZGowMHWPH3uChT7VyKM-T4tfcOP_kEWIh0Y5OamRi5ae14YhIf23QIuoobnRYoDxo5rlWAxtRfKARBaU-YDKl41ZuqdbCTBKo7ZXGlrLidX9vp5Cql6VYSkFlDvoJc1PrmKE-rAFS6QXjjBzh4vH-LMo5peK4ecpyhUFCN6BbxPwjvg_0ma7EOxkQFoMkazDgFJONbbA_1LVnHzmKyWnBrUOetqHJ197cX1D4bL8fDad7GK9LX0xZPtoq5G5o4Ldt0NmApxILQC1ZGU2cApj5tpy4TQoPoBSxdaNjaP9dloq-SMNyof-AxxIqe0DFberUtMALE1GHqAvexD-OiRUeuqM117VkcniRvlLITP1ysnlFThv7XCG2l9UjZMQ1gFDIEJsdJfpfc-yr641mFEwfNh3pOiyEeeemzv_hNEIQ4fAXA6Ng_WdQz_JSrQZuIDnmoNpqIWFKTx9pR00KOlseyO6AjV-dIzC-urKt-CbK6YWyr9MzfIqh1qEW4o-b75J86RMgI0qdumCaxt-jr3edsJ5Hqagy0hOIYV2Dnt6Qzfbmid6FiOkDJt2XmE7YpqUr4_brAwe50Blqz3ezWrmhvJto45q7E4e80hTuSnSHdeWlcdK6n58OzufxdnlkGmvpjNlJa-l_1WqkrH8NFmMKK5fisC5McgO7Bp8jcuW1lUarZuv4_HWvTskzpFgZAD7SUJdptRM-kBdtbY6XOki0aQg9nGSRvHPcamQ5Vkocj51Qly43L-EtKoqHoqvIN2u92WF41w8IfTs0pfPdzVXwJJ0NYuBJ6eRaNmT8CVBJWDTyHlk7CYhu32UxnMXYfV6bAwlc8HK9vFOFaCafYVNw_eoo48HUqHJk2bvsRs1tKkrAfXFU_-VBY6dZ_7Y28jj6Ptkvpk_Wqj7_XuaOLfbqA7pczcy6SRKdP6k16BPP0C-fit9vHQFIYY2mloNnTjeYbuBgmNdLbfjOX9woIg2vHyAaduhaX1srNW9hQ-gKcXbiHxYB-uZe03KdSi_JRxG-tIYqmn6C51-ZSbNog39DxB5rHN2ozjz-qr5cnZg__owuzQz3KBoUaEAZgCpvgI3UkJJqAG8T14MY0di5Df5FaP0uUdi2SIIbin-rnO7dVdiFKnpfwFXyAWfr-Gmm5M7-ohf1J6rGRSN5qLsMX_FaEGR30N_nfT0hj2iCRLkej88QK-L7YE7oFZlAraSCqIAirvzR3OfOxSjJ5Jo8tvMwnVFEDaQ.96GV2N_ENtdjAOlL0Y_FJA",
     "refresh_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..zvJeLVOhNGeTZ-CO.OcDJl4nhcSJxHzQQ84R6JxW8j0j0ihpqVchYUUjAaNRuxa63GYwTGoVSCWaQgGMKYusBM6xRfh8svOHawIAVMbtOSgw9uh6JHsF1ffStetjoaDyNVgpTyr3VVARU-Ok083CaK_AVcHlseklX8YDdp73p2KLvBJVMbBJQwTFXyUzppWcA61BDYS3Tp2shS9EK_BnXNvcYNgAPyNdiMdDFVSE8XWGbx_Vliw_hO_oognhXZ4Gp1iZqPNBq9NXOCTUt0Il86PqwpYZLQ-F_Ho2kmhXkzOetzuGgHbHs4Q30WZYiI3W1JKBWOxnvHJmwD_EY1vnz_fh0MCYs5SkHrIdpwTCyQtjH8rixuNuZAgND6oCR4xxBcMK8a81qTkwZkhMfAx5uHfZsFiJdsb8BZcE8JThQ063r-AgikjXBC2YJNObJoWZeqlReoY1s290qUt2EOuy5s9Cbd3xrUBX7cwmua2EIOlEiulVviValjYbWduY74C35TLQPnznj5Eh-JwMpC60lBUJ1mbNQOAoYiMPJfHoU1hN4zrqfUpiPp4aNeFToILe-cfnJQAtxW0tSYnQD0YhiBTQfiI7JY7B9ksHe3jFhJHm7ed4y_5M7pOhSkCxC8_GCzfd928oUXdd2yytfRhpyij7en9GFa0BldbladccYJg4P25EA6plxOMNstAasA_fPuA.a1R0_8LT1ozzPwwfshX_DQ",
     "registered_at": "2026-08-23T15:59:32Z",
-    "balance": 0
+    "balance": 0,
+    "payment_fingerprint": {
+      "version": 1,
+      "profile_id": "32753d4bb367de27",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+      "locale": "id-ID",
+      "timezone": "Asia/Jakarta",
+      "viewport": {
+        "width": 1600,
+        "height": 900,
+        "device_scale_factor": 1
+      },
+      "sec_ch_ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"123\", \"Google Chrome\";v=\"123\"",
+      "sec_ch_ua_mobile": "?0",
+      "sec_ch_ua_platform": "\"Windows\""
+    }
   },
   {
     "phone": "+6283199662724",
@@ -305,7 +365,22 @@
     "access_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..REwHgvNeV6_bCkLI.mVKhbzehSmOM51jYFf9hoIeIOgVDHamue2pT43E29S9Aqi-RZrrDNPA5sxVxRcJqn5Diea_hn6QP0Z69rgs8hdXR8aGDEsUPOH8T1S0TORuWqNlOWinCZ5eOif1s0HqvIsXro7FumZKjSfBQ6KNHushy3ecZGy_jSWMSmsFqdUxCqqDbkFYdXLZsVMyma6FRhvV1bRITs0HuxbBzHCeoil1IlP2IG5vyd8npo0gqlfEl7YtOE8_5AsydhfjCdAKswWuRWq5RLN9JJUM1FeDObEolcPfoq_NI6TKgm_FlEWTXCCJz9QuSvdASOihlAnXq-g__AT4TNfjx8tRrXKkQYO_meRBAIuKQKJ6hjTGsg95rUvH3rdJHD7BVwRJKwV_IVF8BbDP947ZNaG3c_LqICcyDZZ4cIVBCfiEU0xDOjSvwWnHCzSd3GEO4hNwNRs6xqB9Hu4noZ_ytaiaJvXBgXGGnJcCFigKQrzWBDSJumEwgb72mDouMDMN7BocKeJ5tTMtZlXxGKtUwEnNdhnH0_dNhep8F5CxPGORO7SyRPxUMby9Bs1QLa9kUp4OejhL1ZNzPFoHWdeDwY6wuFiTEDVnbuHRm6P2IvoI8E_WZAB3mHuiM7s6InAMg076Sp_xlvERU6jHCIxNO0Fv8fJp9nSANQ136InYSnxj0FPDn259Njp1MzPLnwBlNtVz-Q13C291kh4DIRJq1MrvhQiOqe_MXCZaiyV7qM3zaRajGzi2fKpiBauPFJe9lG4nZ2D86VZIxwlwcCI6pnOOdk6XiD3TGNX8cpEMBm8SZejzvOH_RffG9_k0kLIQ6IVnwemqJYp00VqGCFrtlkiEETa17w-5lrbdDHAQzZnt_04mOV0MfUtOuRCnm-KtY45gwRHEkwFE-N35kv8sQp0eQuvzHHsAkWzG7tEx_XrZkXMZ8ZjXNS4oKPlXmuaoSp86EWEXszagRWmHFfnNt1ORWPL7utCbjrov4f6ZyhVmWEQn0za5Y8EomW4WpIJIwd77p12xgoJZcjTokkOC_OFblcql7_SU_NL0_YpuxqKbKh8nXeJmoe7E9sT3h7NIUHByvL5a169XEZ-2xpsnRA8V_7016vk9FnGbMHRBdeyDNm2ZMZB1fBOfkZl20isNOlJMrI15s2XuowqSO_nA_maM49bjxZzEbyqQSVgajRDJ3w7EX5kALDcVB41bP5YF4peAvmt6AWMgkvYdtOGKvqyQrca5TpXFzb9bVybAMK2lytQeMofER78Ykohofnfcmt-WJl_I8tCzGiN6uLOMbwuCeWSE7AA.K1kZDWxYjZ0HmBbeiSTKpw",
     "refresh_token": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJBMTI4R0NNIiwidHlwIjoiSldUIiwiemlwIjoiREVGIn0..7z3bqCVDR0rmdYTP.pT5FhHd86wCFcZU-dxNbYEAyoVNhv5a4lnlR0-SbsPThtF_lgUxq3P-U_kQ105pMr1utWJjN_FLC7fe8tOrQ3glB2sNEGGE1ubpSFebY-iODTmvjJzT9JYpjDIokw4w9uOzmWiNu4iBdIwpe5rk7qfXqJ8IosQcDki4vKdy7mItSw8LgFYQ3fZ6W9hgjot8GWYMAYlteLPqne-rsxDERZf54ATegN1iOX79skLlqkcRfyMDEdpf3JSfKVxn5ZQhKdm-RAWh5KVMGwHbsDQ-jXRo7Wf-lavvu9MD9UgLDK6sYHMlmCuzt5FyBii1qsnJXYvrePwFDtbK28xWOWgWmLjvIzgN1Rdz4ySWaqLZIO84Dgs38ZAX8DNhruORdN0AlwEE8DTjZDJe0oygF3TnfsHolwQb1-tfbDHt2-jhx21cz2BIvLNBzbVqbUkIY1iiESKtdJjBKY9Ub0-_Z_EZvi7EuPSEl33thz7ZYc8_OWK1lgTOrpgkL4GRh8Rh46v73NI7qG5jAM5zE2rOJwFR9Dzx6TWFDq-UM5BJSbtvDyNwqw9GcMg9d1mx6xoWZ0BUCPOm3NP9id6TPsMudqq0ES17H6WgoivF5JBP_k1RcjivScAD1q1m5VicvAHcnzVyAswnZjN2vOVpJVCsoz42E16DXR976nTVnmVBQe0_rtxeTDpq2WmR8-Q.BjX7t3femAfjXRsCrYeLlQ",
     "registered_at": "2026-08-24T01:11:58Z",
-    "balance": 0
+    "balance": 0,
+    "payment_fingerprint": {
+      "version": 1,
+      "profile_id": "39d0d6097ff9f11a",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+      "locale": "id-ID",
+      "timezone": "Asia/Jakarta",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "device_scale_factor": 1
+      },
+      "sec_ch_ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"123\", \"Google Chrome\";v=\"123\"",
+      "sec_ch_ua_mobile": "?0",
+      "sec_ch_ua_platform": "\"Windows\""
+    }
   },
   {
     "phone": "+6283112025890",

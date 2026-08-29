@@ -151,6 +151,16 @@ class GoPayRegisterAccountTaskRequest(BaseModel):
     rebind_service: str = ""
 
 
+class EmailRebindTaskRequest(BaseModel):
+    """ChatGPT 账号邮箱换绑任务（cloud-mail 独立配置）。"""
+
+    platform: str = "chatgpt"
+    account_id: int = 0
+    ids: list[int] = Field(default_factory=list)
+    concurrency: int = 1
+    proxy: Optional[str] = None
+
+
 @router.post("/register")
 def create_register_task(body: RegisterTaskRequest):
     return command_service.create_register_task(body.model_dump())
@@ -261,6 +271,14 @@ def create_gopay_pay_chatgpt_task(body: GoPayPayChatGptTaskRequest):
 @router.post("/gopay-register-account")
 def create_gopay_register_account_task(body: GoPayRegisterAccountTaskRequest):
     return command_service.create_gopay_register_account_task(body.model_dump())
+
+
+@router.post("/email-rebind")
+def create_email_rebind_task(body: EmailRebindTaskRequest):
+    try:
+        return command_service.create_email_rebind_task(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{task_id}/cancel")

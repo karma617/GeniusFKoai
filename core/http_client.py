@@ -81,9 +81,15 @@ class HTTPClientError(Exception):
     pass
 
 
-def _proxy_curl_options(upstream_url: str | None) -> dict:
+def _proxy_curl_options(upstream_url: str | None, proxy_url: str | None = None) -> dict:
     upstream = _normalize_pre_proxy_url(upstream_url)
     if not upstream:
+        return {}
+    main_proxy = _normalize_runtime_proxy_url(proxy_url).lower()
+    # 实测（curl_cffi）：SOCKS 主代理叠加 PRE_PROXY 时主代理会被整体忽略，
+    # 流量直接从本机出口/上游出去，出口地区完全错误（地区代理校验会读到错误国家）。
+    # 因此 SOCKS 主代理一律直连，不叠加 pre-proxy。
+    if main_proxy.startswith(("socks5://", "socks5h://", "socks4://", "socks4a://")):
         return {}
     return {CurlOpt.PRE_PROXY: upstream}
 
@@ -175,7 +181,7 @@ class HTTPClient:
             impersonate=self.config.impersonate,
             verify=self.config.verify_ssl,
             timeout=self.config.timeout,
-            curl_options=_proxy_curl_options(upstream_url),
+            curl_options=_proxy_curl_options(upstream_url, self.proxy_url),
         )
         # Avoid implicit Windows/system HTTP(S)_PROXY routing before the selected proxy.
         session.trust_env = False

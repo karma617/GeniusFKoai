@@ -21,6 +21,7 @@ from application.tasks import (
     create_agents_upload_sub2api_task,
     create_gopay_pay_chatgpt_task,
     create_gopay_register_account_task,
+    create_email_rebind_task,
     complete_manual_post_register_capture,
     get_task,
     list_task_events,
@@ -89,6 +90,11 @@ class TaskCommandsService:
 
     def create_gopay_register_account_task(self, payload: dict) -> dict:
         task = create_gopay_register_account_task(payload)
+        task_runtime.wake_up()
+        return task
+
+    def create_email_rebind_task(self, payload: dict) -> dict:
+        task = create_email_rebind_task(payload)
         task_runtime.wake_up()
         return task
 

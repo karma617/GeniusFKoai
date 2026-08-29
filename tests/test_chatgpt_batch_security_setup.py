@@ -519,3 +519,162 @@ def test_about_you_http_failure_stops_registration_step():
     assert engine._latest_chatgpt_open_about_you("/about-you") is False
     assert engine._last_about_you_error == "http_403:forbidden"
 
+
+class _SetupFakeModel:
+    def __init__(self, *, platform="chatgpt", password=""):
+        self.id = 1
+        self.platform = platform
+        self.password = password
+
+
+class _SetupFakeAccount:
+    def __init__(self, *, email, extra, password="", region=""):
+        self.email = email
+        self.extra = dict(extra or {})
+        self.password = password
+        self.region = region
+
+
+class _SetupFakeSession:
+    current_model = None
+
+    def __init__(self, engine):
+        self.model = _SetupFakeSession.current_model
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, model_cls, account_id):
+        return self.model
+
+
+class _SetupFakeLogger:
+    def __init__(self):
+        self.logs = []
+
+    def log(self, message, *args, **kwargs):
+        self.logs.append(message)
+        return True
+
+    def is_cancel_requested(self):
+        return False
+
+
+def _run_security_setup(monkeypatch, *, model, account):
+    import application.tasks as tasks_module
+    import platforms.chatgpt.plugin as plugin_module
+
+    calls = {"persist": [], "set_password": [], "auto_enable": []}
+    _SetupFakeSession.current_model = model
+
+    def fake_build_platform_account(session, model):
+        return account
+
+    def fake_persist(account_id, *, password, extra):
+        calls["persist"].append((account_id, password, dict(extra or {})))
+        return None
+
+    def fake_set_password_protocol(account, *, password, proxy, logger):
+        calls["set_password"].append(password)
+        account.extra = dict(account.extra or {})
+        account.extra["password_set_after_register"] = True
+        return True, {"password_set_after_register": "true"}, ""
+
+    def fake_auto_enable(account, logger, *, proxy=None, enable=None, require_password_set=False):
+        calls["auto_enable"].append(require_password_set)
+        account.extra = dict(account.extra or {})
+        account.extra["mfa_enabled"] = "true"
+        account.extra["totp_secret"] = "fake-totp"
+
+    def fake_generate_password():
+        return "GeneratedPass1!"
+
+    def fake_proxy_log_value(proxy):
+        return proxy
+
+    def fake_resolve_action_proxy(configured, *, region="", log_fn=None, action_label=""):
+        return "proxy:default"
+
+    monkeypatch.setattr(tasks_module, "Session", _SetupFakeSession)
+    monkeypatch.setattr(tasks_module, "build_platform_account", fake_build_platform_account)
+    monkeypatch.setattr(tasks_module, "_persist_chatgpt_security_setup", fake_persist)
+    monkeypatch.setattr(tasks_module, "_set_chatgpt_account_password_protocol", fake_set_password_protocol)
+    monkeypatch.setattr(tasks_module, "_auto_enable_chatgpt_2fa_after_register", fake_auto_enable)
+    monkeypatch.setattr(plugin_module, "_generate_chatgpt_registration_password", fake_generate_password)
+    monkeypatch.setattr(plugin_module, "_proxy_log_value", fake_proxy_log_value)
+    monkeypatch.setattr(plugin_module, "_resolve_action_proxy", fake_resolve_action_proxy)
+
+    logger = _SetupFakeLogger()
+    result = tasks_module._setup_chatgpt_password_and_2fa_for_account(
+        1,
+        configured_proxy=None,
+        logger=logger,
+    )
+    return result, calls, logger
+
+
+def test_security_setup_2fa_bound_missing_password_runs_only_password(monkeypatch):
+    # 已有2FA但无密码：只跑密码协议，2FA 链路不再调用。
+    model = _SetupFakeModel(password="")
+    account = _SetupFakeAccount(email="user@example.com", extra={"mfa_enabled": "true", "session_token": "stale"})
+    result, calls, logger = _run_security_setup(monkeypatch, model=model, account=account)
+
+    assert result["ok"] is True
+    assert result.get("skipped_2fa") is True
+    assert result.get("password_action") == "set"
+    assert result.get("two_fa_action") == "skipped"
+    assert calls["set_password"] != []
+    assert calls["auto_enable"] == []
+    assert any(str(log).startswith("检测:") for log in logger.logs)
+
+
+def test_security_setup_stored_password_missing_2fa_keeps_password(monkeypatch):
+    # 已有密码（仅 stored_password，无标记）+ 缺2FA：不跑密码协议，2FA 以 require_password_set=False 调用。
+    model = _SetupFakeModel(password="existing-pass")
+    account = _SetupFakeAccount(email="user@example.com", extra={})
+    result, calls, logger = _run_security_setup(monkeypatch, model=model, account=account)
+
+    assert result["ok"] is True
+    assert result.get("password_action") == "kept"
+    assert result.get("two_fa_action") == "set"
+    assert calls["set_password"] == []
+    assert calls["auto_enable"] == [False]
+    assert account.password == "existing-pass"
+
+
+def test_security_setup_both_present_skips_everything(monkeypatch):
+    # 两者都有：全部跳过，密码协议与2FA链路都不调用。
+    model = _SetupFakeModel(password="existing-pass")
+    account = _SetupFakeAccount(
+        email="user@example.com",
+        extra={"mfa_enabled": "true", "password_set_after_register": "true"},
+    )
+    result, calls, logger = _run_security_setup(monkeypatch, model=model, account=account)
+
+    assert result["ok"] is True
+    assert result.get("skipped") is True
+    assert result.get("password_action") == "kept"
+    assert result.get("two_fa_action") == "skipped"
+    assert calls["set_password"] == []
+    assert calls["auto_enable"] == []
+    assert calls["persist"] == []
+
+
+def test_security_setup_both_missing_password_then_2fa(monkeypatch):
+    # 两者都缺：先设置密码，再绑定2FA，require_password_set=True。
+    model = _SetupFakeModel(password="")
+    account = _SetupFakeAccount(email="user@example.com", extra={"session_token": "stale"})
+    result, calls, logger = _run_security_setup(monkeypatch, model=model, account=account)
+
+    assert result["ok"] is True
+    assert result.get("password_action") == "set"
+    assert result.get("two_fa_action") == "set"
+    assert calls["set_password"] != []
+    assert calls["auto_enable"] == [True]
+    assert calls["persist"] != []
+    # 密码阶段先于2FA阶段执行
+    assert calls["set_password"][0] == "GeneratedPass1!"
+

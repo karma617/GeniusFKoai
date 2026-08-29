@@ -110,6 +110,28 @@ def _account_secret_value(account: Account, key: str) -> str:
     return _first_non_empty(extra.get(key), overview.get(key), legacy_extra.get(key))
 
 
+_ANDROID_PROTOCOL_VARIANTS = {"android", "android_app", "android_protocol"}
+
+
+def _overview_protocol_variants(account: Account) -> tuple[str, ...]:
+    """收集 account.extra.account_overview（含 legacy_extra）里的协议变体标记。"""
+    extra = _safe_dict(getattr(account, "extra", None))
+    overview = _safe_dict(extra.get("account_overview"))
+    legacy_extra = _safe_dict(overview.get("legacy_extra"))
+    variants: list[str] = []
+    for source in (overview, legacy_extra):
+        for key in ("registration_protocol_variant", "chatgpt_protocol_variant", "protocol_variant"):
+            value = str(source.get(key) or "").strip().lower()
+            if value:
+                variants.append(value)
+    return tuple(variants)
+
+
+def _is_android_protocol_account(account: Account) -> bool:
+    """账号注册链路标记为安卓协议时返回 True（overview 顶层或 legacy_extra）。"""
+    return any(variant in _ANDROID_PROTOCOL_VARIANTS for variant in _overview_protocol_variants(account))
+
+
 def _mask_proxy(proxy: str | None) -> str:
     value = str(proxy or "").strip()
     if not value or "@" not in value:
@@ -1465,6 +1487,50 @@ class ChatGPTPlatform(BasePlatform):
         """Handle refresh_token capability for ChatGPT."""
         proxy = self.config.proxy if self.config else None
         extra = account.extra or {}
+
+        if _is_android_protocol_account(account):
+            refresh_token = str(extra.get("refresh_token") or extra.get("registration_refresh_token") or "").strip()
+            if not refresh_token:
+                return {
+                    "ok": False,
+                    "error": "安卓协议账号缺少 refresh_token（extra.refresh_token / extra.registration_refresh_token 均为空），无法刷新 token",
+                }
+            region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+            android_proxy = _resolve_action_proxy(
+                proxy,
+                region=region,
+                log_fn=getattr(self, "_log_fn", None),
+                action_label="刷新安卓 token",
+            )
+            try:
+                from platforms.chatgpt.protocol_android import refresh_android_oauth_tokens
+
+                tokens = refresh_android_oauth_tokens(refresh_token, proxy_url=android_proxy)
+            except Exception as exc:
+                return {"ok": False, "error": f"安卓 token 刷新失败: {exc}"}
+            tokens = tokens if isinstance(tokens, dict) else {}
+            data = {
+                "access_token": str(tokens.get("access_token") or ""),
+                "refresh_token": str(tokens.get("refresh_token") or ""),
+                "id_token": str(tokens.get("id_token") or ""),
+                "expires_at": tokens.get("expires_at") or "",
+                "expires_in": tokens.get("expires_in") or 0,
+                "token_type": str(tokens.get("token_type") or ""),
+                "scope": str(tokens.get("scope") or ""),
+                "token_refresh_source": "android_protocol",
+            }
+            try:
+                from platforms.chatgpt.switch import fetch_chatgpt_account_state
+
+                data["account_state"] = fetch_chatgpt_account_state(
+                    access_token=data["access_token"],
+                    session_token=str(extra.get("session_token") or ""),
+                    cookies=str(extra.get("cookies") or ""),
+                    proxy=android_proxy,
+                )
+            except Exception:
+                pass
+            return {"ok": True, "data": data}
 
         class _A: pass
         a = _A()

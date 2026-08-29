@@ -92,6 +92,35 @@ def test_validate_trial_region_proxies_rejects_region_mismatch(monkeypatch) -> N
         )
 
 
+def test_trial_probe_uses_system_proxy_when_all_regions_are_empty(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "_get_chatgpt_trial_system_proxy", lambda: "http://127.0.0.1:7897")
+
+    assert tasks._build_chatgpt_trial_probe_targets({}) == [
+        ("SYSTEM", "本机系统代理", "http://127.0.0.1:7897"),
+    ]
+    assert tasks._chatgpt_trial_probe_marking("SYSTEM", "本机系统代理") == ("试用", "", "")
+
+
+def test_trial_probe_includes_vietnam_region() -> None:
+    assert tasks.TRIAL_ELIGIBILITY_REGION_LABELS["VN"] == "越南"
+    assert tasks._normalize_chatgpt_trial_region_proxies({
+        "VN": "socks5://vn-proxy:1080",
+    }) == {
+        "VN": "socks5://vn-proxy:1080",
+    }
+
+
+def test_create_trial_probe_allows_empty_region_proxies(monkeypatch) -> None:
+    monkeypatch.setattr(tasks, "create_task", lambda **kwargs: kwargs)
+
+    result = tasks.create_trial_eligibility_probe_task({
+        "ids": [42],
+        "proxies": {},
+    })
+
+    assert result["payload"]["proxies"] == {}
+
+
 def test_post_register_trial_check_runs_configured_regions_in_parallel(monkeypatch) -> None:
     logger = _Logger()
     account = SimpleNamespace(platform="chatgpt", email="trial@example.com", extra={})
@@ -137,14 +166,18 @@ def test_post_register_trial_check_runs_configured_regions_in_parallel(monkeypat
     assert any("开始并行检测 2 个已配置地区" in message for message, _level, _detail in logger.entries)
 
 
-def test_post_register_trial_check_skips_when_registration_regions_are_empty(monkeypatch) -> None:
+def test_post_register_trial_check_uses_system_proxy_when_regions_are_empty(monkeypatch) -> None:
     logger = _Logger()
     account = SimpleNamespace(platform="chatgpt", email="trial@example.com", extra={})
+    calls: list[tuple[str, str | None]] = []
 
-    def _unexpected_inspect(*_args, **_kwargs):
-        raise AssertionError("empty configured regions must not trigger a trial request")
+    monkeypatch.setattr(tasks, "_get_chatgpt_trial_system_proxy", lambda: "http://127.0.0.1:7897")
 
-    monkeypatch.setattr(tasks, "_inspect_chatgpt_free_plus_trial", _unexpected_inspect)
+    def _inspect(_account, *, proxy=None, region_code="", **_kwargs):
+        calls.append((str(region_code), proxy))
+        return {"ok": True, "eligible": False}
+
+    monkeypatch.setattr(tasks, "_inspect_chatgpt_free_plus_trial", _inspect)
 
     eligible = tasks._run_chatgpt_trial_post_register_check(
         account=account,
@@ -155,4 +188,29 @@ def test_post_register_trial_check_skips_when_registration_regions_are_empty(mon
     )
 
     assert eligible is False
-    assert any("未配置地区检测代理" in message for message, _level, _detail in logger.entries)
+    assert calls == [("", "http://127.0.0.1:7897")]
+    assert any("改用本机系统代理" in message for message, _level, _detail in logger.entries)
+
+
+def test_trial_check_client_uses_registration_proxy_chain(monkeypatch) -> None:
+    from platforms.chatgpt import http_client as chatgpt_http_client
+
+    monkeypatch.setattr(
+        chatgpt_http_client,
+        "get_proxy_runtime_config",
+        lambda: {"upstream_url": "http://127.0.0.1:7897"},
+    )
+
+    client = tasks._create_chatgpt_trial_check_client(
+        "socks5://vn-proxy:1080",
+        20,
+    )
+    try:
+        assert client.config.impersonate == "firefox135"
+        assert client.config.proxy_upstream_url == "http://127.0.0.1:7897"
+        assert client.proxies == {
+            "http": "socks5h://vn-proxy:1080",
+            "https": "socks5h://vn-proxy:1080",
+        }
+    finally:
+        client.close()

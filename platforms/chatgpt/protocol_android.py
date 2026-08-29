@@ -28,10 +28,10 @@ SCOPES = (
     "openid email profile offline_access model.request model.read "
     "organization.read organization.write"
 )
-APP_VERSION = "1.2026.223"
-APP_BUILD = "2622307"
+APP_VERSION = "1.2026.237"
+APP_BUILD = "2623711"
 APP_HASH = "zFKflHMWTnT"
-APP_USER_AGENT = "ChatGPT/1.2026.223 (Android 10; MIX 2S; build 2622307)"
+APP_USER_AGENT = "ChatGPT/1.2026.237 (Android 10; MIX 2S; build 2623711)"
 WEBVIEW_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 10; MIX 2S) "
     "AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -79,6 +79,52 @@ def _token_expiry(tokens: dict[str, Any]) -> tuple[str, int]:
         return "", 0
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
     return expires_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"), expires_in
+
+
+def refresh_android_oauth_tokens(
+    refresh_token: str,
+    *,
+    proxy_url: str | None = None,
+    timeout: int = 30,
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """按 Android App 协议刷新 OAuth token（逆向自 ChatGPT Android 1.2026.237）。"""
+    token = str(refresh_token or "").strip()
+    if not token:
+        raise ValueError("ANDROID协议刷新缺少 refresh_token")
+    if session is None:
+        session = requests.Session()
+        session.trust_env = False
+        if proxy_url:
+            session.proxies.update({"http": proxy_url, "https": proxy_url})
+    response = session.post(
+        TOKEN_URL,
+        json={
+            "grant_type": "refresh_token",
+            "client_id": CLIENT_ID,
+            "refresh_token": token,
+            "scope": SCOPES,
+        },
+        headers={
+            "User-Agent": APP_USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        timeout=timeout,
+    )
+    tokens = _safe_json(response, "刷新 OAuth token")
+    access_token = str(tokens.get("access_token") or "")
+    if not access_token:
+        raise RuntimeError(
+            f"ANDROID协议刷新 OAuth token 缺少 access_token: "
+            f"{json.dumps(tokens, ensure_ascii=False)[:500]}"
+        )
+    result = dict(tokens)
+    result["refresh_token"] = str(tokens.get("refresh_token") or "") or token
+    computed_expires_at, expires_in = _token_expiry(tokens)
+    result["expires_at"] = str(tokens.get("expires_at") or "") or computed_expires_at
+    result["expires_in"] = expires_in
+    return result
 
 
 class ChatGPTAndroidProtocolWorker:

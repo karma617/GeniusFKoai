@@ -674,6 +674,72 @@ def get_codex_desktop_state() -> dict:
     return state
 
 
+def fetch_chatgpt_health_probe(
+    *,
+    access_token: str = "",
+    session_token: str = "",
+    cookies: str = "",
+    proxy: str | None = None,
+) -> dict:
+    """Run the lightweight account health probe.
+
+    An existing access token causes exactly one GET /backend-api/me request.
+    When it is missing, the existing session-token refresh is retained before
+    the single profile request. No trace, subscription, usage, or Codex probes
+    are performed here.
+    """
+    resolved_session = extract_session_token(session_token, cookies)
+    resolved_access = str(access_token or "").strip()
+    state: dict[str, Any] = {
+        "platform": "chatgpt",
+        "session_token_present": bool(resolved_session),
+        "valid": False,
+    }
+
+    if not resolved_access:
+        if not resolved_session:
+            state["profile_error"] = "缺少 access_token/session_token，无法查询账号状态"
+            return state
+        try:
+            from platforms.chatgpt.token_refresh import TokenRefreshManager
+
+            refresh = TokenRefreshManager(proxy_url=proxy).refresh_by_session_token(resolved_session)
+        except Exception as exc:
+            state["token_refresh_error"] = str(exc)
+            return state
+        if not refresh.success or not str(refresh.access_token or "").strip():
+            state["token_refresh_error"] = str(refresh.error_message or "Session token 刷新失败")
+            return state
+        resolved_access = str(refresh.access_token).strip()
+        state["access_token"] = resolved_access
+
+    try:
+        response = curl_requests.get(
+            "https://chatgpt.com/backend-api/me",
+            headers={
+                "authorization": f"Bearer {resolved_access}",
+                "accept": "application/json",
+                "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+                "connection": "keep-alive",
+            },
+            timeout=20,
+            impersonate="chrome124",
+            **_build_proxy_request_kwargs(proxy),
+        )
+        if response.status_code == 200:
+            profile = response.json()
+            state.update({"valid": True, "profile": profile, "remote_user": profile})
+        else:
+            state["profile_error"] = {
+                "status_code": response.status_code,
+                "body": str(response.text or "")[:400],
+            }
+    except Exception as exc:
+        state["profile_error"] = {"error": str(exc)}
+    return state
+
+
 def _fetch_profile(
     access_token: str,
     proxy: str | None = None,

@@ -113,6 +113,7 @@ const TRIAL_PROBE_REGIONS = [
   { code: 'PH', label: '菲律宾' },
   { code: 'GB', label: '英国' },
   { code: 'ID', label: '印度尼西亚' },
+  { code: 'VN', label: '越南' },
   { code: 'NL', label: '荷兰' },
   { code: 'IN', label: '印度' },
 ] as const
@@ -228,8 +229,47 @@ function isRtPendingUploadAccount(acc: any) {
   return status === 'rt_pending_upload'
 }
 
+const ANDROID_PROTOCOL_VARIANTS = new Set(['android', 'android_app', 'android_protocol'])
+const CODEX_RT_LIFECYCLE_STATUSES = new Set(['rt_pending_upload', 'rt_uploaded'])
+const CODEX_RT_RUNTIME_SUMMARY_KEYS = ['rt_acquired_at', 'rt_upload_status', 'rt_upload_message', 'rt_upload_checked_at', 'rt_uploaded_at']
+
+function isAndroidProtocolRegistration(acc: any) {
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  const variant = String(
+    overview?.registration_protocol_variant
+      || overview?.chatgpt_protocol_variant
+      || overview?.protocol_variant
+      || legacyExtra?.registration_protocol_variant
+      || legacyExtra?.chatgpt_protocol_variant
+      || legacyExtra?.protocol_variant
+      || '',
+  ).trim().toLowerCase()
+  return ANDROID_PROTOCOL_VARIANTS.has(variant)
+}
+
+function hasCodexRtMarker(acc: any) {
+  const status = String(getDisplayStatus(acc) || getLifecycleStatus(acc) || '').trim().toLowerCase()
+  if (CODEX_RT_LIFECYCLE_STATUSES.has(status)) return true
+  const overview = getAccountOverview(acc)
+  const legacyExtra = overview?.legacy_extra && typeof overview.legacy_extra === 'object' ? overview.legacy_extra : {}
+  if (overview?.oauth || overview?.codex_oauth || legacyExtra?.oauth || legacyExtra?.codex_oauth) return true
+  const sources = [overview, legacyExtra]
+  return sources.some(source => source && typeof source === 'object' && CODEX_RT_RUNTIME_SUMMARY_KEYS.some((key) => {
+    const value = source[key]
+    return value !== undefined && value !== null && String(value).trim() !== ''
+  }))
+}
+
+// 资格判断表示“已有 Codex RT”：安卓协议注册账号自带的 refresh_token 不算 Codex RT。
+function hasChatgptCodexRt(acc: any) {
+  if (!hasChatgptRefreshToken(acc)) return false
+  if (isAndroidProtocolRegistration(acc) && !hasCodexRtMarker(acc)) return false
+  return true
+}
+
 function isGetRtTargetModeAccount(acc: any) {
-  return !hasChatgptRefreshToken(acc) || isRtPendingUploadAccount(acc)
+  return !hasChatgptCodexRt(acc) || isRtPendingUploadAccount(acc)
 }
 
 function normalizeGetRtSmsProviderKey(value: any) {
@@ -649,7 +689,12 @@ function buildChatgptAtCookieCopyText(acc: any) {
 
 function getAccountPlanLabel(acc: any) {
   const overview = getAccountOverview(acc)
-  const plan = String(acc?.plan_name || overview?.plan_name || overview?.plan || '').trim()
+  const planName = String(acc?.plan_name || overview?.plan_name || '').trim()
+  if (planName) return planName
+  const platform = String(acc?.platform || overview?.platform || '').trim().toLowerCase()
+  // GoPay 是钱包平台，不存在 ChatGPT Free 套餐；历史 plan=free 也不能覆盖平台名称
+  if (platform === 'gopay') return 'GoPay'
+  const plan = String(overview?.plan || '').trim()
   if (plan) return plan
   const planState = String(getPlanState(acc) || '').trim().toLowerCase()
   if (planState === 'free' || planState === 'eligible' || planState === 'unknown') return 'Free'
@@ -2284,7 +2329,7 @@ function RegisterModal({
                       <div>
                         <div className="text-sm font-medium text-[var(--text-primary)]">注册后检测试用资格</div>
                         <div className="mt-1 text-xs text-[var(--text-muted)]">
-                          默认关闭。需要自动检测时再启用，并为本次任务选择地区代理。
+                          默认关闭。需要自动检测时再启用；未填写任何地区代理时默认使用本机系统代理。
                         </div>
                       </div>
                     </label>
@@ -2300,7 +2345,7 @@ function RegisterModal({
                             type="text"
                             value={trialProbeProxies[region.code] || ''}
                             onChange={event => onTrialProbeProxyChange(region.code, event.target.value)}
-                            placeholder="http://user:pass@host:port"
+                            placeholder="http://user:pass@host:port 或 socks5://host:port"
                             disabled={!trialProbeAfterRegisterEnabled}
                             className="control-surface control-surface-compact w-full font-mono text-xs"
                           />
@@ -2308,7 +2353,7 @@ function RegisterModal({
                       ))}
                     </div>
                     <div className="mt-2 text-[11px] text-[var(--text-muted)]">
-                      已配置 {TRIAL_PROBE_REGIONS.filter(region => trialProbeProxies[region.code]?.trim()).length} 个地区；启用后任务开始前会校验代理实际出口地区。
+                      已配置 {TRIAL_PROBE_REGIONS.filter(region => trialProbeProxies[region.code]?.trim()).length} 个地区；全部留空时使用本机系统代理。
                     </div>
                   </div>
                 )}
@@ -4171,6 +4216,7 @@ export default function Accounts() {
   const [oauthConfirmOpen, setOauthConfirmOpen] = useState(false)
   const [trialProbeAccount, setTrialProbeAccount] = useState<{ id: number | string; email?: string } | null>(null)
   const [trialProbeTaskTitle, setTrialProbeTaskTitle] = useState('批量检测试用资格')
+  const [momoMode, setMomoMode] = useState(false)
   const [trialProbeProxies, setTrialProbeProxies] = useState<Record<string, string>>(
     () => readStoredTrialProbeForm().proxies,
   )
@@ -4350,7 +4396,7 @@ export default function Accounts() {
   const selectedCount = selectedIds.size
   const selectedAccounts = accounts.filter(acc => selectedIds.has(acc.id))
   const getRtEligibleIds = selectedAccounts
-    .filter(acc => getRtTaskMode === 'target' ? isGetRtTargetModeAccount(acc) : !hasChatgptRefreshToken(acc))
+    .filter(acc => getRtTaskMode === 'target' ? isGetRtTargetModeAccount(acc) : !hasChatgptCodexRt(acc))
     .map(acc => Number(acc.id))
     .filter(id => Number.isFinite(id) && id > 0)
   const ppLiveMap = (ppPlusStatus?.accounts && typeof ppPlusStatus.accounts === 'object') ? ppPlusStatus.accounts : {}
@@ -5196,10 +5242,6 @@ export default function Accounts() {
         .filter(([, proxy]) => Boolean(proxy)),
     )
     setError('')
-    if (Object.keys(proxies).length === 0) {
-      setError('请至少填写一个地区的检测代理地址')
-      return
-    }
     setOauthBusy(true)
     try {
       const ids = trialProbeAccount
@@ -5233,6 +5275,32 @@ export default function Accounts() {
     }
   }
 
+  const startMomoTrialProbe = async () => {
+    setOauthBusy(true)
+    setError('')
+    try {
+      // 有勾选则检测勾选；无勾选则传空 ids，后端按 platform 检测全部
+      const ids = selectedIds.size > 0 ? [...selectedIds].map(Number) : []
+      const data = await apiFetch('/tasks/momo-trial-probe', {
+        method: 'POST',
+        body: JSON.stringify({
+          ids,
+          platform: tab || 'chatgpt',
+          concurrency: trialProbeConcurrency,
+        }),
+      })
+      const taskId = String(data?.task_id || data?.id || '')
+      if (taskId) {
+        setOauthTaskId(taskId)
+        setOauthConfirmOpen(false)
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : t('login.requestFailed'))
+    } finally {
+      setOauthBusy(false)
+    }
+  }
+
   const handleOAuthTaskDone = useCallback(async () => {
     setOauthBusy(false)
     setSelectedIds(new Set())
@@ -5246,8 +5314,8 @@ export default function Accounts() {
     if (ids.length === 0) {
       setError(
         getRtTaskMode === 'target'
-          ? '目标模式会处理已选中且没有 RT 的账号；已获取 RT、未上传账号会重试上传。'
-          : '获取rt 会处理已选中且没有 RT 的账号；已有 RT 的账号会跳过。',
+          ? '目标模式会处理已选中且没有 Codex RT 的账号；已获取 Codex RT、未上传账号会重试上传。'
+          : '获取rt 会处理已选中且没有 Codex RT 的账号；已有 Codex RT 的账号会跳过。',
       )
       return
     }
@@ -5309,7 +5377,7 @@ export default function Accounts() {
       return
     }
     if (getRtAnyModeEligibleIds.length === 0) {
-      setError('获取rt 会处理已选中且没有 RT 的账号；已有 RT 的账号会跳过。')
+      setError('获取rt 会处理已选中且没有 Codex RT 的账号；已有 Codex RT 的账号会跳过。')
       return
     }
     setGetRtConfirmOpen(true)
@@ -5763,14 +5831,18 @@ export default function Accounts() {
       {oauthTaskId && (
         <SimpleTaskLogDialog
           open={Boolean(oauthTaskId)}
-          title={trialProbeTaskTitle}
-          subtitle={trialProbeAccount
-            ? '当前账号检测所有已填写地区 · 合格地区全部添加标签'
-            : '每个账号检测所有已填写地区 · 合格地区全部添加标签'}
+          title={momoMode ? '检测MOMO试用资格' : trialProbeTaskTitle}
+          subtitle={momoMode
+            ? '后台批量检测 · 同时具备试用和 MoMo 时打标签「MOMO试用」'
+            : trialProbeAccount
+              ? '当前账号检测所有已填写地区 · 合格地区全部添加标签'
+              : '每个账号检测所有已填写地区 · 合格地区全部添加标签'}
           taskId={oauthTaskId}
+          showMomoTrialStats={momoMode}
           onClose={() => {
             setOauthTaskId('')
             setTrialProbeAccount(null)
+            setMomoMode(false)
           }}
           onDone={handleOAuthTaskDone}
         />
@@ -5783,6 +5855,7 @@ export default function Accounts() {
               if (!oauthBusy) {
                 setOauthConfirmOpen(false)
                 setTrialProbeAccount(null)
+                setMomoMode(false)
               }
             }}
           >
@@ -5794,7 +5867,7 @@ export default function Accounts() {
               <div className="shrink-0 flex items-center justify-between border-b border-[var(--border-soft)] bg-[var(--bg-elevated)] px-6 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-[var(--text-primary)]">
-                    {trialProbeAccount ? '检测资格' : '批量检测试用资格'}
+                    {momoMode ? '检测MOMO试用资格' : trialProbeAccount ? '检测资格' : '批量检测试用资格'}
                   </h2>
                   <div className="mt-1 text-xs help-text">
                     {trialProbeAccount
@@ -5809,6 +5882,7 @@ export default function Accounts() {
                     if (!oauthBusy) {
                       setOauthConfirmOpen(false)
                       setTrialProbeAccount(null)
+                      setMomoMode(false)
                     }
                   }}
                   className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
@@ -5818,36 +5892,50 @@ export default function Accounts() {
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-[var(--bg-base)] px-6 py-5">
                 <p className="text-sm text-[var(--text-secondary)]">
-                  {trialProbeAccount
-                    ? '将只检测当前账号。'
-                    : selectedIds.size > 0
-                      ? `将检测已勾选的 ${selectedIds.size} 个账号。`
-                      : '未勾选账号，将检测当前平台全部账号。'}
-                  每个账号会检测所有已填写代理的地区，符合资格的地区会全部添加标签。
+                  {momoMode ? (
+                    <>
+                      {selectedIds.size > 0
+                        ? `将检测已勾选的 ${selectedIds.size} 个账号。`
+                        : '未勾选账号，将检测当前平台全部账号。'}
+                      任务在后台运行；检测到同时具备试用资格和 MoMo 支付方式时自动打标签「MOMO试用」。
+                    </>
+                  ) : (
+                    <>
+                      {trialProbeAccount
+                        ? '将只检测当前账号。'
+                        : selectedIds.size > 0
+                          ? `将检测已勾选的 ${selectedIds.size} 个账号。`
+                          : '未勾选账号，将检测当前平台全部账号。'}
+                      每个账号会检测所有已填写代理的地区；如果全部留空，则使用本机系统代理检测一次。
+                      符合资格的地区会全部添加标签。
+                    </>
+                  )}
                 </p>
-                <div>
-                  <label className="mb-2 block text-xs font-medium text-[var(--text-secondary)]">
-                    各地区检测代理
-                  </label>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {TRIAL_PROBE_REGIONS.map(region => (
-                      <label key={region.code} className="block">
-                        <span className="mb-1 block text-xs text-[var(--text-secondary)]">{region.label}（{region.code}）</span>
-                        <input
-                          type="text"
-                          value={trialProbeProxies[region.code] || ''}
-                          onChange={event => setTrialProbeProxies(current => ({
-                            ...current,
-                            [region.code]: event.target.value,
-                          }))}
-                          placeholder="http://user:pass@host:port"
-                          autoComplete="off"
-                          className="control-surface control-surface-compact w-full"
-                        />
-                      </label>
-                    ))}
+                {!momoMode && (
+                  <div>
+                    <label className="mb-2 block text-xs font-medium text-[var(--text-secondary)]">
+                      各地区检测代理
+                    </label>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {TRIAL_PROBE_REGIONS.map(region => (
+                        <label key={region.code} className="block">
+                          <span className="mb-1 block text-xs text-[var(--text-secondary)]">{region.label}（{region.code}）</span>
+                          <input
+                            type="text"
+                            value={trialProbeProxies[region.code] || ''}
+                            onChange={event => setTrialProbeProxies(current => ({
+                              ...current,
+                              [region.code]: event.target.value,
+                            }))}
+                            placeholder="http://user:pass@host:port 或 socks5://host:port"
+                            autoComplete="off"
+                            className="control-surface control-surface-compact w-full"
+                          />
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
                 <div>
                   <label className="mb-1 block text-xs font-medium text-[var(--text-secondary)]">
                     并发线程数（1-10）
@@ -5871,6 +5959,7 @@ export default function Accounts() {
                   onClick={() => {
                     setOauthConfirmOpen(false)
                     setTrialProbeAccount(null)
+                    setMomoMode(false)
                   }}
                   disabled={oauthBusy}
                 >
@@ -5878,8 +5967,8 @@ export default function Accounts() {
                 </Button>
                 <Button
                   size="sm"
-                  onClick={startTrialEligibilityProbe}
-                  disabled={oauthBusy || !TRIAL_PROBE_REGIONS.some(region => trialProbeProxies[region.code]?.trim())}
+                  onClick={momoMode ? startMomoTrialProbe : startTrialEligibilityProbe}
+                  disabled={oauthBusy}
                 >
                   {oauthBusy ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -5911,7 +6000,7 @@ export default function Accounts() {
                     获取rt（refresh_token）
                   </h2>
                   <div className="mt-1 text-xs help-text">
-                    已选 {selectedIds.size} 个账户；将处理没有 RT 的账号，已有 RT 的账号会跳过。
+                    已选 {selectedIds.size} 个账户；将处理没有 Codex RT 的账号，已有 Codex RT 的账号会跳过。
                   </div>
                 </div>
                 <button
@@ -6382,7 +6471,7 @@ export default function Accounts() {
                 disabled={batchSecurityBusy}
                 onClick={startBatchSecuritySetup}
                 className="h-10 rounded-lg border-[var(--border-soft)] bg-[var(--bg-card)] px-5 text-[13px] font-medium shadow-[var(--shadow-soft)] hover:bg-[var(--bg-pane)]"
-                title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个账号设置密码和2FA` : '未勾选：处理全部未绑定2FA的账号'}
+                title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个账号自动补齐缺失的密码/2FA（已设置的自动跳过）` : '未勾选：处理所有缺密码或缺2FA的账号'}
               >
                 {batchSecurityBusy ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -6489,133 +6578,156 @@ export default function Accounts() {
                   )}
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  value={filterStatus}
-                  onChange={e => setFilterStatus(e.target.value)}
-                  className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] pl-3 pr-8 text-[12px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent)]"
-                >
-                  <option value="">{t('accounts.allStatuses')}</option>
-                  {ACCOUNT_STATUS_FILTER_OPTIONS.map(status => (
-                    <option key={status} value={status}>
-                      {status === 'eligible' ? t('accounts.eligible') : translateAccountStatus(status, language)}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={filterTag}
-                  onChange={e => setFilterTag(e.target.value)}
-                  className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] pl-3 pr-8 text-[12px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent)]"
-                >
-                  <option value="">全部标签</option>
-                  {ACCOUNT_TAG_FILTER_OPTIONS.map(tag => (
-                    <option key={tag} value={tag}>{tag}</option>
-                  ))}
-                </select>
-                {tab === 'chatgpt' && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || loading}
-                    className="h-8 rounded-lg border-0 bg-violet-500/10 px-3 text-[12px] font-medium text-violet-700 hover:bg-violet-500/15 dark:text-violet-300"
-                    title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api` : '为所有状态正常的 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api'}
-                    onClick={startAgentsUploadSub2Api}
+              <div className="flex flex-col items-stretch gap-2 lg:items-end">
+                <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                  <select
+                    value={filterStatus}
+                    onChange={e => setFilterStatus(e.target.value)}
+                    className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] pl-3 pr-8 text-[12px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent)]"
                   >
-                    {agentsUploadBusy ? (
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Upload className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    {agentsUploadBusy ? '批量生成中' : '批量生成Agent Identity'}
-                  </Button>
-                )}
-                {tab === 'chatgpt' && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={oauthBusy || agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || loading}
-                    className="h-8 rounded-lg border-0 bg-blue-500/10 px-3 text-[12px] font-medium text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
-                    title={selectedCount > 0 ? `检测已勾选的 ${selectedCount} 个账号` : '未勾选时检测当前平台全部账号'}
-                    onClick={() => {
-                      setError('')
-                      setTrialProbeAccount(null)
-                      setOauthConfirmOpen(true)
-                    }}
+                    <option value="">{t('accounts.allStatuses')}</option>
+                    {ACCOUNT_STATUS_FILTER_OPTIONS.map(status => (
+                      <option key={status} value={status}>
+                        {status === 'eligible' ? t('accounts.eligible') : translateAccountStatus(status, language)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={filterTag}
+                    onChange={e => setFilterTag(e.target.value)}
+                    className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] pl-3 pr-8 text-[12px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent)]"
                   >
-                    <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
-                    批量检测试用资格
-                  </Button>
-                )}
-                {tab === 'chatgpt' && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={batchPlanRefreshing || agentsUploadBusy || batchHealthChecking || loading}
-                    className="h-8 rounded-lg border-0 bg-emerald-500/10 px-3 text-[12px] font-medium text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
-                    title="全量刷新当前平台所有账号的订阅套餐类型"
-                    onClick={refreshPlanForAllAccounts}
-                  >
-                    {batchPlanRefreshing ? (
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    {batchPlanRefreshing ? '刷新套餐中' : '一键刷新套餐'}
-                  </Button>
-                )}
-                {tab === 'chatgpt' && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={batchHealthChecking || batchPlanRefreshing || loading}
-                    className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
-                    title={t('accounts.healthCheckTitle')}
-                    onClick={startHealthCheck}
-                  >
-                    <ShieldCheck className={cn("mr-1.5 h-3.5 w-3.5", batchHealthChecking && "animate-pulse")} />
-                    {batchHealthChecking ? t('accounts.healthChecking') : t('accounts.healthCheck')}
-                  </Button>
-                )}
-                {tab === 'chatgpt' && selectedCount > 0 && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={batchStatusUpdating}
-                    className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
-                    onClick={openBatchStatusModal}
-                  >
-                    {batchStatusUpdating ? (
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <ListChecks className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    {'\u4fee\u6539\u72b6\u6001'}
-                  </Button>
-                )}
-                {selectedCount > 0 && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={bulkDeleting}
-                    className="h-8 rounded-lg border-0 bg-red-500/10 px-3 text-[12px] font-medium text-red-600 hover:bg-red-500/15"
-                    onClick={async () => {
-                      if (!confirm(t('accounts.deleteSelectedConfirm', { count: selectedCount }))) return
-                      setBulkDeleting(true)
-                      try {
-                        await Promise.allSettled(
-                          [...selectedIds].map(id => apiFetch(`/accounts/${id}`, { method: 'DELETE' }))
-                        )
-                        setSelectedIds(new Set())
-                        load()
-                      } finally {
-                        setBulkDeleting(false)
-                      }
-                    }}
-                  >
-                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                    {bulkDeleting ? t('common.deleting') : t('common.delete')}
-                  </Button>
-                )}
+                    <option value="">全部标签</option>
+                    {ACCOUNT_TAG_FILTER_OPTIONS.map(tag => (
+                      <option key={tag} value={tag}>{tag}</option>
+                    ))}
+                  </select>
+                  {tab === 'chatgpt' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || loading}
+                      className="h-8 rounded-lg border-0 bg-violet-500/10 px-3 text-[12px] font-medium text-violet-700 hover:bg-violet-500/15 dark:text-violet-300"
+                      title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api` : '为所有状态正常的 ChatGPT 账号生成 Agent Identity auth.json 并分批上传到 Sub2Api'}
+                      onClick={startAgentsUploadSub2Api}
+                    >
+                      {agentsUploadBusy ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Upload className="mr-1.5 h-3.5 w-3.5" />
+                      )}
+                      {agentsUploadBusy ? '批量生成中' : '批量生成Agent Identity'}
+                    </Button>
+                  )}
+                  {tab === 'chatgpt' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={oauthBusy || agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || loading}
+                      className="h-8 rounded-lg border-0 bg-blue-500/10 px-3 text-[12px] font-medium text-blue-700 hover:bg-blue-500/15 dark:text-blue-300"
+                      title={selectedCount > 0 ? `检测已勾选的 ${selectedCount} 个账号` : '未勾选时检测当前平台全部账号'}
+                      onClick={() => {
+                        setError('')
+                        setTrialProbeAccount(null)
+                        setMomoMode(false)
+                        setOauthConfirmOpen(true)
+                      }}
+                    >
+                      <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                      批量检测试用资格
+                    </Button>
+                  )}
+                  {tab === 'chatgpt' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={oauthBusy || agentsUploadBusy || batchPlanRefreshing || batchHealthChecking || loading}
+                      className="h-8 rounded-lg border-0 bg-pink-500/10 px-3 text-[12px] font-medium text-pink-700 hover:bg-pink-500/15 dark:text-pink-300"
+                      title={selectedCount > 0 ? `检测已勾选的 ${selectedCount} 个账号的试用资格与 MoMo 支付方式` : '未勾选时检测当前平台全部账号，具备试用资格且有 MoMo 支付方式时打「MOMO试用」标签'}
+                      onClick={() => {
+                        setError('')
+                        setTrialProbeAccount(null)
+                        setMomoMode(true)
+                        setOauthConfirmOpen(true)
+                      }}
+                    >
+                      <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                      检测MOMO试用资格
+                    </Button>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                  {tab === 'chatgpt' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={batchPlanRefreshing || agentsUploadBusy || batchHealthChecking || loading}
+                      className="h-8 rounded-lg border-0 bg-emerald-500/10 px-3 text-[12px] font-medium text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
+                      title="全量刷新当前平台所有账号的订阅套餐类型"
+                      onClick={refreshPlanForAllAccounts}
+                    >
+                      {batchPlanRefreshing ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                      )}
+                      {batchPlanRefreshing ? '刷新套餐中' : '一键刷新套餐'}
+                    </Button>
+                  )}
+                  {tab === 'chatgpt' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={batchHealthChecking || batchPlanRefreshing || loading}
+                      className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
+                      title={t('accounts.healthCheckTitle')}
+                      onClick={startHealthCheck}
+                    >
+                      <ShieldCheck className={cn("mr-1.5 h-3.5 w-3.5", batchHealthChecking && "animate-pulse")} />
+                      {batchHealthChecking ? t('accounts.healthChecking') : t('accounts.healthCheck')}
+                    </Button>
+                  )}
+                  {tab === 'chatgpt' && selectedCount > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={batchStatusUpdating}
+                      className="h-8 rounded-lg border-0 bg-[var(--bg-pane)] px-3 text-[12px] font-medium"
+                      onClick={openBatchStatusModal}
+                    >
+                      {batchStatusUpdating ? (
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ListChecks className="mr-1.5 h-3.5 w-3.5" />
+                      )}
+                      {'\u4fee\u6539\u72b6\u6001'}
+                    </Button>
+                  )}
+                  {selectedCount > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={bulkDeleting}
+                      className="h-8 rounded-lg border-0 bg-red-500/10 px-3 text-[12px] font-medium text-red-600 hover:bg-red-500/15"
+                      onClick={async () => {
+                        if (!confirm(t('accounts.deleteSelectedConfirm', { count: selectedCount }))) return
+                        setBulkDeleting(true)
+                        try {
+                          await Promise.allSettled(
+                            [...selectedIds].map(id => apiFetch(`/accounts/${id}`, { method: 'DELETE' }))
+                          )
+                          setSelectedIds(new Set())
+                          load()
+                        } finally {
+                          setBulkDeleting(false)
+                        }
+                      }}
+                    >
+                      <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                      {bulkDeleting ? t('common.deleting') : t('common.delete')}
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -6951,6 +7063,7 @@ export default function Accounts() {
                                   onClick={() => {
                                     setError('')
                                     setTrialProbeAccount(acc)
+                                    setMomoMode(false)
                                     setOauthConfirmOpen(true)
                                   }}
                                   disabled={oauthBusy}
@@ -7111,7 +7224,7 @@ export default function Accounts() {
                 onClick={startBatchSecuritySetup}
                 disabled={batchSecurityBusy}
                 className={ACCOUNT_TOOL_BUTTON_CLASS}
-                title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个账号设置密码和2FA` : '未勾选：处理全部未绑定2FA的账号'}
+                title={selectedCount > 0 ? `为已勾选的 ${selectedCount} 个账号自动补齐缺失的密码/2FA（已设置的自动跳过）` : '未勾选：处理所有缺密码或缺2FA的账号'}
               >
                 {batchSecurityBusy ? (
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 shrink-0 animate-spin" />

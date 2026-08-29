@@ -435,6 +435,9 @@ class GoPayPlatform(BasePlatform):
                 "acquired_via": "mature_rebind",
                 **sms_lifetime,
                 "account_overview": {
+                    "plan": "gopay",
+                    "plan_name": "GoPay",
+                    "plan_state": "active" if balance_rp > 0 else "registered",
                     "balance_rp": balance_rp,
                     "balance_query_status": balance_info.get("balance_query_status"),
                     "balance_check_error": balance_info.get("balance_check_error"),
@@ -634,6 +637,14 @@ class GoPayPlatform(BasePlatform):
                 # 返回，不能泄漏接码平台的全局 API key。付款步骤 ③ 那边
                 # 改成从 task payload 或环境变量读。
                 "account_overview": {
+                    # 钱包平台没有 ChatGPT Free 套餐：plan 只标记平台身份，
+                    # 套餐状态按余额区分（>0=active / 0=registered）。这层
+                    # 会被 sync_platform_account_graph 映射进
+                    # AccountOverviewModel.summary，必须从第一次保存起就带上，
+                    # 否则列表里 plan_state=unknown、plan_name 为空。
+                    "plan": "gopay",
+                    "plan_name": "GoPay",
+                    "plan_state": "active" if balance_rp > 0 else "registered",
                     "balance_rp": balance_rp,
                     "balance_query_status": balance_info.get("balance_query_status"),
                     "balance_check_error": balance_info.get("balance_check_error"),
@@ -772,7 +783,8 @@ class GoPayPlatform(BasePlatform):
                 return False
             balance = int(balance_info.get("balance_rp") or 0)
             self._last_check_overview = {
-                "plan": "free" if balance < 1 else "active",
+                # 钱包平台没有 ChatGPT Free 套餐，余额为 0 只表示已注册未充值。
+                "plan": "gopay",
                 "plan_name": "GoPay",
                 "plan_state": "active" if balance > 0 else "registered",
                 "registration_ip_country_code": registration_ip_country_code,

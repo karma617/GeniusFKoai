@@ -24,6 +24,7 @@ import GoPayGptPlus from "@/pages/GoPayGptPlus";
 import PlusManager from "@/pages/PlusManager";
 import Sub2ApiManagement from "@/pages/Sub2ApiManagement";
 import GmailApiCodeUsage from "@/pages/GmailApiCodeUsage";
+import ChatGptRebind from "@/pages/ChatGptRebind";
 import UpdateBanner from "@/components/UpdateBanner";
 import {
   ChevronRight,
@@ -40,6 +41,7 @@ import {
   Sparkles,
   MailCheck,
   Wrench,
+  Repeat,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -65,6 +67,7 @@ const WORKBENCH_ITEMS: NavItem[] = [
 const OPERATIONS_ITEMS: NavItem[] = [
   { path: "/sub2api-management", labelKey: "nav.sub2apiManagement", icon: Sparkles },
   { path: "/gmail-api-code-usage", labelKey: "nav.gmailApiCodeUsage", icon: MailCheck },
+  { path: "/chatgpt-rebind", labelKey: "nav.chatgptRebind", icon: Repeat },
 ];
 
 function Sidebar({
@@ -599,6 +602,7 @@ function Shell({
               <Route path="/plus-manager" element={<PlusManager />} />
               <Route path="/sub2api-management" element={<Sub2ApiManagement />} />
               <Route path="/gmail-api-code-usage" element={<GmailApiCodeUsage />} />
+              <Route path="/chatgpt-rebind" element={<ChatGptRebind />} />
               <Route path="/history" element={<TaskHistory />} />
               <Route path="/proxies" element={<Proxies />} />
               <Route

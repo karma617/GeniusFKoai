@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any, Callable
 
 from application.ba_link_extract import (
     PAYMENT_CHECKOUT_URL,
-    _auth_headers,
     _payment_method_types,
     _text,
 )
@@ -26,6 +26,18 @@ DEFAULT_TRIAL_DAYS = 30
 DEFAULT_BILLING_COUNTRY = "VN"
 DEFAULT_BILLING_CURRENCY = "VND"
 MOMO_TRIAL_NETWORK_RETRY_COUNT = 5
+
+# 对齐实测可用的浏览器画像（check_momo_eligibility 脚本同款）：
+# chrome136 TLS 指纹 + Safari UA + 完整 oai 头族。此前 firefox135 TLS 配
+# Chrome UA 且缺 oai-client-*/sec-* 头，会被 /payments/checkout 风控以
+# "unusual activity" 400 拒绝（与 payload、cookie、出口 IP、账号均无关）。
+MOMO_IMPERSONATE = "chrome136"
+MOMO_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_1) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
+)
+MOMO_CLIENT_VERSION = "prod-db390ebea64862bf1899c420a4c736e0cf639747"
+MOMO_CLIENT_BUILD_NUMBER = "7904904"
 
 
 def _log(log_fn: LogFn, message: str) -> None:
@@ -281,13 +293,44 @@ def probe_momo_trial(
     currency = (_text(billing_currency) or DEFAULT_BILLING_CURRENCY).upper()
     days = max(int(trial_period_days or DEFAULT_TRIAL_DAYS), 1)
 
-    session = build_protocol_session(proxy=_text(proxy), cookies_str=_text(cookies))
-    headers = _auth_headers(token, cookies=_text(cookies))
+    session = build_protocol_session(
+        proxy=_text(proxy),
+        cookies_str=_text(cookies),
+        impersonate=MOMO_IMPERSONATE,
+    )
+    device_id = str(uuid.uuid4())
+    headers = {
+        "User-Agent": MOMO_BROWSER_UA,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Authorization": f"Bearer {token}",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "Content-Type": "application/json",
+        "oai-device-id": device_id,
+        "oai-language": "en-US",
+        "oai-session-id": device_id,
+        "oai-client-version": MOMO_CLIENT_VERSION,
+        "oai-client-build-number": MOMO_CLIENT_BUILD_NUMBER,
+        "sec-ch-ua": '"Safari";v="17", "Not.A/Brand";v="8"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "x-openai-target-path": "/backend-api/payments/checkout",
+        "x-openai-target-route": "/backend-api/payments/checkout",
+    }
+    if _text(cookies):
+        headers["cookie"] = _text(cookies)
     payload = {
+        "entry_point": "all_plans_pricing_modal",
         "plan_name": "chatgptplusplan",
+        "price_interval": "month",
+        "seat_quantity": 1,
         "billing_details": {"country": country, "currency": currency},
-        "subscription_data": {"trial_period_days": days},
         "checkout_ui_mode": "custom",
+        "subscription_data": {"trial_period_days": days},
     }
 
     _log(log_fn, f"[MOMO试用] checkout country={country} currency={currency} trial_days={days}")
@@ -314,7 +357,7 @@ def probe_momo_trial(
     text = _text(getattr(resp, "text", ""))
     if status >= 400 or not isinstance(body, dict):
         kind = _classify_checkout_error(status, body, text)
-        _log(log_fn, f"[MOMO试用] checkout 失败 status={status} kind={kind}")
+        _log(log_fn, f"[MOMO试用] checkout 失败 status={status} kind={kind} body={text[:200]}")
         return {
             "ok": False,
             "decision": kind,
