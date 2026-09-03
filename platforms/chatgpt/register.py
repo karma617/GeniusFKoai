@@ -640,6 +640,73 @@ def _extract_oauth_callback_params_from_url(url: str) -> dict[str, str] | None:
     }
 
 
+# ─── Platform OAuth UA/Client-Hints 一致性（nav/json 复用） ──────────
+
+
+_PLATFORM_UA_PLATFORM_HINTS: tuple[tuple[str, str, str], ...] = (
+    # (UA 标记, sec-ch-ua-platform 值, platform-version 兜底)；
+    # Android UA 同样包含 "Linux"，必须先于 Linux 匹配。
+    ("Android", '"Android"', '"13"'),
+    ("Macintosh", '"macOS"', '"10.15.0"'),
+    ("Windows NT", '"Windows"', '"10.0.0"'),
+    ("Linux", '"Linux"', '"6.2.0"'),
+)
+
+
+def _normalize_client_hint_platform(value: Any) -> str:
+    """归一化 sec-ch-ua-platform 值（去空白/引号后小写），用于与 UA 平台比较。"""
+    return str(value or "").strip().strip('"').strip().lower()
+
+
+def _ua_platform_hint(user_agent: str) -> tuple[str, str]:
+    """从 UA 推断与之一致的 sec-ch-ua-platform / platform-version；无法识别时返回空。"""
+    for marker, platform_value, platform_version in _PLATFORM_UA_PLATFORM_HINTS:
+        if marker in user_agent:
+            return platform_value, platform_version
+    return "", ""
+
+
+def _platform_client_hint_headers(fingerprint: Any, user_agent: str) -> dict[str, str]:
+    """按 UA 一致性生成 Platform OAuth 的 sec-ch-ua* 客户端提示头。
+
+    - Firefox/非 Chromium UA，或 fingerprint.sec_ch_ua 为空：完全不发送
+      UA client hints，避免携带与 UA 冲突的平台指纹（Firefox 本身不支持）。
+    - Chromium UA 且 sec_ch_ua 非空才发送；UA 明确 Windows/Macintosh/
+      Linux/Android 时 platform/platform-version 以 UA 为准（覆盖不一致
+      的 fingerprint 值），其余 arch/bitness/full-version 保持 fingerprint 现值。
+    """
+    ua = str(user_agent or "")
+    if not ua or "Firefox/" in ua:
+        return {}
+    if "Chrome/" not in ua and "Chromium/" not in ua:
+        return {}
+    sec_ch_ua = str(getattr(fingerprint, "sec_ch_ua", "") or "").strip()
+    if not sec_ch_ua:
+        return {}
+
+    def _hint(attr: str, default: str) -> str:
+        return str(getattr(fingerprint, attr, "") or "").strip() or default
+
+    headers: dict[str, str] = {
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-full-version-list": _hint("sec_ch_ua_full", PLATFORM_REFERENCE_SEC_CH_UA_FULL),
+        "sec-ch-ua-arch": _hint("sec_ch_ua_arch", '"x86_64"'),
+        "sec-ch-ua-bitness": _hint("sec_ch_ua_bitness", '"64"'),
+        "sec-ch-ua-mobile": _hint("sec_ch_ua_mobile", "?0"),
+        "sec-ch-ua-model": _hint("sec_ch_ua_model", '""'),
+    }
+    ua_platform, ua_platform_version = _ua_platform_hint(ua)
+    fingerprint_platform = _normalize_client_hint_platform(getattr(fingerprint, "sec_ch_ua_platform", ""))
+    if ua_platform and fingerprint_platform != _normalize_client_hint_platform(ua_platform):
+        # UA 明确平台而 fingerprint 平台冲突：以 UA 为准覆盖。
+        headers["sec-ch-ua-platform"] = ua_platform
+        headers["sec-ch-ua-platform-version"] = ua_platform_version
+    else:
+        headers["sec-ch-ua-platform"] = _hint("sec_ch_ua_platform", ua_platform or '"Windows"')
+        headers["sec-ch-ua-platform-version"] = _hint("sec_ch_ua_platform_version", ua_platform_version or '"10.0.0"')
+    return headers
+
+
 # ─── Sentinel helpers (ported from browser_register.py) ──────────
 
 
@@ -7328,22 +7395,6 @@ class RegistrationEngine:
 
             "user-agent": user_agent,
 
-            "sec-ch-ua": getattr(fingerprint, "sec_ch_ua", PLATFORM_REFERENCE_SEC_CH_UA),
-
-            "sec-ch-ua-arch": getattr(fingerprint, "sec_ch_ua_arch", '"x86_64"'),
-
-            "sec-ch-ua-bitness": getattr(fingerprint, "sec_ch_ua_bitness", '"64"'),
-
-            "sec-ch-ua-full-version-list": getattr(fingerprint, "sec_ch_ua_full", PLATFORM_REFERENCE_SEC_CH_UA_FULL),
-
-            "sec-ch-ua-mobile": getattr(fingerprint, "sec_ch_ua_mobile", "?0"),
-
-            "sec-ch-ua-model": getattr(fingerprint, "sec_ch_ua_model", '""'),
-
-            "sec-ch-ua-platform": getattr(fingerprint, "sec_ch_ua_platform", '"Windows"'),
-
-            "sec-ch-ua-platform-version": getattr(fingerprint, "sec_ch_ua_platform_version", '"10.0.0"'),
-
             "sec-fetch-dest": "document",
 
             "sec-fetch-mode": "navigate",
@@ -7353,6 +7404,8 @@ class RegistrationEngine:
             "upgrade-insecure-requests": "1",
 
         }
+
+        headers.update(_platform_client_hint_headers(fingerprint, user_agent))
 
         if referer:
 
@@ -7391,22 +7444,6 @@ class RegistrationEngine:
 
             "oai-device-id": device_id,
 
-            "sec-ch-ua": getattr(fingerprint, "sec_ch_ua", PLATFORM_REFERENCE_SEC_CH_UA),
-
-            "sec-ch-ua-arch": getattr(fingerprint, "sec_ch_ua_arch", '"x86_64"'),
-
-            "sec-ch-ua-bitness": getattr(fingerprint, "sec_ch_ua_bitness", '"64"'),
-
-            "sec-ch-ua-full-version-list": getattr(fingerprint, "sec_ch_ua_full", PLATFORM_REFERENCE_SEC_CH_UA_FULL),
-
-            "sec-ch-ua-mobile": getattr(fingerprint, "sec_ch_ua_mobile", "?0"),
-
-            "sec-ch-ua-model": getattr(fingerprint, "sec_ch_ua_model", '""'),
-
-            "sec-ch-ua-platform": getattr(fingerprint, "sec_ch_ua_platform", '"Windows"'),
-
-            "sec-ch-ua-platform-version": getattr(fingerprint, "sec_ch_ua_platform_version", '"10.0.0"'),
-
             "sec-fetch-dest": "empty",
 
             "sec-fetch-mode": "cors",
@@ -7414,6 +7451,8 @@ class RegistrationEngine:
             "sec-fetch-site": "same-origin",
 
         }
+
+        headers.update(_platform_client_hint_headers(fingerprint, user_agent))
 
         headers.update(_generate_datadog_trace_headers())
 

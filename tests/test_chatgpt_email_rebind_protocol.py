@@ -34,6 +34,7 @@ class FakeMailbox:
     instances = []
     next_wait_behavior = "code"  # code | timeout | error | empty
     next_get_email_error = None
+    next_get_email_errors: list = []  # 按顺序抛出（域名预检重试场景用完即止）
     next_new_email = NEW_EMAIL
 
     def __init__(self, api_url="", admin_token="", domain="", fingerprint="", proxy=None):
@@ -42,6 +43,8 @@ class FakeMailbox:
         self.domain = domain
         self.proxy = proxy
         self.wait_calls = []
+        self._api_mode = "auto"
+        self.get_email_calls = 0
         FakeMailbox.instances.append(self)
 
     @property
@@ -53,6 +56,9 @@ class FakeMailbox:
         return FakeMailbox.next_new_email
 
     def get_email(self):
+        self.get_email_calls += 1
+        if FakeMailbox.next_get_email_errors:
+            raise FakeMailbox.next_get_email_errors.pop(0)
         if FakeMailbox.next_get_email_error is not None:
             raise FakeMailbox.next_get_email_error
         email = FakeMailbox.next_new_email
@@ -179,6 +185,7 @@ def _reset_fakes():
     FakeMailbox.instances.clear()
     FakeMailbox.next_wait_behavior = "code"
     FakeMailbox.next_get_email_error = None
+    FakeMailbox.next_get_email_errors = []
     FakeMailbox.next_new_email = NEW_EMAIL
     FakeRegistrationEngine.instances.clear()
     FakeRegistrationEngine.next_result = None
@@ -455,6 +462,47 @@ def test_select_cloud_mail_domain_variants():
     assert email_rebind._select_cloud_mail_domain({}) == ""
 
 
+def _allocation_entries(domain, count, prefix="s"):
+    return [
+        {"subdomain": prefix + str(index), "account_email": "", "created_at": ""}
+        for index in range(count)
+    ]
+
+
+def test_select_cloud_mail_domain_quota_aware_variants():
+    allocations = {"a.com": _allocation_entries("a.com", 10), "b.com": []}
+    # 满额主域名跳过，选下一个有余量的
+    assert (
+        email_rebind._select_cloud_mail_domain(
+            {"domains": ["a.com", "b.com"]},
+            subdomain_allocations=allocations,
+            subdomain_limit=10,
+        )
+        == "b.com"
+    )
+    # 显式域名仍有余量时优先
+    assert (
+        email_rebind._select_cloud_mail_domain(
+            {"domain": "c.com", "domains": ["a.com"]},
+            subdomain_allocations={"c.com": _allocation_entries("c.com", 3)},
+            subdomain_limit=10,
+        )
+        == "c.com"
+    )
+    # 全部满额 -> 空串
+    full = {"a.com": _allocation_entries("a.com", 10), "b.com": _allocation_entries("b.com", 10)}
+    assert (
+        email_rebind._select_cloud_mail_domain(
+            {"domains": ["a.com", "b.com"]},
+            subdomain_allocations=full,
+            subdomain_limit=10,
+        )
+        == ""
+    )
+    # 不传配额数据 -> 维持旧行为（不看占用）
+    assert email_rebind._select_cloud_mail_domain({"domains": ["a.com", "b.com"]}) == "a.com"
+
+
 def _stored_cloud_mail_resource(**metadata_overrides):
     """模拟首次换绑成功后落库的 mailbox_resource（安全：不含 api_token）。"""
     metadata = {
@@ -541,3 +589,125 @@ def test_rebind_leaves_incompatible_and_normal_resources_untouched(monkeypatch):
     # 原始 dict 同样未被修改
     for resource in account["extra"]["provider_resources"]:
         assert "api_token" not in resource["metadata"]
+
+SUB_EMAIL = "abc123xyz@sub7.cloud.example.com"
+
+
+def test_rebind_uses_subdomain_domain_for_new_mailbox(monkeypatch):
+    """任务层把 mail_config.domain 覆写为「子域名.主域名」后，新邮箱按该域名创建。"""
+    session = _install_fakes(monkeypatch)
+    FakeRegistrationEngine.next_result = _success_engine_result()
+    FakeMailbox.next_new_email = SUB_EMAIL
+    config = dict(MAIL_CONFIG)
+    config["domain"] = "sub7.cloud.example.com"
+
+    result = email_rebind.rebind_account_email(
+        {"email": OLD_EMAIL, "extra": {"provider_resources": []}},
+        config,
+        log_fn=lambda message: None,
+    )
+
+    assert result["ok"] is True
+    assert result["new_email"] == SUB_EMAIL
+    mailbox = FakeMailbox.instances[-1]
+    assert mailbox.domain == "sub7.cloud.example.com"
+    assert session.calls[0]["kwargs"]["json"] == {"email": SUB_EMAIL}
+    assert session.calls[1]["kwargs"]["json"] == {"email": SUB_EMAIL, "code": "654321"}
+
+
+def test_rebind_rejects_new_email_domain_mismatch(monkeypatch):
+    """创建地址域名与目标不符 -> 结构化失败，不进入协议请求。"""
+    session = _install_fakes(monkeypatch)
+    FakeRegistrationEngine.next_result = _success_engine_result()
+    FakeMailbox.next_new_email = "abc123@other.example.com"
+
+    result = email_rebind.rebind_account_email(
+        {"email": OLD_EMAIL}, dict(MAIL_CONFIG), log_fn=lambda message: None
+    )
+
+    assert result["ok"] is False
+    assert "与目标 cloud.example.com 不符" in result["error"]
+    assert session.calls == []
+
+
+def test_rebind_rejects_new_email_invalid_local_part(monkeypatch):
+    """创建地址本地部分不合法 -> 结构化失败。"""
+    _install_fakes(monkeypatch)
+    FakeRegistrationEngine.next_result = _success_engine_result()
+    FakeMailbox.next_new_email = "prefix-abc123@cloud.example.com"
+
+    result = email_rebind.rebind_account_email(
+        {"email": OLD_EMAIL}, dict(MAIL_CONFIG), log_fn=lambda message: None
+    )
+
+    assert result["ok"] is False
+    assert "本地部分不合法" in result["error"]
+
+
+def test_rebind_retries_add_user_when_domain_precheck_rejects_subdomain(monkeypatch):
+    """worker domainList 预检未包含子域名域名时，跳过预检按完整地址重试一次。"""
+    _install_fakes(monkeypatch)
+    FakeRegistrationEngine.next_result = _success_engine_result()
+    FakeMailbox.next_get_email_errors = [
+        RuntimeError(
+            "Cloud Mail 未启用邮箱域名 sub7.cloud.example.com，当前可用域名: cloud.example.com"
+        )
+    ]
+    FakeMailbox.next_new_email = SUB_EMAIL
+    config = dict(MAIL_CONFIG)
+    config["domain"] = "sub7.cloud.example.com"
+
+    result = email_rebind.rebind_account_email(
+        {"email": OLD_EMAIL, "extra": {"provider_resources": []}},
+        config,
+        log_fn=lambda message: None,
+    )
+
+    assert result["ok"] is True
+    assert result["new_email"] == SUB_EMAIL
+    mailbox = FakeMailbox.instances[-1]
+    assert mailbox.get_email_calls == 2
+    assert mailbox._api_mode == "cloud_mail"
+
+
+def test_rebind_success_logs_key_protocol_nodes(monkeypatch):
+    """关键节点逐行日志：OTP 登录、新邮箱地址、begin/verify 请求与响应、终态。"""
+    _install_fakes(monkeypatch)
+    FakeRegistrationEngine.next_result = _success_engine_result()
+    logs: list[str] = []
+
+    result = email_rebind.rebind_account_email(
+        {"email": OLD_EMAIL, "extra": {"provider_resources": []}},
+        dict(MAIL_CONFIG),
+        log_fn=logs.append,
+    )
+
+    assert result["ok"] is True
+    text = "\n".join(logs)
+    assert "旧邮箱 OTP 新鲜登录" in text
+    assert "重新登录成功" in text
+    assert "新邮箱已生成: " + NEW_EMAIL in text
+    assert "change_email/begin 请求 email=" + NEW_EMAIL in text
+    assert "change_email/begin 响应 status=200" in text
+    assert "change_email/verify 请求 email=" + NEW_EMAIL in text
+    assert "code=654321" in text
+    assert "change_email/verify 响应 status=200" in text
+    assert "换绑成功" in text
+
+
+def test_rebind_failure_logs_terminal_line(monkeypatch):
+    """协议失败时输出「换绑失败」终态日志（供前端日志弹窗）。"""
+    session = _install_fakes(monkeypatch)
+    session.begin_response = FakeResponse(403, "forbidden by cloudflare")
+    FakeRegistrationEngine.next_result = _success_engine_result()
+    logs: list[str] = []
+
+    result = email_rebind.rebind_account_email(
+        {"email": OLD_EMAIL}, dict(MAIL_CONFIG), log_fn=logs.append
+    )
+
+    assert result["ok"] is False
+    assert any(
+        "换绑失败" in message and "change_email/begin 403" in message for message in logs
+    )
+    assert any("change_email/begin 响应 status=403" in message for message in logs)

@@ -10366,6 +10366,39 @@ def _apply_email_rebind_result(
     return True, ""
 
 
+def _onboard_rebind_subdomain_email_routing(
+    main_domain: str,
+    new_domain: str,
+    mail_config: dict[str, Any],
+    logger: TaskLogger,
+) -> str:
+    """为换绑子域幂等启用 Cloudflare Email Routing；成功返回空串，失败返回结构化错误消息。
+
+    根因链：通配 MX 只保证 DNS 可解析，Cloudflare Email Routing 仅处理已 onboarding
+    的域名（官方 Subdomains 文档：子域需逐一启用，每 zone ≤30 个含 apex），未启用子域
+    被 CF 以 Domain not found 拒收；因此分配子域后、协议调用前必须完成 onboarding。
+    权限：enable 端点需 Zone Settings Write；另需 Zone 读取（get_zone）与 DNS Records
+    读取（幂等检测）。同账号重试复用分配 -> onboarding 幂等重跑（已有 MX 直接跳过）。
+    """
+    from application.cloudflare_email_routing import CloudflareClient, ensure_subdomain_email_routing
+
+    token = str(mail_config.get("cloudflare_api_token") or "").strip()
+    if not token:
+        return "请先在「ChatGPT 邮箱换绑」Cloudflare 配置中填写 cloudflare_api_token（子域名邮件路由启用需要）"
+    try:
+        cf_client = CloudflareClient(token, account_id=str(mail_config.get("cloudflare_account_id") or "").strip())
+        zone = cf_client.get_zone(main_domain)
+        if not isinstance(zone, dict) or not str(zone.get("id") or ""):
+            return f"主域名 {main_domain} 未托管在当前 Token 可见范围（Cloudflare Zone 解析失败），无法为 {new_domain} 启用邮件路由"
+        ensure_subdomain_email_routing(cf_client, str(zone.get("id")), new_domain, log_fn=logger.log)
+    except Exception as exc:  # CloudflareAPIError / requests.RequestException / 其他意外
+        return (
+            f"子域名邮件路由启用失败: {exc}。"
+            "请确认 API Token 具备「区域→Zone Settings→编辑」与 Email Routing Rules 权限"
+        )
+    return ""
+
+
 def _execute_email_rebind_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     """批量 ChatGPT 账号邮箱换绑：协议失败不落库，成功后事务更新邮箱与 tokens。"""
     if logger.is_cancel_requested():
@@ -10377,7 +10410,7 @@ def _execute_email_rebind_task(payload: dict[str, Any], logger: TaskLogger) -> N
         logger.finish(TASK_STATUS_FAILED, error="邮箱换绑仅支持 ChatGPT")
         return
 
-    from application.chatgpt_rebind import load_rebind_mail_config
+    from application.chatgpt_rebind import allocate_rebind_subdomain, load_rebind_mail_config
 
     mail_config = load_rebind_mail_config()
     if (
@@ -10426,9 +10459,47 @@ def _execute_email_rebind_task(payload: dict[str, Any], logger: TaskLogger) -> N
                 password = str(model.password or "")
             extra = dict(getattr(account, "extra", {}) or {})
             logger.log(f"[{index + 1}/{total}] 开始换绑邮箱: 账号 #{account_id} ({old_email})")
+            # 子域名分配：先持久化再执行协议；同账号重试幂等复用；
+            # 全部主域名配额用尽则该账号失败（错误含各主域名 N/10 明细）
+            try:
+                subdomain, main_domain = allocate_rebind_subdomain(old_email)
+            except Exception as exc:
+                error = str(exc) or "子域名分配失败"
+                _save_task_log(
+                    platform,
+                    old_email,
+                    "failed",
+                    error=error,
+                    detail={"action": "email_rebind", "account_id": account_id},
+                )
+                logger.log(f"[{index + 1}/{total}] 子域名分配失败 #{account_id} ({old_email}): {error}", level="error")
+                return {"ok": False, "account_id": account_id, "email": old_email, "error": error}
+            new_domain = f"{subdomain}.{main_domain}"
+            logger.log(f"[{index + 1}/{total}] 账号 #{account_id} ({old_email}) 已分配子域名: {new_domain}")
+            # 子域投递就绪：通配 MX 只保证 DNS 可解析，未 onboarding 的子域被 CF 以
+            # Domain not found 拒收 -> 分配后、协议调用前幂等启用该子域 Email Routing
+            onboarding_error = _onboard_rebind_subdomain_email_routing(
+                main_domain, new_domain, mail_config, logger
+            )
+            if onboarding_error:
+                _save_task_log(
+                    platform,
+                    old_email,
+                    "failed",
+                    error=onboarding_error,
+                    detail={"action": "email_rebind", "account_id": account_id, "new_domain": new_domain},
+                )
+                logger.log(
+                    f"[{index + 1}/{total}] 子域名邮件路由启用失败 #{account_id} ({old_email}): {onboarding_error}",
+                    level="error",
+                )
+                return {"ok": False, "account_id": account_id, "email": old_email, "error": onboarding_error}
+            logger.log(f"[{index + 1}/{total}] 子域名邮件路由已就绪: {new_domain}")
+            account_mail_config = dict(mail_config)
+            account_mail_config["domain"] = new_domain
             rebind_result = chatgpt_email_rebind.rebind_account_email(
                 {"email": old_email, "password": password, "extra": extra},
-                mail_config,
+                account_mail_config,
                 proxy=proxy,
                 log_fn=logger.log,
             )

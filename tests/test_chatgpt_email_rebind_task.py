@@ -3,9 +3,11 @@
 - 协议函数 rebind_account_email 全部 mock（_ProtocolStub）。
 - 数据库使用 tmp_path 隔离 sqlite 引擎（SQLModel.metadata.create_all）。
 - 覆盖：单个/批量成功、协议失败不落库、重复邮箱拒绝、仅 registered 查询、
-  配置域名归一与 secret 遮蔽/保留、PUT 部分更新（exclude_unset）。
+  配置域名归一与 secret 遮蔽/保留、PUT 部分更新（exclude_unset）、
+  Cloudflare provision 能力声明（ready/implemented）。
 """
 import json
+import re
 
 import pytest
 from sqlmodel import Session, SQLModel, select
@@ -14,12 +16,14 @@ import application.chatgpt_rebind as rebind_service
 import application.tasks as tasks_module
 import core.config_store as config_store_module
 from api.chatgpt_rebind import MailConfigUpdateRequest
+from application.cloudflare_email_routing import CloudflareAPIError
 from application.tasks import TaskLogger, _execute_email_rebind_task, create_email_rebind_task
 from core.db import (
     AccountCredentialModel,
     AccountModel,
     AccountOverviewModel,
     ProviderResourceModel,
+    TaskEventModel,
     TaskModel,
     create_configured_engine,
 )
@@ -28,6 +32,8 @@ CONFIG = {
     "api_url": "https://mail.example.com",
     "api_token": "token-abc-123456",
     "domains": ["cloud.example.com"],
+    "cloudflare_api_token": "cf-token-9999",
+    "cloudflare_account_id": "acct-1",
 }
 
 
@@ -80,12 +86,66 @@ def protocol(monkeypatch):
     return stub
 
 
+class _CloudflareStub:
+    """CloudflareClient 替身：记录 get_zone/list/enable 调用；enable 可注入错误。"""
+
+    def __init__(self):
+        self.calls = []
+        self.zone_result = {"id": "zone-1", "name": "", "status": "active"}
+        self.existing_mx_records = []
+        self.enable_error = None
+
+    def get_zone(self, domain):
+        self.calls.append({"op": "get_zone", "domain": domain})
+        if self.zone_result is None:
+            return None
+        return {**self.zone_result, "name": domain}
+
+    def list_dns_records(self, zone_id, *, name, record_type):
+        self.calls.append({"op": "list_dns_records", "zone_id": zone_id, "name": name, "record_type": record_type})
+        return list(self.existing_mx_records)
+
+    def enable_email_routing_dns(self, zone_id, *, name=""):
+        self.calls.append({"op": "enable_email_routing_dns", "zone_id": zone_id, "name": name})
+        if self.enable_error is not None:
+            raise self.enable_error
+        # 模拟 CF onboarding 为子域创建托管 MX（供启用后的复核 GET 命中）
+        self.existing_mx_records.append(
+            {
+                "id": f"rec-{name or zone_id}",
+                "type": "MX",
+                "name": name,
+                "content": "route1.mx.cloudflare.net",
+                "priority": 10,
+                "ttl": 1,
+                "proxied": False,
+            }
+        )
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def cloudflare_stub(monkeypatch):
+    """让换绑任务的子域 onboarding 默认幂等成功；记录调用供用例断言。"""
+    import application.cloudflare_email_routing as cloudflare_email_routing_module
+
+    stub = _CloudflareStub()
+    monkeypatch.setattr(
+        cloudflare_email_routing_module,
+        "CloudflareClient",
+        lambda token, account_id="": stub,
+    )
+    return stub
+
+
 def _configure_mail() -> None:
     rebind_service.update_mail_config(
         {
             "domains": CONFIG["domains"][0],
             "api_url": CONFIG["api_url"],
             "api_token": CONFIG["api_token"],
+            "cloudflare_api_token": CONFIG["cloudflare_api_token"],
+            "cloudflare_account_id": CONFIG["cloudflare_account_id"],
         }
     )
 
@@ -233,10 +293,10 @@ def test_config_domains_normalization_and_secret_masking(isolated_db):
     assert masked["cloudflare_api_token_masked"] == masked["cloudflare_api_token"]
     assert masked["has_api_token"] is True
     assert masked["has_cloudflare_api_token"] is True
-    # Cloudflare 自动配置为未实现的占位能力
-    assert masked["provision"]["status"] == "not_implemented"
-    assert masked["provision"]["capabilities"]["cloudflare_mx_provision"] == {"implemented": False}
-    assert masked["provision"]["capabilities"]["cloudflare_email_routing_provision"] == {"implemented": False}
+    # Cloudflare 自动配置能力已实现（application.cloudflare_email_routing）
+    assert masked["provision"]["status"] == "ready"
+    assert masked["provision"]["capabilities"]["cloudflare_mx_provision"] == {"implemented": True}
+    assert masked["provision"]["capabilities"]["cloudflare_email_routing_provision"] == {"implemented": True}
 
     # PUT 遮蔽值/空值 -> 保留原 secret；新值 -> 覆盖
     masked_keep = rebind_service.update_mail_config(
@@ -265,6 +325,7 @@ def test_mail_config_partial_update_preserves_other_fields(isolated_db):
             "api_token": CONFIG["api_token"],
             "cloudflare_api_token": "cf-token-9999",
             "cloudflare_account_id": "acct-1",
+            "cloudflare_worker_name": "cloud-mail-worker",
             "forward_to": "me@example.com",
         }
     )
@@ -282,6 +343,7 @@ def test_mail_config_partial_update_preserves_other_fields(isolated_db):
     assert saved["api_token"] == CONFIG["api_token"]
     assert saved["cloudflare_api_token"] == "cf-token-9999"
     assert saved["cloudflare_account_id"] == "acct-1"
+    assert saved["cloudflare_worker_name"] == "cloud-mail-worker"
 
     # 显式提交空值：普通字段清除，secret 保留
     clear_url = MailConfigUpdateRequest.model_validate({"api_url": ""})
@@ -492,3 +554,248 @@ def test_registered_accounts_email_search_filter(isolated_db):
     # 空搜索退化为全量分页
     all_registered = rebind_service.list_registered_accounts(page=1, page_size=10, email="  ")
     assert all_registered["total"] == 3
+
+# ---------------------------------------------------------------------------
+# 子域名邮箱分配：配额（每主域名 10 个）、复用、格式、持久化与任务集成
+# ---------------------------------------------------------------------------
+
+
+def test_allocate_rebind_subdomain_quota_reuse_and_format(isolated_db):
+    _configure_mail()
+    first_sub, first_main = rebind_service.allocate_rebind_subdomain("User1@Example.com")
+    assert first_main == "cloud.example.com"
+    assert re.fullmatch(r"[a-z0-9]{6,8}", first_sub)
+    # 同一账号（大小写不敏感）复用既有分配（任务重试幂等）
+    assert rebind_service.allocate_rebind_subdomain("user1@example.com") == (first_sub, first_main)
+    # 其余账号分配互不冲突，直到 10/10 满额
+    subs = {first_sub}
+    for index in range(2, 11):
+        sub, main = rebind_service.allocate_rebind_subdomain(f"user{index}@example.com")
+        assert main == "cloud.example.com"
+        assert sub not in subs
+        subs.add(sub)
+    with pytest.raises(RuntimeError) as exc_info:
+        rebind_service.allocate_rebind_subdomain("user11@example.com")
+    assert "主域名 cloud.example.com 子域名配额已用完(10/10)" in str(exc_info.value)
+    allocations = rebind_service.load_subdomain_allocations()
+    assert len(allocations["cloud.example.com"]) == 10
+    assert re.fullmatch(r"[a-z0-9]{6,8}", allocations["cloud.example.com"][0]["subdomain"])
+
+
+def test_allocate_rebind_subdomain_falls_back_to_next_domain(isolated_db):
+    """显式/首个主域名满额时自动选下一个仍有余量的主域名。"""
+    rebind_service.update_mail_config({"domains": "full.example.com\nspare.example.com"})
+    rebind_service.save_subdomain_allocations(
+        {
+            "full.example.com": [
+                {"subdomain": f"s{index}", "account_email": f"u{index}@x.com", "created_at": ""}
+                for index in range(10)
+            ]
+        }
+    )
+
+    sub, main = rebind_service.allocate_rebind_subdomain("fresh@example.com")
+
+    assert main == "spare.example.com"
+    assert re.fullmatch(r"[a-z0-9]{6,8}", sub)
+
+
+def test_task_allocates_subdomain_and_passes_domain(isolated_db, protocol):
+    """任务执行：先持久化子域名分配，再以 domain=子域名.主域名 调协议；日志含分配节点。"""
+    _configure_mail()
+    account_id = _create_account(isolated_db, email="old@example.com")
+    protocol.results["old@example.com"] = _protocol_success("moved@later.example.com", "old@example.com")
+
+    outcome = _run_task(isolated_db, {"ids": [account_id]})
+
+    assert outcome["status"] == "succeeded"
+    call = protocol.calls[0]
+    allocations = rebind_service.load_subdomain_allocations()
+    entries = allocations["cloud.example.com"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["account_email"] == "old@example.com"
+    assert entry["created_at"]
+    expected_domain = entry["subdomain"] + ".cloud.example.com"
+    assert call["mail_config"]["domain"] == expected_domain
+    assert call["mail_config"]["domains"] == CONFIG["domains"]
+    with Session(isolated_db) as session:
+        events = session.exec(
+            select(TaskEventModel).where(TaskEventModel.task_id == "task-rebind-test")
+        ).all()
+    messages = " ".join(event.message for event in events)
+    assert "已分配子域名: " + expected_domain in messages
+
+
+def test_task_fails_when_all_domain_quota_exhausted(isolated_db, protocol):
+    """全部主域名配额用尽 -> 任务失败，错误含「主域名 X 子域名配额已用完(10/10)」。"""
+    _configure_mail()
+    rebind_service.save_subdomain_allocations(
+        {
+            "cloud.example.com": [
+                {"subdomain": f"s{index}", "account_email": f"u{index}@x.com", "created_at": ""}
+                for index in range(10)
+            ]
+        }
+    )
+    account_id = _create_account(isolated_db, email="old@example.com")
+
+    outcome = _run_task(isolated_db, {"ids": [account_id]})
+
+    assert outcome["status"] == "failed"
+    assert outcome["error_count"] == 1
+    item = outcome["result"]["data"]["results"][0]
+    assert item["ok"] is False
+    assert "主域名 cloud.example.com 子域名配额已用完(10/10)" in item["error"]
+    assert protocol.calls == []
+    assert _account_snapshot(isolated_db, account_id)["email"] == "old@example.com"
+
+
+def test_task_retry_reuses_allocation_after_protocol_failure(isolated_db, protocol):
+    """协议失败后再重试：同一账号复用已分配子域名，不新增占用。"""
+    _configure_mail()
+    account_id = _create_account(isolated_db, email="old@example.com")
+    protocol.results["old@example.com"] = {
+        "ok": False,
+        "old_email": "old@example.com",
+        "new_email": "",
+        "error": "change_email/begin 403: forbidden",
+    }
+
+    first = _run_task(isolated_db, {"ids": [account_id]}, task_id="task-rebind-1")
+    assert first["status"] == "failed"
+    assert len(rebind_service.load_subdomain_allocations()["cloud.example.com"]) == 1
+    first_domain = protocol.calls[0]["mail_config"]["domain"]
+
+    protocol.results["old@example.com"] = _protocol_success(
+        "moved@" + first_domain, "old@example.com"
+    )
+    second = _run_task(isolated_db, {"ids": [account_id]}, task_id="task-rebind-2")
+    assert second["status"] == "succeeded"
+    assert len(rebind_service.load_subdomain_allocations()["cloud.example.com"]) == 1
+    assert protocol.calls[1]["mail_config"]["domain"] == first_domain
+
+
+def test_rebind_onboards_subdomain_email_routing(isolated_db, protocol, cloudflare_stub):
+    """分配子域后、协议调用前：get_zone 解析主域名 zone 并以 name={sub}.{main} 启用 onboarding。"""
+    _configure_mail()
+    account_id = _create_account(isolated_db, email="old@example.com")
+    protocol.results["old@example.com"] = _protocol_success("moved@later.example.com", "old@example.com")
+
+    outcome = _run_task(isolated_db, {"ids": [account_id]})
+
+    assert outcome["status"] == "succeeded"
+    allocations = rebind_service.load_subdomain_allocations()["cloud.example.com"]
+    expected_domain = allocations[0]["subdomain"] + ".cloud.example.com"
+    assert [c for c in cloudflare_stub.calls if c["op"] == "get_zone"] == [
+        {"op": "get_zone", "domain": "cloud.example.com"}
+    ]
+    enables = [c for c in cloudflare_stub.calls if c["op"] == "enable_email_routing_dns"]
+    assert enables == [{"op": "enable_email_routing_dns", "zone_id": "zone-1", "name": expected_domain}]
+    # 协议在 onboarding 之后调用，且 domain 即完成 onboarding 的子域
+    assert protocol.calls[0]["mail_config"]["domain"] == expected_domain
+    with Session(isolated_db) as session:
+        events = session.exec(
+            select(TaskEventModel).where(TaskEventModel.task_id == "task-rebind-test")
+        ).all()
+    messages = " ".join(event.message for event in events)
+    assert f"子域名邮件路由已就绪: {expected_domain}" in messages
+
+
+def test_rebind_skips_onboarding_when_subdomain_mx_exists(isolated_db, protocol, cloudflare_stub):
+    """子域已有托管 MX（已 onboarding）：跳过 enable，仅幂等检测，任务继续成功。"""
+    _configure_mail()
+    account_id = _create_account(isolated_db, email="old@example.com")
+    protocol.results["old@example.com"] = _protocol_success("moved@later.example.com", "old@example.com")
+    cloudflare_stub.existing_mx_records = [
+        {
+            "id": "rec-mx",
+            "type": "MX",
+            "name": "anything.cloud.example.com",
+            "content": "route1.mx.cloudflare.net",
+            "priority": 10,
+            "ttl": 1,
+            "proxied": False,
+        }
+    ]
+
+    outcome = _run_task(isolated_db, {"ids": [account_id]})
+
+    assert outcome["status"] == "succeeded"
+    assert outcome["result"]["data"]["results"][0]["ok"] is True
+    assert not any(c["op"] == "enable_email_routing_dns" for c in cloudflare_stub.calls)
+    assert any(
+        c["op"] == "list_dns_records" and c["record_type"] == "MX" for c in cloudflare_stub.calls
+    )
+    assert protocol.calls[0]["mail_config"]["domain"].endswith(".cloud.example.com")
+
+
+def test_rebind_onboarding_failure_fails_account_before_protocol(isolated_db, protocol, cloudflare_stub):
+    """onboarding 失败 -> 账号结构化失败：不调用协议、不落库，错误含明细与补救提示。"""
+    _configure_mail()
+    account_id = _create_account(isolated_db, email="old@example.com")
+    cloudflare_stub.enable_error = CloudflareAPIError(
+        "POST",
+        "/zones/zone-1/email/routing/dns",
+        403,
+        [{"code": 9103, "message": "Unauthorized to access requested resource"}],
+    )
+
+    outcome = _run_task(isolated_db, {"ids": [account_id]})
+
+    assert outcome["status"] == "failed"
+    assert outcome["success_count"] == 0
+    assert outcome["error_count"] == 1
+    item = outcome["result"]["data"]["results"][0]
+    assert item["ok"] is False
+    assert "子域名邮件路由启用失败" in item["error"]
+    assert "HTTP 403" in item["error"]
+    assert "Unauthorized to access requested resource" in item["error"]
+    assert "区域→Zone Settings→编辑" in item["error"]
+    assert protocol.calls == []
+    assert _account_snapshot(isolated_db, account_id)["email"] == "old@example.com"
+    with Session(isolated_db) as session:
+        events = session.exec(
+            select(TaskEventModel).where(TaskEventModel.task_id == "task-rebind-test")
+        ).all()
+    messages = " ".join(event.message for event in events)
+    assert "子域名邮件路由启用失败" in messages
+    assert "区域→Zone Settings→编辑" in messages
+
+
+def test_rebind_onboarding_fails_when_main_domain_zone_not_visible(isolated_db, protocol, cloudflare_stub):
+    """主域名不在当前 Token 可见范围 -> 账号失败，日志说明 Zone 解析失败。"""
+    _configure_mail()
+    account_id = _create_account(isolated_db, email="old@example.com")
+    cloudflare_stub.zone_result = None
+
+    outcome = _run_task(isolated_db, {"ids": [account_id]})
+
+    assert outcome["status"] == "failed"
+    assert outcome["error_count"] == 1
+    item = outcome["result"]["data"]["results"][0]
+    assert item["ok"] is False
+    assert "未托管在当前 Token 可见范围" in item["error"]
+    assert protocol.calls == []
+    assert _account_snapshot(isolated_db, account_id)["email"] == "old@example.com"
+
+
+def test_subdomain_allocations_survive_partial_update_and_get_config(isolated_db):
+    """PUT 部分更新不误清 subdomain_allocations；GET 返回分配与配额能力，且无敏感值。"""
+    _configure_mail()
+    sub, main = rebind_service.allocate_rebind_subdomain("old@example.com")
+
+    rebind_service.update_mail_config({"forward_to": "ops@example.com"})
+    allocations = rebind_service.load_subdomain_allocations()
+    assert allocations[main][0]["subdomain"] == sub
+    assert allocations[main][0]["account_email"] == "old@example.com"
+
+    # PUT 显式提交其他字段（含伪造的 subdomain_allocations）都不会替换真实分配
+    rebind_service.update_mail_config({"domains": "cloud.example.com", "subdomain_allocations": {"evil.com": []}})
+    assert rebind_service.load_subdomain_allocations()[main][0]["subdomain"] == sub
+
+    masked = rebind_service.get_mail_config()
+    assert masked["subdomain_allocations"] == rebind_service.load_subdomain_allocations()
+    capabilities = masked["provision"]["capabilities"]
+    assert capabilities["subdomain_limit_per_domain"] == rebind_service.SUBDOMAIN_LIMIT_PER_DOMAIN == 10
+    assert CONFIG["api_token"] not in json.dumps(masked, ensure_ascii=False)

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  CloudCog,
   Forward,
   Loader2,
   RefreshCw,
@@ -18,6 +19,7 @@ import { apiFetch, cn } from '@/lib/utils'
 import { formatDateTime, translateAccountStatus, type Language } from '@/lib/i18n'
 import { getTaskStatusText, isTerminalTaskStatus } from '@/lib/tasks'
 import { useI18n } from '@/lib/i18n-context'
+import { RebindTaskLogDialog } from '@/components/tasks/RebindTaskLogDialog'
 
 type RebindAccountItem = {
   id?: number | string
@@ -41,7 +43,47 @@ type MailConfigResponse = {
   api_token_masked?: string
   cloudflare_api_token_masked?: string
   cloudflare_account_id?: string
+  cloudflare_worker_name?: string
   forward_to?: string
+  provision?: { status?: string; capabilities?: { subdomain_limit_per_domain?: number } }
+  subdomain_allocations?: Record<string, SubdomainAllocationItem[]>
+}
+
+type SubdomainAllocationItem = {
+  subdomain?: string
+  account_email?: string
+  created_at?: string
+}
+
+type CloudflareStepResult = {
+  status?: string
+  message?: string
+}
+
+type CloudflareDomainResult = {
+  domain?: string
+  ok?: boolean
+  zone_id?: string
+  steps?: {
+    zone?: CloudflareStepResult
+    dns?: CloudflareStepResult
+    email_routing?: CloudflareStepResult
+    catch_all?: CloudflareStepResult
+    worker?: CloudflareStepResult
+    wildcard?: CloudflareStepResult
+  }
+  error?: string
+}
+
+type CloudflareProvisionResponse = {
+  ok?: boolean
+  summary?: {
+    total?: number
+    succeeded?: number
+    failed?: number
+    skipped?: number
+  }
+  results?: CloudflareDomainResult[]
 }
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100]
@@ -100,9 +142,18 @@ export default function ChatGptRebind() {
   const [mailApiToken, setMailApiToken] = useState('')
   const [mailCloudflareToken, setMailCloudflareToken] = useState('')
   const [mailCloudflareAccountId, setMailCloudflareAccountId] = useState('')
+  const [mailCloudflareWorkerName, setMailCloudflareWorkerName] = useState('')
   const [mailForwardTo, setMailForwardTo] = useState('')
   const [maskedCloudMailToken, setMaskedCloudMailToken] = useState('')
   const [maskedCloudflareToken, setMaskedCloudflareToken] = useState('')
+  const [cfCapabilityReady, setCfCapabilityReady] = useState(false)
+  const [cfProvisioning, setCfProvisioning] = useState(false)
+  const [cfSummary, setCfSummary] = useState<CloudflareProvisionResponse | null>(null)
+  const [logDialogTaskId, setLogDialogTaskId] = useState('')
+  const [mailSubdomainAllocations, setMailSubdomainAllocations] = useState<
+    Record<string, SubdomainAllocationItem[]>
+  >({})
+  const [mailSubdomainLimit, setMailSubdomainLimit] = useState(10)
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
 
@@ -250,6 +301,7 @@ export default function ChatGptRebind() {
       setReloadTick((value) => value + 1)
       setActiveTaskId(taskId)
       setActiveTaskStatus(String(data?.status || 'pending'))
+      setLogDialogTaskId(taskId)
     } catch (exc) {
       setActionError(errorText(exc, t('chatgptRebind.task.createFailed')))
     } finally {
@@ -278,9 +330,17 @@ export default function ChatGptRebind() {
       setMailApiToken('')
       setMailCloudflareToken('')
       setMailCloudflareAccountId(String(data.cloudflare_account_id || ''))
+      setMailCloudflareWorkerName(String(data.cloudflare_worker_name || ''))
       setMailForwardTo(String(data.forward_to || ''))
       setMaskedCloudMailToken(String(data.api_token_masked || ''))
       setMaskedCloudflareToken(String(data.cloudflare_api_token_masked || ''))
+      setCfCapabilityReady(String(data.provision?.status || '') === 'ready')
+      setMailSubdomainAllocations(
+        data.subdomain_allocations && typeof data.subdomain_allocations === 'object'
+          ? data.subdomain_allocations
+          : {},
+      )
+      setMailSubdomainLimit(Number(data.provision?.capabilities?.subdomain_limit_per_domain || 10))
     } catch (exc) {
       setMailError(errorText(exc, t('chatgptRebind.mailConfig.loadFailed')))
     } finally {
@@ -294,8 +354,8 @@ export default function ChatGptRebind() {
     loadMailConfig()
   }
 
-  const saveMailConfig = async () => {
-    if (mailSaving) return
+  const saveMailConfig = async (): Promise<boolean> => {
+    if (mailSaving) return false
     setMailSaving(true)
     setMailError('')
     setMailSaved('')
@@ -311,15 +371,66 @@ export default function ChatGptRebind() {
           api_token: mailApiToken,
           cloudflare_api_token: mailCloudflareToken,
           cloudflare_account_id: mailCloudflareAccountId.trim(),
+          cloudflare_worker_name: mailCloudflareWorkerName.trim(),
           forward_to: mailForwardTo.trim(),
         }),
       })
       setMailSaved(t('chatgptRebind.mailConfig.saved'))
       await loadMailConfig()
+      return true
     } catch (exc) {
       setMailError(errorText(exc, t('chatgptRebind.mailConfig.saveFailed')))
+      return false
     } finally {
       setMailSaving(false)
+    }
+  }
+
+  const runCloudflareProvision = async () => {
+    if (cfProvisioning || mailSaving) return
+    const domains = mailDomains
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    if (domains.length === 0) {
+      setMailError(t('chatgptRebind.mailConfig.cf.needDomains'))
+      return
+    }
+    if (!mailCloudflareToken.trim() && !maskedCloudflareToken.trim()) {
+      setMailError(t('chatgptRebind.mailConfig.cf.needToken'))
+      return
+    }
+    const workerName = mailCloudflareWorkerName.trim()
+    if (!workerName) {
+      setMailError(t('chatgptRebind.mailConfig.cf.needWorker'))
+      return
+    }
+    setCfProvisioning(true)
+    setMailError('')
+    setMailSaved('')
+    try {
+      // 先保存配置（含 Token / Worker 名称），后端按持久化配置执行
+      const saved = await saveMailConfig()
+      if (!saved) return
+      const confirmed = window.confirm(
+        t('chatgptRebind.mailConfig.cf.confirmBody', {
+          count: domains.length,
+          worker: workerName,
+        }),
+      )
+      if (!confirmed) return
+      const data: CloudflareProvisionResponse = await apiFetch(
+        '/chatgpt-rebind/provision/cloudflare',
+        {
+          method: 'POST',
+          body: JSON.stringify({ domains }),
+        },
+      )
+      setCfSummary(data)
+    } catch (exc) {
+      setMailError(errorText(exc, t('chatgptRebind.mailConfig.cf.failed')))
+    } finally {
+      setCfProvisioning(false)
     }
   }
 
@@ -334,6 +445,75 @@ export default function ChatGptRebind() {
     masked
       ? t('chatgptRebind.mailConfig.currentToken', { masked })
       : t('chatgptRebind.mailConfig.tokenKeepHint')
+
+  const cfStepBadge = (
+    result: CloudflareDomainResult,
+    step: 'zone' | 'dns' | 'email_routing' | 'catch_all' | 'worker' | 'wildcard',
+    label: string,
+  ) => {
+    const status = result.steps?.[step]?.status || ''
+    if (!status) return null
+    const variant =
+      status === 'success' ? 'success' : status === 'failed' ? 'danger' : 'secondary'
+    const statusLabel =
+      status === 'success'
+        ? t('chatgptRebind.mailConfig.cf.status.success')
+        : status === 'failed'
+          ? t('chatgptRebind.mailConfig.cf.status.failed')
+          : status === 'skipped'
+            ? t('chatgptRebind.mailConfig.cf.status.skipped')
+            : status
+    return (
+      <Badge
+        key={step}
+        variant={variant}
+        title={result.steps?.[step]?.message || undefined}
+        className="whitespace-nowrap"
+      >
+        {label} · {statusLabel}
+      </Badge>
+    )
+  }
+
+  const cfResults = cfSummary?.results ?? []
+  const cfTotal = Number(cfSummary?.summary?.total ?? cfResults.length)
+  const cfSucceeded = Number(
+    cfSummary?.summary?.succeeded ?? cfResults.filter((item) => item.ok).length,
+  )
+  const cfFailed = Number(
+    cfSummary?.summary?.failed ?? cfResults.filter((item) => !item.ok).length,
+  )
+  const cfSkipped = Number(cfSummary?.summary?.skipped ?? 0)
+  const cfOutcome: 'success' | 'partial' | 'failed' =
+    cfFailed > 0
+      ? cfSucceeded > 0
+        ? 'partial'
+        : 'failed'
+      : cfSummary?.ok === false
+        ? 'failed'
+        : 'success'
+  const cfSummaryKey =
+    cfOutcome === 'success'
+      ? 'chatgptRebind.mailConfig.cf.summaryAllSuccess'
+      : cfOutcome === 'partial'
+        ? 'chatgptRebind.mailConfig.cf.summaryPartial'
+        : 'chatgptRebind.mailConfig.cf.summaryFailed'
+
+  // 域名输入区子域名配额展示：按已配置主域名统计已分配子域名数
+  const mailSubdomainUsage = useMemo(() => {
+    const seen = new Set<string>()
+    const domains: string[] = []
+    for (const raw of mailDomains.split(/\r?\n/)) {
+      const domain = raw.trim().replace(/^@+/, '').toLowerCase()
+      if (!domain || seen.has(domain)) continue
+      seen.add(domain)
+      domains.push(domain)
+    }
+    return domains.map((domain) => ({
+      domain,
+      used: (mailSubdomainAllocations[domain] || []).length,
+    }))
+  }, [mailDomains, mailSubdomainAllocations])
 
   return (
     <div className="space-y-4">
@@ -371,8 +551,8 @@ export default function ChatGptRebind() {
         </div>
       )}
 
-      {/* 任务状态横幅：创建成功 / 执行中 / 终态成功失败 */}
-      {activeTaskId && (
+      {/* 任务状态横幅：日志弹窗关闭期间的简短状态提示，可点“查看日志”重新打开弹窗 */}
+      {activeTaskId && !logDialogTaskId && (
         <div
           className={cn(
             'flex items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm',
@@ -409,16 +589,21 @@ export default function ChatGptRebind() {
               )}
             </div>
           </div>
-          <button
-            onClick={() => {
-              setActiveTaskId('')
-              setActiveTaskStatus('')
-              setTaskError('')
-            }}
-            className="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button onClick={() => setLogDialogTaskId(activeTaskId)} className="table-action-btn">
+              {t('chatgptRebind.taskLog.viewLog')}
+            </button>
+            <button
+              onClick={() => {
+                setActiveTaskId('')
+                setActiveTaskStatus('')
+                setTaskError('')
+              }}
+              className="shrink-0 rounded p-1 opacity-60 transition hover:opacity-100"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -675,6 +860,19 @@ export default function ChatGptRebind() {
                         placeholder={t('chatgptRebind.mailConfig.domainsPlaceholder')}
                         className="control-surface control-surface-compact mt-1 w-full font-mono text-xs leading-relaxed"
                       />
+                      {mailSubdomainUsage.length > 0 && (
+                        <div className="mt-1 space-y-0.5 text-[11px] font-normal text-[var(--text-muted)]">
+                          {mailSubdomainUsage.map((item) => (
+                            <div key={item.domain} className="break-all">
+                              {item.domain} ·{' '}
+                              {t('chatgptRebind.mailConfig.subdomainQuota', {
+                                used: item.used,
+                                limit: mailSubdomainLimit,
+                              })}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </label>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="block text-xs font-medium text-[var(--text-secondary)]">
@@ -694,6 +892,9 @@ export default function ChatGptRebind() {
                           spellCheck={false}
                           className="control-surface control-surface-compact mt-1 w-full font-mono text-xs"
                         />
+                        <span className="mt-1 block break-all text-[11px] font-normal text-[var(--text-muted)]">
+                          {t('chatgptRebind.mailConfig.forwardToHint')}
+                        </span>
                       </label>
                       <label className="block text-xs font-medium text-[var(--text-secondary)]">
                         {t('chatgptRebind.mailConfig.apiToken')}
@@ -721,6 +922,16 @@ export default function ChatGptRebind() {
                           {tokenHint(maskedCloudflareToken)}
                         </span>
                       </label>
+                      <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                        {t('chatgptRebind.mailConfig.cloudflareWorkerName')}
+                        <input
+                          value={mailCloudflareWorkerName}
+                          onChange={(event) => setMailCloudflareWorkerName(event.target.value)}
+                          spellCheck={false}
+                          placeholder={t('chatgptRebind.mailConfig.cloudflareWorkerNamePlaceholder')}
+                          className="control-surface control-surface-compact mt-1 w-full font-mono text-xs"
+                        />
+                      </label>
                       <label className="block text-xs font-medium text-[var(--text-secondary)] sm:col-span-2">
                         {t('chatgptRebind.mailConfig.cloudflareAccountId')}
                         <input
@@ -731,15 +942,105 @@ export default function ChatGptRebind() {
                         />
                       </label>
                     </div>
-                    {/* MX / Email Routing 自动配置：待接入（仅展示，不提供操作入口） */}
-                    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-3 py-2.5">
-                      <Clock className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
-                      <Badge variant="warning">
-                        {t('chatgptRebind.mailConfig.mxPending')}
-                      </Badge>
-                      <Badge variant="warning">
-                        {t('chatgptRebind.mailConfig.emailRoutingPending')}
-                      </Badge>
+                    {/* Cloudflare 自动配置：能力未就绪时保留降级提示 */}
+                    <div className="space-y-2 rounded-lg border border-[var(--border-soft)] bg-[var(--bg-pane)] px-3 py-2.5">
+                      {cfCapabilityReady ? (
+                        <>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-[var(--text-secondary)]">
+                              {t('chatgptRebind.mailConfig.cf.title')}
+                            </span>
+                            <Button
+                              size="sm"
+                              onClick={runCloudflareProvision}
+                              disabled={cfProvisioning || mailSaving}
+                            >
+                              {cfProvisioning ? (
+                                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <CloudCog className="mr-1.5 h-3.5 w-3.5" />
+                              )}
+                              {cfProvisioning
+                                ? t('chatgptRebind.mailConfig.cf.actionRunning')
+                                : t('chatgptRebind.mailConfig.cf.action')}
+                            </Button>
+                          </div>
+                          <p className="break-words text-[11px] font-normal leading-relaxed text-[var(--text-muted)]">
+                            {t('chatgptRebind.mailConfig.cf.description')}
+                          </p>
+                          {cfSummary && (
+                            <>
+                              <div
+                                className={cn(
+                                  'flex items-start gap-2 rounded-lg border px-3 py-2 text-xs',
+                                  cfOutcome === 'success' &&
+                                    'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+                                  cfOutcome === 'partial' &&
+                                    'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+                                  cfOutcome === 'failed' &&
+                                    'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300',
+                                )}
+                              >
+                                {cfOutcome === 'success' ? (
+                                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                ) : cfOutcome === 'partial' ? (
+                                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                ) : (
+                                  <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                )}
+                                <span className="min-w-0 break-words">
+                                  {t(cfSummaryKey, {
+                                    total: cfTotal,
+                                    succeeded: cfSucceeded,
+                                    failed: cfFailed,
+                                    skipped: cfSkipped,
+                                  })}
+                                </span>
+                              </div>
+                              {cfResults.length > 0 && (
+                                <div className="space-y-1.5">
+                                  {cfResults.map((result, index) => (
+                                    <div
+                                      key={result.domain || `domain-${index}`}
+                                      className="rounded-lg border border-[var(--border-soft)] px-2.5 py-2"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        <span
+                                          className="max-w-[240px] truncate font-mono text-xs font-medium text-[var(--text-primary)]"
+                                          title={result.domain || ''}
+                                        >
+                                          {result.domain || '-'}
+                                        </span>
+                                        {cfStepBadge(result, 'zone', t('chatgptRebind.mailConfig.cf.col.zone'))}
+                                        {cfStepBadge(result, 'dns', t('chatgptRebind.mailConfig.cf.col.dns'))}
+                                        {cfStepBadge(result, 'email_routing', t('chatgptRebind.mailConfig.cf.col.routing'))}
+                                        {cfStepBadge(result, 'catch_all', t('chatgptRebind.mailConfig.cf.col.catchAll'))}
+                                        {cfStepBadge(result, 'worker', t('chatgptRebind.mailConfig.cf.col.worker'))}
+                                        {cfStepBadge(result, 'wildcard', t('chatgptRebind.mailConfig.cf.col.wildcard'))}
+                                      </div>
+                                      {result.error && (
+                                        <div className="mt-1 break-all text-[11px] text-red-700 dark:text-red-300">
+                                          {result.error}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Clock className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+                          <Badge variant="warning">
+                            {t('chatgptRebind.mailConfig.mxPending')}
+                          </Badge>
+                          <Badge variant="warning">
+                            {t('chatgptRebind.mailConfig.emailRoutingPending')}
+                          </Badge>
+                        </div>
+                      )}
                     </div>
                     {mailSaved && (
                       <div className="flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
@@ -760,7 +1061,11 @@ export default function ChatGptRebind() {
                 <Button variant="outline" size="sm" onClick={() => setMailOpen(false)} disabled={mailSaving}>
                   {t('common.cancel')}
                 </Button>
-                <Button size="sm" onClick={saveMailConfig} disabled={mailLoading || mailSaving}>
+                <Button
+                  size="sm"
+                  onClick={saveMailConfig}
+                  disabled={mailLoading || mailSaving || cfProvisioning}
+                >
                   {mailSaving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
                   {mailSaving ? t('common.saving') : t('common.save')}
                 </Button>
@@ -769,6 +1074,16 @@ export default function ChatGptRebind() {
           </div>,
           document.body,
         )}
+
+      {/* 换绑任务日志弹窗：创建成功自动打开，可从横幅“查看日志”重新打开 */}
+      {logDialogTaskId && (
+        <RebindTaskLogDialog
+          taskId={logDialogTaskId}
+          taskStatus={activeTaskId === logDialogTaskId ? activeTaskStatus : ''}
+          onClose={() => setLogDialogTaskId('')}
+          onDone={() => setReloadTick((value) => value + 1)}
+        />
+      )}
     </div>
   )
 }

@@ -132,6 +132,28 @@ def _is_android_protocol_account(account: Account) -> bool:
     return any(variant in _ANDROID_PROTOCOL_VARIANTS for variant in _overview_protocol_variants(account))
 
 
+def _account_action_region(account: Account) -> str:
+    """解析账号动作代理用的地区（大写）。
+
+    优先级：account.region → extra.region → account_overview.region →
+    overview.registration_ip_country_code / country_code →
+    overview.legacy_extra 同名字段。注册 IP 国别码可代表账号实际归属地区。
+    """
+    extra = _safe_dict(getattr(account, "extra", None))
+    overview = _safe_dict(extra.get("account_overview"))
+    legacy_extra = _safe_dict(overview.get("legacy_extra"))
+    region = _first_non_empty(
+        getattr(account, "region", None),
+        extra.get("region"),
+        overview.get("region"),
+        overview.get("registration_ip_country_code"),
+        overview.get("country_code"),
+        legacy_extra.get("registration_ip_country_code"),
+        legacy_extra.get("country_code"),
+    )
+    return str(region or "").strip().upper()
+
+
 def _mask_proxy(proxy: str | None) -> str:
     value = str(proxy or "").strip()
     if not value or "@" not in value:
@@ -196,7 +218,41 @@ def _is_chatgpt_account_deactivated_error(message: str) -> bool:
     return "account_deactivated" in str(message or "").lower()
 
 
-def _run_get_rt_protocol_with_restarts(run_once, *, otp_callback, log_fn, max_attempts: int):
+GET_RT_LOGIN_RESTART_DEFAULT_ATTEMPTS = 3
+GET_RT_LOGIN_RESTART_MAX_ATTEMPTS = 5
+GET_RT_LOGIN_RESTART_BACKOFF_BASE_SECONDS = 5.0
+GET_RT_LOGIN_RESTART_BACKOFF_CAP_SECONDS = 20.0
+
+
+def _resolve_get_rt_login_restart_limit(params: dict) -> int:
+    """登录完整重启次数：默认 3、上限 5；可由 params.login_restart_limit 覆盖（不进前端 UI）。"""
+    limit = _int_param(params or {}, "login_restart_limit", GET_RT_LOGIN_RESTART_DEFAULT_ATTEMPTS)
+    return min(max(limit, 1), GET_RT_LOGIN_RESTART_MAX_ATTEMPTS)
+
+
+def _get_rt_login_restart_backoff_seconds(failed_attempts: int) -> float:
+    """第 N 次登录完整重启失败后的退避秒数：5s/10s/20s…（上限 20s）。"""
+    return min(
+        GET_RT_LOGIN_RESTART_BACKOFF_BASE_SECONDS * (2 ** max(0, int(failed_attempts) - 1)),
+        GET_RT_LOGIN_RESTART_BACKOFF_CAP_SECONDS,
+    )
+
+
+def _run_get_rt_protocol_with_restarts(
+    run_once,
+    *,
+    otp_callback,
+    log_fn,
+    max_attempts: int,
+    proxy_url: str | None = None,
+):
+    """协议获取 rt 的登录完整重启 wrapper。
+
+    - 只对携带 GET_RT_LOGIN_RESTART_REQUIRED 标记的错误整体重启（重新登录），
+      其它错误立即抛出；
+    - 全程复用调用方租好的同一个 proxy URL（闭包捕获），重启不换代理；
+    - 每次重启先按 5s/10s/…（上限 20s）指数退避，再刷新邮箱 OTP baseline。
+    """
     attempt_limit = max(1, int(max_attempts or 1))
     for attempt in range(1, attempt_limit + 1):
         try:
@@ -205,9 +261,11 @@ def _run_get_rt_protocol_with_restarts(run_once, *, otp_callback, log_fn, max_at
             if "GET_RT_LOGIN_RESTART_REQUIRED" not in str(exc) or attempt >= attempt_limit:
                 raise
             log_fn(
-                f"  获取rt(协议): 当前授权状态无法继续，准备从头重新登录 "
+                f"  获取rt(协议): 当前授权状态无法继续，保持同一 leased proxy "
+                f"{_proxy_log_value(proxy_url)} 从头重新登录 "
                 f"({attempt}/{attempt_limit}) detail={exc}"
             )
+            time.sleep(_get_rt_login_restart_backoff_seconds(attempt))
             refresh_baseline = getattr(otp_callback, "refresh_before_ids", None)
             if callable(refresh_baseline):
                 refresh_baseline()
@@ -2283,6 +2341,7 @@ class ChatGPTPlatform(BasePlatform):
           smspool_max_price: SMSPool 价格上限 USD
           smsapi_phone: smsapi 固定手机号
           smsapi_url: smsapi 查询短信 API URL
+          login_restart_limit: 登录完整重启次数（默认 3，上限 5；独立于手机接码次数）
         """
         log_fn = getattr(self, "log", print)
         cancel_fn = getattr(self, "_cancel_check_fn", None)
@@ -2295,7 +2354,7 @@ class ChatGPTPlatform(BasePlatform):
         except Exception:
             phone_change_limit = 10
         extra = account.extra or {}
-        region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+        region = _account_action_region(account)
         proxy, proxy_source = _resolve_action_proxy_with_source(
             self.config.proxy if self.config else None,
             region=region,
@@ -2397,7 +2456,8 @@ class ChatGPTPlatform(BasePlatform):
                     _run_protocol_once,
                     otp_callback=otp_callback,
                     log_fn=log_fn,
-                    max_attempts=phone_change_limit,
+                    max_attempts=_resolve_get_rt_login_restart_limit(params),
+                    proxy_url=proxy,
                 )
                 refresh_token = str(result.get("refresh_token") or "")
                 access_token = str(result.get("access_token") or "")
@@ -2605,7 +2665,7 @@ class ChatGPTPlatform(BasePlatform):
 
         browser_mode = str(params.get("browser_mode") or "camoufox_headed")
         extra = account.extra or {}
-        region = str(getattr(account, "region", "") or extra.get("region", "") or "").strip()
+        region = _account_action_region(account)
         proxy = _resolve_action_proxy(
             self.config.proxy if self.config else None,
             region=region,

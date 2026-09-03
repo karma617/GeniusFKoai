@@ -359,6 +359,134 @@ def _login_restart_required_error(stage: str, detail: str = "") -> RuntimeError:
     return RuntimeError(f"GET_RT_LOGIN_RESTART_REQUIRED: {stage}{suffix}")
 
 
+_GET_RT_LOGIN_MAX_ATTEMPTS = 3
+_GET_RT_LOGIN_RETRY_DELAYS = (5, 10)
+
+_CLOUDFLARE_CHALLENGE_MARKERS = (
+    "just a moment",
+    "challenges.cloudflare.com",
+    "cf-challenge",
+    "cf_chl_opt",
+    "__cf_chl",
+    "attention required",
+    "cf-browser-verification",
+)
+
+
+def _response_body_lower(resp, *, limit: int = 4000) -> str:
+    return str(getattr(resp, "text", "") or "")[:limit].lower()
+
+
+def _is_cloudflare_challenge_response(resp) -> bool:
+    """识别 Cloudflare managed challenge / block HTML 页面。"""
+    body = _response_body_lower(resp)
+    if any(marker in body for marker in _CLOUDFLARE_CHALLENGE_MARKERS):
+        return True
+    status = int(getattr(resp, "status_code", 0) or 0)
+    if status < 400:
+        return False
+    headers = getattr(resp, "headers", {}) or {}
+    server = str(headers.get("server") or headers.get("Server") or "").strip().lower()
+    content_type = str(
+        headers.get("content-type") or headers.get("Content-Type") or ""
+    ).strip().lower()
+    return server == "cloudflare" and "text/html" in content_type
+
+
+def _is_authorize_page_ready(resp) -> bool:
+    """authorize 响应是否已进入有效 2xx/登录页面（排除 Cloudflare challenge）。"""
+    status = int(getattr(resp, "status_code", 0) or 0)
+    if status < 200 or status >= 300:
+        return False
+    return not _is_cloudflare_challenge_response(resp)
+
+
+def _bootstrap_authorize_until_ready(
+    *,
+    session,
+    auth_url: str,
+    log_fn: Callable[[str], None],
+    stage: str,
+    max_attempts: int = _GET_RT_LOGIN_MAX_ATTEMPTS,
+    retry_delays: tuple[int, ...] = _GET_RT_LOGIN_RETRY_DELAYS,
+):
+    """在同一 engine/session/proxy 内重新 bootstrap authorize，直到进入有效 2xx/登录页面。
+
+    未就绪期间严禁提交 authorize/continue；耗尽后抛 GET_RT_LOGIN_RESTART_REQUIRED，
+    由外层完整重启（新建 engine/session/proxy）。
+    """
+    response = None
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            delay = retry_delays[min(attempt - 2, len(retry_delays) - 1)] if retry_delays else 5
+            _wait_before_authorize_retry(log_fn, delay)
+        response = session.get(auth_url, timeout=30, allow_redirects=True)
+        status = int(getattr(response, "status_code", 0) or 0)
+        ready = _is_authorize_page_ready(response)
+        log_fn(
+            f"  获取rt(协议): authorize attempt={attempt}/{max_attempts} "
+            f"-> status={status} ready={ready} "
+            f"cf_challenge={_is_cloudflare_challenge_response(response)} stage={stage}"
+        )
+        _log_response_debug(log_fn, f"authorize attempt {attempt}", response)
+        if ready:
+            return response
+        log_fn(
+            "  获取rt(协议): authorize 未进入有效登录页面，禁止提交 authorize/continue: "
+            f"stage={stage} attempt={attempt}/{max_attempts}"
+        )
+    raise _login_restart_required_error(
+        stage,
+        f"authorize 连续 {max_attempts} 次未进入有效 2xx/登录页面: "
+        f"HTTP {int(getattr(response, 'status_code', 0) or 0)}",
+    )
+
+
+def _build_continue_sentinel(
+    *,
+    engine: RegistrationEngine,
+    client,
+    device_id: str,
+    log_fn: Callable[[str], None],
+) -> str:
+    try:
+        sentinel_header = engine._build_sentinel_header_for_client(client, device_id, "authorize_continue")
+    except Exception as exc:
+        raise RuntimeError(f"获取rt协议模式 Sentinel 初始化失败: {exc}") from exc
+    log_fn("  获取rt(协议): Sentinel 已就绪")
+    return sentinel_header
+
+
+def _post_authorize_continue(
+    *,
+    session,
+    engine: RegistrationEngine,
+    device_id: str,
+    email: str,
+    sentinel_header: str,
+    log_fn: Callable[[str], None],
+    label: str = "authorize/continue",
+):
+    continue_body = {"username": {"kind": "email", "value": email}}
+    continue_headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/log-in")
+    continue_headers["openai-sentinel-token"] = sentinel_header
+    log_fn(
+        f"  获取rt(协议): authorize/continue request ({label}): "
+        f"endpoint={OPENAI_API_ENDPOINTS['signup']} referer={continue_headers.get('referer') or ''} "
+        f"body_keys={','.join(continue_body.keys())} sentinel=yes"
+    )
+    resp = _post_json(
+        session,
+        OPENAI_API_ENDPOINTS["signup"],
+        headers=continue_headers,
+        body=continue_body,
+        allow_redirects=False,
+        timeout=30,
+    )
+    _log_response_debug(log_fn, label, resp)
+    return resp
+
+
 def _send_platform_login_otp_checked(
     *,
     client: OpenAIHTTPClient,
@@ -561,50 +689,70 @@ def run_protocol_get_rt(
     )
     log_fn(f"  获取rt(协议): OAuth 授权链接已生成 state={oauth_start.state[:18]}...")
 
-    auth_resp = session.get(oauth_start.auth_url, timeout=30, allow_redirects=True)
-    log_fn(f"  获取rt(协议): authorize -> {getattr(auth_resp, 'status_code', 0)}")
-    _log_response_debug(log_fn, "authorize", auth_resp)
-
-    try:
-        sentinel_header = engine._build_sentinel_header_for_client(client, device_id, "authorize_continue")
-        log_fn("  获取rt(协议): Sentinel 已就绪")
-    except Exception as exc:
-        raise RuntimeError(f"获取rt协议模式 Sentinel 初始化失败: {exc}") from exc
-
-    continue_body = {"username": {"kind": "email", "value": email}}
-    continue_headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/log-in")
-    continue_headers["openai-sentinel-token"] = sentinel_header
-    log_fn(
-        "  获取rt(协议): authorize/continue request: "
-        f"endpoint={OPENAI_API_ENDPOINTS['signup']} referer={continue_headers.get('referer') or ''} "
-        f"body_keys={','.join(continue_body.keys())} sentinel=yes"
+    _bootstrap_authorize_until_ready(
+        session=session,
+        auth_url=oauth_start.auth_url,
+        log_fn=log_fn,
+        stage="authorize/bootstrap",
     )
-    continue_resp = _post_json(
-        session,
-        OPENAI_API_ENDPOINTS["signup"],
-        headers=continue_headers,
-        body=continue_body,
-        allow_redirects=False,
-        timeout=30,
+
+    sentinel_header = _build_continue_sentinel(
+        engine=engine, client=client, device_id=device_id, log_fn=log_fn
     )
-    _log_response_debug(log_fn, "authorize/continue", continue_resp)
-    if continue_resp.status_code == 409 and engine._is_invalid_state_response(continue_resp):
-        log_fn("  获取rt(协议): authorize/continue invalid_state，重建 authorize + sentinel 后重试")
-        _wait_before_authorize_retry(log_fn)
-        auth_resp = session.get(oauth_start.auth_url, timeout=30, allow_redirects=True)
-        _log_response_debug(log_fn, "authorize retry", auth_resp)
-        sentinel_header = engine._build_sentinel_header_for_client(client, device_id, "authorize_continue")
-        continue_headers = _json_headers(engine, device_id=device_id, referer=f"{OPENAI_AUTH}/log-in")
-        continue_headers["openai-sentinel-token"] = sentinel_header
-        continue_resp = _post_json(
-            session,
-            OPENAI_API_ENDPOINTS["signup"],
-            headers=continue_headers,
-            body=continue_body,
-            allow_redirects=False,
-            timeout=30,
+    continue_resp = _post_authorize_continue(
+        session=session,
+        engine=engine,
+        device_id=device_id,
+        email=email,
+        sentinel_header=sentinel_header,
+        log_fn=log_fn,
+        label="authorize/continue attempt 1",
+    )
+
+    continue_attempts_used = 1
+    while (
+        int(getattr(continue_resp, "status_code", 0) or 0) == 409
+        and engine._is_invalid_state_response(continue_resp)
+        and continue_attempts_used < _GET_RT_LOGIN_MAX_ATTEMPTS
+    ):
+        delay = _GET_RT_LOGIN_RETRY_DELAYS[
+            min(continue_attempts_used - 1, len(_GET_RT_LOGIN_RETRY_DELAYS) - 1)
+        ]
+        log_fn(
+            "  获取rt(协议): authorize/continue invalid_state，将重建 authorize 上下文与 Sentinel 后重试: "
+            f"attempt={continue_attempts_used}/{_GET_RT_LOGIN_MAX_ATTEMPTS} delay={delay}s"
         )
-        _log_response_debug(log_fn, "authorize/continue retry", continue_resp)
+        _wait_before_authorize_retry(log_fn, delay)
+        _bootstrap_authorize_until_ready(
+            session=session,
+            auth_url=oauth_start.auth_url,
+            log_fn=log_fn,
+            stage="authorize/continue-recovery",
+        )
+        sentinel_header = _build_continue_sentinel(
+            engine=engine, client=client, device_id=device_id, log_fn=log_fn
+        )
+        continue_attempts_used += 1
+        continue_resp = _post_authorize_continue(
+            session=session,
+            engine=engine,
+            device_id=device_id,
+            email=email,
+            sentinel_header=sentinel_header,
+            log_fn=log_fn,
+            label=f"authorize/continue attempt {continue_attempts_used}",
+        )
+
+    if int(getattr(continue_resp, "status_code", 0) or 0) == 409 and engine._is_invalid_state_response(continue_resp):
+        log_fn(
+            "  获取rt(协议): authorize/continue invalid_state 恢复耗尽，需完整重启登录: "
+            f"attempts={continue_attempts_used}/{_GET_RT_LOGIN_MAX_ATTEMPTS}"
+        )
+        raise _login_restart_required_error(
+            "authorize/continue",
+            f"invalid_state 重试 {continue_attempts_used}/{_GET_RT_LOGIN_MAX_ATTEMPTS} 次后仍失败: "
+            f"{_continue_error_message(continue_resp)}",
+        )
     if continue_resp.status_code != 200:
         detail = _continue_error_message(continue_resp)
         if _is_login_cooldown_error_text(detail):
